@@ -95,6 +95,8 @@ const makeFakeElement = (tag: string): FakeElement => {
       }
     },
     contains: (): boolean => true,
+    querySelectorAll: (() => [] as unknown as NodeListOf<Element>) as HTMLElement['querySelectorAll'],
+    replaceChildren: (): void => { childList.splice(0); },
     setAttribute: (name: string, value: string): void => {
       attrs.set(name, value);
     },
@@ -288,6 +290,7 @@ const makeFakeConn = (): FakeConn => {
     // fetches `reception.inbox.list` on mount; the destination picker reads
     // `work_entity.source.list` lazily (kept here for completeness).
     'reception.inbox.list': { items: [] },
+    'reception.jobs.list': { captured_at: NOW,jobs: [] },
     'work_entity.source.list': { sources: [] },
     'reception.intake_recipe_pair.get': {
       endpoint_id: 'intake-1',
@@ -358,6 +361,7 @@ describe('D-149 follow-on — bootstrapReceptionRoute: route chrome + sections (
     // `records` second — see `r19-reception-sections.test.ts` for the vocabulary ratchet).
     expect(tabBar.childList.map((a) => a.attrs.get('href'))).toEqual([
       '#reception/inbox',
+      '#reception/jobs',
       '#reception/records',
       '#reception/signoffs',
       '#reception/abuse',
@@ -365,6 +369,7 @@ describe('D-149 follow-on — bootstrapReceptionRoute: route chrome + sections (
     ]);
     expect(tabBar.childList.map((a) => a.textContent)).toEqual([
       'Inbox',
+      'Customer jobs',
       'Records',
       'Customer sign-offs',
       'Abuse',
@@ -396,6 +401,14 @@ describe('D-149 follow-on — bootstrapReceptionRoute: route chrome + sections (
     route.dispose();
   });
 
+  it('mounts the Customer jobs section and its owner-only list',async () => {
+    const fakeDoc = makeFakeDocument();const root = makeFakeElement('div');const { shell,fns } = makeFakeShell();const fc = makeFakeConn();
+    const route = bootstrapReceptionRoute({ ...baseOpts(root,fakeDoc,shell,fc.conn),initialSection: 'jobs' });
+    expect(route.activeSection()).toBe('jobs');await flush();
+    expect(fc.calls).toContainEqual({ method: 'reception.jobs.list',payload: { limit: 50 } });
+    expect(fc.calls.some(call => call.method === 'reception.inbox.list' || call.method === 'reception.page.get')).toBe(false);
+    expect(fns.loadPage).not.toHaveBeenCalled();expect(route.hasUnsavedChanges?.()).toBe(false);route.dispose();
+  });
   it('mounts the Endpoints spine (page main + modal + prompts slots) for #reception/endpoints', async () => {
     const fakeDoc = makeFakeDocument();
     const root = makeFakeElement('div');

@@ -27,6 +27,7 @@ import {
 
 import { classifyRpcError, humanizeRpcError } from '../shell/rpc-error-copy.js';
 import { connectionsEnrollAddress } from '../connections/connections-navigation.js';
+import { createPackResourceAccessController, type PackResourceAccessCaller } from './pack-resource-access-controls.js';
 
 export type PackConnectionsView = RpcResponse<ServerRpcRegistry, 'packs.connections.list'>;
 type PackConnectionSlot = PackConnectionsView['slots'][number];
@@ -34,6 +35,8 @@ type PackConnectionChange = RpcRequest<ServerRpcRegistry, 'packs.connections.add
 
 /** The four `packs.connections.*` calls, and what a removal does. */
 export interface PackConnectionsCallers {
+  /** D-322 §24 — optional for older servers. */
+  access?: PackResourceAccessCaller;
   list: (args: { pack_slug: string }) => Promise<PackConnectionsView>;
   add: (args: PackConnectionChange) => Promise<PackConnectionsView>;
   remove: (args: PackConnectionChange) => Promise<PackConnectionsView>;
@@ -136,6 +139,7 @@ export const createPackConnectionsController = (
   const doc = opts.document;
   const callers = opts.callers;
   const enabled = callers !== undefined;
+  const access = createPackResourceAccessController({ document: doc, call: callers?.access, onChange: opts.onChange });
   const states = new Map<string, PackState>();
   /** `pack::slot::connection` with a write in flight. */
   const busy = new Set<string>();
@@ -220,7 +224,8 @@ export const createPackConnectionsController = (
     change: PackConnectionChange,
   ): void => {
     const key = `${change.pack_slug}::${change.slot}::${change.connection_name}`;
-    if (busy.has(key)) return;
+    if (busy.has(key) || access.busy()) return;
+    access.refresh();
     busy.add(key);
     writeErrors.delete(change.pack_slug);
     changed();
@@ -269,7 +274,7 @@ export const createPackConnectionsController = (
     b.setAttribute(PACK_CONNECTIONS_ACTION_ATTR, action);
     if (disabled) b.setAttribute('disabled', '');
     b.addEventListener('click', () => {
-      if (!disabled) onClick();
+      if (!disabled && !access.busy()) onClick();
     });
     return b;
   };
@@ -298,7 +303,7 @@ export const createPackConnectionsController = (
     for (const connection of slot.connections) {
       const change = { pack_slug: packSlug, slot: slot.slot, connection_name: connection.connection_name };
       const key = `${packSlug}::${slot.slot}::${connection.connection_name}`;
-      const isBusy = busy.has(key);
+      const isBusy = busy.has(key) || access.busy();
       const row = el(list, 'li', 'pc-row');
       row.setAttribute(PACK_CONNECTIONS_ROW_ATTR, connection.connection_name);
       const name = el(row, 'span', 'pc-name', connection.display_name);
@@ -307,8 +312,12 @@ export const createPackConnectionsController = (
       if (!connection.enrolled) {
         el(row, 'span', 'pc-note', heldBy !== undefined ? COPY.not_set_up_held : COPY.not_set_up);
       }
-      if (heldBy !== undefined) continue;
+      if (heldBy !== undefined) {
+        if (connection.enrolled) access.render(row, change, isBusy);
+        continue;
+      }
       const actions = el(row, 'span', 'pc-actions');
+      if (connection.enrolled) access.render(row, change, isBusy);
       if (confirming === key) {
         el(actions, 'span', 'pc-confirm', COPY.confirm_remove(connection.display_name));
         button(actions, COPY.remove, 'confirm-remove', true, isBusy, () => {
@@ -350,6 +359,7 @@ export const createPackConnectionsController = (
         button(actions, COPY.make_default, 'make-default', false, isBusy, () => write(callers!.setDefault, change));
       }
       button(actions, COPY.remove, 'remove', false, isBusy, () => {
+        access.refresh();
         confirming = key;
         confirmingChange = change;
         loadEffect(change, key);
@@ -392,7 +402,7 @@ export const createPackConnectionsController = (
       option.value = candidate.connection_name;
     }
     select.value = slot.candidates[0]!.connection_name;
-    const addBusy = [...busy].some((k) => k.startsWith(`${packSlug}::${slot.slot}::`));
+    const addBusy = access.busy() || [...busy].some((k) => k.startsWith(`${packSlug}::${slot.slot}::`));
     const addButton = button(add, COPY.add_button, 'add', true, addBusy, () => {
       const chosen = select.value;
       if (chosen.length === 0) return;
@@ -439,6 +449,7 @@ export const createPackConnectionsController = (
   return {
     enabled,
     refresh: () => {
+      access.refresh();
       states.clear();
       writeErrors.clear();
       effects.clear();
@@ -447,8 +458,10 @@ export const createPackConnectionsController = (
     renderForPack,
     whenSettled: async () => {
       while (inFlight.size > 0) await Promise.allSettled([...inFlight]);
+      await access.whenSettled();
     },
     dispose: () => {
+      access.dispose();
       disposed = true;
       inFlight = new Set();
     },
@@ -538,5 +551,35 @@ export const PACK_CONNECTIONS_STYLES = `
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+/* D-322 §24 — the check stays under its account on narrow screens. */
+[${PACK_CONNECTIONS_ATTR}] .pc-resource-access {
+  flex-basis: 100%;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+}
+[${PACK_CONNECTIONS_ATTR}] .pc-resource-access[aria-busy] {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+[${PACK_CONNECTIONS_ATTR}] .pc-resource-access h5,
+[${PACK_CONNECTIONS_ATTR}] .pc-resource-access p,
+[${PACK_CONNECTIONS_ATTR}] .pc-resource-access > div {
+  flex-basis: 100%;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+[${PACK_CONNECTIONS_ATTR}] .pc-resource-access h6 { margin: 6px 0; font-size: 12px; }
+[${PACK_CONNECTIONS_ATTR}] .pc-resource-access label { display: block; margin-bottom: 8px; }
+[${PACK_CONNECTIONS_ATTR}] .pc-resource-access input {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 420px;
+  padding: 8px;
+  margin-top: 4px;
 }
 `;

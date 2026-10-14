@@ -1,6 +1,8 @@
 import { RpcError, type QuoteSignoffPrepareInput, type QuoteSignoffAdditionPrepareInput, type QuoteSignoffPublishInput,
-  type QuoteSignoffListInput, type QuoteSignoffCancelInput } from '@recued/contracts';
+  type QuoteSignoffListInput, type QuoteSignoffCancelInput, type QuoteSignoffReceiptInput } from '@recued/contracts';
+import { openCompletionResponse } from './quote-completion-rpc-handler.js';
 import { QuoteSignoffError } from './quote-signoff-service.js';
+import { openApprovalIntentPiiField } from './ports/reception/approval-pii.js';
 import { handleReceptionEndpointPreviewDraft, handleReceptionEndpointCreate,
   handleReceptionEndpointEnable, handleReceptionEndpointRevoke, type ReceptionRpcDeps } from './reception-rpc-handler.js';
 
@@ -79,7 +81,13 @@ export const handleSignoffPrepareAddition = (deps: ReceptionRpcDeps, input: Quot
 
 export const handleSignoffPublish = (deps: ReceptionRpcDeps, input: QuoteSignoffPublishInput, caller: Caller) => run(async () => {
   const service = serviceFor(deps, caller);
-  shape(input, ['signoff_id', 'preview_hash']);
+  shape(input, ['signoff_id', 'preview_hash', 'remember_link_for_reminders']);
+  if (input.remember_link_for_reminders !== undefined && typeof input.remember_link_for_reminders !== 'boolean') {
+    throw new RpcError('quote_signoff_invalid', 'Choose whether to save the link for follow-up emails.', 400);
+  }
+  if (input.remember_link_for_reminders && !deps.getQuoteSignoffReminderService) {
+    throw new RpcError('not_configured', 'Sign-off reminders are unavailable on this server.', 503);
+  }
   const signoffId = id(input.signoff_id);
   if (typeof input.preview_hash !== 'string' || !/^[a-f0-9]{64}$/.test(input.preview_hash)) {
     throw new RpcError('quote_signoff_invalid', 'Preview this request before publishing its link.', 400);
@@ -95,6 +103,7 @@ export const handleSignoffPublish = (deps: ReceptionRpcDeps, input: QuoteSignoff
     // Cancel/supersession during the async enable still closes the visitor and
     // release paths; do not return an obsolete link as ready to share.
     if (service.checkLink(signoffId, endpointId) !== null) throw new QuoteSignoffError('quote_signoff_superseded', 'This request changed while publishing. Preview a new one.');
+    if (input.remember_link_for_reminders) deps.getQuoteSignoffReminderService!().rememberLink(signoffId, created.share_url_once);
     return { signoff: service.get(signoffId), share_url: created.share_url_once };
   } catch (error) {
     if (endpointId) {
@@ -109,4 +118,43 @@ export const handleSignoffPublish = (deps: ReceptionRpcDeps, input: QuoteSignoff
 export const handleSignoffCancel = (deps: ReceptionRpcDeps, input: QuoteSignoffCancelInput, caller: Caller) => run(() => {
   const service = serviceFor(deps, caller); shape(input, ['signoff_id']);
   return service.cancel(id(input.signoff_id));
+});
+
+export const handleSignoffReceipt = (deps: ReceptionRpcDeps, input: QuoteSignoffReceiptInput, caller: Caller) => run(async () => {
+  const service = serviceFor(deps, caller);
+  shape(input, ['signoff_id']);
+  const store = deps.getApprovalIntentStore!();
+  const completionService = deps.getQuoteCompletionService?.();
+  const read = (endpoint: string | null) => endpoint === null ? null : store.findByEndpoint(endpoint);
+  const { receipt, responses, completionSnapshot } = service.receipt(id(input.signoff_id),read,
+    completionService ? ids => completionService.receipt(ids,read) : undefined);
+  let key: Uint8Array | undefined;
+  for (const [index, binding] of responses.entries()) {
+    const entry = receipt.requests[index]!; const intent = binding.snapshot;
+    if (intent === null) continue;
+    if (intent.endpoint_id !== binding.endpoint_id || intent.intent_id !== binding.endpoint_id
+      || intent.target_id !== entry.signoff_id || intent.action_kind !== 'approve_wording') {
+      entry.response.decision = 'unavailable'; continue;
+    }
+    if (intent.consumed_at === null) continue;
+    entry.response.decision = 'unavailable';
+    if (!Number.isSafeInteger(intent.consumed_at) || intent.consumed_at < 0 || intent.consumed_at > receipt.captured_at) continue;
+    entry.response.received_at = intent.consumed_at;
+    try {
+      key ??= deps.getApprovalIntentPiiKey?.();
+      if (!key) continue;
+      const outcome = await openApprovalIntentPiiField({ key, endpoint_id: intent.endpoint_id,
+        intent_id: intent.intent_id, field: 'outcome', ciphertext: intent.consumed_outcome_encrypted });
+      if (outcome === 'approve') entry.response.decision = 'accepted';
+      else if (outcome === 'reject' || outcome?.startsWith('reject:')) entry.response.decision = 'declined';
+    } catch { /* Locked/corrupt replies stay unavailable; never infer from current state. */ }
+  }
+  if (completionSnapshot && completionSnapshot.entries.length) {
+    for (const [index,entry] of completionSnapshot.entries.entries()) {
+      const binding = completionSnapshot.responses[index]!;
+      await openCompletionResponse(deps,entry,binding.endpoint_id,binding.snapshot,receipt.captured_at,false,binding.expected_hash);
+    }
+    receipt.version = 2; receipt.completions = completionSnapshot.entries;
+  }
+  return receipt;
 });

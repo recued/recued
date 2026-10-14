@@ -59,6 +59,7 @@ import {
 // carries. TYPE-only (recipe.ts does not import bulk-pack → no cycle).
 import type { RecipeDefinition } from './recipe.js';
 import { publisherMayDeclare } from './publisher-trust.js';
+import { validatePackAccessChecks, type PackAccessCheck } from './pack-access.js';
 import { isRecuedVersion } from './recued-version.js';
 import {
   BULK_PACK_MAX_CONNECTION_HINTS,
@@ -324,6 +325,8 @@ export interface BulkPackManifest {
    *  compile-time fallback remains only for consumers loading pre-migration
    *  manifests with this field absent. */
   connection_requirements?: ConnectionRequirement[];
+  /** D-322 §24 — explicit bounded GET checks; never automatic recipe execution. */
+  connection_access_checks?: PackAccessCheck[];
   /** D-223 — pre-fills for the generic connection form, declarable by ANY
    *  publisher. A hint sets a VALUE on a visible, editable field; it never sets
    *  schema (`hidden` / `readonly` / `showWhen`), which is what decides whether
@@ -2154,6 +2157,10 @@ export const parseBulkPackManifest = (input: unknown): BulkPackParseResult => {
         `bundled: true is reserved for the 'recued-core' publisher; got ${JSON.stringify(obj.publisher)}`,
       );
     }
+  }
+
+  for (const issue of validatePackAccessChecks(obj)) {
+    add('error', 'pack_connection_access_check_invalid', 'connection_access_checks', issue);
   }
 
   // D-194 — connection_requirements[] (optional, first-party-only). Declaring

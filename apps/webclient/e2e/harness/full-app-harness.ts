@@ -701,13 +701,19 @@ const demoCreatedWebhookIngress = (
   };
 };
 
+type AiSettingsReadMethod = 'chat.default_model_pref.get' | 'chat.rolling_brief.get' | 'chat.install_offers.get';
+
 interface FakeTransportControls {
   transport: WebclientWsTransport;
   setServerAvailable(available: boolean): void;
   forceReauth(): void;
   rpcCallCount(method: string): number;
   releaseServerControlResponses(): number;
-  releaseRpcResponses(method: string): number;
+  holdRpcResponses(method: string): void;
+  releaseRpcResponses(method: string, index?: number): number;
+  setAiModelsConfig(config: Record<string, unknown>): void;
+  failNextAiModelsConfigRead(): void;
+  failNextAiSettingsRead(method: AiSettingsReadMethod): void;
   fireState(state: WebclientWsState): void;
   fireMessage(message: unknown): void;
 }
@@ -898,6 +904,9 @@ const buildFakeTransport = (
   const recipeBodies = createRecipeBodyMemory();
   const heldServerControlResponses: Array<() => void> = [];
   const heldRpcResponses = new Map<string, Array<() => void>>();
+  const heldRpcMethods = new Set(searchParams.getAll('hold_rpc'));
+  let failNextAiModelsRead = false;
+  const failingAiSettingsReads = new Set<AiSettingsReadMethod>();
   let serverAvailable = true;
   let bridgeNotificationsEnabled = false;
   let pairedBridgeModes = { notification: false, approval: false };
@@ -1005,7 +1014,50 @@ const buildFakeTransport = (
           : {}),
       }
     : {};
+  if (searchParams.get('ai_pool') === 'freshness') {
+    llmConfig.free_pool = [
+      {
+        id: 'groq', type: 'api', provider: 'openai-compatible', model: 'llama-free',
+        base_url: 'https://api.groq.com/openai/v1', has_key: true, enabled: true,
+      },
+      {
+        id: 'mistral', type: 'api', provider: 'openai-compatible', model: 'mistral-small',
+        base_url: 'https://api.mistral.ai/v1', has_key: true, enabled: true,
+      },
+    ];
+  }
+  const sourceProbeMode = searchParams.get('ai_source_probe');
+  const sourceProbeAttempts = new Map<string, number>();
+  if (searchParams.get('ai_embeddings') === 'configured') {
+    llmConfig.embeddings_slot = {
+      provider: 'openai',
+      model: 'text-embedding-3-small',
+      has_key: true,
+    };
+  }
+  const transcriptionProbeMode = searchParams.get('ai_transcription_probe');
+  let transcriptionProbeAttempts = 0;
+  if (searchParams.get('ai_transcription') === 'configured') {
+    llmConfig.transcription_slot = {
+      provider: 'openai',
+      model: 'whisper-1',
+      has_key: true,
+    };
+    if (transcriptionProbeMode !== 'auto') {
+      llmConfig.transcription_language = transcriptionProbeMode === 'mismatch' ? 'tr' : 'en';
+    }
+    llmConfig.transcription_daily_requests = 10;
+  }
+  const failFirstTranscriptionWrite = searchParams.get('ai_transcription_fail_first');
+  let transcriptionWriteFailed = false;
+  const shouldFailTranscriptionWrite = (phase: 'slot' | 'clear' | 'language' | 'limit'): boolean => {
+    if (transcriptionWriteFailed || failFirstTranscriptionWrite !== phase) return false;
+    transcriptionWriteFailed = true;
+    return true;
+  };
   const defaultPrompt = 'You are Recued. You speak in plain, calm prose.';
+  const chatBehaviourSwitches = { rolling_brief: true, install_offers: true };
+  const chatSwitchResponse = searchParams.get('ai_chat_switch_response');
   let chatPrompt = defaultPrompt;
   let chatPromptRole: 'system' | 'user' | 'assistant' = 'system';
   let chatPromptIsDefault = true;
@@ -1037,6 +1089,7 @@ const buildFakeTransport = (
   });
   let defaultSourceId: 'slot_1' | 'slot_2' | 'free_pool' | null =
     initialAiConfigured ? 'slot_1' : null;
+  let defaultModelUpdatedAt = initialAiConfigured ? FIXED_NOW : 0;
   let mailConnected = connectedSourceReadyDemo
     || connectedSourceAnswerDemo
     || connectedSourceCheckDemo;
@@ -2135,11 +2188,11 @@ const buildFakeTransport = (
             : rpc.method === 'server.getLLMConfig'
               // A current server: it keeps a slot's provider_name.
               ? {
-                  config: { ...llmConfig },
+                  config: structuredClone(llmConfig),
                   supports: { slot_provider_name: true, pool_entry_drafts: true },
                 }
               : rpc.method === 'chat.default_model_pref.get'
-                ? { source_id: defaultSourceId, updated_at: FIXED_NOW }
+                ? { source_id: defaultSourceId, updated_at: defaultModelUpdatedAt }
                 : rpc.method === 'prefs.get'
                   ? { prefs: {} }
                   : rpc.method === 'recipe.list'
@@ -2307,6 +2360,24 @@ const buildFakeTransport = (
             code: 'UNAVAILABLE',
             message: 'Chat session unavailable.',
           };
+        }
+        // Both chat switches default on in a fresh server. Their writes must
+        // feed later reads so revisiting Settings reports the saved state.
+        if (rpc.method === 'chat.rolling_brief.get' || rpc.method === 'chat.install_offers.get') {
+          const key = rpc.method === 'chat.rolling_brief.get' ? 'rolling_brief' : 'install_offers';
+          result = { enabled: chatBehaviourSwitches[key] };
+        }
+        if (rpc.method === 'chat.rolling_brief.set' || rpc.method === 'chat.install_offers.set') {
+          const key = rpc.method === 'chat.rolling_brief.set' ? 'rolling_brief' : 'install_offers';
+          const enabled = (rpc.args as { enabled?: unknown } | undefined)?.enabled;
+          if (typeof enabled !== 'boolean') {
+            error = { code: 'BAD_REQUEST', message: 'Chat behaviour requires a boolean.' };
+          } else if (chatSwitchResponse === 'fail-first' && rpcCallCounts.get(rpc.method) === 1) {
+            error = { code: 'UNAVAILABLE', message: 'Chat behaviour update unavailable.' };
+          } else {
+            if (chatSwitchResponse !== 'unchanged') chatBehaviourSwitches[key] = enabled;
+            result = { enabled: chatBehaviourSwitches[key] };
+          }
         }
         if (rpc.method === 'server.getLlmPrompts') {
           result = llmPromptSnapshot();
@@ -5848,6 +5919,53 @@ const buildFakeTransport = (
           }
           result = { ok: true };
         }
+        // The Transcription card saves these three fields in sequence. Keep
+        // their state independent so partial failures and later reads agree.
+        if (rpc.method === 'server.setTranscriptionSlot') {
+          const slot = (rpc.args as { slot?: unknown }).slot;
+          const savingSlot = slot !== null && typeof slot === 'object';
+          const failure = savingSlot ? 'slot' : 'clear';
+          if (shouldFailTranscriptionWrite(failure)) {
+            error = {
+              code: 'UNAVAILABLE',
+              message: savingSlot
+                ? 'Transcription slot save unavailable.'
+                : 'Transcription slot clear unavailable.',
+            };
+          } else if (savingSlot) {
+            const next = slot as Record<string, unknown>;
+            const current = llmConfig.transcription_slot as Record<string, unknown> | null | undefined;
+            const { api_key: apiKey, ...redacted } = next;
+            const sameContext = current?.provider === redacted.provider
+              && current?.base_url === redacted.base_url;
+            const hasKey = (typeof apiKey === 'string' && apiKey.length > 0)
+              || (current?.has_key === true && sameContext);
+            llmConfig.transcription_slot = hasKey ? { ...redacted, has_key: true } : null;
+          } else {
+            llmConfig.transcription_slot = null;
+          }
+          if (error === undefined) result = { ok: true };
+        }
+        if (rpc.method === 'server.setTranscriptionLanguage') {
+          const language = (rpc.args as { language: string | null }).language;
+          if (shouldFailTranscriptionWrite('language')) {
+            error = { code: 'UNAVAILABLE', message: 'Transcription language save unavailable.' };
+          } else {
+            if (language === null || language.trim().length === 0) delete llmConfig.transcription_language;
+            else llmConfig.transcription_language = language.trim();
+            result = { ok: true };
+          }
+        }
+        if (rpc.method === 'server.setTranscriptionDailyRequests') {
+          const limit = (rpc.args as { limit: number | null }).limit;
+          if (shouldFailTranscriptionWrite('limit')) {
+            error = { code: 'UNAVAILABLE', message: 'Transcription daily limit save unavailable.' };
+          } else {
+            if (limit === null || limit <= 0) delete llmConfig.transcription_daily_requests;
+            else llmConfig.transcription_daily_requests = limit;
+            result = { ok: true };
+          }
+        }
         if (rpc.method === 'server.setConfigField') {
           const args = rpc.args as { key?: unknown; value?: unknown };
           if (args.key === 'llm.budget' && failAiBudgetSave) {
@@ -5899,10 +6017,20 @@ const buildFakeTransport = (
             const current = Array.isArray(llmConfig.free_pool)
               ? llmConfig.free_pool as Array<Record<string, unknown>>
               : [];
-            llmConfig.free_pool = [
-              ...current.filter((row) => row.id !== nextEntry.id),
-              nextEntry,
-            ];
+            const previous = current.find((row) => row.id === nextEntry.id);
+            const { api_key: apiKey, ...redacted } = nextEntry;
+            const sameContext = previous?.provider === redacted.provider
+              && previous?.base_url === redacted.base_url;
+            const saved = {
+              ...redacted,
+              has_key: (typeof apiKey === 'string' && apiKey.length > 0)
+                || (previous?.has_key === true && sameContext),
+            };
+            // A read mirrors the server: keys are redacted and edits keep
+            // their row's place rather than appending it again.
+            llmConfig.free_pool = previous === undefined
+              ? [...current, saved]
+              : current.map((row) => row.id === nextEntry.id ? saved : row);
           }
           if (error === undefined) result = { ok: true };
         }
@@ -5916,6 +6044,80 @@ const buildFakeTransport = (
             supports_json: true,
             elapsed_ms: 120,
           };
+          const args = rpc.args as {
+            target?: { kind?: unknown; slot_key?: unknown; entry_id?: unknown };
+            draft?: { model?: unknown };
+          };
+          if (args.target?.kind === 'pool_entry' || (args.target?.kind === 'slot' && (
+            args.target.slot_key === 'slot_1'
+            || args.target.slot_key === 'slot_2'
+            || args.target.slot_key === 'embeddings_slot'
+          ))) {
+            const key = args.target.kind === 'pool_entry'
+              ? args.draft === undefined ? `pool:${String(args.target.entry_id)}` : 'pool:form'
+              : String(args.target.slot_key);
+            const attempt = (sourceProbeAttempts.get(key) ?? 0) + 1;
+            sourceProbeAttempts.set(key, attempt);
+            if (sourceProbeMode === 'rpc-fail-first' && attempt === 1) {
+              result = undefined;
+              error = { code: 'UNAVAILABLE', message: 'Source probe transport unavailable.' };
+            } else if (sourceProbeMode === 'rejected-first' && attempt === 1) {
+              result = {
+                ok: false,
+                diagnosis: 'auth',
+                detail: 'The fixture source endpoint refused the key.',
+                elapsed_ms: 120,
+              };
+            } else {
+              result = {
+                ok: true,
+                diagnosis: 'ok',
+                ...(key === 'embeddings_slot'
+                  ? { dimensions: 1536 }
+                  : { accepts_system_role: true, supports_json: true }),
+                // Distinguish explicit retries from an old, held reply.
+                elapsed_ms: sourceProbeMode !== null ? attempt * 120 : 120,
+              };
+            }
+          } else if (args.target?.kind === 'slot' && args.target.slot_key === 'transcription_slot') {
+            transcriptionProbeAttempts += 1;
+            if (transcriptionProbeMode === 'rpc-fail-first' && transcriptionProbeAttempts === 1) {
+              result = undefined;
+              error = { code: 'UNAVAILABLE', message: 'Transcription probe transport unavailable.' };
+            } else if (transcriptionProbeMode === 'rejected-first' && transcriptionProbeAttempts === 1) {
+              result = {
+                ok: false,
+                diagnosis: 'auth',
+                detail: 'The fixture transcription endpoint refused the key.',
+                elapsed_ms: 120,
+              };
+            } else if (transcriptionProbeMode === 'no-sample') {
+              result = {
+                ok: false,
+                diagnosis: 'no_sample',
+                detail: 'The transcription test clip is unavailable in this fixture.',
+                elapsed_ms: 0,
+              };
+            } else {
+              const expected = 'This is a transcript microphone test.';
+              result = {
+                ok: true,
+                diagnosis: 'ok',
+                transcript: transcriptionProbeMode === 'mismatch'
+                  ? 'Bu bir transkript mikrofon testidir.'
+                  // Echo the draft model only in this synthetic mode so a
+                  // browser check can distinguish old and new probe replies.
+                  : transcriptionProbeMode === 'draft'
+                    ? `Fixture transcript from ${String(args.draft?.model)}.`
+                    : expected,
+                expected_transcript: expected,
+                ...(typeof llmConfig.transcription_language === 'string'
+                  ? { probe_language: llmConfig.transcription_language }
+                  : {}),
+                elapsed_ms: 120,
+              };
+            }
+          }
         }
         if (rpc.method === 'server.setFreePoolEntryEnabled') {
           const args = rpc.args as { id?: unknown; enabled?: unknown };
@@ -6021,8 +6223,11 @@ const buildFakeTransport = (
               || sourceId === 'free_pool'
             ) {
               defaultSourceId = sourceId;
+              const clockMode = searchParams.get('ai_default_model_clock');
+              const step = clockMode === 'same-ms' ? 0 : clockMode === 'step-two' ? 2 : 1;
+              defaultModelUpdatedAt = Math.max(FIXED_NOW, defaultModelUpdatedAt) + step;
             }
-            result = { source_id: defaultSourceId, updated_at: FIXED_NOW + 1 };
+            result = { source_id: defaultSourceId, updated_at: defaultModelUpdatedAt };
           }
         }
         if (rpc.method === 'chat.session.set_model_pref') {
@@ -6152,6 +6357,16 @@ const buildFakeTransport = (
           mailConnected = false;
           result = { ok: true };
         }
+        // Mail and Calendar also gather this roster for managed sign-in
+        // options. The base fixture has no enrolled connections; the demos
+        // above supply their own rosters and errors.
+        if (
+          rpc.method === 'collection.connection.list'
+          && result === undefined
+          && error === undefined
+        ) {
+          result = { connections: [] };
+        }
         // ── `settle_reads=1` — settle the background reads a route waits on. ──
         //
         // ⛔ An unrecognised method below is left PENDING FOREVER, and a route
@@ -6173,7 +6388,6 @@ const buildFakeTransport = (
             'collection.contract.session_grant.list': { grants: [] },
             'contract.grant.read': { grants: [] },
             'collection.contract.listCatalogOperations': { ingredients: [] },
-            'collection.connection.list': { connections: [] },
             // D-320 — the Access tab's Connections block: a pack that signs in to
             // nothing shows no block.
             'packs.connections.list': { pack_slug: '', slots: [] },
@@ -6765,6 +6979,13 @@ const buildFakeTransport = (
         if (tracePendingReads && result === undefined && error === undefined) {
           console.warn('[unanswered-rpc]', rpc.method);
         }
+        if (rpc.method === 'server.getLLMConfig' && failNextAiModelsRead) {
+          failNextAiModelsRead = false;
+          error = { code: 'UNAVAILABLE', message: 'Saved AI configuration unavailable.' };
+        }
+        if (failingAiSettingsReads.delete(rpc.method as AiSettingsReadMethod)) {
+          error = { code: 'UNAVAILABLE', message: 'AI setting read unavailable.' };
+        }
         if (result === undefined && error === undefined) return;
         // rpc-conn registers the pending request before transport.send. One
         // harness mode deliberately lets the AI-config read settle on a later
@@ -6781,7 +7002,7 @@ const buildFakeTransport = (
           }
         };
         if (
-          new URLSearchParams(location.search).getAll('hold_rpc').includes(rpc.method)
+          heldRpcMethods.has(rpc.method)
         ) {
           const pending = heldRpcResponses.get(rpc.method) ?? [];
           pending.push(respond);
@@ -7492,16 +7713,39 @@ const buildFakeTransport = (
       for (const respond of pending) respond();
       return pending.length;
     },
-    releaseRpcResponses: (method) => {
+    holdRpcResponses: (method) => { heldRpcMethods.add(method); },
+    releaseRpcResponses: (method, index) => {
       const pending = heldRpcResponses.get(method) ?? [];
-      heldRpcResponses.delete(method);
-      for (const respond of pending) respond();
-      return pending.length;
+      const released = index === undefined ? pending.splice(0) : pending.splice(index, 1);
+      if (pending.length === 0) heldRpcResponses.delete(method);
+      for (const respond of released) respond();
+      return released.length;
     },
+    setAiModelsConfig: (config) => {
+      for (const key of Object.keys(llmConfig)) delete llmConfig[key];
+      Object.assign(llmConfig, structuredClone(config));
+    },
+    failNextAiModelsConfigRead: () => { failNextAiModelsRead = true; },
+    failNextAiSettingsRead: (method) => { failingAiSettingsReads.add(method); },
     fireState: (state) => {
       for (const listener of [...states]) listener(state);
     },
     fireMessage: (msg) => {
+      if (msg !== null && typeof msg === 'object' && (msg as { type?: unknown }).type === 'server_event') {
+        const event = (msg as { event?: unknown }).event as {
+          kind?: unknown; source_id?: unknown; updated_at?: unknown;
+        } | null | undefined;
+        if (event?.kind === 'chat.default_model_pref_changed'
+          && typeof event.updated_at === 'number' && Number.isFinite(event.updated_at)
+          && event.updated_at >= defaultModelUpdatedAt
+          && (event.source_id === 'slot_1' || event.source_id === 'slot_2'
+            || event.source_id === 'free_pool' || event.source_id === null)) {
+          // An injected broadcast represents the fixture server's saved
+          // state, so later reads and writes carry its actual timestamp.
+          defaultSourceId = event.source_id;
+          defaultModelUpdatedAt = event.updated_at;
+        }
+      }
       if (
         connectedSourceAnswerDemo
         && msg !== null
@@ -7577,7 +7821,14 @@ interface FullAppHooks {
   rpcCallCount(method: string): number;
   releaseServerControlResponses?(): number;
   /** Settle responses held by `hold_rpc` after pending-state assertions. */
-  releaseRpcResponses?(method: string): number;
+  releaseRpcResponses?(method: string, index?: number): number;
+  /** Hold subsequent saved-config reads after the initial page load. */
+  holdRpcResponses?(method: string): void;
+  setAiModelsConfig?(config: Record<string, unknown>): void;
+  failNextAiModelsConfigRead?(): void;
+  failNextAiSettingsRead?(method: AiSettingsReadMethod): void;
+  /** Exercise the real route mount's public read, with no provider request. */
+  refreshAiModels?(): Promise<void>;
   fireState(state: WebclientWsState): void;
   fireMessage(message: unknown): void;
   /** Multi-tab journey diagnostic: proves the passive sibling never POSTed. */
@@ -9292,7 +9543,12 @@ void (async (): Promise<void> => {
       rpcCallCount: (method) => transport.rpcCallCount(method),
       releaseServerControlResponses: () =>
         transport.releaseServerControlResponses(),
-      releaseRpcResponses: (method) => transport.releaseRpcResponses(method),
+      releaseRpcResponses: (method, index) => transport.releaseRpcResponses(method, index),
+      holdRpcResponses: (method) => transport.holdRpcResponses(method),
+      setAiModelsConfig: (config) => transport.setAiModelsConfig(config),
+      failNextAiModelsConfigRead: () => transport.failNextAiModelsConfigRead(),
+      failNextAiSettingsRead: (method) => transport.failNextAiSettingsRead(method),
+      refreshAiModels: () => handle.settingsRoute()?.aiModelsPage()?.refresh() ?? Promise.resolve(),
       fireState: (state) => transport.fireState(state),
       fireMessage: (message) => transport.fireMessage(message),
       ...(accountDemo

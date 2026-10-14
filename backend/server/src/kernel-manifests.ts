@@ -8,6 +8,14 @@ import type { IngredientManifest } from '@recued/contracts';
 
 const MANIFESTS = [
   {
+    slug: 'quote-completion-review', name: 'Review customer completion', mcp_exposed: false,
+    description: 'After owner approval, close a local task for an accepted delivery or reopen it for customer corrections. Bind the saved released agreement, delivery summary, customer response and exact task version. Preserve payment records. Repeating a completed review returns its recorded action.',
+    author: 'recued', kind: 'storage' as const, version: 1, category: 'action' as const,
+    risk_tier: 'write' as const, tags: ['kernel', 'reception', 'quotes'],
+    input: { completion_id: null, expected_plan_hash: null, summary: null },
+    output: { completion_id: 'completion_id', task_id: 'task_id', action: 'action', already_reviewed: 'already_reviewed' },
+  },
+  {
     slug: 'approval-workflow-continue', name: 'Continue an accepted workflow', mcp_exposed: false,
     description: 'After owner review, complete a bound local task, fulfill a local commitment or start an exact saved recipe with its saved settings. Require recorded customer acceptance and unchanged targets. Recipe operations keep their own approvals. Completed continuations return their existing receipt.',
     author: 'recued', kind: 'storage' as const, version: 1, category: 'action' as const,

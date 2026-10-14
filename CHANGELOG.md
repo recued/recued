@@ -7,6 +7,73 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.10.14 — 2026-10-14
+
+A customer can now confirm that your work is done, or ask for fixes, from a
+link you share, and Reception shows each job's work, replies and bills in one
+place. A saved connection can move its sign-in to Nango without changing its
+name, and five Google and Microsoft packs can check that a connection can read
+what they need.
+
+⚠ Update Recued before you update the Reception — Approval pack. Its new
+completion review needs this release.
+
+### Added
+
+- **Ask a customer to confirm the work.** Once the work is done, Request
+  completion describes what you delivered alongside the agreed scope and every
+  addition you released. The customer accepts it, or asks for fixes and says
+  what to change. Their reply waits in Reception Inbox for you: approving
+  closes the task, or reopens it for fixes. It never changes an invoice or
+  records a payment.
+- **Follow up with a customer.** Set a follow-up date on a request that is
+  waiting for its customer. Recued reminds you when it is due and respects
+  your quiet hours. For an email follow-up, Recued prepares a draft in the mail
+  editor and you send it. Follow-ups stop when the customer replies or the offer
+  is cancelled, expires or is replaced, and a retry or restart never sends the
+  same reminder twice.
+- **Sign-off receipts.** View receipt shows the offer as you saved it, the
+  customer's reply and your release. Download it as a file that opens offline,
+  or print it. The copy leaves out private quote notes, contact details, reply
+  comments and share links.
+- **Customer jobs.** Reception → Customer jobs shows each job on one row, with
+  its work, replies and bills in separate columns. Search by name, quote or bill
+  reference, or show the jobs waiting for a reply, fixes or your review, and
+  work with a late bill.
+- **Move a connection's sign-in to Nango.** Edit a saved connection and choose
+  Switch authentication to move it from your own OAuth app or token to Nango,
+  or to another Nango account. Its name stays the same, so packs and workflows
+  stay linked to it; the new account may see different data. Recued first reads
+  a resource you name through the new account, and keeps the old sign-in if
+  that fails. Bulk authentication migration moves up to 20 connections of one
+  service with one sign-in, and switches only those whose check passed.
+- **See what a change would affect.** Before you sign in or switch, the account
+  and impact preview shows the account in use and the one you chose, and the
+  packs, workflows, schedules, mail, calendars and files that use the
+  connection.
+- **Check a pack's access.** On a pack's Access tab, Check access for this pack
+  runs a read check for the account you choose. The Gmail, Google Calendar,
+  Google Sheets, Outlook and OneDrive packs offer one; update an installed pack
+  if Recued asks. A check only reads: it changes nothing and grants nothing.
+- **See where a Nango account is used.** Manage OAuth brokers lists the saved
+  connections that use each Nango account, with their last use and last check.
+
+### Fixed
+
+- **Approval replies by email** now count only when Recued can tell you sent
+  them: the reply's sent copy is in a mailbox Recued reads, or it comes from
+  your notification address and your mail provider confirms it with DMARC.
+  Before, any email in that mailbox that carried the request's tag and an
+  answer counted. A reply that proves neither leaves the request open in the
+  web app.
+- **AI settings** no longer show an answer meant for settings you have since
+  changed, keep what you are typing when they refresh, and ask before you leave
+  while a change is still saving. An edit and an on/off switch on the same Free
+  pool entry no longer overwrite each other.
+- **Keyboard focus** stays visible in the Connections and Automation tabs, the
+  Settings menu and the Chat behaviour switches, and the Connections tabs no
+  longer scroll up and down.
+
 ## 26.10.13 — 2026-10-13
 
 Chat now suggests packs from the marketplace when nothing you have installed can

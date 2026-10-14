@@ -124,6 +124,7 @@ import type {
 } from '@recued/contracts';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import { createManagedOAuthPanel, type ManagedOAuthPanelContext } from '../settings/managed-oauth-panel.js';
+import { createManagedOAuthMigrationPanel } from '../settings/managed-oauth-migration-panel.js';
 
 export const CONNECTIONS_ROUTE_GRANTS_SECTION_ATTR =
   'data-recued-connections-route-grants';
@@ -321,9 +322,12 @@ const CONNECTIONS_ROUTE_CHROME_STYLES = `
   flex-wrap: nowrap;
   min-width: 0;
   overflow-x: auto;
+  overflow-y: hidden;
   scrollbar-width: thin;
   overscroll-behavior-x: contain;
-  border-bottom: 1px solid var(--border);
+  /* Keep the separator inside the rail; overlapping its border with a
+     negative tab margin creates one pixel of vertical scroll overflow. */
+  box-shadow: inset 0 -1px 0 var(--border);
   margin-bottom: 20px;
 }
 [${CONNECTIONS_ROUTE_TABS_ATTR}] .connections-route-tab {
@@ -331,7 +335,6 @@ const CONNECTIONS_ROUTE_CHROME_STYLES = `
   appearance: none;
   text-decoration: none;
   border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
   padding: 9px 14px 10px;
   font-weight: 600;
   font-size: 14px;
@@ -347,6 +350,11 @@ const CONNECTIONS_ROUTE_CHROME_STYLES = `
 [${CONNECTIONS_ROUTE_TABS_ATTR}] .connections-route-tab--active {
   color: var(--fg);
   border-bottom-color: var(--accent);
+}
+/* Keep the keyboard focus ring inside the scrolling row. */
+[${CONNECTIONS_ROUTE_HOST_ATTR}] [${CONNECTIONS_ROUTE_TABS_ATTR}] .connections-route-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
 }
 [${CONNECTIONS_ROUTE_CONTENT_ATTR}],
 [${CONNECTIONS_ROUTE_ENROLL_HOST_ATTR}] { min-width: 0; }
@@ -406,6 +414,8 @@ export interface BootstrapConnectionsRouteOptions {
   /** Preferred complete route selection. Legacy positional fields below stay
    * available for narrow/test mounts; production passes this typed address. */
   initialAddress?: ConnectionsAddress;
+  /** D-322 §24 — open a fresh saved editor; consent remains owner-triggered. */
+  initialConnectionAccessReview?: { name: string };
   /** Keeps the shell's same-route comparison baseline aligned after a
    * successful in-page account list/detail History write. */
   onHashSync?: (hash: string) => void;
@@ -686,6 +696,10 @@ export const bootstrapConnectionsRoute = (
       + (tab.id === activeTab ? ' connections-route-tab--active' : '');
     link.setAttribute('href', connectionsLaneAddress(tab.id).hash);
     link.textContent = tab.label;
+    // Native keyboard focus can leave a trailing tab only partly visible.
+    link.addEventListener('focus', () => {
+      link.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    });
     link.addEventListener('click', (event) => {
       const click = event as MouseEvent;
       if (
@@ -712,6 +726,7 @@ export const bootstrapConnectionsRoute = (
   let accountsPanel: AccountsLanePanelMount | null = null;
   let connectionsEnroll: ConnectionsEnrollPanelMount | null = null;
   let brokerPanel: ReturnType<typeof createManagedOAuthPanel> | null = null;
+  let migrationPanel: ReturnType<typeof createManagedOAuthMigrationPanel> | null = null;
   let connectionsGrant: ConnectionsGrantPanelMount | null = null;
   let webhooksPanel: WebhooksPanelMount | null = null;
 
@@ -837,7 +852,22 @@ export const bootstrapConnectionsRoute = (
         scopes: [], profile_id: '', integration_id: '' };
       brokerPanel = createManagedOAuthPanel({ call: opts.connectionsManagedOAuthCaller, manageProfiles: true,
         context: () => context, select: (profile, integration) => { context.profile_id = profile; context.integration_id = integration; },
-        authorized: () => {}, invalidate: () => {}, changed: () => {
+        authorized: () => {}, invalidate: () => {},
+        openConnection: async (name, expectedUpdatedAt) => {
+          if (!connectionsEnroll || connectionsEnroll.hasInFlightWork()) throw new Error('Finish the current connection action before opening another connection.');
+          const opened = await connectionsEnroll.openConnection('api', name, expectedUpdatedAt);
+          if (opened) {
+            const enrollHost = content.querySelector<HTMLElement>(`[${CONNECTIONS_ROUTE_ENROLL_HOST_ATTR}]`);
+            enrollHost?.querySelector<HTMLElement>('[data-conn-field]:not(:disabled)')?.focus?.();
+          }
+          return opened;
+        },
+        ...(opts.connectionsProbeCaller ? { checkConnection: async (name: string, expectedUpdatedAt: number) => {
+          if (connectionsEnroll?.hasInFlightWork()) throw new Error('Finish the current connection action before checking API access.');
+          await opts.connectionsProbeCaller!({ kind: 'api', name, expected_updated_at: expectedUpdatedAt });
+          await connectionsEnroll?.refresh();
+        } } : {}),
+        changed: () => {
           const busy = brokerPanel?.busy() ?? false;
           button.setAttribute('aria-busy', String(busy));
           if (busy) button.setAttribute('aria-disabled', 'true'); else button.removeAttribute('aria-disabled');
@@ -847,7 +877,7 @@ export const bootstrapConnectionsRoute = (
           }
         } });
       button.addEventListener('click', () => {
-        if (brokerPanel?.busy()) return;
+        if (brokerPanel?.busy() || migrationPanel?.busy()) return;
         if (context.enabled && brokerPanel?.hasDraft()) {
           const confirm = doc.defaultView?.confirm?.bind(doc.defaultView);
           if (confirm && !confirm('Discard this OAuth broker setup? Credential fields are not saved in your browser. Select Cancel to keep editing.')) return;
@@ -863,6 +893,27 @@ export const bootstrapConnectionsRoute = (
       });
       section.appendChild(intro);
       section.appendChild(button); section.appendChild(editor); content.appendChild(section);
+      const migrate = doc.createElement('button'); migrate.type = 'button'; migrate.className = 'rx-btn rx-btn-outline rx-btn-sm';
+      migrate.textContent = 'Bulk authentication migration'; migrate.setAttribute('data-recued-bulk-authentication', '');
+      const migrationHost = doc.createElement('div'); migrationHost.hidden = true;
+      migrate.setAttribute('aria-expanded', 'false'); migrationHost.id = 'connections-bulk-authentication';
+      migrate.setAttribute('aria-controls', migrationHost.id);
+      const migrationNotice = doc.createElement('p'); migrationNotice.setAttribute('role', 'status'); migrationNotice.hidden = true;
+      migrate.addEventListener('click', () => {
+        if (migrationPanel) return;
+        if (brokerPanel?.busy() || connectionsEnroll?.hasInFlightWork() || connectionsEnroll?.hasUnsavedChanges()) {
+          migrationNotice.textContent = 'Finish or cancel the current connection action before starting a bulk migration.';
+          migrationNotice.hidden = false; return;
+        }
+        migrationNotice.hidden = true;
+        migrationHost.hidden = false; migrate.setAttribute('aria-expanded', 'true'); migrate.disabled = true;
+        migrationPanel = createManagedOAuthMigrationPanel({ host: migrationHost, call: opts.connectionsManagedOAuthCaller!,
+          changed: () => { void connectionsEnroll?.refresh(); },
+          closed: () => { migrationPanel?.dispose(); migrationPanel = null; migrationHost.hidden = true; migrationHost.innerHTML = '';
+            migrate.disabled = false; migrate.setAttribute('aria-expanded', 'false'); migrate.focus?.(); void connectionsEnroll?.refresh(); } });
+        void migrationPanel.load();
+      });
+      section.appendChild(migrate); section.appendChild(migrationNotice); section.appendChild(migrationHost);
     }
     const canMountEnroll =
       opts.connectionsEnrollListCaller !== undefined
@@ -997,6 +1048,7 @@ export const bootstrapConnectionsRoute = (
           : {}),
         ...(opts.initialAddress?.kind === 'enroll' && opts.initialAddress.pack !== undefined
           ? { initialPack: opts.initialAddress.pack } : {}),
+        ...(opts.initialConnectionAccessReview ? { initialConnectionAccessReview: opts.initialConnectionAccessReview } : {}),
         ...(opts.initialCredentialRotationServerUpdateRetry !== undefined
           ? {
               initialCredentialRotationServerUpdateRetry:
@@ -1148,6 +1200,7 @@ export const bootstrapConnectionsRoute = (
   const hasInFlightWork = (): boolean =>
     (accountsPanel?.hasInFlightWork() ?? false)
     || (brokerPanel?.busy() ?? false)
+    || (migrationPanel?.busy() ?? false)
     || (connectionsEnroll?.hasInFlightWork() ?? false)
     || (connectionsGrant?.hasInFlightWork() ?? false)
     || (webhooksPanel?.hasInFlightWork() ?? false);
@@ -1198,7 +1251,7 @@ export const bootstrapConnectionsRoute = (
         }
       : {}),
     hasUnsavedChanges: () =>
-      (brokerPanel?.hasDraft() ?? false) || (connectionsEnroll?.hasUnsavedChanges() ?? false),
+      (brokerPanel?.hasDraft() ?? false) || (migrationPanel?.hasDraft() ?? false) || (connectionsEnroll?.hasUnsavedChanges() ?? false),
     unsavedChangesPrompt: () =>
       brokerPanel?.hasDraft() === true
         ? 'Discard this OAuth broker setup? Credential fields are not saved in your browser and cannot be restored after leaving.'
@@ -1214,6 +1267,7 @@ export const bootstrapConnectionsRoute = (
       if (accountsPanel !== null) accountsPanel.dispose();
       if (connectionsEnroll !== null) connectionsEnroll.dispose();
       brokerPanel?.dispose();
+      migrationPanel?.dispose();
       if (webhooksPanel !== null) webhooksPanel.dispose();
       try {
         opts.root.removeChild(routeRoot);

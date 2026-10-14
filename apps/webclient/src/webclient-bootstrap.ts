@@ -361,7 +361,7 @@ import {
   serializeConnectionsCredentialRotationRetry,
   serializeConnectionsPostSafeStopRecovery,
 } from './connections/bootstrap-connections-route.js';
-import { parseConnectionsAddress } from './connections/connections-navigation.js';
+import { parseConnectionsAddress, parseConnectionsReviewAccess } from './connections/connections-navigation.js';
 import type { SignInGridCallers } from './connections/sign-in-grid-controls.js';
 import {
   bootstrapPacksRoute,
@@ -8934,6 +8934,7 @@ export const bootstrapWebclient = async (
   // D-320 — the Access tab's Connections block (`packs.connections.*`): which of
   // the owner's connections a pack signs in with, and its default.
   const packConnectionsCallers: PackConnectionsCallers = {
+    access: (args) => rpcConn.call('packs.connections.access', args),
     list: (args) => rpcConn.call('packs.connections.list', args),
     add: (args) => rpcConn.call('packs.connections.add', args),
     remove: (args) => rpcConn.call('packs.connections.remove', args),
@@ -10006,6 +10007,7 @@ export const bootstrapWebclient = async (
       const initialConnectionsAddress = connectionsAddress === null
         ? null
         : parseConnectionsAddress(connectionsAddress);
+      const initialConnectionAccessReview = parseConnectionsReviewAccess(connectionsSegments);
       const initialCredentialRotationServerUpdateRetry =
         parseConnectionsCredentialRotationRetry(connectionsSegments);
       const postSafeStopRecoveryResolution =
@@ -10089,6 +10091,7 @@ export const bootstrapWebclient = async (
         ...(initialConnectionsAddress !== null
           ? { initialAddress: initialConnectionsAddress }
           : {}),
+        ...(initialConnectionAccessReview !== null ? { initialConnectionAccessReview } : {}),
         onHashSync: (hash) => { activeHash = hash; },
         ...(initialCredentialRotationServerUpdateRetry !== null
           ? {
@@ -12770,6 +12773,8 @@ export const bootstrapWebclient = async (
     }
     activeSettingsRoute = null;
     const receptionMutationMethods = new Set<string>([
+      'reception.signoff.reminders.set',
+      'reception.signoff.reminders.draft',
       'reception.compose.propose',
       'reception.intake_recipe_pair.bind',
       'reception.intake_recipe_pair.configure',
@@ -12789,6 +12794,11 @@ export const bootstrapWebclient = async (
         execute: switchWorkTracker.track(recipeExecuteCaller),
         serverTimeZone: getServerTimeZone,
       },
+      signoffReminders: { mail: {
+        serverTimeZone: getServerTimeZone, drafts: mailDraftCallers,
+        listMailInstances: () => rpcConn.call('collection.mail.list', undefined),
+        runExecute: switchWorkTracker.track(recipeExecuteCaller),
+      }, ...(options.now ? { now: options.now } : {}) },
       root: appShell.contentRoot,
       shell: receptionShell,
       conn: trackSelectedRpcMethods<BootstrapReceptionRouteOptions['conn']>(

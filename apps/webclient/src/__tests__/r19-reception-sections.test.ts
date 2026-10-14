@@ -22,6 +22,7 @@ describe('R19 — reception sections vocabulary', () => {
     // pinned here rather than left to whoever appends next.
     expect(RECEPTION_SECTIONS.map((s) => s.id)).toEqual([
       'inbox',
+      'jobs',
       'records',
       'signoffs',
       'abuse',
@@ -29,6 +30,7 @@ describe('R19 — reception sections vocabulary', () => {
     ]);
     expect(RECEPTION_SECTIONS.map((s) => s.label)).toEqual([
       'Inbox',
+      'Customer jobs',
       'Records',
       'Customer sign-offs',
       'Abuse',

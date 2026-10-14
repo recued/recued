@@ -6,6 +6,8 @@
  *
  *    - **Inbox** (`#reception/inbox`)     — DEFAULT. The D-173 review
  *      queue: read-and-decide incoming requests. Most frequent.
+ *    - **Customer jobs** (`#reception/jobs`) — daily work, replies and
+ *      payment grouped by the root customer agreement.
  *    - **Records** (`#reception/records`) — D-210 §4c. Every reception
  *      row as its owner reads it, read-only (the record is write-once —
  *      §4). The one surface that can show a row the drain HELD: it has
@@ -38,7 +40,8 @@
 /** The sections in their locked frequency order (Inbox first = default;
  *  Endpoints last = set-and-forget). The label is the nav text.
  *
- *  D-210 §4c adds **Records** in second place, directly beside the Inbox:
+ *  Customer jobs sits beside Inbox; Records follows the daily work views.
+ *  D-210 §4c added **Records** directly beside the Inbox:
  *  the two answer the same question ("what came in?") for rows at
  *  different stages, and a record the drain could not hand off is
  *  precisely what the Inbox CANNOT show — no held op to join. Putting it
@@ -46,6 +49,7 @@
  *  gap it covers. */
 export const RECEPTION_SECTIONS = [
   { id: 'inbox', label: 'Inbox' },
+  { id: 'jobs', label: 'Customer jobs' },
   { id: 'records', label: 'Records' },
   { id: 'signoffs', label: 'Customer sign-offs' },
   { id: 'abuse', label: 'Abuse' },

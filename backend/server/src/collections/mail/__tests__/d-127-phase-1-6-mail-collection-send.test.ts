@@ -39,6 +39,7 @@ import type {
 } from '../provider.js';
 import { handleCollectionMailSend } from '../../collection-handler.js';
 import type { CollectionRegistry } from '../../registry.js';
+import { createMailSendClaimStore } from '../../../storage/mail-send-claim-store.js';
 
 // ────────────────────────────────────────────────────────────────
 // Stub provider — controllable sendCapable + accountEmail + send
@@ -428,3 +429,42 @@ describe('D-127 P1.6 — collection.mail.send rpc handler', () => {
 
 // silence unused-import warning when vi is not referenced in this module
 void vi;
+
+describe('trusted reminder guard at the mail provider boundary', () => {
+  it.each(['collection', 'handler', 'caller callback'])('refuses an unguarded reminder through %s', async path => {
+    const h = withHarness({ sendCapable: true });
+    const reconciliation_id = 'qsr_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa_1';
+    const supplied = vi.fn(() => {});
+    const send = path === 'collection'
+      ? h.collection.send({ ...baseInput, reconciliation_id })
+      : handleCollectionMailSend({ registry: stubRegistry(h.collection) },
+        Object.assign({ instance: 'work', ...baseInput, reconciliation_id },
+          path === 'caller callback' ? { before_dispatch: supplied } : {}));
+    await expect(send).rejects.toMatchObject({ code: 'BAD_INPUT' });
+    expect(supplied).not.toHaveBeenCalled();
+    expect(h.stub.sendCalls).toHaveLength(0);
+    expect(createMailSendClaimStore(h.db).get(reconciliation_id)).toBeNull();
+  });
+  it('rechecks after an awaited review and records proof that cancelled mail never left', async () => {
+    const h = withHarness({ sendCapable: true }); let closed = false;
+    const before_dispatch = vi.fn(() => { if (closed) throw new RpcError('offer_closed', 'The customer already replied.', 409); });
+    const reconciliation_id = 'qsr_late-provider-regression';
+    const sending = h.collection.send({ ...baseInput, reconciliation_id, before_dispatch });
+    closed = true;
+    await expect(sending).rejects.toMatchObject({ code: 'offer_closed' });
+    expect(before_dispatch).toHaveBeenCalledTimes(2); expect(h.stub.sendCalls).toHaveLength(0);
+    expect(createMailSendClaimStore(h.db).get(reconciliation_id)?.status).toBe('not_sent');
+  });
+  it('forwards the trusted host assertion and refuses before making a send claim', async () => {
+    const h = withHarness({ sendCapable: true }); const reconciliation_id = 'qsr_before-claim-regression';
+    await expect(handleCollectionMailSend({ registry: stubRegistry(h.collection) }, { instance: 'work', ...baseInput, reconciliation_id },
+      { before_dispatch: () => { throw new RpcError('offer_closed', 'The offer expired.', 409); } })).rejects.toMatchObject({ code: 'offer_closed' });
+    expect(h.stub.sendCalls).toHaveLength(0); expect(createMailSendClaimStore(h.db).get(reconciliation_id)).toBeNull();
+  });
+  it('never reads a dispatcher assertion from caller-owned fields', async () => {
+    const h = withHarness({ sendCapable: true }); const supplied = vi.fn(() => { throw new Error('untrusted'); });
+    await handleCollectionMailSend({ registry: stubRegistry(h.collection) },
+      Object.assign({ instance: 'work', ...baseInput }, { before_dispatch: supplied }));
+    expect(supplied).not.toHaveBeenCalled(); expect(h.stub.sendCalls).toHaveLength(1);
+  });
+});

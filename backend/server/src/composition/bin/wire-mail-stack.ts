@@ -22,7 +22,8 @@ import type { ContactStore } from '../../storage/contact-store.js';
 import type { MailFactWriter } from '../../mail-facts/fact-writer.js';
 import { createMailFactIngest } from '../../mail-facts/mail-ingest.js';
 import type { FileReadDeps } from '../../collections/file/file-read-handler.js';
-import type { MailInboundAttachmentDeps } from '../../collections/mail/mail-collection.js';
+import type { MailInboundAttachmentDeps, MailUpsertContext } from '../../collections/mail/mail-collection.js';
+import type { CanonicalMessage } from '../../collections/mail/provider.js';
 import type { OAuthProviderConfig } from '../../collections/mail/oauth.js';
 import { deriveContactsFromMail } from '../../warehouse/contact-derive.js';
 import {
@@ -92,6 +93,10 @@ export interface ComposeMailStackBootDeps {
    *  collection's poll loop is deferred while the vault is LOCKED. Absent ⇒
    *  sync always starts (dbless / harness). */
   isVaultUnlocked?: () => boolean;
+  /** D-318 P23 — the email-approval reply check, called on every upsert while
+   *  the provider's own record of the message is in hand. The listeners bind
+   *  it late (`createLateEmailAnswerHook`); absent ⇒ no mail answers an ask. */
+  emailAnswerHook?: (msg: CanonicalMessage, ctx: MailUpsertContext) => void;
 }
 
 type UpsertHook = NonNullable<MailStackStorageDeps['onMessageUpserted']>;
@@ -159,6 +164,8 @@ export const composeMailBoot = (
       factIngest.onMessageUpserted(msg, ctx);
     });
   }
+  const { emailAnswerHook } = deps;
+  if (emailAnswerHook) upsertHooks.push(emailAnswerHook);
 
   return composeMailStack(
     db,

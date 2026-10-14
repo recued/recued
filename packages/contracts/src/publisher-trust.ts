@@ -34,7 +34,9 @@ export type ReservedPackCapability =
   /** Declare a connection descriptor: matching, vendor identity, OAuth issuer,
    *  dedup endpoint. NOT the same as declaring a connection HINT, which is open
    *  to every publisher and gated by value admission instead (D-223 § 0). */
-  | 'connection_requirements';
+  | 'connection_requirements'
+  /** D-322 §24 — declare a safe owner-triggered access check. */
+  | 'connection_access_checks';
 
 /** May this publisher declare this capability?
  *

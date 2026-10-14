@@ -6,10 +6,20 @@ import {
   connectionsEnrollAddress,
   connectionsLaneAddress,
   parseConnectionsAddress,
+  connectionsReviewAccessAddress,
+  parseConnectionsReviewAccess,
 } from '../connections-navigation.js';
 import { parseShellRoute } from '../../shell/route.js';
 
 describe('Connections hierarchical navigation contract', () => {
+  it('routes an exact saved-account review without importing a URL or scope from the route', () => {
+    const address = connectionsReviewAccessAddress('sheets-work');
+    expect(address.hash).toBe('#connections/others/review-access/api/sheets-work');
+    expect(parseConnectionsReviewAccess(parseShellRoute(address.hash).segments)).toEqual({ name: 'sheets-work' });
+    expect(parseConnectionsAddress(parseShellRoute(address.hash))).toEqual({ kind: 'lane', tab: 'others' });
+    for (const parts of [['others', 'review-access', 'api', '../bad'], ['others', 'review-access', 'mcp', 'main'],
+      ['others', 'review-access', 'api', 'main', 'scopes']]) expect(parseConnectionsReviewAccess(parts)).toBeNull();
+  });
   it('models lane -> account depth', () => {
     expect(connectionsLaneAddress('mail').hash).toBe('#connections/mail');
     expect(connectionsAccountAddress('mail', 'work/mail').hash)

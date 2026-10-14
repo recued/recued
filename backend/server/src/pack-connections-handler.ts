@@ -48,6 +48,7 @@ import { recipeConnectionSlots, recipeRemovalEffects } from './recipe-connection
 import { notOnList, unknownSlot } from './run-connection-choice.js';
 import type { DishHandlerDeps } from './dish-handler.js';
 import type { WsClient } from './ws-server.js';
+import { createPackAccessHandler } from './pack-access-handler.js';
 
 /** The wire shapes, read off the registry (`packages/contracts/src/pack-connections.ts`). */
 type PackConnectionsView = RpcResponse<ServerRpcRegistry, 'packs.connections.list'>;
@@ -61,6 +62,8 @@ type PackSignInCell = PackSignInsView['signins'][number]['rows'][number]['cells'
 type PackConnectionAddMany = RpcRequest<ServerRpcRegistry, 'packs.connections.add_many'>;
 
 export interface PackConnectionsDeps {
+  /** D-322 §24 — isolated diagnostics on this pack's actual connection list. */
+  access?: (args: unknown) => Promise<import('@recued/contracts').PackAccessResponse>;
   contractStore: ContractStore;
   connectionStore: Pick<ConnectionStoreSqlite, 'list'>;
   /** Catalog manifests, from the live registry. */
@@ -778,6 +781,7 @@ export const recipeConnectionsView = (
 };
 
 type PackConnectionsMethods =
+  | 'packs.connections.access'
   | 'packs.connections.list'
   | 'packs.connections.add'
   | 'packs.connections.remove'
@@ -793,6 +797,7 @@ export const makePackConnectionsHandlers = (
   if (!deps) return undefined;
   return {
     methods: [
+      'packs.connections.access',
       'packs.connections.list',
       'packs.connections.add',
       'packs.connections.remove',
@@ -803,6 +808,10 @@ export const makePackConnectionsHandlers = (
       'packs.connections.add_many',
     ],
     handlers: {
+      'packs.connections.access': async (args) => {
+        if (!deps.access) throw new RpcError('not_configured', 'Pack access checks are unavailable on this server.');
+        return deps.access(args);
+      },
       'packs.connections.list': async (args) =>
         packConnectionsView(deps, requireString('packs.connections.list', 'pack_slug', (args as { pack_slug?: unknown })?.pack_slug)),
       'packs.connections.add': async (args) => withMovedDoors(deps, await addPackConnection(deps, args)),
@@ -832,11 +841,11 @@ const withMovedDoors = <T extends object>(deps: PackConnectionsDeps, result: T):
  *  either is missing (a dbless harness), and the rpcs are not registered. */
 export const packConnectionsDepsFrom = (
   install: PackInstallRpcDeps | undefined,
-  connections: Pick<ConnectionRpcDeps, 'store' | 'getEncryptionKey'> | undefined,
+  connections: Pick<ConnectionRpcDeps, 'store' | 'getEncryptionKey' | 'managedOAuth' | 'resolveFetch' | 'now'> | undefined,
   run?: Pick<PackConnectionsDeps, 'operationProfiles' | 'localManifestStore'>,
 ): PackConnectionsDeps | undefined => {
   if (install?.contractStore === undefined || connections === undefined) return undefined;
-  return {
+  const deps: PackConnectionsDeps = {
     ...(run?.operationProfiles !== undefined ? { operationProfiles: run.operationProfiles } : {}),
     ...(run?.localManifestStore !== undefined ? { localManifestStore: run.localManifestStore } : {}),
     contractStore: install.contractStore,
@@ -871,6 +880,13 @@ export const packConnectionsDepsFrom = (
       }
     },
   };
+  deps.access = createPackAccessHandler({
+    connections,
+    view: (slug) => packConnectionsView(deps, slug),
+    manifest: (slug) => deps.resolvePackManifest?.(slug) ?? null,
+    installed: (slug) => getInstalledPack(deps.contractStore, slug),
+  });
+  return deps;
 };
 
 /** D-320 §3.4 — a dish's choice of connection, checked as it is saved: each slot

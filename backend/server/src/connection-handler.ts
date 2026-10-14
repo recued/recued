@@ -198,6 +198,9 @@ import {
 } from './connection-setup-guide.js';
 import { makeConnectionRuntimeBaseIssueSink } from './connection-runtime-base-issue.js';
 import type { ManagedOAuthService } from './managed-oauth-service.js';
+import { managedOAuthVerificationUrl } from '@recued/contracts';
+import { verifyManagedOAuthAccess } from './managed-oauth-verification.js';
+import { createManagedOAuthMigration } from './managed-oauth-migration.js';
 
 export interface ConnectionRpcDeps {
   /** D-322 — the same broker service used by native API execution. */
@@ -1936,7 +1939,7 @@ export const handleConnectionUpdate = async (
     };
     expected_updated_at?: number;
   },
-  internal: { allowCredentialCandidate?: boolean; allowManagedConsent?: boolean } = {},
+  internal: { allowCredentialCandidate?: boolean; allowManagedConsent?: boolean; managedSwitchCandidate?: true } = {},
 ): Promise<{ connection: ConnectionView }> => {
   const a = ensureRecordArgs('collection.connection.update', args);
   const name = ensureName('collection.connection.update', a.name);
@@ -2105,6 +2108,7 @@ export const handleConnectionUpdate = async (
   if (auth?.type === 'managed_oauth') {
     const verified = requireManagedOAuth(deps).authorizeForSave(
       auth, String(finalConfig.base_url ?? ''), name, deps.store.get(kind, name) ?? undefined,
+      internal.managedSwitchCandidate ? { consume: false, switchAuthentication: true } : undefined,
     );
     granted_scopes_json = verified.granted_scopes === undefined ? undefined : JSON.stringify(verified.granted_scopes);
   }
@@ -4046,7 +4050,7 @@ const isolatedConnectionStore = (
 /** Compare every durable field, not only `updated_at`: injected clocks and
  * same-millisecond writes can legitimately share a timestamp. This closes the
  * verify-await-write race without requiring the SQLite store to grow a CAS API. */
-const connectionRowFingerprint = (row: ConnectionRow): string => JSON.stringify([
+const connectionRowFingerprint = (row: ConnectionRow, ignoreObservations = false): string => JSON.stringify([
   row.pk,
   row.kind,
   row.name,
@@ -4057,8 +4061,8 @@ const connectionRowFingerprint = (row: ConnectionRow): string => JSON.stringify(
   row.auth_ciphertext,
   row.enrolled_at,
   row.updated_at,
-  row.last_used_at,
-  row.health_json,
+  ignoreObservations ? undefined : row.last_used_at,
+  ignoreObservations ? undefined : row.health_json,
   row.subresource_path,
   row.granted_scopes_json,
 ]);
@@ -4069,9 +4073,10 @@ const assertCredentialRotationSnapshotIsCurrent = (
   kind: ConnectionKind,
   name: string,
   snapshot: string,
+  ignoreObservations = false,
 ): void => {
   const current = store.get(kind, name);
-  if (current !== null && connectionRowFingerprint(current) === snapshot) return;
+  if (current !== null && connectionRowFingerprint(current, ignoreObservations) === snapshot) return;
   throw new RpcError(
     'conflict',
     'This connection changed while Recued was preparing or verifying the replacement. Nothing from this attempt was saved; review the latest connection and try again.',
@@ -4488,6 +4493,7 @@ export const handleConnectionRotateCredentials = async (
      * the isolated candidate and commits in the credential's single swap. */
     match_patterns?: MessageMatchPattern[];
   },
+  internal: { managedSwitch?: { verificationUrl: string; impactFingerprint?: string; beforeSwap?(): void } } = {},
 ): Promise<{
   connection: ConnectionView;
   verification: ConnectionCredentialVerification;
@@ -4508,7 +4514,8 @@ export const handleConnectionRotateCredentials = async (
   // Validate before constructing the candidate so malformed auth and unsafe
   // OAuth destinations fail without ever entering a network path.
   const auth = credentialCandidateFromOwnerInput(ensureAuth(method, a.patch.auth));
-  if (auth.type === 'managed_oauth') throw new RpcError('bad_request', 'Use managed OAuth reauthorization to replace this broker credential.');
+  if (auth.type === 'managed_oauth' && !internal.managedSwitch) throw new RpcError('bad_request', 'Use managed OAuth reauthorization to replace this broker credential.');
+  if (internal.managedSwitch && (kind !== 'api' || auth.type !== 'managed_oauth')) throw new RpcError('bad_request', 'A managed API authorization is required for this switch.');
   // ⚠ NO kind gate here, deliberately. An earlier draft added one and no
   // mutation could make it bite: this handler reaches the credential store
   // through `handleConnectionUpdate`, which already runs `ensureSigningAuthKind`
@@ -4559,7 +4566,7 @@ export const handleConnectionRotateCredentials = async (
       : ensureConfig(method, candidateConfig),
     auth,
   );
-  const snapshot = connectionRowFingerprint(existing);
+  const snapshot = connectionRowFingerprint(existing, internal.managedSwitch !== undefined);
   const recoveryStore = credentialRotationRecoveryStore(method, deps.store);
   // A repeated attempt id resolves its durable outcome even though a
   // successful first attempt necessarily advanced the row revision beyond the
@@ -4593,6 +4600,16 @@ export const handleConnectionRotateCredentials = async (
       );
     }
     if (claim.attempt.status === 'succeeded') {
+      if (internal.managedSwitch && auth.type === 'managed_oauth') {
+        const savedAuth = await decodeAuthFromStorage(existing.auth_ciphertext, { kind, name }, deps.getEncryptionKey);
+        if (claim.attempt.verification.auth_type !== 'managed_oauth' || savedAuth.type !== 'managed_oauth'
+          || savedAuth.broker_profile_id !== auth.broker_profile_id || savedAuth.integration_id !== auth.integration_id
+          || savedAuth.connection_id !== auth.connection_id || savedAuth.target_origin !== auth.target_origin
+          || JSON.stringify(savedAuth.requested_scopes) !== JSON.stringify(auth.requested_scopes)
+          || JSON.stringify(savedAuth.required_scopes) !== JSON.stringify(auth.required_scopes)) {
+          throw new RpcError('conflict', 'This switch attempt already completed for another authentication. Reopen the current connection before starting a new attempt.');
+        }
+      }
       return {
         connection: connectionViewFromRow(existing),
         verification: claim.attempt.verification,
@@ -4637,7 +4654,13 @@ export const handleConnectionRotateCredentials = async (
       kind,
       name,
       snapshot,
+      internal.managedSwitch !== undefined,
     );
+    if (internal.managedSwitch?.impactFingerprint !== undefined && auth.type === 'managed_oauth') {
+      const service = requireManagedOAuth(deps);
+      if (!service.verifyImpact) throw new RpcError('not_configured', 'Account impact review is unavailable.');
+      await service.verifyImpact(auth, internal.managedSwitch.impactFingerprint);
+    }
     const isolated = isolatedConnectionStore(existing);
     await handleConnectionUpdate(
       { ...deps, store: isolated.store },
@@ -4654,12 +4677,14 @@ export const handleConnectionRotateCredentials = async (
           auth,
         },
       },
-      { allowCredentialCandidate: true },
+      { allowCredentialCandidate: true, ...(internal.managedSwitch ? { managedSwitchCandidate: true as const } : {}) },
     );
-    const { health } = await handleConnectionProbe(
-      { ...deps, store: isolated.store },
-      { name, kind },
-    );
+    const health = internal.managedSwitch && auth.type === 'managed_oauth'
+      ? await verifyManagedOAuthAccess({ broker: requireManagedOAuth(deps),
+          fetchImpl: deps.resolveFetch ?? globalThis.fetch.bind(globalThis), now: deps.now ?? Date.now,
+        }, auth, internal.managedSwitch.verificationUrl)
+      : (await handleConnectionProbe({ ...deps, store: isolated.store }, { name, kind })).health;
+    if (internal.managedSwitch) isolated.store.setHealth(kind, name, JSON.stringify(health));
     // Ordinary health treats any non-auth HTTP response as "reachable" and
     // records e.g. `http_status_500` alongside status=ok. That is useful for a
     // row probe but is not strong enough to authorize a credential swap: only a
@@ -4734,12 +4759,22 @@ export const handleConnectionRotateCredentials = async (
       { kind, name },
       deps.getEncryptionKey,
     );
+    if (internal.managedSwitch && auth.type === 'managed_oauth') {
+      if (internal.managedSwitch.impactFingerprint !== undefined) {
+        const service = requireManagedOAuth(deps);
+        if (!service.verifyImpact) throw new RpcError('not_configured', 'Upgrade the server to review the account impact before switching.');
+        await service.verifyImpact(auth, internal.managedSwitch.impactFingerprint);
+      }
+      await requireManagedOAuth(deps).verifySwitchAccount(auth);
+    }
+    internal.managedSwitch?.beforeSwap?.();
     assertCredentialRotationSnapshotIsCurrent(
       method,
       deps.store,
       kind,
       name,
       snapshot,
+      internal.managedSwitch !== undefined,
     );
 
     const expiresAt = 'expires_at' in verifiedAuth
@@ -4752,12 +4787,20 @@ export const handleConnectionRotateCredentials = async (
       auth_type: verifiedAuth.type,
       ...(expiresAt !== undefined ? { access_expires_at: expiresAt } : {}),
     };
+    let consumeSwitchReceipt: (() => void) | undefined;
+    if (internal.managedSwitch && auth.type === 'managed_oauth') {
+      consumeSwitchReceipt = requireManagedOAuth(deps).authorizeForSave(auth, String(parseStoredConfig(existing.config_json).base_url ?? ''),
+        name, deps.store.get(kind, name) ?? undefined, { consume: false, switchAuthentication: true }).consume;
+      const currentUse = deps.store.get(kind, name)?.last_used_at;
+      if (currentUse !== undefined) candidate = { ...candidate, last_used_at: currentUse };
+    }
     const row = recoveryStore.completeCredentialRotationAttempt({
       attempt_id: attemptId,
       connection: connectionUpsertFromRow(candidate),
       verification,
     });
     committed = true;
+    consumeSwitchReceipt?.();
     if (kind === 'api') {
       try {
         deps.recipeRunnabilityBroadcast?.recomputeAndEmit();
@@ -5766,6 +5809,15 @@ export const makeConnectionHandlers = (
   // already prevents duplicate clicks in one tab; this closes the cross-tab /
   // direct-paired-client cost race around a slow model call.
   let setupGuideInFlight = false;
+  const migration = deps.managedOAuth ? createManagedOAuthMigration({
+    broker: deps.managedOAuth, rows: () => deps.store.list(),
+    fetchImpl: deps.resolveFetch ?? globalThis.fetch.bind(globalThis), now: deps.now ?? Date.now,
+    apply: async input => {
+      await handleConnectionRotateCredentials(deps, { attempt_id: input.attempt_id, name: input.name, kind: 'api',
+        expected_updated_at: input.revision, patch: { auth: input.auth } },
+      { managedSwitch: { verificationUrl: input.url, impactFingerprint: input.impact_fingerprint, beforeSwap: input.beforeSwap } });
+    },
+  }) : undefined;
   return {
     methods: [
       'collection.connection.list',
@@ -5794,12 +5846,34 @@ export const makeConnectionHandlers = (
     ],
     handlers: {
       'collection.connection.managedOAuth': async (args) => {
+        if (args && typeof args.action === 'string' && args.action.startsWith('migration_')) {
+          if (!migration) throw new RpcError('not_configured', 'Managed OAuth is unavailable.');
+          return migration.handle(args as import('@recued/contracts').ManagedOAuthMigrationRequest);
+        }
+        if (args !== null && typeof args === 'object' && args.action === 'apply_authentication_switch') {
+          const revision = ensureExpectedConnectionUpdatedAt('managedOAuth.apply_authentication_switch', args.expected_updated_at);
+          if (revision === undefined) throw new RpcError('bad_request', 'The current connection revision is required.');
+          const name = ensureName('managedOAuth.apply_authentication_switch', args.name);
+          const existing = deps.store.get('api', name);
+          if (!existing) throw new RpcError('not_found', 'The connection to switch no longer exists.');
+          const base = String(parseStoredConfig(existing.config_json).base_url ?? '');
+          const url = typeof args.verification_url === 'string' ? managedOAuthVerificationUrl(base, args.verification_url) : undefined;
+          if (!url) throw new RpcError('bad_request', 'Enter a read-only access check URL within this connection’s saved vendor API.');
+          const result = await handleConnectionRotateCredentials(deps, { attempt_id: args.attempt_id, name, kind: 'api',
+            expected_updated_at: revision, patch: { auth: args.auth } }, { managedSwitch: { verificationUrl: url, impactFingerprint: args.impact_fingerprint } });
+          return { action: 'apply_authentication_switch', ...result };
+        }
         if (args !== null && typeof args === 'object' && args.action === 'save_reauthorization') {
           if (!isRecord(args.patch) || !isRecord(args.patch.auth) || args.patch.auth.type !== 'managed_oauth') {
             throw new RpcError('bad_request', 'A verified managed OAuth authorization is required.');
           }
           const revision = ensureExpectedConnectionUpdatedAt('managedOAuth.save_reauthorization', args.expected_updated_at);
           if (revision === undefined) throw new RpcError('bad_request', 'The current connection revision is required.');
+          if (args.impact_fingerprint !== undefined) {
+            const service = requireManagedOAuth(deps);
+            if (!service.verifyImpact) throw new RpcError('not_configured', 'Account impact review is unavailable.');
+            await service.verifyImpact(args.patch.auth as unknown as import('@recued/contracts').ManagedOAuthAuth, args.impact_fingerprint);
+          }
           const saved = await handleConnectionUpdate(deps, {
             name: args.name, kind: 'api', patch: args.patch, expected_updated_at: revision,
           }, { allowManagedConsent: true });

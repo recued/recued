@@ -65,6 +65,10 @@ import { listInstalledPackManifests } from '../pack-list-handler.js';
 import { decodeAuthFromStorage } from '../connection-handler.js';
 import { createManagedOAuthConsumers, type ManagedOAuthConsumers } from '../managed-oauth-consumers.js';
 import { createInstanceStore } from '../collections/instance-store.js';
+import { managedOAuthConnectionUses } from '../managed-oauth-account-usage.js';
+import { managedOAuthRecipeUses } from '../managed-oauth-recipe-usage.js';
+import { recipeConnectionSlots } from '../recipe-connection-choices.js';
+import { connectionPackUsageDeps } from '../pack-connection-borrowing.js';
 import { makeConnectionCredentialPersistFailureSink } from '../connection-credential-persist-failure.js';
 import { createVaultStateBus, type VaultStateBus } from '../vault-state-bus.js';
 import type { PairedInstancesStore } from '../paired-instances-store.js';
@@ -1079,6 +1083,30 @@ export const composeAppContext = (
       decodeAuth: (row) => decodeAuthFromStorage(row.auth_ciphertext, row, managedKeys.keyProvider('connection')),
       requiredScopes: (vendor, baseUrl) => managedOAuthRequiredScopes(listInstalledPackManifests(contractStoreRef), vendor, baseUrl),
       requiredScopeSources: (vendor, baseUrl) => managedOAuthPackScopeRequirements(listInstalledPackManifests(contractStoreRef), vendor, baseUrl),
+      // D-322 §22 — reuse the same pack lists/grants as the Connections page.
+      connectionUses: name => {
+        const base = managedOAuthConnectionUses(name, {
+        packSlugs: connectionPackUsageDeps({ contractStore: contractStoreRef, grantStore: contractGrantStoreRef })
+          .boundPackSlugsForConnection?.(name) ?? [],
+        packNames: new Map(listInstalledPackManifests(contractStoreRef).map(pack => [pack.slug, pack.name])),
+        instances: createInstanceStore({ db }).list(),
+        sources: workEntityStore?.listSources('file') ?? [],
+        complete: contractStoreRef !== undefined && contractGrantStoreRef !== undefined && workEntityStore !== undefined,
+        });
+        const execute = chatLateBound.getExecuteDeps();
+        const schedule = chatLateBound.getScheduleDeps();
+        if (!execute || !contractStoreRef || !execute.dishStore || !schedule) return { ...base, complete: false };
+        const rows = managedConnections.list();
+        const readSlots = recipeConnectionSlots({ contractScan: (type, filters) => contractStoreRef!.scan(type, filters),
+          manifests: { get: slug => execute.executorConfig.manifests.get(slug) ?? null },
+          enrolled: new Set(rows.filter(row => row.kind === 'api').map(row => row.name)),
+          displayName: connection => rows.find(row => row.name === connection)?.display_name,
+          profiles: execute.connectionOperationProfiles, localManifestStore: execute.localManifestStore,
+          packManifestOf: execute.packManifestOf });
+        const recipes = recipeStore.listStored().flatMap(row => { const recipe = recipeStore.get(row.recipe_id); return recipe ? [recipe] : []; });
+        return { uses: [...base.uses, ...managedOAuthRecipeUses(name, { recipes, readSlots,
+          dishes: execute.dishStore.list(), schedules: schedule.store.list() })], complete: base.complete };
+      },
     });
     if (managedOAuth && managedKeys) managedOAuthConsumers = createManagedOAuthConsumers({
       connections: managedConnections, instances: createInstanceStore({ db }), broker: managedOAuth,

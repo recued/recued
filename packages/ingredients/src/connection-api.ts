@@ -935,7 +935,8 @@ const applyBodyFieldAuth = (
  *  means "send no body", so any case left un-updated would silently DROP the
  *  request body instead of failing. Wrapping it makes every bare `return;` a
  *  compile error, which is what forced each case below to say what it sends. */
-const injectAuth = (
+/** D-322 §24 — shared injection for owner read checks and normal API dispatch. */
+export const injectConnectionApiAuth = (
   auth: ConnectionAuth,
   headers: Headers,
   url: URL,
@@ -2239,7 +2240,7 @@ export const createConnectionApiHandler = (
     }
     const authBodyFields = parseAuthBodyFields(params);
     {
-      const injected = injectAuth(liveAuth, headers, url, {
+      const injected = injectConnectionApiAuth(liveAuth, headers, url, {
         method,
         body: typeof body === 'string' ? body : undefined,
         nowMs: deps.now?.() ?? Date.now(),
@@ -2408,7 +2409,7 @@ export const createConnectionApiHandler = (
         // same way the first call does it. Dropping it here would leave the
         // retry sending the pre-injection body if the gate is ever widened.
         {
-          const reinjected = injectAuth(reauthed, headers, url, {
+          const reinjected = injectConnectionApiAuth(reauthed, headers, url, {
             method,
             body: typeof body === 'string' ? body : undefined,
             nowMs: deps.now?.() ?? Date.now(),

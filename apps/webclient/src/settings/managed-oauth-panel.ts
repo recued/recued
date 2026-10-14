@@ -1,12 +1,18 @@
 /** D-322 — broker setup and Connect popup. Secrets stay in this mounted editor. */
 import type { ManagedOAuthAuth, ManagedOAuthIntegration, ManagedOAuthProfileView,
-  ManagedOAuthProvider, ManagedOAuthRemoteConnection, ManagedOAuthRequest, ManagedOAuthResponse, ManagedOAuthPermissionPreview } from '@recued/contracts';
+  ManagedOAuthProvider, ManagedOAuthRemoteConnection, ManagedOAuthRequest, ManagedOAuthResponse, ManagedOAuthPermissionPreview,
+  ManagedOAuthAccountUsage, ManagedOAuthAuthorizationRequest, ManagedOAuthImpactPreview } from '@recued/contracts';
+import { renderManagedOAuthAccountUsage } from './managed-oauth-account-view.js';
+import { renderManagedOAuthImpact } from './managed-oauth-impact-view.js';
+import { CONNECTION_HEALTH_FRESH_MS, isManagedOAuthAccountUsage, isManagedOAuthImpactPreview } from '@recued/contracts';
 
 export type ManagedOAuthCaller = (args: ManagedOAuthRequest) => Promise<ManagedOAuthResponse>;
 export interface ManagedOAuthPanelContext {
-  enabled: boolean; mode: 'create' | 'edit'; name: string; vendor?: string;
+  enabled: boolean; mode: 'create' | 'edit' | 'switch'; name: string; vendor?: string;
   base_url: string; scopes: string[]; profile_id: string; integration_id: string;
   connection_id?: string; imported?: boolean;
+  expected_updated_at?: number;
+  saving?: boolean;
 }
 export interface ManagedOAuthPanelDeps {
   call?: ManagedOAuthCaller;
@@ -18,6 +24,8 @@ export interface ManagedOAuthPanelDeps {
   authorized(auth: ManagedOAuthAuth, grantedScopes?: readonly string[]): void;
   invalidate(): void;
   changed(): void;
+  openConnection?(name: string, expectedUpdatedAt: number): Promise<boolean>;
+  checkConnection?(name: string, expectedUpdatedAt: number): Promise<void>;
   open?: () => { location: { href: string }; closed: boolean; close(): void; opener?: unknown } | null;
   now?: () => number;
   confirmDiscard?: (prompt: string) => boolean;
@@ -29,6 +37,7 @@ let panelSequence = 0;
 
 export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
   const panelId = `managed-oauth-${++panelSequence}`;
+  const now = deps.now ?? Date.now;
   let host: HTMLElement | null = null;
   let profiles: readonly ManagedOAuthProfileView[] = [];
   let integrations: readonly ManagedOAuthIntegration[] = [];
@@ -46,28 +55,72 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
   let integrationSetup = false; let providers: readonly ManagedOAuthProvider[] = [];
   let providerId = ''; let integrationId = ''; let integrationLabel = '';
   let app: 'shared' | 'custom' = 'shared'; let clientId = ''; let clientSecret = ''; let appScopes = '';
-  let existingMode = false; let remotes: readonly ManagedOAuthRemoteConnection[] = [];
+  let existingMode = false; let switchMode = false; let remotes: readonly ManagedOAuthRemoteConnection[] = [];
   let accountDiscoveryKey = '';
   let remoteId = ''; let remotePage = 0; let remoteMore = false; let deleteConfirmation = '';
+  let usage: ManagedOAuthAccountUsage | undefined; let usageLoading = false; let usageError = ''; let usageSequence = 0;
+  let checkingConnection: string | undefined;
+  let usageHealthTimer: ReturnType<typeof setTimeout> | undefined;
+  const stopUsageHealthTimer = (): void => { if (usageHealthTimer !== undefined) clearTimeout(usageHealthTimer); usageHealthTimer = undefined; };
+  const scheduleUsageHealth = (): void => {
+    stopUsageHealthTimer();
+    const observedAt = now();
+    const next = Math.min(...(usage?.connections ?? []).flatMap(connection => {
+      const at = connection.health.last_probed_at;
+      return connection.health.status === 'ok' && at !== undefined && at <= observedAt
+        && at + CONNECTION_HEALTH_FRESH_MS >= observedAt ? [at + CONNECTION_HEALTH_FRESH_MS + 1] : [];
+    }));
+    if (!Number.isFinite(next)) return;
+    const seq = usageSequence; const gen = generation;
+    usageHealthTimer = setTimeout(() => {
+      usageHealthTimer = undefined;
+      if (disposed || seq !== usageSequence || gen !== generation) return;
+      scheduleUsageHealth(); render(); deps.changed();
+    }, Math.max(1, next - observedAt));
+  };
+  const clearUsage = (): void => { usageSequence += 1; stopUsageHealthTimer(); usage = undefined; usageLoading = false; usageError = ''; checkingConnection = undefined; };
+  const deletionDisabled = (): boolean => busy || usageLoading || !usage || !!usageError
+    || usage.connections.length > 0 || deleteConfirmation !== remoteId;
   let preview: ManagedOAuthPermissionPreview | undefined;
+  let completedImpact: ManagedOAuthImpactPreview | undefined;
+  let impactLoading = false; let impactError = '';
+  let readyAuthorization: { auth: ManagedOAuthAuth; grants?: readonly string[] } | undefined;
   let previewKey = ''; let previewLoading = false; let previewError = ''; let previewSequence = 0;
   let forcePreview = false;
-  const clearPreview = (): void => { previewSequence += 1; preview = undefined; previewKey = ''; previewLoading = false; previewError = ''; };
+  const clearPreview = (): void => { previewSequence += 1; preview = undefined; previewKey = ''; previewLoading = false; previewError = '';
+    completedImpact = undefined; impactLoading = false; impactError = ''; readyAuthorization = undefined; };
   const permissionKey = (): string => {
     const ctx = deps.context();
     return JSON.stringify([ctx.enabled, ctx.mode, ctx.name, ctx.vendor, ctx.base_url, ctx.scopes,
-      ctx.profile_id, ctx.integration_id, ctx.mode === 'edit' ? ctx.connection_id : undefined, forcePreview]);
+      ctx.profile_id, ctx.integration_id, ctx.mode === 'edit' ? ctx.connection_id : undefined, forcePreview,
+      ctx.mode === 'switch' ? [ctx.expected_updated_at, existingMode, remoteId] : undefined]);
+  };
+  const authorizationRequest = (): ManagedOAuthAuthorizationRequest => {
+    const ctx = deps.context();
+    return { profile_id: ctx.profile_id, integration_id: ctx.integration_id, base_url: ctx.base_url, scopes: [...ctx.scopes], include_account_impact: true,
+      ...(ctx.vendor === undefined ? {} : { vendor: ctx.vendor }),
+      ...(ctx.mode === 'edit' ? { name: ctx.name, connection_id: ctx.connection_id } : {}),
+      ...(ctx.mode === 'switch' ? { name: ctx.name, switch_authentication: true as const,
+        expected_updated_at: ctx.expected_updated_at, ...(existingMode ? { connection_id: remoteId } : {}) } : {}),
+    };
   };
   const clearApp = (): void => { integrationSetup = false; clientId = ''; clientSecret = ''; appScopes = ''; };
-  const clearAccounts = (): void => { remotes = []; remoteId = ''; remotePage = 0; remoteMore = false; deleteConfirmation = ''; };
+  const clearAccounts = (): void => { clearUsage(); remotes = []; remoteId = ''; remotePage = 0; remoteMore = false; deleteConfirmation = ''; };
   const profileDraft = (): string => JSON.stringify([label, server, connectOrigin, apiKey]);
   let pending: { flow_id: string; claim_secret: string; expires_at: number; failures: number; popup: ReturnType<NonNullable<ManagedOAuthPanelDeps['open']>> } | undefined;
   let opening: ReturnType<NonNullable<ManagedOAuthPanelDeps['open']>> | undefined;
-  let verifiedFlow: { flow_id: string; claim_secret: string } | undefined;
+  let verifiedFlow: { flow_id: string; claim_secret: string; account_id: string } | undefined;
+  let completedAccountId = ''; let completedAccountKey = '';
+  const accountContextKey = (): string => {
+    const ctx = deps.context();
+    return JSON.stringify([ctx.enabled, ctx.mode, ctx.name, ctx.vendor, ctx.base_url, ctx.profile_id, ctx.integration_id, ctx.expected_updated_at]);
+  };
+  const rememberCompletedAccount = (auth: ManagedOAuthAuth): void => {
+    if (deps.context().mode === 'switch') { completedAccountId = auth.connection_id; completedAccountKey = accountContextKey(); }
+  };
   let wasEnabled = false;
   let pollTimer: ReturnType<typeof setTimeout> | undefined;
   let retirement: Promise<void> = Promise.resolve();
-  const now = deps.now ?? Date.now;
   const closePopup = (popup: ReturnType<NonNullable<ManagedOAuthPanelDeps['open']>> | undefined): void => {
     if (!popup || popup.closed) return;
     // An isolated cross-origin window can reject close in WebKit. Close only a
@@ -116,7 +169,7 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
       cancellations.push(call({ action: 'cancel', flow_id: old.flow_id, claim_secret: old.claim_secret }));
     }
     const verified = verifiedFlow; verifiedFlow = undefined;
-    if (verified !== undefined) cancellations.push(call({ action: 'cancel', ...verified }));
+    if (verified !== undefined) cancellations.push(call({ action: 'cancel', flow_id: verified.flow_id, claim_secret: verified.claim_secret }));
     retirement = Promise.allSettled([retirement, ...cancellations]).then(() => {});
     return retirement;
   };
@@ -129,10 +182,10 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
     }
     const ctx = deps.context(); const profile = profiles.find(p => p.id === ctx.profile_id);
     const option = (value: string, title: string, current: string) => `<option value="${escape(value)}"${value === current ? ' selected' : ''}>${escape(title)}</option>`;
-    const locked = busy || profilesLoading ? ' disabled' : '';
+    const locked = busy || profilesLoading || ctx.saving ? ' disabled' : '';
     const identityLocked = ctx.mode === 'edit' ? ' disabled' : locked;
     const button = (action: string, title: string, variant = 'secondary', disabled = busy || profilesLoading): string =>
-      `<button type="button" class="rx-btn rx-btn-${variant} rx-btn-sm" data-managed-action="${action}"${disabled ? ' disabled' : ''}>${escape(title)}</button>`;
+      `<button type="button" class="rx-btn rx-btn-${variant} rx-btn-sm" data-managed-action="${action}"${disabled || ctx.saving ? ' disabled' : ''}>${escape(title)}</button>`;
     const inputField = (field: string, title: string, value: string, type = 'text', hint = '', readonly = false, placeholder = ''): string => {
       const issue = fieldErrors[field]; const description = [hint ? `${panelId}-${field}-hint` : '', issue ? `${panelId}-${field}-error` : ''].filter(Boolean).join(' ');
       return `<div class="managed-oauth-field"><label for="${panelId}-${field}">${title}</label><input id="${panelId}-${field}" data-managed-field="${field}" type="${type}" value="${escape(value)}"${locked}${readonly ? ' readonly' : ''}${type === 'password' || field === 'key' || field === 'client-secret' ? ' autocomplete="off" spellcheck="false"' : ''}${placeholder ? ` placeholder="${escape(placeholder)}"` : ''}${description ? ` aria-describedby="${description}"` : ''}${issue ? ' aria-invalid="true"' : ''}>
@@ -140,8 +193,10 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
     };
     const details = (key: string, title: string, content: string): string => `<details class="managed-oauth-details" data-managed-details="${key}"${openDetails.has(key) ? ' open' : ''}><summary>${title}</summary><div>${content}</div></details>`;
     const accountSection = ctx.profile_id && ctx.integration_id && !setup && !integrationSetup;
-    const permissionSection = !deps.manageProfiles && accountSection && (ctx.mode === 'edit' ? !!ctx.connection_id : !existingMode);
+    const permissionSection = !deps.manageProfiles && accountSection && (ctx.mode === 'edit' ? !!ctx.connection_id
+      : ctx.mode === 'switch' ? !existingMode || !!remoteId : !existingMode);
     const reviewed = previewKey === permissionKey() && !previewLoading ? preview : undefined;
+    const completedNewAccountNeedsReview = ctx.mode === 'switch' && !existingMode && completedAccountId !== '';
     const scopeItems = (scopes: readonly string[]): string => scopes.length
       ? `<ul>${scopes.map(scope => `<li><code>${escape(scope)}</code></li>`).join('')}</ul>` : '<p>None.</p>';
     const decisionLabel = reviewed ? {
@@ -180,14 +235,20 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
         </fieldset>` : ''}
       </div>` : ''}
       ${accountSection ? `<div class="managed-oauth-section"><h4>${deps.manageProfiles ? 'Nango accounts' : 'Account authorization'}</h4>
-        ${!deps.manageProfiles && ctx.mode === 'create' ? `<label class="managed-oauth-field"><span>Account setup</span><select data-managed-field="account-mode"${locked}>${option('existing', 'Use an existing Nango account', existingMode ? 'existing' : 'new')}${option('new', 'Authorize a new account', existingMode ? 'existing' : 'new')}</select></label>` : ''}
-        ${!deps.manageProfiles && ctx.mode === 'create' && !existingMode ? '<p class="managed-oauth-note">A new sign-in creates another Nango connection. Reuse an existing account to share authorization across your connections and packs.</p>' : ''}
+        ${!deps.manageProfiles && ctx.mode !== 'edit' ? `<label class="managed-oauth-field"><span>Account setup</span><select data-managed-field="account-mode"${locked}>${option('existing', 'Use an existing Nango account', existingMode ? 'existing' : 'new')}${option('new', 'Authorize a new account', existingMode ? 'existing' : 'new')}</select></label>` : ''}
+        ${!deps.manageProfiles && ctx.mode !== 'edit' && !existingMode ? '<p class="managed-oauth-note">A new sign-in creates another Nango connection. Reuse an existing account to share authorization across your connections and packs.</p>' : ''}
         ${existingMode ? `<label class="managed-oauth-field"><span>Nango account</span><select data-managed-field="account"${locked}>${option('', 'Select an existing account', remoteId)}${remotes.map(r => option(r.id, `${r.label} (${r.id})${r.auth_error ? ' — reauthorization needed' : ''}`, remoteId)).join('')}</select></label>
           <div class="managed-oauth-actions">${button('refresh-accounts', 'Refresh accounts')}${remotePage > 0 ? button('previous-accounts', 'Previous accounts') : ''}${remoteMore ? button('next-accounts', 'Next accounts') : ''}</div>
-          ${!deps.manageProfiles ? `<p class="managed-oauth-note">Reuse this account’s current authorization. Granted permissions remain unverified. To change permissions, manage consent in Nango with its existing scope profile, or authorize a new account here.</p>${button('attach', 'Use selected account', 'primary', busy || !remoteId || !!remotes.find(r => r.id === remoteId)?.auth_error)}` : remoteId ? details('account-delete', 'Delete this account from Nango', `<div class="managed-oauth-danger"><p>Deletion affects every tool using this account. Remove its Recued connections first. Vendor consent may remain until revoked at the vendor.</p>${inputField('delete-confirmation', 'Type account ID to confirm deletion', deleteConfirmation, 'text', `Account ID: <code>${escape(remoteId)}</code>`)}${button('delete-account', 'Delete account from Nango', 'danger', busy || deleteConfirmation !== remoteId)}</div>`) : ''}` : ''}
-        ${ctx.mode === 'edit' && !ctx.connection_id ? '<p class="managed-oauth-note">To switch a direct credential to managed OAuth, add a new connection, then select it for your packs. Reauthorization keeps the saved broker and account.</p>' : ''}
+          ${!deps.manageProfiles && ctx.mode === 'create' ? `<p class="managed-oauth-note">Reuse this account’s current authorization. Granted permissions remain unverified. To change permissions, manage consent in Nango with its existing scope profile, or authorize a new account here.</p>${button('attach', 'Use selected account', 'primary', busy || !remoteId || !!remotes.find(r => r.id === remoteId)?.auth_error)}` : ''}` : ''}
+        ${deps.manageProfiles && remoteId ? renderManagedOAuthAccountUsage({ usage, loading: usageLoading, error: usageError,
+          canOpen: deps.openConnection !== undefined, canCheck: deps.checkConnection !== undefined,
+          checking: checkingConnection, disabled: busy || profilesLoading, now: now() }) : ''}
+        ${deps.manageProfiles && remoteId ? details('account-delete', 'Delete this account from Nango', `<div class="managed-oauth-danger"><p>Deletion affects every tool using this account. Remove its Recued connections first. Vendor consent may remain until revoked at the vendor.</p>${usage?.connections.length ? '<p>This account has saved Recued connections. Open them above to review their use before removal.</p>' : ''}${inputField('delete-confirmation', 'Type account ID to confirm deletion', deleteConfirmation, 'text', `Account ID: <code>${escape(remoteId)}</code>`)}${button('delete-account', 'Delete account from Nango', 'danger', deletionDisabled())}</div>`) : ''}
+        ${ctx.mode === 'edit' && !ctx.connection_id ? '<p class="managed-oauth-note">Use Switch authentication in this connection’s editor to choose a broker account while keeping its name. Reauthorization keeps the saved broker and account.</p>' : ''}
         ${ctx.mode === 'edit' && ctx.imported ? '<p class="managed-oauth-note">This account was reused from Nango. Recued checks for saved scope history before changing consent. If that history is unknown, manage consent in Nango with its existing scope profile.</p>' : ''}
         ${!deps.manageProfiles && ctx.mode === 'edit' && ctx.connection_id ? '<p class="managed-oauth-note">Recued reuses completed scope requests when they cover current needs. Granted permissions remain unknown. New consent preserves scopes needed by other connections. Choose Review sign-in again to check a repair request.</p>' : ''}
+        ${renderManagedOAuthImpact(completedImpact ?? reviewed?.account_impact, impactLoading, impactError)}
+        ${verifiedFlow && readyAuthorization && (completedImpact || impactError) ? button('refresh-impact', 'Refresh account and impact', 'secondary', busy) : ''}
         ${permissionSection ? `<section class="managed-oauth-preview" aria-label="Permission preview" aria-busy="${previewLoading}"><h4>Permission preview</h4>
           ${previewLoading ? '<p role="status">Checking the permission request…</p>' : reviewed ? `<strong>${decisionLabel}</strong>
             ${reviewed.blocked_reason ? `<p role="alert">${escape(reviewed.blocked_reason)}</p>` : ''}
@@ -197,7 +258,10 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
             ${reviewed.warnings.map(warning => `<p class="managed-oauth-note">${escape(warning)}</p>`).join('')}` : `<p${previewError ? ' role="alert"' : ''}>${escape(previewError || 'Review the permission request before continuing.')}</p>`}
           ${button('refresh-permissions', 'Refresh permission preview', 'secondary', busy || previewLoading || verifiedFlow !== undefined)}
         </section>` : ''}
-        <div class="managed-oauth-actions">${!deps.manageProfiles && (ctx.mode === 'edit' || !existingMode) ? button('authorize', reviewed?.decision === 'reuse' ? 'Use current authorization' : forcePreview ? 'Sign in again' : ctx.mode === 'edit' ? 'Reauthorize' : 'Authorize', 'primary', busy || verifiedFlow !== undefined || !reviewed || reviewed.decision === 'blocked' || !ctx.profile_id || !ctx.integration_id || (ctx.mode === 'edit' && !ctx.connection_id)) : ''}${!deps.manageProfiles && ctx.mode === 'edit' && ctx.connection_id ? button('force-reauthorize', forcePreview ? 'Use automatic reuse' : 'Review sign-in again') : ''}${pending ? button('cancel', 'Cancel authorization', 'secondary', false) : ''}</div>
+        <div class="managed-oauth-actions">${!deps.manageProfiles && (ctx.mode !== 'create' || !existingMode) ? button('authorize', reviewed?.decision === 'reuse' ? 'Use current authorization' : forcePreview ? 'Sign in again' : ctx.mode === 'edit' ? 'Reauthorize' : 'Authorize', 'primary', busy || completedNewAccountNeedsReview || verifiedFlow !== undefined || !reviewed || reviewed.decision === 'blocked' || !ctx.profile_id || !ctx.integration_id || (ctx.mode === 'edit' && !ctx.connection_id)) : ''}
+          ${!deps.manageProfiles && (ctx.mode === 'edit' && ctx.connection_id || ctx.mode === 'switch' && existingMode && remoteId) ? button('force-reauthorize', forcePreview ? 'Use automatic reuse' : 'Review sign-in again') : ''}
+          ${ctx.mode === 'switch' && completedAccountId ? button('review-authorization', 'Review authorization again') : ''}
+          ${pending ? button('cancel', 'Cancel authorization', 'secondary', false) : ''}</div>
       </div>` : ''}
       ${busy || profilesLoading || message ? `<p class="managed-oauth-feedback" role="status" tabindex="-1">${escape(profilesLoading ? 'Loading broker profiles…' : busy && !pending ? working || 'Contacting Nango…' : message)}</p>` : ''}${error ? `<p class="managed-oauth-feedback managed-oauth-feedback-error" role="alert" tabindex="-1">${escape(error)}</p>` : ''}
       ${ctx.profile_id && !setup ? '<p class="managed-oauth-note managed-oauth-footer">Removing a Recued connection keeps its Nango account. Use Manage OAuth brokers to delete unused Nango accounts.</p>' : ''}
@@ -208,7 +272,7 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
   const syncPreview = (): void => {
     const ctx = deps.context();
     if (!ctx.enabled || deps.manageProfiles || setup || integrationSetup || !ctx.profile_id || !ctx.integration_id
-      || !ctx.base_url || (ctx.mode === 'edit' ? !ctx.connection_id : existingMode)) {
+      || !ctx.base_url || (ctx.mode === 'edit' ? !ctx.connection_id : ctx.mode === 'switch' ? existingMode && !remoteId : existingMode)) {
       if (previewKey) clearPreview();
       return;
     }
@@ -222,14 +286,19 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
     const read = async (): Promise<ManagedOAuthResponse | undefined> => {
       await retirement;
       if (disposed || sequence !== previewSequence || key !== permissionKey()) return;
-      return call({ action: 'preview', profile_id: ctx.profile_id, integration_id: ctx.integration_id,
-      base_url: ctx.base_url, scopes: [...ctx.scopes], ...(ctx.vendor === undefined ? {} : { vendor: ctx.vendor }),
-      ...(ctx.mode === 'edit' ? { name: ctx.name, connection_id: ctx.connection_id } : {}),
+      return call({ action: 'preview', ...authorizationRequest(),
       ...(forcePreview ? { force_reauthorization: true } : {}) });
     };
     void read().then(result => {
       if (disposed || sequence !== previewSequence || key !== permissionKey()) return;
       if (result?.action !== 'preview') throw new Error('Permission preview is unavailable. Upgrade the paired server and try again.');
+      if (result.preview.account_impact !== undefined && (!isManagedOAuthImpactPreview(result.preview.account_impact)
+        || result.preview.account_impact.phase !== 'before_authorization'
+        || result.preview.account_impact.target.broker?.id !== ctx.profile_id
+        || result.preview.account_impact.target.integration_id !== ctx.integration_id
+        || result.preview.account_impact.target.connection_id !== authorizationRequest().connection_id)) {
+        throw new Error('The account and impact preview is invalid. Refresh the review.');
+      }
       preview = result.preview; previewLoading = false; render(); deps.changed();
     }).catch(value => {
       if (disposed || sequence !== previewSequence || key !== permissionKey()) return;
@@ -267,7 +336,7 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
     } catch (value) { if (!disposed && gen === generation) fail(value); return; }
     if (disposed || gen !== generation || result.action !== 'integrations') return;
     integrations = result.integrations; busy = false;
-    if (ctx.mode === 'create') deps.requiredScopes?.(result.required_scopes ?? []);
+    if (ctx.mode !== 'edit') deps.requiredScopes?.(result.required_scopes ?? []);
     const selected = ctx.mode === 'edit' || integrations.some((i) => i.id === ctx.integration_id) ? ctx.integration_id : result.selected_id ?? '';
     deps.select(ctx.profile_id, selected); render(); deps.changed(); discoverAccounts();
   };
@@ -281,9 +350,28 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
     message = remotes.length === 0 ? deps.manageProfiles ? 'No Nango accounts on this page. Check the selected integration.' : 'No existing accounts on this page. Authorize a new account or check the selected integration.' : '';
     render(); deps.changed();
   };
+  const loadUsage = async (): Promise<void> => {
+    if (!deps.manageProfiles || !remoteId) return;
+    const ctx = deps.context(); const id = remoteId; const seq = ++usageSequence; const gen = generation;
+    stopUsageHealthTimer(); usage = undefined; usageError = ''; usageLoading = true; render(); deps.changed();
+    try {
+      const result = await call({ action: 'account_usage', profile_id: ctx.profile_id, integration_id: ctx.integration_id, connection_id: id });
+      if (disposed || seq !== usageSequence || gen !== generation) return;
+      if (result.action !== 'account_usage' || !isManagedOAuthAccountUsage(result.usage) || result.usage.connection_id !== id) {
+        throw new Error('Account usage could not be verified. Refresh and try again.');
+      }
+      usage = result.usage;
+      scheduleUsageHealth();
+    } catch (value) {
+      if (disposed || seq !== usageSequence || gen !== generation) return;
+      usageError = value instanceof Error ? value.message : 'Account usage could not be read. Try again.';
+    }
+    if (disposed || seq !== usageSequence || gen !== generation) return;
+    usageLoading = false; render(); deps.changed();
+  };
   const discoverAccounts = (): void => {
     const ctx = deps.context();
-    if (!ctx.enabled || ctx.mode !== 'create' || !ctx.profile_id || !ctx.integration_id) return;
+    if (!ctx.enabled || ctx.mode === 'edit' || !ctx.profile_id || !ctx.integration_id) return;
     const key = JSON.stringify([ctx.profile_id, ctx.integration_id]);
     if (key === accountDiscoveryKey) return;
     accountDiscoveryKey = key; existingMode = true; error = ''; message = '';
@@ -292,6 +380,7 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
     run(loadAccounts(0, !deps.manageProfiles));
   };
   const attachAccount = async (): Promise<void> => {
+    if (deps.context().mode !== 'create') return;
     const ctx = deps.context(); const gen = ++generation;
     working = 'Verifying the existing Nango account…';
     const canceled = stop(); deps.invalidate(); busy = true; render(); deps.changed();
@@ -305,8 +394,8 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
         if (result.action === 'attach') void call({ action: 'cancel', flow_id: result.flow_id, claim_secret: result.claim_secret }).catch(() => {});
         return;
       }
-      verifiedFlow = { flow_id: result.flow_id, claim_secret: result.claim_secret };
-      busy = false; deps.authorized(result.auth);
+      verifiedFlow = { flow_id: result.flow_id, claim_secret: result.claim_secret, account_id: result.auth.connection_id };
+      if (!await finishAuthorization(result.auth, undefined, result.impact_available === true)) return;
       message = 'Existing Nango authorization verified. Save and probe this connection. Granted permissions remain unknown. Manage consent in Nango to change permissions, or authorize a new account here.';
       render(); deps.changed();
     } catch (value) {
@@ -324,6 +413,34 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
     if (!ctx.profile_id && profiles.length === 1) deps.select(profiles[0]!.id, '');
     await discover(); render(); deps.changed();
   };
+  const readCompletedImpact = async (): Promise<boolean> => {
+    if (!verifiedFlow || !readyAuthorization) return false;
+    const flow = verifiedFlow; const gen = generation; const ctx = deps.context();
+    completedImpact = undefined; impactLoading = true; impactError = ''; busy = true;
+    render(); deps.changed();
+    try {
+      const result = await call({ action: 'account_impact', flow_id: flow.flow_id, claim_secret: flow.claim_secret });
+      if (disposed || gen !== generation || verifiedFlow !== flow) return false;
+      if (result.action !== 'account_impact' || !isManagedOAuthImpactPreview(result.impact)
+        || result.impact.phase !== 'before_save' || result.impact.mode !== (ctx.mode === 'edit' ? 'reauthorize' : ctx.mode)
+        || result.impact.target.broker?.id !== ctx.profile_id || result.impact.target.integration_id !== ctx.integration_id
+        || result.impact.target.connection_id !== readyAuthorization.auth.connection_id) throw new Error('Invalid account review');
+      completedImpact = result.impact;
+    } catch {
+      if (!disposed && gen === generation) {
+        impactError = 'The account and impact could not be reviewed. Refresh this review or authorize again.';
+        deps.invalidate();
+      }
+    }
+    if (disposed || gen !== generation) return false;
+    impactLoading = false; busy = false; render(); deps.changed(); return completedImpact !== undefined;
+  };
+  const finishAuthorization = async (auth: ManagedOAuthAuth, grants: readonly string[] | undefined, modern: boolean): Promise<boolean> => {
+    readyAuthorization = { auth, grants };
+    rememberCompletedAccount(auth);
+    if (modern && !await readCompletedImpact()) return false;
+    busy = false; deps.authorized(auth, grants); return true;
+  };
   const poll = async (gen: number): Promise<void> => {
     const flow = pending;
     if (flow === undefined || disposed || gen !== generation) return;
@@ -335,12 +452,13 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
       if (flow.failures > 0) { flow.failures = 0; message = 'Waiting for vendor authorization.'; render(); deps.changed(); }
       if (result.status === 'authorized' && result.auth !== undefined) {
         pending = undefined; busy = false;
-        verifiedFlow = { flow_id: flow.flow_id, claim_secret: flow.claim_secret };
+        verifiedFlow = { flow_id: flow.flow_id, claim_secret: flow.claim_secret, account_id: result.auth.connection_id };
         closePopup(flow.popup);
-        deps.authorized(result.auth, result.granted_scopes);
+        if (!await finishAuthorization(result.auth, result.granted_scopes, result.impact_available === true)) return;
         message = result.granted_scopes === undefined
           ? 'Authorized. Recued has no confirmed granted-scope metadata from this broker. Save and probe, then use vendor operations to check the access they need.'
           : 'Existing authorization verified. Save and probe this connection.';
+        if (deps.context().mode === 'switch') message = 'Account authorization is ready. Verify access to the chosen resource, then apply the switch.';
         message += ' Close the sign-in window if it is still open.';
         render(); deps.changed(); return;
       }
@@ -364,9 +482,10 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
   };
   const authorize = async (): Promise<void> => {
     const ctx = deps.context();
+    if (ctx.mode === 'switch' && !existingMode && completedAccountId) return;
     const force = forcePreview;
-    if (force && ctx.mode !== 'edit') return;
-    if (ctx.mode === 'create' && accountDiscoveryKey !== JSON.stringify([ctx.profile_id, ctx.integration_id])) { discoverAccounts(); return; }
+    if (force && ctx.mode !== 'edit' && !(ctx.mode === 'switch' && existingMode && remoteId)) return;
+    if (ctx.mode !== 'edit' && accountDiscoveryKey !== JSON.stringify([ctx.profile_id, ctx.integration_id])) { discoverAccounts(); return; }
     if ((verifiedFlow !== undefined && !force) || (ctx.mode === 'create' && existingMode)) return;
     const reviewed = previewKey === permissionKey() && !previewLoading ? preview : undefined;
     if (!reviewed || reviewed.decision === 'blocked') { render(); return; }
@@ -379,9 +498,7 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
     try {
       await canceled;
       if (disposed || gen !== generation) { closePopup(popup); return; }
-      const result = await call({ action: 'start', profile_id: ctx.profile_id, integration_id: ctx.integration_id,
-        base_url: ctx.base_url, scopes: ctx.scopes, ...(ctx.vendor === undefined ? {} : { vendor: ctx.vendor }),
-        ...(ctx.mode === 'edit' ? { name: ctx.name, connection_id: ctx.connection_id } : {}),
+      const result = await call({ action: 'start', ...authorizationRequest(),
         preview_fingerprint: reviewed.fingerprint, ...(force ? { force_reauthorization: true } : {}) });
       if (disposed || gen !== generation) {
         closePopup(popup);
@@ -392,9 +509,9 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
       opening = undefined;
       if (result.action === 'reuse') {
         closePopup(popup); busy = false;
-        verifiedFlow = { flow_id: result.flow_id, claim_secret: result.claim_secret };
-        deps.authorized(result.auth, result.granted_scopes);
-        message = 'Reusing the saved Nango account. These scopes were requested before; granted permissions remain unknown. Save and probe this connection. Choose Review sign-in again if access needs repair.';
+        verifiedFlow = { flow_id: result.flow_id, claim_secret: result.claim_secret, account_id: result.auth.connection_id };
+        if (!await finishAuthorization(result.auth, result.granted_scopes, result.impact_available === true)) return;
+        message = ctx.mode === 'switch' ? 'Account authorization is ready. Verify access to the chosen resource, then apply the switch.' : 'Reusing the saved Nango account. These scopes were requested before; granted permissions remain unknown. Save and probe this connection. Choose Review sign-in again if access needs repair.';
         render(); deps.changed(); return;
       }
       // Own the returned claim before browser navigation or UI callbacks can throw.
@@ -414,13 +531,48 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
       failAuthorization(value);
     }
   };
-  const action = async (name: string): Promise<void> => {
+  /** Review completed consent again without creating another remote account. */
+  const reviewAuthorization = async (): Promise<void> => {
+    const ctx = deps.context(); const id = completedAccountId;
+    if (ctx.mode !== 'switch' || !id || setup || integrationSetup) return;
+    const gen = ++generation; const canceled = stop(); deps.invalidate(); clearPreview(); forcePreview = false;
+    working = 'Checking the authorized account…'; busy = true; error = ''; message = ''; render(); deps.changed();
+    try {
+      await canceled;
+      if (disposed || gen !== generation) return;
+      const result = await call({ action: 'account_usage', profile_id: ctx.profile_id, integration_id: ctx.integration_id, connection_id: id });
+      if (disposed || gen !== generation) return;
+      if (result.action !== 'account_usage' || !isManagedOAuthAccountUsage(result.usage) || result.usage.connection_id !== id) {
+        throw new Error('The completed account could not be verified. Refresh accounts and choose it again.');
+      }
+      remotes = [{ id, label: remotes.find(account => account.id === id)?.label ?? id, auth_error: result.usage.auth_error },
+        ...remotes.filter(account => account.id !== id)];
+      existingMode = true; remoteId = id; busy = false; render(); deps.changed();
+    } catch (value) { if (!disposed && gen === generation) fail(value); }
+  };
+  const action = async (name: string, connectionName?: string): Promise<void> => {
+    if (deps.context().saving) return;
     if ((busy || profilesLoading) && name !== 'cancel') return;
     const ctx = deps.context();
     if (name === 'toggle-key') { showKey = !showKey; render(); return; }
     error = ''; fieldErrors = {};
     const gen = generation;
     switch (name) {
+      case 'refresh-usage': await loadUsage(); return;
+      case 'open-connection':
+      case 'check-connection': {
+        if (!deps.manageProfiles || usageLoading || !connectionName) return;
+        const connection = usage?.connections.find(row => row.name === connectionName);
+        if (!connection) return;
+        const operation = name === 'open-connection' ? deps.openConnection : deps.checkConnection;
+        if (!operation) return;
+        working = name === 'open-connection' ? 'Opening the saved connection…' : 'Checking API access…';
+        busy = true; checkingConnection = name === 'check-connection' ? connectionName : undefined; render(); deps.changed();
+        try { await operation(connectionName, connection.updated_at); }
+        finally { if (!disposed && gen === generation) { busy = false; checkingConnection = undefined; render(); deps.changed(); } }
+        if (!disposed && gen === generation && name === 'check-connection') await loadUsage();
+        return;
+      }
       case 'add':
         if (((setup && profileDraft() !== profileBaseline) || integrationSetup) && !confirmDiscard('this broker setup')) return;
         clearApp(); deletingProfile = false; setup = true; editingProfile = undefined; label = 'Nango Cloud'; server = 'https://api.nango.dev'; apiKey = ''; connectOrigin = ''; showKey = false; profileBaseline = profileDraft(); render(); focusField('label'); return;
@@ -509,6 +661,7 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
       case 'previous-accounts': await loadAccounts(Math.max(0, remotePage - 1)); return;
       case 'attach': await attachAccount(); return;
       case 'delete-account': {
+        if (deletionDisabled()) return;
         working = 'Deleting the account from Nango…';
         message = '';
         busy = true; render(); deps.changed();
@@ -517,10 +670,15 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
         if (disposed || gen !== generation) return;
         await loadAccounts(); message = 'Account deleted from Nango. Vendor consent may remain until revoked at the vendor.'; render(); return;
       }
+      case 'review-authorization': await reviewAuthorization(); return;
       case 'authorize': await authorize(); return;
       case 'force-reauthorize':
         stop(); deps.invalidate(); forcePreview = !forcePreview; clearPreview(); render(); deps.changed(); return;
       case 'refresh-permissions': clearPreview(); render(); deps.changed(); return;
+      case 'refresh-impact': {
+        if (await readCompletedImpact() && readyAuthorization) deps.authorized(readyAuthorization.auth, readyAuthorization.grants);
+        return;
+      }
       case 'cancel': generation += 1; stop(); clearPreview(); deps.invalidate(); busy = false;
         message = 'Authorization canceled. Close the sign-in window if it is still open.'; render(); deps.changed(); return;
     }
@@ -531,7 +689,7 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
     const button = target.closest<HTMLElement>('[data-managed-action]');
     if (button === null || !host?.contains(button) || (button as HTMLButtonElement).disabled) return;
     const gen = generation;
-    event.preventDefault(); void action(button.dataset.managedAction ?? '').catch((value) => {
+    event.preventDefault(); void action(button.dataset.managedAction ?? '', button.dataset.managedName).catch((value) => {
       if (!disposed && gen === generation) fail(value);
     });
   };
@@ -540,7 +698,7 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
     if (target === null || !host?.contains(target) || !['INPUT', 'SELECT'].includes(target.tagName)) return;
     const field = target.dataset.managedField;
     if ((target.tagName === 'SELECT' ? 'change' : 'input') !== event.type) return;
-    if (busy || profilesLoading) return;
+    if (busy || profilesLoading || deps.context().saving) return;
     rememberFocus();
     if (field === 'label') label = target.value;
     if (field === 'server') server = target.value;
@@ -554,7 +712,7 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
     if (field === 'delete-confirmation') {
       deleteConfirmation = target.value;
       const button = host?.querySelector?.<HTMLButtonElement>('[data-managed-action="delete-account"]');
-      if (button !== null && button !== undefined) button.disabled = deleteConfirmation !== remoteId;
+      if (button !== null && button !== undefined) button.disabled = deletionDisabled();
     }
     if (field === 'provider') {
       providerId = target.value; integrationId = `recued-${providerId}`; integrationLabel = providers.find((p) => p.id === providerId)?.label ?? '';
@@ -562,14 +720,15 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
     }
     if (field === 'app') { app = target.value === 'custom' ? 'custom' : 'shared'; clientSecret = ''; clientId = ''; render(); }
     if (field === 'account-mode' || field === 'account') {
-      generation += 1; stop(); deps.invalidate();
+      completedAccountId = ''; completedAccountKey = '';
+      generation += 1; stop(); deps.invalidate(); clearPreview(); forcePreview = false;
       if (field === 'account-mode') { existingMode = target.value === 'existing'; clearAccounts(); if (existingMode) run(loadAccounts()); }
-      else { remoteId = target.value; deleteConfirmation = ''; }
+      else { clearUsage(); remoteId = target.value; deleteConfirmation = ''; if (deps.manageProfiles) void loadUsage(); }
       render(); deps.changed();
     }
     if (field === 'profile' || field === 'integration') {
       if (integrationSetup && !confirmDiscard('this integration setup')) { render(); return; }
-      generation += 1; stop(); deps.invalidate(); clearApp(); clearAccounts(); existingMode = false; accountDiscoveryKey = '';
+      generation += 1; stop(); deps.invalidate(); clearApp(); clearAccounts(); existingMode = deps.context().mode === 'switch'; accountDiscoveryKey = '';
       deletingProfile = false;
       deps.select(field === 'profile' ? target.value : deps.context().profile_id, field === 'integration' ? target.value : '');
       if (field === 'profile') run(discover());
@@ -590,11 +749,14 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
     // New enrollment writes result metadata into the form. Only an edited saved
     // account ID is an authorization input; imported is server-issued metadata.
     let ctx = deps.context(); const key = JSON.stringify([ctx.enabled, ctx.mode, ctx.name, ctx.vendor, ctx.base_url, ctx.scopes,
-      ctx.profile_id, ctx.integration_id, ctx.mode === 'edit' ? ctx.connection_id : undefined]);
-    if (contextKey !== '' && key !== contextKey) { generation += 1; stop(); clearPreview(); forcePreview = false; clearAccounts(); clearApp(); accountDiscoveryKey = ''; existingMode = false; busy = false; deps.invalidate(); message = ''; }
+      ctx.profile_id, ctx.integration_id, ctx.mode === 'edit' ? ctx.connection_id : undefined, ctx.expected_updated_at]);
+    if (completedAccountKey && completedAccountKey !== accountContextKey()) { completedAccountId = ''; completedAccountKey = ''; }
+    if (contextKey !== '' && key !== contextKey) { generation += 1; stop(); clearPreview(); forcePreview = false; clearAccounts(); clearApp(); accountDiscoveryKey = ''; if (ctx.mode !== 'switch') existingMode = false; busy = false; deps.invalidate(); message = ''; }
     contextKey = key;
+    if (ctx.mode === 'switch' && !switchMode) existingMode = true;
+    switchMode = ctx.mode === 'switch';
     if (!ctx.enabled) { clearPreview(); forcePreview = false; apiKey = ''; showKey = false; setup = false; deletingProfile = false; fieldErrors = {}; error = ''; message = ''; focus = undefined; clearApp(); clearAccounts(); existingMode = false; accountDiscoveryKey = ''; }
-    if (ctx.enabled && !wasEnabled && ctx.mode === 'create' && !ctx.profile_id && profiles.length === 1) {
+    if (ctx.enabled && !wasEnabled && ctx.mode !== 'edit' && !ctx.profile_id && profiles.length === 1) {
       deps.select(profiles[0]!.id, ''); ctx = deps.context();
     }
     wasEnabled = ctx.enabled;
@@ -612,7 +774,8 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
       host?.addEventListener('focusin', focusIn); host?.addEventListener('focusout', focusOut);
       if (host !== null && (!loaded || (!enabledBefore && deps.context().enabled))) { loaded = true; run(load()); }
     },
-    sync, busy: () => busy || profilesLoading, hasDraft: () => (setup && profileDraft() !== profileBaseline) || integrationSetup,
+    sync, busy: () => busy || profilesLoading, impactFingerprint: () => completedImpact?.fingerprint,
+    hasDraft: () => (setup && profileDraft() !== profileBaseline) || integrationSetup,
     dispose() { disposed = true; generation += 1; stop(); clearPreview(); apiKey = ''; clearApp(); clearAccounts(); detach(); host = null; },
   };
 };

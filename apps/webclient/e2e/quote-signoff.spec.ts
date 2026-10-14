@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import type {} from './harness/quote-signoff-harness.js';
 
-const BASE = 'http://127.0.0.1:4319/quote-signoff-harness.html';
+const BASE = `${process.env.E2E_SIGNOFF_HARNESS_URL ?? 'http://127.0.0.1:4319'}/quote-signoff-harness.html`;
 const fill = async (page: Page, scope = 'Three drawings. <img src=x onerror=alert(1)>') => {
   await page.getByLabel('Open quote').selectOption('Q1');
   await page.getByLabel('Business name shown to the customer').fill('Studio');
@@ -16,7 +16,8 @@ test('freezes and shows the full scope, blocks duplicate submissions, and publis
   await page.goto(`${BASE}?defer=prepare`); await fill(page);
   await page.getByRole('button', { name: 'Preview customer sign-off' }).click();
   await expect(page.getByLabel('Complete scope shown to the customer')).toBeDisabled();
-  await page.locator('form').evaluate((form) => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+  await page.locator('form').filter({ has: page.getByLabel('Open quote') })
+    .evaluate((form) => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
   expect(await count(page, 'reception.signoff.prepare')).toBe(1);
   await page.evaluate(() => window.__quoteSignoff.release());
   const preview = page.locator('[data-signoff-preview]');

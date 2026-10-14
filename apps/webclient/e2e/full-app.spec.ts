@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import type { Page } from '@playwright/test';
 import { HARNESS_SERVER_PUBLIC_KEY } from './harness/server-identity.js';
 import { openChatHistory } from './helpers/chat-history.js';
 
@@ -9593,6 +9594,63 @@ test('Data exposes full mobile targets for its persistent navigation', async ({ 
   const memory = switcher.getByRole('button', { name: 'Memory' });
   await memory.focus();
   await expect(memory).toBeFocused();
+});
+
+for (const { query, collection, label } of [
+  { query: 'calendar', collection: 'calendar', label: 'Calendar' },
+  { query: 'pack', collection: 'records', label: 'Pack records' },
+]) {
+  test(`Data preserves native Collection picker typeahead for ${query}`, async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`${HARNESS_URL}?data=contacts&settle_reads=1#data/contact`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+
+    const collections = page.getByRole('combobox', { name: 'Collection', exact: true });
+    await expect(collections).toHaveValue('contact');
+    await collections.focus();
+    await page.keyboard.type(query, { delay: 80 });
+
+    await expect(collections).toHaveValue(collection);
+    await expect(collections).toBeFocused();
+    await expect(page).toHaveURL(new RegExp(`#data/${collection}(?:/|$)`));
+    await expect(page.getByRole('tabpanel', { name: label, exact: true })).toBeVisible();
+  });
+}
+
+test('Data hands collection focus between tabs and picker at the breakpoint', async ({ page }) => {
+  await page.setViewportSize({ width: 641, height: 900 });
+  await page.goto(`${HARNESS_URL}?data=contacts&settle_reads=1#data/contact`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const contacts = page.locator(`[${DATA_TAB}="contact"]`);
+  const tasks = page.locator(`[${DATA_TAB}="task"]`);
+  const notes = page.locator(`[${DATA_TAB}="note"]`);
+  const commitments = page.locator(`[${DATA_TAB}="commitment"]`);
+  const collections = page.getByRole('combobox', { name: 'Collection', exact: true });
+  await contacts.focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(tasks).toBeFocused();
+
+  await page.setViewportSize({ width: 640, height: 900 });
+  await expect(collections).toHaveValue('task');
+  await expect(collections).toBeFocused();
+  await page.keyboard.press('n');
+  await expect(collections).toHaveValue('note');
+
+  await page.setViewportSize({ width: 641, height: 900 });
+  await expect(notes).toBeFocused();
+  await page.keyboard.press('ArrowRight');
+  await expect(commitments).toBeFocused();
+  await expect(page).toHaveURL(/#data\/commitment$/);
+
+  await page.keyboard.press('Home');
+  await expect(contacts).toBeFocused();
+  const search = page.getByPlaceholder('Search contacts');
+  await search.focus();
+  await page.setViewportSize({ width: 640, height: 900 });
+  await expect(search).toBeFocused();
+  await page.setViewportSize({ width: 641, height: 900 });
+  await expect(search).toBeFocused();
 });
 
 test('Data keeps a contact file apply visible, owned, and single-flight', async ({ page }) => {
@@ -21734,6 +21792,16 @@ test('Settings Privacy retains keyboard ownership through browser-clear recovery
   await expect(clear).toBeFocused();
 });
 
+const settingsNavItemIsVisible = (item: HTMLElement, navAttr: string): boolean => {
+  const rail = item.closest<HTMLElement>(`[${navAttr}]`);
+  if (rail === null) return false;
+  const railRect = rail.getBoundingClientRect();
+  const itemRect = item.getBoundingClientRect();
+  const left = railRect.left + rail.clientLeft;
+  // Scroll alignment can finish on a fractional CSS pixel at the strip edge.
+  return itemRect.left >= left - 1 && itemRect.right <= left + rail.clientWidth + 1;
+};
+
 test('Settings reveals the active section in its mobile overflow rail', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 800 });
   await page.evaluate(() => window.__app.setHash('#settings/server'));
@@ -21745,16 +21813,72 @@ test('Settings reveals the active section in its mobile overflow rail', async ({
   );
   expect(Math.min(...targetHeights)).toBeGreaterThanOrEqual(36);
   await expect(server).toHaveAttribute('aria-current', 'page');
-  await expect.poll(async () => server.evaluate((item, navAttr) => {
-    const rail = item.closest(`[${navAttr}]`);
-    if (rail === null) return false;
-    const railRect = rail.getBoundingClientRect();
-    const itemRect = item.getBoundingClientRect();
-    // Scroll alignment can finish on a fractional CSS pixel at the strip edge.
-    return itemRect.left >= railRect.left - 1
-      && itemRect.right <= railRect.right + 1;
-  }, SETTINGS_NAV)).toBe(true);
+  await expect.poll(() => server.evaluate(settingsNavItemIsVisible, SETTINGS_NAV)).toBe(true);
   expect(await nav.evaluate((rail) => rail.scrollLeft)).toBeGreaterThan(0);
+});
+
+for (const width of [280, 390, 720]) {
+  test(`Settings fully reveals keyboard-focused rail items at ${width}px`, async ({ page, browserName }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.evaluate(() => window.__app.setHash('#settings/account'));
+    const items = page.locator(`[${SETTINGS_NAV_ITEM}]`);
+    await expect(items.first()).toBeVisible();
+    const count = await items.count();
+    // Use WebKit's full keyboard navigation shortcut for ordinary buttons.
+    const next = browserName === 'webkit' ? 'Alt+Tab' : 'Tab';
+    const previous = browserName === 'webkit' ? 'Alt+Shift+Tab' : 'Shift+Tab';
+    await items.first().focus();
+    await page.keyboard.press(previous);
+    await page.keyboard.press(next);
+    for (let index = 0; index < count; index++) {
+      const item = items.nth(index);
+      await expect(item).toBeFocused();
+      await expect.poll(() => item.evaluate(settingsNavItemIsVisible, SETTINGS_NAV)).toBe(true);
+      if (index < count - 1) await page.keyboard.press(next);
+    }
+    await expect(page).toHaveURL(/#settings\/account$/);
+    await page.keyboard.press('Enter');
+    await expect(page).toHaveURL(/#settings\/server$/);
+    await expect(items.last()).toBeFocused();
+    for (let index = count - 2; index >= 0; index--) {
+      await page.keyboard.press(previous);
+      const item = items.nth(index);
+      await expect(item).toBeFocused();
+      await expect.poll(() => item.evaluate(settingsNavItemIsVisible, SETTINGS_NAV)).toBe(true);
+    }
+  });
+}
+
+test('Settings preserves navigation visibility and focus through resizing', async ({ page }) => {
+  await page.setViewportSize({ width: 721, height: 900 });
+  await page.evaluate(() => window.__app.setHash('#settings/account'));
+  const server = page.locator(`[${SETTINGS_NAV_ITEM}="server"]`);
+  await server.focus();
+  for (const width of [720, 390, 280, 721]) {
+    await page.setViewportSize({ width, height: 900 });
+    await expect(server).toBeFocused();
+    await expect.poll(() => server.evaluate(settingsNavItemIsVisible, SETTINGS_NAV)).toBe(true);
+  }
+  await expect(page).toHaveURL(/#settings\/account$/);
+
+  await page.goto(`${HARNESS_URL}?settle_reads=1#settings/server`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const section = page.locator('[data-recued-settings-section="server"]');
+  await section.focus();
+  for (const width of [720, 390, 280]) {
+    await page.setViewportSize({ width, height: 900 });
+    await expect(section).toBeFocused();
+    await expect.poll(() => server.evaluate(settingsNavItemIsVisible, SETTINGS_NAV)).toBe(true);
+  }
+  await section.evaluate((owner) => owner.scrollIntoView({ block: 'start' }));
+  const verticalScroll = () => page.evaluate(() => ({
+    window: window.scrollY,
+    content: document.querySelector('[data-recued-webclient-content]')?.scrollTop,
+  }));
+  const before = await verticalScroll();
+  await page.evaluate(() => window.dispatchEvent(new Event('resize')));
+  expect(await verticalScroll()).toEqual(before);
+  await expect(section).toBeFocused();
 });
 
 test('Settings Housekeeping identifies repeated producer actions', async ({ page }) => {
@@ -23485,6 +23609,476 @@ test('Settings Exposure confirmations own keyboard focus', async ({ page }) => {
   await expect(wsTrigger).toBeFocused();
 });
 
+for (const method of ['chat.rolling_brief.get', 'chat.install_offers.get']) {
+  test(`Settings AI Models waits for ${method} before completing initialization`, async ({ page }) => {
+    await page.goto(
+      `${HARNESS_URL}?ai=two&ai_pool=entry&hold_rpc=${encodeURIComponent(method)}#settings/ai-models`,
+    );
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await expect.poll(() => page.evaluate((read) => window.__app.rpcCallCount(read), method))
+      .toBeGreaterThan(0);
+
+    const loading = page.getByText('Loading your AI settings.', { exact: true });
+    const choices = page.locator('[data-recued-ai-models-model-pref]');
+    await expect(loading).toBeVisible();
+    await expect(choices).toHaveCount(0);
+
+    const released = await page.evaluate(
+      (read) => window.__app.releaseRpcResponses?.(read) ?? 0,
+      method,
+    );
+    expect(released).toBeGreaterThan(0);
+    await expect(loading).toHaveCount(0);
+    await expect(choices).toHaveCount(3);
+    await expect(page.locator('[data-recued-ai-models-rolling-brief]'))
+      .toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('[data-recued-ai-models-install-offers]'))
+      .toHaveAttribute('aria-pressed', 'true');
+  });
+}
+
+const chatBehaviourSwitchCases = [
+  {
+    name: 'rolling brief',
+    rpc: 'chat.rolling_brief',
+    attr: 'data-recued-ai-models-rolling-brief',
+    onLabel: 'Stop keeping a running note',
+    offLabel: 'Keep a running note',
+  },
+  {
+    name: 'install offers',
+    rpc: 'chat.install_offers',
+    attr: 'data-recued-ai-models-install-offers',
+    onLabel: 'Stop suggesting packs',
+    offLabel: 'Suggest packs',
+  },
+] as const;
+
+for (const [index, chatSwitch] of chatBehaviourSwitchCases.entries()) {
+  const method = `${chatSwitch.rpc}.set`;
+  const sibling = chatBehaviourSwitchCases[(index + 1) % chatBehaviourSwitchCases.length]!;
+
+  test(`Settings AI Models ${chatSwitch.name} saves by keyboard and retains focus`, async ({ page }) => {
+    await page.goto(`${HARNESS_URL}?ai=two&hold_rpc=${method}#settings/ai-models`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+
+    const toggle = page.locator(`[${chatSwitch.attr}]`);
+    const other = page.locator(`[${sibling.attr}]`);
+    await expect(toggle).toHaveText(chatSwitch.onLabel);
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    await toggle.focus();
+    await page.keyboard.press('Enter');
+
+    await expect(toggle).toHaveText('Saving…');
+    await expect(toggle).toBeFocused();
+    await expect(toggle).toHaveAttribute('aria-busy', 'true');
+    await expect(toggle).toHaveAttribute('aria-disabled', 'true');
+    await expect(toggle).not.toHaveAttribute('disabled');
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Space');
+    expect(await page.evaluate((rpc) => window.__app.rpcCallCount(rpc), method)).toBe(1);
+    expect(await page.evaluate((rpc) => window.__app.releaseRpcResponses?.(rpc) ?? 0, method)).toBe(1);
+
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    await expect(toggle).toHaveText(chatSwitch.offLabel);
+    await expect(toggle).not.toHaveAttribute('aria-busy');
+    await expect(toggle).not.toHaveAttribute('aria-disabled');
+    await expect(toggle).toBeFocused();
+    await expect(other).toHaveAttribute('aria-pressed', 'true');
+
+    // Re-mount the page against the same fixture server, rather than relying
+    // on the write response still held in the page's in-memory snapshot.
+    await page.evaluate(() => window.__app.setHash('#chat'));
+    await expect(page.locator('[data-recued-chat-route]')).toHaveCount(1);
+    await page.evaluate(() => window.__app.setHash('#settings/ai-models'));
+    await expect(toggle).toHaveText(chatSwitch.offLabel);
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    expect(await page.evaluate((rpc) => window.__app.rpcCallCount(rpc), `${chatSwitch.rpc}.get`))
+      .toBeGreaterThanOrEqual(2);
+
+    await toggle.focus();
+    await page.keyboard.press('Space');
+    await expect(toggle).toHaveText('Saving…');
+    await expect(toggle).toBeFocused();
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    expect(await page.evaluate((rpc) => window.__app.releaseRpcResponses?.(rpc) ?? 0, method)).toBe(1);
+    await expect(toggle).toHaveText(chatSwitch.onLabel);
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    await expect(toggle).toBeFocused();
+    expect(await page.evaluate((rpc) => window.__app.rpcCallCount(rpc), method)).toBe(2);
+  });
+
+  test(`Settings AI Models ${chatSwitch.name} failed save stays focused and retryable`, async ({ page }) => {
+    await page.goto(
+      `${HARNESS_URL}?ai=two&ai_chat_switch_response=fail-first&hold_rpc=${method}#settings/ai-models`,
+    );
+    await page.waitForFunction(() => window.__app?.ready === true);
+
+    const toggle = page.locator(`[${chatSwitch.attr}]`);
+    const error = page.locator('[data-recued-ai-models-action-error]');
+    await expect(toggle).toHaveText(chatSwitch.onLabel);
+    await toggle.focus();
+    await page.keyboard.press('Enter');
+    await expect(toggle).toHaveText('Saving…');
+    expect(await page.evaluate((rpc) => window.__app.releaseRpcResponses?.(rpc) ?? 0, method)).toBe(1);
+
+    await expect(error).toHaveText('Chat behaviour update unavailable.');
+    await expect(error).toHaveAttribute('role', 'alert');
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    await expect(toggle).toHaveText(chatSwitch.onLabel);
+    await expect(toggle).not.toHaveAttribute('aria-busy');
+    await expect(toggle).not.toHaveAttribute('aria-disabled');
+    await expect(toggle).not.toBeDisabled();
+    await expect(toggle).toBeFocused();
+
+    await page.keyboard.press('Space');
+    await expect(toggle).toHaveText('Saving…');
+    await expect(error).toHaveCount(0);
+    expect(await page.evaluate((rpc) => window.__app.releaseRpcResponses?.(rpc) ?? 0, method)).toBe(1);
+    await expect(toggle).toHaveText(chatSwitch.offLabel);
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    await expect(toggle).toBeFocused();
+    await expect(error).toHaveCount(0);
+    expect(await page.evaluate((rpc) => window.__app.rpcCallCount(rpc), method)).toBe(2);
+  });
+
+  test(`Settings AI Models ${chatSwitch.name} reflects the confirmed server state`, async ({ page }) => {
+    await page.goto(
+      `${HARNESS_URL}?ai=two&ai_chat_switch_response=unchanged&hold_rpc=${method}#settings/ai-models`,
+    );
+    await page.waitForFunction(() => window.__app?.ready === true);
+
+    const toggle = page.locator(`[${chatSwitch.attr}]`);
+    await expect(toggle).toHaveText(chatSwitch.onLabel);
+    await toggle.focus();
+    await page.keyboard.press('Enter');
+    await expect(toggle).toHaveText('Saving…');
+    expect(await page.evaluate((rpc) => window.__app.releaseRpcResponses?.(rpc) ?? 0, method)).toBe(1);
+    await expect(toggle).toHaveText(chatSwitch.onLabel);
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    await expect(toggle).not.toHaveAttribute('aria-busy');
+    await expect(toggle).toBeFocused();
+    await expect(page.locator('[data-recued-ai-models-action-error]')).toHaveCount(0);
+  });
+
+  test(`Settings AI Models ${chatSwitch.name} completion follows the current keyboard focus`, async ({ page, browserName }) => {
+    const siblingMethod = `${sibling.rpc}.set`;
+    await page.goto(
+      `${HARNESS_URL}?ai=two&hold_rpc=${method}&hold_rpc=${siblingMethod}#settings/ai-models`,
+    );
+    await page.waitForFunction(() => window.__app?.ready === true);
+
+    const toggle = page.locator(`[${chatSwitch.attr}]`);
+    const other = page.locator(`[${sibling.attr}]`);
+    await expect(toggle).toHaveText(chatSwitch.onLabel);
+    await toggle.focus();
+    await page.keyboard.press('Enter');
+    await expect(toggle).toHaveText('Saving…');
+    await expect(toggle).toBeFocused();
+
+    // Safari's full keyboard navigation includes ordinary buttons.
+    const tabKey = index === 0 ? 'Tab' : 'Shift+Tab';
+    await page.keyboard.press(browserName === 'webkit' ? `Alt+${tabKey}` : tabKey);
+    await expect(other).toBeFocused();
+    await page.keyboard.press('Space');
+    await expect(other).toHaveText('Saving…');
+    await expect(other).toBeFocused();
+
+    // The first response must preserve the second switch's pending state and
+    // current focus while the two saves overlap.
+    expect(await page.evaluate((rpc) => window.__app.releaseRpcResponses?.(rpc) ?? 0, method)).toBe(1);
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    await expect(other).toHaveText('Saving…');
+    await expect(other).toHaveAttribute('aria-pressed', 'true');
+    await expect(other).toBeFocused();
+    expect(await page.evaluate((rpc) => window.__app.releaseRpcResponses?.(rpc) ?? 0, siblingMethod)).toBe(1);
+    await expect(other).toHaveText(sibling.offLabel);
+    await expect(other).toHaveAttribute('aria-pressed', 'false');
+    await expect(other).toBeFocused();
+    expect(await page.evaluate((rpc) => window.__app.rpcCallCount(rpc), method)).toBe(1);
+    expect(await page.evaluate((rpc) => window.__app.rpcCallCount(rpc), siblingMethod)).toBe(1);
+  });
+}
+
+const aiSettingRefreshCases = [
+  {
+    name: 'default model', read: 'chat.default_model_pref.get', write: 'chat.default_model_pref.set',
+    selector: '[data-recued-ai-models-model-pref="slot_2"]', initial: 'false', confirmed: 'true',
+    errorPrefix: 'model preference:',
+  },
+  {
+    name: 'rolling brief', read: 'chat.rolling_brief.get', write: 'chat.rolling_brief.set',
+    selector: '[data-recued-ai-models-rolling-brief]', initial: 'true', confirmed: 'false',
+    errorPrefix: 'chat behaviour:',
+  },
+  {
+    name: 'pack suggestions', read: 'chat.install_offers.get', write: 'chat.install_offers.set',
+    selector: '[data-recued-ai-models-install-offers]', initial: 'true', confirmed: 'false',
+    errorPrefix: null,
+  },
+] as const;
+type AiSettingReadRpc = typeof aiSettingRefreshCases[number]['read'];
+const beginAiSettingRefresh = async (page: Page, method: AiSettingReadRpc, fail = false) => {
+  const count = await page.evaluate((rpc) => window.__app.rpcCallCount(rpc), method);
+  await page.evaluate(({ method, fail }) => {
+    window.__app.holdRpcResponses?.(method);
+    if (fail) window.__app.failNextAiSettingsRead?.(method);
+    void window.__app.refreshAiModels?.();
+  }, { method, fail });
+  await expect.poll(() => page.evaluate((rpc) => window.__app.rpcCallCount(rpc), method)).toBe(count + 1);
+};
+const releaseAiSettingRead = async (page: Page, method: AiSettingReadRpc) => {
+  expect(await page.evaluate((rpc) => window.__app.releaseRpcResponses?.(rpc) ?? 0, method)).toBe(1);
+};
+const openAiSettingRefresh = async (page: Page, mobile = false, query = '') => {
+  if (mobile) await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?ai=two&${query}#settings/ai-models`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await expect(aiRefreshState(page)).toHaveAttribute('data-recued-ai-models-page-state', 'ready');
+};
+
+for (const [index, setting] of aiSettingRefreshCases.entries()) {
+  for (const outcome of ['success', 'failure'] as const) {
+    test(`Settings AI Models ${setting.name} refresh keeps a confirmed value after an older ${outcome}`, async ({ page }) => {
+      await openAiSettingRefresh(page, index === 2);
+      const button = page.locator(setting.selector);
+      await expect(button).toHaveAttribute('aria-pressed', setting.initial);
+      await button.focus();
+      await beginAiSettingRefresh(page, setting.read, outcome === 'failure');
+      await expect(button).toBeFocused();
+      await page.keyboard.press('Enter');
+      await expect(button).toHaveAttribute('aria-pressed', setting.confirmed);
+      await expect(button).not.toHaveAttribute('aria-busy');
+      await releaseAiSettingRead(page, setting.read);
+      await expect(aiRefreshState(page)).toHaveAttribute('data-recued-ai-models-page-state', 'ready');
+      await expect(button).toHaveAttribute('aria-pressed', setting.confirmed);
+      await expect(button).toBeFocused();
+      await expect(page.getByText('AI setting read unavailable.', { exact: false })).toHaveCount(0);
+      expect(await page.evaluate((rpc) => window.__app.rpcCallCount(rpc), setting.write)).toBe(1);
+      expect(await page.evaluate(() => window.__app.rpcCallCount('server.probeLlmSource'))).toBe(0);
+    });
+  }
+
+  test(`Settings AI Models ${setting.name} refresh can settle while a write is pending without optimistic changes`, async ({ page }) => {
+    await openAiSettingRefresh(page, index === 2, `hold_rpc=${setting.write}`);
+    const button = page.locator(setting.selector);
+    await beginAiSettingRefresh(page, setting.read);
+    await button.focus();
+    await page.keyboard.press('Enter');
+    await expect(button).toHaveAttribute('aria-busy', 'true');
+    await expect(button).toHaveAttribute('aria-pressed', setting.initial);
+    await releaseAiSettingRead(page, setting.read);
+    await expect(aiRefreshState(page)).toHaveAttribute('data-recued-ai-models-page-state', 'ready');
+    await expect(button).toHaveAttribute('aria-busy', 'true');
+    await expect(button).toHaveAttribute('aria-pressed', setting.initial);
+    await expect(button).toBeFocused();
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Space');
+    expect(await page.evaluate((rpc) => window.__app.rpcCallCount(rpc), setting.write)).toBe(1);
+    expect(await page.evaluate((rpc) => window.__app.releaseRpcResponses?.(rpc) ?? 0, setting.write)).toBe(1);
+    await expect(button).toHaveAttribute('aria-pressed', setting.confirmed);
+    await expect(button).not.toHaveAttribute('aria-busy');
+    await expect(button).not.toHaveAttribute('aria-disabled');
+    await expect(button).toBeFocused();
+  });
+
+  if (setting.errorPrefix !== null) {
+    test(`Settings AI Models ${setting.name} refresh error clears when a later save confirms`, async ({ page }) => {
+      await openAiSettingRefresh(page);
+      const button = page.locator(setting.selector);
+      await beginAiSettingRefresh(page, setting.read, true);
+      await releaseAiSettingRead(page, setting.read);
+      await expect(aiRefreshState(page)).toHaveAttribute('data-recued-ai-models-page-state', 'error');
+      const error = page.getByText(`${setting.errorPrefix} AI setting read unavailable.`, { exact: true });
+      await expect(error).toBeVisible();
+      await button.focus();
+      await page.keyboard.press('Space');
+      await expect(button).toHaveAttribute('aria-pressed', setting.confirmed);
+      await expect(error).toHaveCount(0);
+      await expect(aiRefreshState(page)).toHaveAttribute('data-recued-ai-models-page-state', 'ready');
+      await expect(button).toBeFocused();
+    });
+  }
+}
+
+for (const outcome of ['success', 'failure'] as const) {
+  test(`Settings AI Models default model refresh keeps a broadcast value after an older ${outcome}`, async ({ page }) => {
+    await openAiSettingRefresh(page);
+    const button = page.locator(aiSettingRefreshCases[0].selector);
+    await button.focus();
+    await beginAiSettingRefresh(page, aiSettingRefreshCases[0].read, outcome === 'failure');
+    await page.evaluate(() => window.__app.fireMessage({
+      type: 'server_event', event: {
+        kind: 'chat.default_model_pref_changed', source_id: 'slot_2', updated_at: Number.MAX_SAFE_INTEGER,
+      },
+    }));
+    await expect(button).toHaveAttribute('aria-pressed', 'true');
+    await releaseAiSettingRead(page, aiSettingRefreshCases[0].read);
+    await expect(aiRefreshState(page)).toHaveAttribute('data-recued-ai-models-page-state', 'ready');
+    await expect(button).toHaveAttribute('aria-pressed', 'true');
+    await expect(button).toBeFocused();
+    expect(await page.evaluate(() => window.__app.rpcCallCount('chat.default_model_pref.set'))).toBe(0);
+  });
+}
+
+test('Settings AI Models default model refresh error clears after a broadcast confirms the value', async ({ page }) => {
+  await openAiSettingRefresh(page);
+  const button = page.locator(aiSettingRefreshCases[0].selector);
+  await beginAiSettingRefresh(page, aiSettingRefreshCases[0].read, true);
+  await releaseAiSettingRead(page, aiSettingRefreshCases[0].read);
+  await expect(aiRefreshState(page)).toHaveAttribute('data-recued-ai-models-page-state', 'error');
+  await button.focus();
+  await page.evaluate(() => window.__app.fireMessage({
+    type: 'server_event', event: {
+      kind: 'chat.default_model_pref_changed', source_id: 'slot_2', updated_at: Number.MAX_SAFE_INTEGER,
+    },
+  }));
+  await expect(button).toHaveAttribute('aria-pressed', 'true');
+  await expect(aiRefreshState(page)).toHaveAttribute('data-recued-ai-models-page-state', 'ready');
+  await expect(page.getByText('model preference: AI setting read unavailable.', { exact: true })).toHaveCount(0);
+  await expect(button).toBeFocused();
+});
+
+const defaultModelFixtureStamp = 1_700_000_000_000;
+const broadcastDefaultModel = async (page: Page, source_id: 'slot_1' | 'slot_2' | 'free_pool', updated_at: number) => {
+  await page.evaluate(({ source_id, updated_at }) => window.__app.fireMessage({
+    type: 'server_event', event: { kind: 'chat.default_model_pref_changed', source_id, updated_at },
+  }), { source_id, updated_at });
+};
+const openDefaultModelOrdering = async (page: Page, mobile = false, query = '') => {
+  await openAiSettingRefresh(page, mobile, `ai_pool=freshness&${query}`);
+  return (id: 'slot_1' | 'slot_2' | 'free_pool') => page.locator(`[data-recued-ai-models-model-pref="${id}"]`);
+};
+const releaseDefaultModelWrite = async (page: Page, count = 1) => {
+  await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('chat.default_model_pref.set'))).toBe(count);
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('chat.default_model_pref.set') ?? 0)).toBe(1);
+};
+
+for (const mobile of [false, true]) {
+  test(`Settings AI Models default model ordering ignores older broadcasts on ${mobile ? 'mobile' : 'desktop'}`, async ({ page }) => {
+    const choice = await openDefaultModelOrdering(page, mobile);
+    await choice('slot_2').focus();
+    await broadcastDefaultModel(page, 'slot_2', defaultModelFixtureStamp + 20);
+    await expect(choice('slot_2')).toHaveAttribute('aria-pressed', 'true');
+    await broadcastDefaultModel(page, 'slot_1', defaultModelFixtureStamp + 10);
+    await expect(choice('slot_2')).toHaveAttribute('aria-pressed', 'true');
+    await expect(choice('slot_1')).toHaveAttribute('aria-pressed', 'false');
+    await expect(choice('slot_2')).toBeFocused();
+    // A second real change within that millisecond still applies.
+    await broadcastDefaultModel(page, 'free_pool', defaultModelFixtureStamp + 20);
+    await expect(choice('free_pool')).toHaveAttribute('aria-pressed', 'true');
+    await page.evaluate(() => window.__app.refreshAiModels?.());
+    await expect(choice('free_pool')).toHaveAttribute('aria-pressed', 'true');
+    await expect(choice('slot_2')).toBeFocused();
+    expect(await page.evaluate(() => window.__app.rpcCallCount('chat.default_model_pref.set'))).toBe(0);
+    expect(await page.evaluate(() => window.__app.rpcCallCount('server.probeLlmSource'))).toBe(0);
+  });
+}
+
+for (const tie of [false, true]) {
+  test(`Settings AI Models default model ordering ignores a late ${tie ? 'same-millisecond' : 'older'} save reply and permits a new save`, async ({ page }) => {
+    const choice = await openDefaultModelOrdering(page, tie, 'hold_rpc=chat.default_model_pref.set');
+    await choice('slot_2').focus();
+    await page.keyboard.press('Enter');
+    await expect(choice('slot_2')).toHaveAttribute('aria-busy', 'true');
+    await broadcastDefaultModel(page, 'free_pool', defaultModelFixtureStamp + (tie ? 1 : 2));
+    await expect(choice('free_pool')).toHaveAttribute('aria-pressed', 'true');
+    await page.keyboard.press('Enter');
+    await releaseDefaultModelWrite(page);
+    await expect(choice('slot_2')).not.toHaveAttribute('aria-busy');
+    await expect(choice('slot_2')).not.toHaveAttribute('aria-disabled');
+    await expect(choice('free_pool')).toHaveAttribute('aria-pressed', 'true');
+    await expect(choice('slot_2')).toBeFocused();
+    await page.evaluate(() => window.__app.refreshAiModels?.());
+    await expect(choice('free_pool')).toHaveAttribute('aria-pressed', 'true');
+    await expect(choice('slot_2')).toBeFocused();
+    await choice('slot_1').focus();
+    await page.keyboard.press('Space');
+    await releaseDefaultModelWrite(page, 2);
+    await expect(choice('slot_1')).toHaveAttribute('aria-pressed', 'true');
+    await expect(choice('slot_1')).toBeFocused();
+    await expect(page.locator('[data-recued-ai-models-action-error]')).toHaveCount(0);
+  });
+}
+
+test('Settings AI Models default model ordering settles a save acknowledged after its own broadcast', async ({ page }) => {
+  const choice = await openDefaultModelOrdering(page, false, 'hold_rpc=chat.default_model_pref.set');
+  await choice('slot_2').focus();
+  await page.keyboard.press('Enter');
+  await expect(choice('slot_2')).toHaveAttribute('aria-busy', 'true');
+  await broadcastDefaultModel(page, 'slot_2', defaultModelFixtureStamp + 1);
+  await expect(choice('slot_2')).toHaveAttribute('aria-pressed', 'true');
+  await expect(choice('slot_2')).toHaveAttribute('aria-busy', 'true');
+  await releaseDefaultModelWrite(page);
+  await expect(choice('slot_2')).not.toHaveAttribute('aria-busy');
+  await expect(choice('slot_2')).not.toHaveAttribute('aria-disabled');
+  await expect(choice('slot_2')).toHaveAttribute('aria-pressed', 'true');
+  await expect(choice('slot_2')).toBeFocused();
+  await expect(page.locator('[data-recued-ai-models-action-error]')).toHaveCount(0);
+});
+
+test('Settings AI Models default model ordering leaves a pending read valid after an ignored broadcast', async ({ page }) => {
+  const choice = await openDefaultModelOrdering(page);
+  await choice('slot_1').focus();
+  await beginAiSettingRefresh(page, 'chat.default_model_pref.get');
+  await broadcastDefaultModel(page, 'slot_2', defaultModelFixtureStamp - 1);
+  await releaseAiSettingRead(page, 'chat.default_model_pref.get');
+  await expect(aiRefreshState(page)).toHaveAttribute('data-recued-ai-models-page-state', 'ready');
+  await expect(choice('slot_1')).toHaveAttribute('aria-pressed', 'true');
+  await expect(choice('slot_2')).toHaveAttribute('aria-pressed', 'false');
+  await expect(choice('slot_1')).toBeFocused();
+});
+
+test('Settings AI Models default model ordering cannot hide a read error with an older broadcast', async ({ page }) => {
+  const choice = await openDefaultModelOrdering(page, true);
+  await choice('slot_2').focus();
+  await beginAiSettingRefresh(page, 'chat.default_model_pref.get', true);
+  await releaseAiSettingRead(page, 'chat.default_model_pref.get');
+  const error = page.getByText('model preference: AI setting read unavailable.', { exact: true });
+  await expect(error).toBeVisible();
+  await broadcastDefaultModel(page, 'slot_2', defaultModelFixtureStamp - 1);
+  await expect(error).toBeVisible();
+  await expect(aiRefreshState(page)).toHaveAttribute('data-recued-ai-models-page-state', 'error');
+  await expect(choice('slot_1')).toHaveAttribute('aria-pressed', 'true');
+  await broadcastDefaultModel(page, 'free_pool', defaultModelFixtureStamp + 1);
+  await expect(error).toHaveCount(0);
+  await expect(aiRefreshState(page)).toHaveAttribute('data-recued-ai-models-page-state', 'ready');
+  await expect(choice('free_pool')).toHaveAttribute('aria-pressed', 'true');
+  await expect(choice('slot_2')).toBeFocused();
+});
+
+test('Settings AI Models default model ordering permits a same-millisecond save after an earlier read settles', async ({ page }) => {
+  const choice = await openDefaultModelOrdering(page, false,
+    'ai_default_model_clock=same-ms&hold_rpc=chat.default_model_pref.set');
+  await beginAiSettingRefresh(page, 'chat.default_model_pref.get');
+  await choice('slot_2').focus();
+  await page.keyboard.press('Enter');
+  await expect(choice('slot_2')).toHaveAttribute('aria-busy', 'true');
+  await releaseAiSettingRead(page, 'chat.default_model_pref.get');
+  await expect(aiRefreshState(page)).toHaveAttribute('data-recued-ai-models-page-state', 'ready');
+  await expect(choice('slot_1')).toHaveAttribute('aria-pressed', 'true');
+  await releaseDefaultModelWrite(page);
+  await expect(choice('slot_2')).toHaveAttribute('aria-pressed', 'true');
+  await expect(choice('slot_2')).not.toHaveAttribute('aria-busy');
+  await expect(choice('slot_2')).toBeFocused();
+});
+
+test('Settings AI Models default model ordering permits a newer save reply after an intermediate broadcast', async ({ page }) => {
+  const choice = await openDefaultModelOrdering(page, false,
+    'ai_default_model_clock=step-two&hold_rpc=chat.default_model_pref.set');
+  await choice('slot_2').focus();
+  await page.keyboard.press('Enter');
+  await expect(choice('slot_2')).toHaveAttribute('aria-busy', 'true');
+  await broadcastDefaultModel(page, 'free_pool', defaultModelFixtureStamp + 1);
+  await expect(choice('free_pool')).toHaveAttribute('aria-pressed', 'true');
+  await releaseDefaultModelWrite(page);
+  await expect(choice('slot_2')).toHaveAttribute('aria-pressed', 'true');
+  await expect(choice('slot_2')).toBeFocused();
+  await page.evaluate(() => window.__app.refreshAiModels?.());
+  await expect(choice('slot_2')).toHaveAttribute('aria-pressed', 'true');
+});
+
 test('Settings AI Models controls form full-size keyboard navigation', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?ai=two&ai_pool=entry`);
@@ -24218,7 +24812,9 @@ test('Settings AI Models slot actions preserve sibling drafts and action focus',
   const cancelClear = clearDialog.locator(
     `[${AI_MODELS_SLOT_CLEAR_CANCEL}="slot_1"]`,
   );
-  await confirmClear.click();
+  await page.keyboard.press('Shift+Tab');
+  await expect(confirmClear).toBeFocused();
+  await page.keyboard.press('Enter');
   await page.waitForFunction(
     () => window.__app.rpcCallCount('server.setLLMSlot') === 2,
   );
@@ -24765,6 +25361,1622 @@ test('Settings AI Models pool Add failures preserve the exact secret draft', asy
   )).toBe(1);
 });
 
+const editableProbeSources = [
+  { key: 'slot_1', title: 'BYOK', label: 'Slot 1: fast', write: 'server.setLLMSlot' },
+  { key: 'embeddings_slot', title: 'Embeddings', label: 'Embeddings slot', write: 'server.setEmbeddingsSlot' },
+] as const;
+
+const openEditableProbeSettings = async (
+  page: Page,
+  source: typeof editableProbeSources[number],
+  query: string,
+) => {
+  if (source.key === 'embeddings_slot') await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?ai=two&ai_embeddings=configured&${query}#settings/ai-models`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const providers = page.locator(`[${AI_MODELS_TAB}="providers"]`);
+  await providers.focus();
+  await page.keyboard.press('Enter');
+  const card = page.locator(`[data-recued-ai-models-control="${source.key}"]`);
+  await expect(card).toBeVisible();
+  const field = (name: string) => card.locator(source.key === 'embeddings_slot'
+    ? `[data-recued-ai-models-embeddings-field="${name}"]`
+    : `[data-recued-ai-models-slot-field="${source.key}:${name}"]`);
+  return {
+    card, field,
+    model: field('model'),
+    key: field('api-key'),
+    test: card.getByRole('button', { name: `Test the ${source.label} connection`, exact: true }),
+    save: card.getByRole('button', { name: `Save ${source.label}`, exact: true }),
+    clear: card.getByRole('button', { name: `Clear ${source.label}`, exact: true }),
+    probe: card.locator(`[data-recued-ai-models-slot-test-result="${source.key}"]`),
+    testError: card.locator(`[data-recued-ai-models-form-error="${source.key}:test"]`),
+  };
+};
+
+const releaseEditableProbeRpc = async (page: Page, method: string, count: number) => {
+  await expect.poll(() => page.evaluate((rpc) => window.__app.rpcCallCount(rpc), method)).toBe(count);
+  expect(await page.evaluate((rpc) => window.__app.releaseRpcResponses?.(rpc) ?? 0, method)).toBe(1);
+};
+
+for (const source of editableProbeSources) {
+  const heldProbe = 'hold_rpc=server.probeLlmSource';
+  const probeRpc = 'server.probeLlmSource';
+
+  test(`Settings AI Models ${source.title} probe tests drafts explicitly and reports source-specific facts`, async ({ page }) => {
+    const fields = await openEditableProbeSettings(page, source, `${heldProbe}&ai_source_probe=success`);
+    await fields.model.fill('unsaved-probe-model');
+    await fields.key.fill('source-fixture-key');
+    expect(await page.evaluate(() => window.__app.rpcCallCount('server.probeLlmSource'))).toBe(0);
+    await fields.test.focus();
+    await page.keyboard.press('Enter');
+    await expect(fields.test).toHaveText('Testing…');
+    await expect(fields.test).toHaveAttribute('aria-busy', 'true');
+    await expect(fields.test).toHaveAttribute('aria-disabled', 'true');
+    await expect(fields.test).not.toHaveAttribute('disabled');
+    await expect(fields.test).toBeFocused();
+    await releaseEditableProbeRpc(page, probeRpc, 1);
+    await expect(fields.probe).toHaveAttribute('data-probe-ok', 'true');
+    await expect(fields.probe).toHaveAttribute('role', 'status');
+    await expect(fields.probe).toContainText('answered in 120 ms');
+    if (source.key === 'embeddings_slot') await expect(fields.probe).toContainText('1536-dimension vectors');
+    else await expect(fields.probe).not.toContainText('dimension vectors');
+    await expect(fields.probe.locator('[data-recued-ai-models-probe-transcript]')).toHaveCount(0);
+    await expect(fields.test).toBeFocused();
+    await expect(fields.model).toHaveValue('unsaved-probe-model');
+    await expect(fields.key).toHaveValue('source-fixture-key');
+    expect(await page.evaluate((rpc) => window.__app.rpcCallCount(rpc), source.write)).toBe(0);
+  });
+
+  for (const mode of ['success', 'rejected-first', 'rpc-fail-first']) {
+    test(`Settings AI Models ${source.title} probe ignores a stale ${mode} reply after an edit`, async ({ page }) => {
+      const fields = await openEditableProbeSettings(page, source, `${heldProbe}&ai_source_probe=${mode}`);
+      await fields.key.fill('source-fixture-key');
+      await fields.test.focus();
+      await page.keyboard.press('Enter');
+      await expect(fields.test).toHaveText('Testing…');
+      await fields.model.fill('edited-probe-model');
+      await fields.test.focus();
+      await page.keyboard.press('Enter');
+      await page.keyboard.press('Space');
+      const siblingKey = source.key === 'slot_1' ? 'embeddings_slot' : 'slot_1';
+      const siblingTest = page.locator(`[data-recued-ai-models-slot-test="${siblingKey}"]`);
+      await expect(siblingTest).toHaveAttribute('aria-disabled', 'true');
+      await siblingTest.evaluate((button: HTMLElement) => button.click());
+      await fields.model.focus();
+      await fields.model.evaluate((input: HTMLInputElement) => input.setSelectionRange(5, 5));
+      await releaseEditableProbeRpc(page, probeRpc, 1);
+      await expect(fields.test).toHaveText('Test connection');
+      await expect(fields.test).not.toHaveAttribute('aria-busy');
+      await expect(siblingTest).not.toHaveAttribute('aria-disabled');
+      await expect(fields.probe).toHaveCount(0);
+      await expect(fields.testError).toHaveCount(0);
+      await expect(fields.model).toHaveValue('edited-probe-model');
+      await expect(fields.model).toBeFocused();
+      expect(await fields.model.evaluate((input: HTMLInputElement) => [input.selectionStart, input.selectionEnd])).toEqual([5, 5]);
+      expect(await page.evaluate(() => window.__app.rpcCallCount('server.probeLlmSource'))).toBe(1);
+      await fields.test.focus();
+      await page.keyboard.press('Enter');
+      await releaseEditableProbeRpc(page, probeRpc, 2);
+      await expect(fields.probe).toHaveAttribute('data-probe-ok', 'true');
+      await expect(fields.probe).toContainText('answered in 240 ms');
+      await expect(fields.test).toBeFocused();
+      expect(await page.evaluate((rpc) => window.__app.rpcCallCount(rpc), source.write)).toBe(0);
+    });
+  }
+
+  for (const { mode, field, value } of [
+    { mode: 'success', field: 'model', value: 'edited-probe-model' },
+    { mode: 'success', field: 'provider', value: 'openai-compatible' },
+    { mode: 'success', field: 'base-url', value: 'https://probe.example.test/v1' },
+    { mode: 'success', field: 'api-key', value: 'edited-fixture-key' },
+    { mode: 'rejected-first', field: 'model', value: 'edited-probe-model' },
+    { mode: 'rpc-fail-first', field: 'model', value: 'edited-probe-model' },
+  ]) {
+    test(`Settings AI Models ${source.title} probe removes a completed ${mode} answer after ${field} changes`, async ({ page }) => {
+      const fields = await openEditableProbeSettings(page, source, `${heldProbe}&ai_source_probe=${mode}`);
+      await fields.test.focus();
+      await page.keyboard.press('Enter');
+      await releaseEditableProbeRpc(page, probeRpc, 1);
+      if (mode === 'rpc-fail-first') await expect(fields.testError).toHaveText('Source probe transport unavailable.');
+      else {
+        await expect(fields.probe).toHaveAttribute('data-probe-ok', mode === 'success' ? 'true' : 'false');
+        if (mode === 'rejected-first') await expect(fields.probe).toContainText('The fixture source endpoint refused the key.');
+      }
+      const input = fields.field(field);
+      const originalInput = await input.elementHandle();
+      await input.focus();
+      if (field === 'provider') await input.selectOption(value);
+      else await input.fill(value);
+      await expect(fields.probe).toHaveCount(0);
+      await expect(fields.testError).toHaveCount(0);
+      await expect(input).toBeFocused();
+      expect(await originalInput!.evaluate((element) => element.isConnected)).toBe(true);
+      if (field !== 'provider') {
+        await page.keyboard.type('-continued');
+        await expect(input).toHaveValue(`${value}-continued`);
+      }
+      expect(await page.evaluate(() => window.__app.rpcCallCount('server.probeLlmSource'))).toBe(1);
+    });
+  }
+
+  for (const action of ['Save', 'Clear'] as const) {
+    for (const failWrite of [false, true]) {
+      test(`Settings AI Models ${source.title} probe discards a pending answer when ${action} starts (${failWrite ? 'failed' : 'successful'} write)`, async ({ page }) => {
+        const response = source.key === 'slot_1' ? 'ai_slot' : 'ai_embeddings';
+        const fields = await openEditableProbeSettings(page, source,
+          `${heldProbe}&ai_source_probe=success&hold_rpc=${source.write}`
+          + (failWrite ? `&${response}_${action.toLowerCase()}_response=fail-slow` : ''));
+        await fields.key.fill('source-fixture-key');
+        const originalModel = await fields.model.inputValue();
+        await fields.test.focus();
+        await page.keyboard.press('Enter');
+        await expect(fields.test).toHaveText('Testing…');
+        let owner = fields.save;
+        const dialog = page.locator(`[${AI_MODELS_SLOT_CLEAR_DIALOG}="${source.key}"]`);
+        if (action === 'Save') {
+          await fields.save.focus();
+          await page.keyboard.press('Enter');
+          await expect(fields.save).toHaveText('Saving slot…');
+        } else {
+          await fields.clear.focus();
+          await page.keyboard.press('Enter');
+          owner = dialog.locator(`[${AI_MODELS_SLOT_CLEAR_CONFIRM}="${source.key}"]`);
+          await page.keyboard.press('Shift+Tab');
+          await expect(owner).toBeFocused();
+          await page.keyboard.press('Enter');
+          await expect(dialog).toHaveAttribute('aria-busy', 'true');
+        }
+        await releaseEditableProbeRpc(page, probeRpc, 1);
+        await expect(fields.test).toHaveText('Test connection');
+        await expect(fields.probe).toHaveCount(0);
+        await expect(fields.testError).toHaveCount(0);
+        await expect(owner).toHaveAttribute('aria-busy', 'true');
+        await expect(owner).toBeFocused();
+        await releaseEditableProbeRpc(page, source.write, 1);
+        if (failWrite) {
+          if (action === 'Clear') {
+            await expect(dialog).toContainText(source.key === 'slot_1' ? 'Model slot clear unavailable.' : 'Embeddings slot clear unavailable.');
+            await dialog.locator(`[${AI_MODELS_SLOT_CLEAR_CANCEL}="${source.key}"]`).focus();
+            await page.keyboard.press('Enter');
+            await expect(dialog).toHaveCount(0);
+          } else await expect(fields.card.locator(`[data-recued-ai-models-form-error="${source.key}:save"]`)).toBeVisible();
+          await expect(fields.model).toHaveValue(originalModel);
+          await fields.test.focus();
+          await page.keyboard.press('Enter');
+          await releaseEditableProbeRpc(page, probeRpc, 2);
+          await expect(fields.probe).toHaveAttribute('data-probe-ok', 'true');
+        } else {
+          await expect(fields.model).toHaveValue(action === 'Clear' ? '' : originalModel);
+          await expect(action === 'Clear' ? fields.clear : fields.save).toBeFocused();
+          await expect(fields.probe).toHaveCount(0);
+          expect(await page.evaluate(() => window.__app.rpcCallCount('server.probeLlmSource'))).toBe(1);
+        }
+      });
+    }
+
+    test(`Settings AI Models ${source.title} probe removes a completed answer as ${action} starts`, async ({ page }) => {
+      const fields = await openEditableProbeSettings(page, source, `${heldProbe}&ai_source_probe=success&hold_rpc=${source.write}`);
+      await fields.key.fill('source-fixture-key');
+      await fields.test.focus();
+      await page.keyboard.press('Enter');
+      await releaseEditableProbeRpc(page, probeRpc, 1);
+      await expect(fields.probe).toBeVisible();
+      if (action === 'Save') {
+        await fields.save.focus();
+        await page.keyboard.press('Enter');
+        await expect(fields.save).toHaveText('Saving slot…');
+      } else {
+        await fields.clear.focus();
+        await page.keyboard.press('Enter');
+        const dialog = page.locator(`[${AI_MODELS_SLOT_CLEAR_DIALOG}="${source.key}"]`);
+        await page.keyboard.press('Shift+Tab');
+        await expect(dialog.locator(`[${AI_MODELS_SLOT_CLEAR_CONFIRM}="${source.key}"]`)).toBeFocused();
+        await page.keyboard.press('Enter');
+        await expect(dialog).toHaveAttribute('aria-busy', 'true');
+      }
+      await expect(fields.probe).toHaveCount(0);
+      await releaseEditableProbeRpc(page, source.write, 1);
+      await expect(fields.probe).toHaveCount(0);
+      expect(await page.evaluate(() => window.__app.rpcCallCount('server.probeLlmSource'))).toBe(1);
+    });
+  }
+
+  test(`Settings AI Models ${source.title} probe stays valid when Clear is cancelled`, async ({ page }) => {
+    const fields = await openEditableProbeSettings(page, source, `${heldProbe}&ai_source_probe=success`);
+    await fields.test.focus();
+    await page.keyboard.press('Enter');
+    await fields.clear.focus();
+    await page.keyboard.press('Enter');
+    const dialog = page.locator(`[${AI_MODELS_SLOT_CLEAR_DIALOG}="${source.key}"]`);
+    await expect(dialog.locator(`[${AI_MODELS_SLOT_CLEAR_CANCEL}="${source.key}"]`)).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(dialog).toHaveCount(0);
+    await releaseEditableProbeRpc(page, probeRpc, 1);
+    await expect(fields.probe).toHaveAttribute('data-probe-ok', 'true');
+    await expect(fields.clear).toBeFocused();
+    expect(await page.evaluate((rpc) => window.__app.rpcCallCount(rpc), source.write)).toBe(0);
+  });
+
+  test(`Settings AI Models ${source.title} probe preserves display and limit drafts outside the request`, async ({ page }) => {
+    const fields = await openEditableProbeSettings(page, source, `${heldProbe}&ai_source_probe=success`);
+    await fields.test.focus();
+    await page.keyboard.press('Enter');
+    await fields.field('provider-name').fill('My renamed source');
+    if (source.key === 'slot_1') {
+      await fields.field('daily-budget').fill('2500');
+      await fields.field('context-window').fill('64000');
+    }
+    const focusedField = source.key === 'slot_1' ? fields.field('context-window') : fields.field('provider-name');
+    await releaseEditableProbeRpc(page, probeRpc, 1);
+    await expect(fields.probe).toHaveAttribute('data-probe-ok', 'true');
+    await expect(focusedField).toBeFocused();
+    await expect(fields.field('provider-name')).toHaveValue('My renamed source');
+    await fields.field('provider-name').fill('Another display name');
+    await expect(fields.probe).toBeVisible();
+    expect(await page.evaluate(() => window.__app.rpcCallCount('server.probeLlmSource'))).toBe(1);
+  });
+
+  test(`Settings AI Models ${source.title} probe stays valid when a sibling source saves`, async ({ page }) => {
+    const fields = await openEditableProbeSettings(page, source, `${heldProbe}&ai_source_probe=success`);
+    await fields.test.focus();
+    await page.keyboard.press('Enter');
+    const sibling = page.locator('[data-recued-ai-models-control="slot_2"]');
+    await sibling.locator('[data-recued-ai-models-slot-field="slot_2:model"]').fill('sibling-draft');
+    await sibling.locator('[data-recued-ai-models-slot-field="slot_2:api-key"]').fill('sibling-fixture-key');
+    await sibling.getByRole('button', { name: 'Save Slot 2: better, slower thinking', exact: true }).click();
+    await expect(sibling).toContainText('sibling-draft');
+    await fields.model.focus();
+    await releaseEditableProbeRpc(page, probeRpc, 1);
+    await expect(fields.probe).toHaveAttribute('data-probe-ok', 'true');
+    await expect(fields.model).toBeFocused();
+    expect(await page.evaluate(() => window.__app.rpcCallCount('server.probeLlmSource'))).toBe(1);
+  });
+}
+
+const poolProbeRpc = 'server.probeLlmSource';
+const poolWriteRpc = 'server.upsertFreePoolEntry';
+const openFreePoolProbeSettings = async (page: Page, mode: 'add' | 'edit', query: string) => {
+  if (mode === 'edit') await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?ai=two&ai_pool=freshness&hold_rpc=${poolProbeRpc}&${query}#settings/ai-models`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator(`[${AI_MODELS_TAB}="providers"]`).focus();
+  await page.keyboard.press('Enter');
+  const pool = page.locator('[data-recued-ai-models-control="free_pool"]');
+  const form = pool.locator('.ai-models-add-pool');
+  const field = (name: string) => form.locator(`[data-recued-ai-models-pool-add-field="${name}"]`);
+  const row = (id: string) => pool.locator(`[data-recued-ai-models-control="free_pool:${id}"]`);
+  const edit = (id: string) => row(id).getByRole('button', { name: `Edit free-pool entry ${id}`, exact: true });
+  await field('id').fill('new-source');
+  await field('model').fill('new-model');
+  await field('api-key').fill('pool-fixture-key');
+  await field('base-url').fill('https://new.example.test/v1');
+  if (mode === 'edit') {
+    await edit('groq').focus();
+    await page.keyboard.press('Enter');
+    await expect(form.getByRole('heading', { name: 'Edit groq', exact: true })).toBeVisible();
+  }
+  return {
+    pool, form, field, row, edit,
+    model: field('model'), key: field('api-key'),
+    test: form.locator('[data-recued-ai-models-slot-test="free_pool:form"]'),
+    submit: form.locator(mode === 'add' ? '[data-recued-ai-models-pool-add]' : '[data-recued-ai-models-pool-save="groq"]'),
+    probe: form.locator('[data-recued-ai-models-slot-test-result="free_pool:form"]'),
+    error: form.locator('[data-recued-ai-models-form-error="free_pool:form:test"]'),
+  };
+};
+
+const poolToggleRpc = 'server.setFreePoolEntryEnabled';
+const openFreePoolWriteSettings = async (page: Page, enabled: boolean, query = '') => {
+  await page.goto(`${HARNESS_URL}?ai=two&ai_pool=freshness&hold_rpc=${poolWriteRpc}${enabled ? `&hold_rpc=${poolToggleRpc}` : ''}&${query}#settings/ai-models`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const providers = page.locator(`[${AI_MODELS_TAB}="providers"]`);
+  await providers.focus();
+  await page.keyboard.press('Enter');
+  const pool = page.locator('[data-recued-ai-models-control="free_pool"]');
+  const form = pool.locator('.ai-models-add-pool');
+  const row = (id: string) => pool.locator(`[data-recued-ai-models-control="free_pool:${id}"]`);
+  const toggle = (id: string) => row(id).locator(`[data-recued-ai-models-pool-toggle="${id}"]`);
+  if (!enabled) {
+    await toggle('groq').focus();
+    await page.keyboard.press('Enter');
+    await expect(row('groq')).toContainText('(disabled)');
+    await expect(toggle('groq')).not.toHaveAttribute('aria-busy');
+    await page.evaluate((rpc) => window.__app.holdRpcResponses?.(rpc), poolToggleRpc);
+  }
+  return { pool, form, row, toggle, providers, toggleBase: enabled ? 0 : 1 };
+};
+
+const remountFreePoolAndCheck = async (
+  page: Page,
+  fields: Awaited<ReturnType<typeof openFreePoolWriteSettings>>,
+  enabled: boolean,
+  model: string,
+) => {
+  for (const revisit of [false, true]) {
+    if (revisit) {
+      await page.evaluate(() => window.__app.setHash('#data'));
+      await expect(page.locator('[data-recued-data-route]')).toHaveCount(1);
+      await page.evaluate(() => window.__app.setHash('#settings/ai-models'));
+      await expect(page.locator('[data-recued-ai-models-page-state]')).toHaveAttribute('data-recued-ai-models-page-state', 'ready');
+      await fields.providers.focus();
+      await page.keyboard.press('Enter');
+    }
+    await expect(fields.row('groq')).toContainText(enabled ? '(enabled)' : '(disabled)');
+    await expect(fields.row('groq')).toContainText(model);
+  }
+};
+
+for (const size of [
+  { name: 'desktop', viewport: { width: 1360, height: 900 } },
+  { name: 'mobile', viewport: { width: 390, height: 844 } },
+]) {
+  for (const { enabled, outcome } of [
+    { enabled: true, outcome: 'success' },
+    { enabled: true, outcome: 'failure' },
+    { enabled: false, outcome: 'success' },
+  ] as const) {
+    const action = enabled ? 'disable' : 'enable';
+    test(`Settings AI Models Free-pool write ownership ${size.name} edit before ${action} (${outcome})`, async ({ page }) => {
+      await page.setViewportSize(size.viewport);
+      const fields = await openFreePoolWriteSettings(page, enabled, outcome === 'failure' ? 'ai_pool_add_response=fail-slow' : '');
+      await fields.row('groq').getByRole('button', { name: 'Edit free-pool entry groq', exact: true }).click();
+      const model = fields.form.locator('[data-recued-ai-models-pool-add-field="model"]');
+      await model.fill('serialized-model');
+      const save = fields.form.locator('[data-recued-ai-models-pool-save="groq"]');
+      await save.focus();
+      await page.keyboard.press('Enter');
+      await expect(save).toHaveAttribute('aria-busy', 'true');
+      const toggle = fields.toggle('groq');
+      const remove = fields.row('groq').locator('[data-recued-ai-models-pool-remove="groq"]');
+      await expect(toggle).toHaveAttribute('aria-disabled', 'true');
+      await expect(toggle).not.toHaveAttribute('aria-busy');
+      await expect(toggle).not.toHaveAttribute('disabled');
+      await expect(remove).toHaveAttribute('aria-disabled', 'true');
+      await toggle.focus();
+      await page.keyboard.press('Enter');
+      await page.keyboard.press('Space');
+      await toggle.evaluate((button: HTMLElement) => button.click());
+      await remove.evaluate((button: HTMLElement) => button.click());
+      await expect(toggle).toBeFocused();
+      expect(await page.evaluate((rpc) => window.__app.rpcCallCount(rpc), poolToggleRpc)).toBe(fields.toggleBase);
+      await expect(page.getByRole('alertdialog')).toHaveCount(0);
+      expect(await page.evaluate((rpc) => window.__app.releaseRpcResponses?.(rpc) ?? 0, poolWriteRpc)).toBe(1);
+      if (outcome === 'failure') {
+        await expect(fields.form.locator('[data-recued-ai-models-form-error="free_pool:form:save"]'))
+          .toHaveText('Free-pool entry save unavailable.');
+        await expect(model).toHaveValue('serialized-model');
+        await expect(model).not.toHaveAttribute('readonly');
+      } else await expect(save).toHaveCount(0);
+      await expect(toggle).not.toHaveAttribute('aria-disabled');
+      await expect(toggle).toBeFocused();
+      await page.keyboard.press('Enter');
+      await expect(toggle).toHaveAttribute('aria-busy', 'true');
+      expect(await page.evaluate((rpc) => window.__app.releaseRpcResponses?.(rpc) ?? 0, poolToggleRpc)).toBe(1);
+      await expect(toggle).not.toHaveAttribute('aria-busy');
+      await expect(toggle).toBeFocused();
+      expect(await page.evaluate((rpc) => window.__app.rpcCallCount(rpc), poolWriteRpc)).toBe(1);
+      expect(await page.evaluate((rpc) => window.__app.rpcCallCount(rpc), poolToggleRpc)).toBe(fields.toggleBase + 1);
+      await remountFreePoolAndCheck(page, fields, !enabled, outcome === 'success' ? 'serialized-model' : 'llama-free');
+    });
+
+    test(`Settings AI Models Free-pool write ownership ${size.name} ${action} before edit (${outcome})`, async ({ page }) => {
+      await page.setViewportSize(size.viewport);
+      const fields = await openFreePoolWriteSettings(page, enabled, outcome === 'failure' ? 'ai_pool_toggle_response=fail-slow' : '');
+      await fields.row('groq').getByRole('button', { name: 'Edit free-pool entry groq', exact: true }).click();
+      const model = fields.form.locator('[data-recued-ai-models-pool-add-field="model"]');
+      await model.fill('serialized-model');
+      const probe = fields.form.locator('[data-recued-ai-models-slot-test-result="free_pool:form"]');
+      await fields.form.locator('[data-recued-ai-models-slot-test="free_pool:form"]').click();
+      await expect(probe).toHaveAttribute('data-probe-ok', 'true');
+      const toggle = fields.toggle('groq');
+      await toggle.focus();
+      await page.keyboard.press('Enter');
+      await expect(toggle).toHaveAttribute('aria-busy', 'true');
+      const save = fields.form.locator('[data-recued-ai-models-pool-save="groq"]');
+      await expect(save).toHaveAttribute('aria-disabled', 'true');
+      await expect(save).not.toHaveAttribute('aria-busy');
+      await expect(save).not.toHaveAttribute('disabled');
+      await save.focus();
+      await page.keyboard.press('Enter');
+      await save.evaluate((button: HTMLElement) => button.click());
+      await expect(save).toBeFocused();
+      await expect(probe).toHaveAttribute('data-probe-ok', 'true');
+      expect(await page.evaluate((rpc) => window.__app.rpcCallCount(rpc), poolWriteRpc)).toBe(0);
+      await model.fill('continued-model');
+      await model.evaluate((input: HTMLInputElement) => input.setSelectionRange(4, 4));
+      await expect(model).not.toHaveAttribute('readonly');
+      expect(await page.evaluate((rpc) => window.__app.releaseRpcResponses?.(rpc) ?? 0, poolToggleRpc)).toBe(1);
+      await expect(toggle).not.toHaveAttribute('aria-busy');
+      await expect(save).not.toHaveAttribute('aria-disabled');
+      await expect(model).toHaveValue('continued-model');
+      await expect(model).toBeFocused();
+      expect(await model.evaluate((input: HTMLInputElement) => [input.selectionStart, input.selectionEnd])).toEqual([4, 4]);
+      if (outcome === 'failure') {
+        await expect(page.locator('[data-recued-ai-models-action-error]')).toHaveText('Free-pool entry update unavailable.');
+      }
+      await save.focus();
+      await page.keyboard.press('Enter');
+      await expect(save).toHaveAttribute('aria-busy', 'true');
+      expect(await page.evaluate((rpc) => window.__app.releaseRpcResponses?.(rpc) ?? 0, poolWriteRpc)).toBe(1);
+      await expect(save).toHaveCount(0);
+      expect(await page.evaluate((rpc) => window.__app.rpcCallCount(rpc), poolWriteRpc)).toBe(1);
+      expect(await page.evaluate((rpc) => window.__app.rpcCallCount(rpc), poolToggleRpc)).toBe(fields.toggleBase + 1);
+      await remountFreePoolAndCheck(page, fields, outcome === 'success' ? !enabled : enabled, 'continued-model');
+    });
+  }
+
+  test(`Settings AI Models Free-pool write ownership ${size.name} permits sibling changes through refresh`, async ({ page }) => {
+    await page.setViewportSize(size.viewport);
+    const fields = await openFreePoolWriteSettings(page, true);
+    await fields.row('groq').getByRole('button', { name: 'Edit free-pool entry groq', exact: true }).click();
+    await fields.form.locator('[data-recued-ai-models-pool-add-field="model"]').fill('serialized-model');
+    const save = fields.form.locator('[data-recued-ai-models-pool-save="groq"]');
+    await save.focus();
+    await page.keyboard.press('Enter');
+    await expect(save).toHaveAttribute('aria-busy', 'true');
+    await page.evaluate(() => window.__app.refreshAiModels?.());
+    await expect(fields.toggle('groq')).toHaveAttribute('aria-disabled', 'true');
+    const sibling = fields.toggle('mistral');
+    await expect(sibling).not.toHaveAttribute('aria-disabled');
+    await sibling.focus();
+    await page.keyboard.press('Enter');
+    await expect(sibling).toHaveAttribute('aria-busy', 'true');
+    expect(await page.evaluate((rpc) => window.__app.releaseRpcResponses?.(rpc) ?? 0, poolToggleRpc)).toBe(1);
+    await expect(fields.row('mistral')).toContainText('(disabled)');
+    await expect(sibling).toBeFocused();
+    await expect(save).toHaveAttribute('aria-busy', 'true');
+    expect(await page.evaluate((rpc) => window.__app.releaseRpcResponses?.(rpc) ?? 0, poolWriteRpc)).toBe(1);
+    await expect(save).toHaveCount(0);
+    await expect(sibling).toBeFocused();
+    await remountFreePoolAndCheck(page, fields, true, 'serialized-model');
+    await expect(fields.row('mistral')).toContainText('(disabled)');
+  });
+
+  test(`Settings AI Models Free-pool write ownership ${size.name} protects an added row revealed by refresh`, async ({ page }) => {
+    await page.setViewportSize(size.viewport);
+    const fields = await openFreePoolWriteSettings(page, true);
+    for (const [field, value] of [
+      ['id', 'new-source'], ['model', 'new-model'], ['api-key', 'pool-fixture-key'],
+      ['base-url', 'https://new.example.test/v1'],
+    ]) await fields.form.locator(`[data-recued-ai-models-pool-add-field="${field}"]`).fill(value!);
+    const add = fields.form.locator('[data-recued-ai-models-pool-add]');
+    await add.focus();
+    await page.keyboard.press('Enter');
+    await expect(add).toHaveAttribute('aria-busy', 'true');
+    await page.evaluate(() => window.__app.refreshAiModels?.());
+    const toggle = fields.toggle('new-source');
+    await expect(toggle).toHaveAttribute('aria-disabled', 'true');
+    await toggle.focus();
+    await page.keyboard.press('Enter');
+    expect(await page.evaluate((rpc) => window.__app.rpcCallCount(rpc), poolToggleRpc)).toBe(0);
+    expect(await page.evaluate((rpc) => window.__app.releaseRpcResponses?.(rpc) ?? 0, poolWriteRpc)).toBe(1);
+    await expect(add).not.toHaveAttribute('aria-busy');
+    await expect(toggle).not.toHaveAttribute('aria-disabled');
+    await expect(toggle).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(toggle).toHaveAttribute('aria-busy', 'true');
+    expect(await page.evaluate((rpc) => window.__app.releaseRpcResponses?.(rpc) ?? 0, poolToggleRpc)).toBe(1);
+    await expect(fields.row('new-source')).toContainText('(disabled)');
+    await remountFreePoolAndCheck(page, fields, true, 'llama-free');
+    await expect(fields.row('new-source')).toContainText('(disabled)');
+  });
+}
+
+for (const mode of ['add', 'edit'] as const) {
+  for (const outcome of ['success', 'rejected-first', 'rpc-fail-first']) {
+    test(`Settings AI Models Free-pool ${mode} probe ignores a stale ${outcome} reply after an edit`, async ({ page }) => {
+      const fields = await openFreePoolProbeSettings(page, mode, `ai_source_probe=${outcome}`);
+      await fields.test.focus();
+      await page.keyboard.press('Enter');
+      await expect(fields.test).toHaveText('Testing…');
+      await expect(fields.test).toBeFocused();
+      await fields.model.fill('edited-pool-model');
+      await fields.test.focus();
+      await page.keyboard.press('Enter');
+      await page.keyboard.press('Space');
+      const siblingTest = fields.row('mistral').locator('[data-recued-ai-models-slot-test="pool:mistral"]');
+      await expect(siblingTest).toHaveAttribute('aria-disabled', 'true');
+      await siblingTest.evaluate((button: HTMLElement) => button.click());
+      await fields.model.focus();
+      await fields.model.evaluate((input: HTMLInputElement) => input.setSelectionRange(5, 5));
+      await releaseEditableProbeRpc(page, poolProbeRpc, 1);
+      await expect(fields.test).toHaveText('Test connection');
+      await expect(fields.probe).toHaveCount(0);
+      await expect(fields.error).toHaveCount(0);
+      await expect(fields.model).toHaveValue('edited-pool-model');
+      await expect(fields.model).toBeFocused();
+      expect(await fields.model.evaluate((input: HTMLInputElement) => [input.selectionStart, input.selectionEnd])).toEqual([5, 5]);
+      await expect(siblingTest).not.toHaveAttribute('aria-disabled');
+      expect(await page.evaluate(() => window.__app.rpcCallCount('server.probeLlmSource'))).toBe(1);
+      await fields.test.focus();
+      await page.keyboard.press('Enter');
+      await releaseEditableProbeRpc(page, poolProbeRpc, 2);
+      await expect(fields.probe).toHaveAttribute('data-probe-ok', 'true');
+      await expect(fields.probe).toContainText('answered in 240 ms');
+      await expect(fields.test).toBeFocused();
+      expect(await page.evaluate(() => window.__app.rpcCallCount('server.upsertFreePoolEntry'))).toBe(0);
+    });
+  }
+
+  for (const { outcome, field, value } of [
+    { outcome: 'success', field: 'model', value: 'edited-pool-model' },
+    { outcome: 'success', field: 'provider', value: 'openai' },
+    { outcome: 'success', field: 'base-url', value: 'https://changed.example.test/v1' },
+    { outcome: 'success', field: 'api-key', value: 'changed-fixture-key' },
+    ...(mode === 'add' ? [{ outcome: 'success', field: 'id', value: 'renamed-target' }] : []),
+    { outcome: 'rejected-first', field: 'model', value: 'edited-pool-model' },
+    { outcome: 'rpc-fail-first', field: 'model', value: 'edited-pool-model' },
+  ]) {
+    test(`Settings AI Models Free-pool ${mode} probe clears a completed ${outcome} answer after ${field} changes`, async ({ page }) => {
+      const fields = await openFreePoolProbeSettings(page, mode, `ai_source_probe=${outcome}`);
+      await fields.test.focus();
+      await page.keyboard.press('Enter');
+      await releaseEditableProbeRpc(page, poolProbeRpc, 1);
+      if (outcome === 'rpc-fail-first') await expect(fields.error).toHaveText('Source probe transport unavailable.');
+      else await expect(fields.probe).toHaveAttribute('data-probe-ok', outcome === 'success' ? 'true' : 'false');
+      const input = fields.field(field);
+      const original = await input.elementHandle();
+      await input.focus();
+      if (field === 'provider') await input.selectOption(value);
+      else await input.fill(value);
+      await expect(fields.probe).toHaveCount(0);
+      await expect(fields.error).toHaveCount(0);
+      await expect(input).toBeFocused();
+      expect(await original!.evaluate((element) => element.isConnected)).toBe(true);
+      if (field !== 'provider') {
+        await page.keyboard.type('-continued');
+        await expect(input).toHaveValue(`${value}-continued`);
+      }
+      expect(await page.evaluate(() => window.__app.rpcCallCount('server.probeLlmSource'))).toBe(1);
+    });
+  }
+
+  for (const failWrite of [false, true]) {
+    test(`Settings AI Models Free-pool ${mode} probe discards a pending answer when its write starts (${failWrite ? 'failed' : 'successful'} write)`, async ({ page }) => {
+      const fields = await openFreePoolProbeSettings(page, mode,
+        `ai_source_probe=success&hold_rpc=${poolWriteRpc}${failWrite ? '&ai_pool_add_response=fail-slow' : ''}`);
+      const originalModel = await fields.model.inputValue();
+      const originalKey = await fields.key.inputValue();
+      await fields.test.focus();
+      await page.keyboard.press('Enter');
+      await fields.submit.focus();
+      await page.keyboard.press('Enter');
+      await expect(fields.submit).toHaveAttribute('aria-busy', 'true');
+      await releaseEditableProbeRpc(page, poolProbeRpc, 1);
+      await expect(fields.probe).toHaveCount(0);
+      await expect(fields.error).toHaveCount(0);
+      await expect(fields.submit).toBeFocused();
+      await expect(fields.submit).toHaveAttribute('aria-busy', 'true');
+      await releaseEditableProbeRpc(page, poolWriteRpc, 1);
+      await expect(fields.probe).toHaveCount(0);
+      if (failWrite) {
+        await expect(fields.form.locator('[data-recued-ai-models-form-error="free_pool:form:save"]')).toHaveText('Free-pool entry save unavailable.');
+        await expect(fields.model).toHaveValue(originalModel);
+        await expect(fields.key).toHaveValue(originalKey);
+        await fields.test.focus();
+        await page.keyboard.press('Enter');
+        await releaseEditableProbeRpc(page, poolProbeRpc, 2);
+        await expect(fields.probe).toHaveAttribute('data-probe-ok', 'true');
+      } else {
+        await expect(fields.model).toHaveValue(mode === 'add' ? '' : 'new-model');
+        await expect(mode === 'add' ? fields.submit : fields.edit('groq')).toBeFocused();
+        expect(await page.evaluate(() => window.__app.rpcCallCount('server.probeLlmSource'))).toBe(1);
+      }
+    });
+  }
+
+  test(`Settings AI Models Free-pool ${mode} probe started during a write cannot answer the reset form`, async ({ page }) => {
+    const fields = await openFreePoolProbeSettings(page, mode, `ai_source_probe=success&hold_rpc=${poolWriteRpc}`);
+    await fields.submit.focus();
+    await page.keyboard.press('Enter');
+    await expect(fields.submit).toHaveAttribute('aria-busy', 'true');
+    await fields.test.focus();
+    await page.keyboard.press('Enter');
+    await expect(fields.test).toHaveText('Testing…');
+    await releaseEditableProbeRpc(page, poolWriteRpc, 1);
+    await expect(fields.form.getByRole('heading', { name: 'Add a free one', exact: true })).toBeVisible();
+    await releaseEditableProbeRpc(page, poolProbeRpc, 1);
+    await expect(fields.probe).toHaveCount(0);
+    await expect(fields.error).toHaveCount(0);
+    await expect(fields.model).toHaveValue(mode === 'add' ? '' : 'new-model');
+  });
+
+  test(`Settings AI Models Free-pool ${mode} probe clears a completed answer as its write starts`, async ({ page }) => {
+    const fields = await openFreePoolProbeSettings(page, mode, `ai_source_probe=success&hold_rpc=${poolWriteRpc}`);
+    await fields.test.focus();
+    await page.keyboard.press('Enter');
+    await releaseEditableProbeRpc(page, poolProbeRpc, 1);
+    await expect(fields.probe).toBeVisible();
+    await fields.submit.focus();
+    await page.keyboard.press('Enter');
+    await expect(fields.submit).toHaveAttribute('aria-busy', 'true');
+    await expect(fields.probe).toHaveCount(0);
+    await releaseEditableProbeRpc(page, poolWriteRpc, 1);
+    await expect(fields.probe).toHaveCount(0);
+  });
+
+  test(`Settings AI Models Free-pool ${mode} probe keeps context-limit edits outside the request`, async ({ page }) => {
+    const fields = await openFreePoolProbeSettings(page, mode, 'ai_source_probe=success');
+    await fields.test.focus();
+    await page.keyboard.press('Enter');
+    await fields.field('context-window').fill('64000');
+    await releaseEditableProbeRpc(page, poolProbeRpc, 1);
+    await expect(fields.probe).toHaveAttribute('data-probe-ok', 'true');
+    await expect(fields.field('context-window')).toHaveValue('64000');
+    await expect(fields.field('context-window')).toBeFocused();
+    await fields.field('context-window').fill('128000');
+    await expect(fields.probe).toBeVisible();
+    expect(await page.evaluate(() => window.__app.rpcCallCount('server.probeLlmSource'))).toBe(1);
+  });
+}
+
+for (const transition of ['add-to-edit', 'edit-to-edit', 'Cancel'] as const) {
+  for (const outcome of ['success', 'rejected-first', 'rpc-fail-first']) {
+    test(`Settings AI Models Free-pool probe ignores a stale ${outcome} reply across ${transition}`, async ({ page }) => {
+      const fields = await openFreePoolProbeSettings(page, transition === 'add-to-edit' ? 'add' : 'edit', `ai_source_probe=${outcome}`);
+      await fields.test.focus();
+      await page.keyboard.press('Enter');
+      if (transition === 'Cancel') {
+        await fields.form.getByRole('button', { name: 'Stop editing free-pool entry groq', exact: true }).focus();
+        await page.keyboard.press('Enter');
+        await expect(fields.edit('groq')).toBeFocused();
+      } else {
+        await fields.edit(transition === 'add-to-edit' ? 'groq' : 'mistral').focus();
+        await page.keyboard.press('Enter');
+        await expect(fields.field('provider')).toBeFocused();
+      }
+      await fields.model.focus();
+      await fields.model.evaluate((input: HTMLInputElement) => input.setSelectionRange(3, 3));
+      const currentModel = await fields.model.inputValue();
+      await releaseEditableProbeRpc(page, poolProbeRpc, 1);
+      await expect(fields.probe).toHaveCount(0);
+      await expect(fields.error).toHaveCount(0);
+      await expect(fields.model).toHaveValue(currentModel);
+      await expect(fields.model).toBeFocused();
+      expect(await fields.model.evaluate((input: HTMLInputElement) => [input.selectionStart, input.selectionEnd])).toEqual([3, 3]);
+      if (transition === 'Cancel') await expect(fields.key).toHaveValue('pool-fixture-key');
+      await fields.test.focus();
+      await page.keyboard.press('Enter');
+      await releaseEditableProbeRpc(page, poolProbeRpc, 2);
+      await expect(fields.probe).toHaveAttribute('data-probe-ok', 'true');
+      await expect(fields.probe).toContainText('answered in 240 ms');
+      expect(await page.evaluate(() => window.__app.rpcCallCount('server.upsertFreePoolEntry'))).toBe(0);
+    });
+  }
+}
+
+test('Settings AI Models Free-pool probe stays stale after switching away and back to the same entry', async ({ page }) => {
+  const fields = await openFreePoolProbeSettings(page, 'edit', 'ai_source_probe=success');
+  await fields.test.click();
+  await fields.edit('mistral').click();
+  await fields.edit('groq').click();
+  await releaseEditableProbeRpc(page, poolProbeRpc, 1);
+  await expect(fields.probe).toHaveCount(0);
+  await expect(fields.error).toHaveCount(0);
+  await expect(fields.model).toHaveValue('llama-free');
+});
+
+test('Settings AI Models Free-pool stored-row probes are invalidated as their entry saves', async ({ page }) => {
+  const fields = await openFreePoolProbeSettings(page, 'add', `ai_source_probe=success&hold_rpc=${poolWriteRpc}`);
+  const rowProbe = fields.row('groq').locator('[data-recued-ai-models-slot-test-result="pool:groq"]');
+  const rowTest = fields.row('groq').getByRole('button', { name: 'Test the free-pool entry groq connection', exact: true });
+  await rowTest.click();
+  await fields.edit('groq').click();
+  await fields.model.fill('changed-saved-model');
+  const save = fields.form.getByRole('button', { name: 'Save free-pool entry groq', exact: true });
+  await save.focus();
+  await page.keyboard.press('Enter');
+  await expect(save).toHaveAttribute('aria-busy', 'true');
+  await releaseEditableProbeRpc(page, poolProbeRpc, 1);
+  await expect(rowProbe).toHaveCount(0);
+  await expect(save).toBeFocused();
+  await releaseEditableProbeRpc(page, poolWriteRpc, 1);
+  await expect(fields.row('groq')).toContainText('changed-saved-model');
+  await expect(fields.edit('groq')).toBeFocused();
+  await rowTest.click();
+  await releaseEditableProbeRpc(page, poolProbeRpc, 2);
+  await expect(rowProbe).toContainText('answered in 240 ms');
+  await fields.edit('groq').click();
+  await fields.model.fill('another-saved-model');
+  await expect(rowProbe).toBeVisible();
+  await save.click();
+  await expect(save).toHaveAttribute('aria-busy', 'true');
+  await expect(rowProbe).toHaveCount(0);
+  await releaseEditableProbeRpc(page, poolWriteRpc, 2);
+  await expect(rowProbe).toHaveCount(0);
+});
+
+test('Settings AI Models Free-pool stored-row probes survive unsaved edits, Cancel, toggles, and sibling saves', async ({ page }) => {
+  const fields = await openFreePoolProbeSettings(page, 'add', 'ai_source_probe=success');
+  await fields.row('groq').getByRole('button', { name: 'Test the free-pool entry groq connection', exact: true }).click();
+  await fields.edit('groq').click();
+  await fields.model.fill('unsaved-model');
+  await fields.form.getByRole('button', { name: 'Stop editing free-pool entry groq', exact: true }).click();
+  await fields.row('groq').getByRole('button', { name: 'Disable free-pool entry groq', exact: true }).click();
+  await fields.edit('mistral').click();
+  await fields.model.fill('sibling-model');
+  await fields.form.getByRole('button', { name: 'Save free-pool entry mistral', exact: true }).click();
+  await expect(fields.row('mistral')).toContainText('sibling-model');
+  await fields.model.focus();
+  await releaseEditableProbeRpc(page, poolProbeRpc, 1);
+  await expect(fields.row('groq').locator('[data-recued-ai-models-slot-test-result="pool:groq"]')).toHaveAttribute('data-probe-ok', 'true');
+  await expect(fields.model).toHaveValue('new-model');
+  await expect(fields.model).toBeFocused();
+});
+
+test('Settings AI Models Free-pool stored-row probe cannot reappear after removing and reusing its name', async ({ page }) => {
+  const fields = await openFreePoolProbeSettings(page, 'add', 'ai_source_probe=success');
+  await fields.row('groq').getByRole('button', { name: 'Test the free-pool entry groq connection', exact: true }).click();
+  await fields.row('groq').getByRole('button', { name: 'Remove free-pool entry groq', exact: true }).click();
+  const dialog = page.locator('[data-recued-ai-models-pool-remove-dialog="groq"]');
+  await page.keyboard.press('Shift+Tab');
+  await expect(dialog.locator('[data-recued-ai-models-pool-remove-confirm="groq"]')).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(fields.row('groq')).toHaveCount(0);
+  await fields.field('id').fill('groq');
+  await fields.model.fill('readded-model');
+  await fields.submit.click();
+  await expect(fields.row('groq')).toContainText('readded-model');
+  await releaseEditableProbeRpc(page, poolProbeRpc, 1);
+  await expect(fields.row('groq').locator('[data-recued-ai-models-slot-test-result="pool:groq"]')).toHaveCount(0);
+});
+
+test('Settings AI Models Free-pool probe follows a changed automatic name after removal', async ({ page }) => {
+  const fields = await openFreePoolProbeSettings(page, 'add', 'ai_source_probe=success');
+  await fields.field('id').fill('');
+  await fields.field('base-url').fill('https://api.groq.com/openai/v1');
+  await fields.test.click();
+  await fields.row('groq').getByRole('button', { name: 'Remove free-pool entry groq', exact: true }).click();
+  const dialog = page.locator('[data-recued-ai-models-pool-remove-dialog="groq"]');
+  await page.keyboard.press('Shift+Tab');
+  await expect(dialog.locator('[data-recued-ai-models-pool-remove-confirm="groq"]')).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(fields.row('groq')).toHaveCount(0);
+  await releaseEditableProbeRpc(page, poolProbeRpc, 1);
+  await expect(fields.probe).toHaveCount(0);
+  await fields.test.click();
+  await releaseEditableProbeRpc(page, poolProbeRpc, 2);
+  await expect(fields.probe).toHaveAttribute('data-probe-ok', 'true');
+  await fields.submit.click();
+  await expect(fields.row('groq')).toContainText('new-model');
+});
+
+const transcriptionWrites = [
+  'server.setTranscriptionSlot',
+  'server.setTranscriptionLanguage',
+  'server.setTranscriptionDailyRequests',
+] as const;
+const heldTranscriptionWrites = transcriptionWrites.map((method) => `hold_rpc=${method}`).join('&');
+
+const openTranscriptionSettings = async (page: Page, query: string) => {
+  await page.goto(`${HARNESS_URL}?ai=two&${query}#settings/ai-models`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const providers = page.locator(`[${AI_MODELS_TAB}="providers"]`);
+  await expect(providers).toBeVisible();
+  await providers.focus();
+  await page.keyboard.press('Enter');
+  const card = page.locator('[data-recued-ai-models-control="transcription_slot"]');
+  await expect(card).toBeVisible();
+  return {
+    card,
+    protocol: card.getByRole('combobox', { name: 'Transcription slot protocol' }),
+    model: card.getByRole('textbox', { name: 'Transcription slot model' }),
+    key: card.locator('[data-recued-ai-models-transcription-field="api-key"]'),
+    language: card.getByRole('textbox', { name: 'Transcription spoken language' }),
+    limit: card.getByRole('textbox', { name: 'Transcription daily call limit' }),
+    save: card.getByRole('button', { name: 'Save Transcription slot', exact: true }),
+    clear: card.getByRole('button', { name: 'Clear Transcription slot', exact: true }),
+    test: card.getByRole('button', { name: 'Test the Transcription slot connection', exact: true }),
+    probe: card.locator('[data-recued-ai-models-slot-test-result="transcription_slot"]'),
+    transcript: card.locator('[data-recued-ai-models-probe-transcript]'),
+    testError: card.locator('[data-recued-ai-models-form-error="transcription_slot:test"]'),
+  };
+};
+
+const fillTranscriptionDraft = async (fields: Awaited<ReturnType<typeof openTranscriptionSettings>>) => {
+  await fields.protocol.selectOption('openai');
+  await fields.model.fill('whisper-draft');
+  await fields.key.fill('transcription-fixture-key');
+  await fields.language.fill(' fr ');
+  await fields.limit.fill('12');
+};
+
+const releaseTranscriptionWrite = async (page: Page, method: string, count: number) => {
+  await expect.poll(() => page.evaluate((rpc) => window.__app.rpcCallCount(rpc), method)).toBe(count);
+  expect(await page.evaluate((rpc) => window.__app.releaseRpcResponses?.(rpc) ?? 0, method)).toBe(1);
+};
+
+const auditAiModelsExitConfirm = async (page: Page) => {
+  await page.evaluate(() => {
+    const html = document.documentElement;
+    html.setAttribute('data-audit-ai-exit-count', '0');
+    html.setAttribute('data-audit-ai-exit-allowed', 'false');
+    window.confirm = (message?: string): boolean => {
+      html.setAttribute('data-audit-ai-exit-count', String(Number(html.getAttribute('data-audit-ai-exit-count')) + 1));
+      html.setAttribute('data-audit-ai-exit-message', message ?? '');
+      return html.getAttribute('data-audit-ai-exit-allowed') === 'true';
+    };
+  });
+};
+
+const aiModelsUnloadAllowed = (page: Page) => page.evaluate(() =>
+  window.dispatchEvent(new Event('beforeunload', { cancelable: true })),
+);
+
+const cancelPendingAiModelsLeave = async (page: Page, count: number) => {
+  expect(await aiModelsUnloadAllowed(page)).toBe(false);
+  await page.evaluate(() => window.__app.setHash('#data'));
+  await expect(page).toHaveURL(/#settings\/ai-models$/);
+  await expect(page.locator('html')).toHaveAttribute('data-audit-ai-exit-count', String(count));
+  await expect(page.locator('html')).toHaveAttribute(
+    'data-audit-ai-exit-message',
+    'An AI model setting is still updating. Leave Settings anyway?',
+  );
+};
+
+const leaveSettledAiModels = async (page: Page, count: number) => {
+  expect(await aiModelsUnloadAllowed(page)).toBe(true);
+  await page.evaluate(() => window.__app.setHash('#data'));
+  await expect(page).toHaveURL(/#data$/);
+  await expect(page.locator('html')).toHaveAttribute('data-audit-ai-exit-count', String(count));
+};
+
+for (const size of [
+  { name: 'desktop', viewport: { width: 1360, height: 900 } },
+  { name: 'mobile', viewport: { width: 390, height: 844 } },
+]) {
+  test(`Settings AI Models exit guard ${size.name} transcription success`, async ({ page }) => {
+    await page.setViewportSize(size.viewport);
+    const fields = await openTranscriptionSettings(page, heldTranscriptionWrites);
+    await auditAiModelsExitConfirm(page);
+    await fillTranscriptionDraft(fields);
+    await fields.save.focus();
+    await page.keyboard.press('Enter');
+
+    for (const [index, method] of transcriptionWrites.entries()) {
+      await expect(fields.save).toHaveAttribute('aria-busy', 'true');
+      await cancelPendingAiModelsLeave(page, index + 1);
+      await expect(fields.save).toBeFocused();
+      await expect(fields.model).toHaveValue('whisper-draft');
+      await releaseTranscriptionWrite(page, method, 1);
+    }
+    await expect(fields.save).not.toHaveAttribute('aria-busy');
+    await expect(fields.language).toHaveValue('fr');
+    await expect(fields.limit).toHaveValue('12');
+    for (const method of transcriptionWrites) {
+      expect(await page.evaluate((rpc) => window.__app.rpcCallCount(rpc), method)).toBe(1);
+    }
+    await leaveSettledAiModels(page, transcriptionWrites.length);
+  });
+
+  for (const [failedIndex, phase] of ['slot', 'language', 'limit'].entries()) {
+    test(`Settings AI Models exit guard ${size.name} transcription ${phase} failure`, async ({ page }) => {
+      await page.setViewportSize(size.viewport);
+      const fields = await openTranscriptionSettings(
+        page, `ai_transcription=configured&ai_transcription_fail_first=${phase}&${heldTranscriptionWrites}`,
+      );
+      await auditAiModelsExitConfirm(page);
+      await fillTranscriptionDraft(fields);
+      await fields.save.focus();
+      await page.keyboard.press('Enter');
+      for (const [index, method] of transcriptionWrites.slice(0, failedIndex + 1).entries()) {
+        await expect(fields.save).toHaveAttribute('aria-busy', 'true');
+        await cancelPendingAiModelsLeave(page, index + 1);
+        await expect(fields.save).toBeFocused();
+        await releaseTranscriptionWrite(page, method, 1);
+      }
+      await expect(fields.card.locator('[data-recued-ai-models-form-error="transcription_slot:save"]'))
+        .toContainText('unavailable.');
+      await expect(fields.save).not.toHaveAttribute('aria-busy');
+      for (const method of transcriptionWrites.slice(failedIndex + 1)) {
+        expect(await page.evaluate((rpc) => window.__app.rpcCallCount(rpc), method)).toBe(0);
+      }
+      await leaveSettledAiModels(page, failedIndex + 1);
+    });
+  }
+
+  for (const chatSwitch of chatBehaviourSwitchCases) {
+    for (const outcome of ['success', 'failure'] as const) {
+      test(`Settings AI Models exit guard ${size.name} ${chatSwitch.name} ${outcome}`, async ({ page }) => {
+        await page.setViewportSize(size.viewport);
+        const method = `${chatSwitch.rpc}.set`;
+        await page.goto(`${HARNESS_URL}?ai=two&hold_rpc=${method}${outcome === 'failure' ? '&ai_chat_switch_response=fail-first' : ''}#settings/ai-models`);
+        await page.waitForFunction(() => window.__app?.ready === true);
+        await auditAiModelsExitConfirm(page);
+        const toggle = page.locator(`[${chatSwitch.attr}]`);
+        await expect(toggle).toHaveText(chatSwitch.onLabel);
+        await toggle.focus();
+        await page.keyboard.press('Enter');
+        await expect(toggle).toHaveAttribute('aria-busy', 'true');
+        await cancelPendingAiModelsLeave(page, 1);
+        await expect(toggle).toBeFocused();
+        expect(await page.evaluate((rpc) => window.__app.releaseRpcResponses?.(rpc) ?? 0, method)).toBe(1);
+        await expect(toggle).not.toHaveAttribute('aria-busy');
+        await expect(toggle).toHaveAttribute('aria-pressed', outcome === 'success' ? 'false' : 'true');
+        if (outcome === 'failure') {
+          await expect(page.locator('[data-recued-ai-models-action-error]'))
+            .toHaveText('Chat behaviour update unavailable.');
+        }
+        expect(await page.evaluate((rpc) => window.__app.rpcCallCount(rpc), method)).toBe(1);
+        await leaveSettledAiModels(page, 1);
+      });
+    }
+  }
+
+  test(`Settings AI Models exit guard ${size.name} overlapping chat switches`, async ({ page }) => {
+    await page.setViewportSize(size.viewport);
+    const methods = chatBehaviourSwitchCases.map((chatSwitch) => `${chatSwitch.rpc}.set`);
+    await page.goto(`${HARNESS_URL}?ai=two&${methods.map((rpc) => `hold_rpc=${rpc}`).join('&')}#settings/ai-models`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await auditAiModelsExitConfirm(page);
+    const toggles = chatBehaviourSwitchCases.map((chatSwitch) => page.locator(`[${chatSwitch.attr}]`));
+    for (const toggle of toggles) {
+      await toggle.focus();
+      await page.keyboard.press('Enter');
+      await expect(toggle).toHaveAttribute('aria-busy', 'true');
+    }
+    await cancelPendingAiModelsLeave(page, 1);
+    expect(await page.evaluate((rpc) => window.__app.releaseRpcResponses?.(rpc) ?? 0, methods[0]!)).toBe(1);
+    await expect(toggles[0]!).not.toHaveAttribute('aria-busy');
+    await expect(toggles[1]!).toHaveAttribute('aria-busy', 'true');
+    await expect(toggles[1]!).toBeFocused();
+    await cancelPendingAiModelsLeave(page, 2);
+    expect(await page.evaluate((rpc) => window.__app.releaseRpcResponses?.(rpc) ?? 0, methods[1]!)).toBe(1);
+    await expect(toggles[1]!).not.toHaveAttribute('aria-busy');
+    for (const method of methods) {
+      expect(await page.evaluate((rpc) => window.__app.rpcCallCount(rpc), method)).toBe(1);
+    }
+    await leaveSettledAiModels(page, 2);
+  });
+
+  for (const action of ['transcription', ...chatBehaviourSwitchCases.map((chatSwitch) => chatSwitch.name)]) {
+    test(`Settings AI Models exit guard ${size.name} permits confirmed leave during ${action}`, async ({ page }) => {
+      await page.setViewportSize(size.viewport);
+      let methods: readonly string[];
+      if (action === 'transcription') {
+        const fields = await openTranscriptionSettings(page, heldTranscriptionWrites);
+        await auditAiModelsExitConfirm(page);
+        await fillTranscriptionDraft(fields);
+        await fields.save.focus();
+        await page.keyboard.press('Enter');
+        await expect(fields.save).toHaveAttribute('aria-busy', 'true');
+        methods = transcriptionWrites;
+      } else {
+        const chatSwitch = chatBehaviourSwitchCases.find((candidate) => candidate.name === action)!;
+        methods = [`${chatSwitch.rpc}.set`];
+        await page.goto(`${HARNESS_URL}?ai=two&hold_rpc=${methods[0]}#settings/ai-models`);
+        await page.waitForFunction(() => window.__app?.ready === true);
+        await auditAiModelsExitConfirm(page);
+        const toggle = page.locator(`[${chatSwitch.attr}]`);
+        await toggle.focus();
+        await page.keyboard.press('Enter');
+        await expect(toggle).toHaveAttribute('aria-busy', 'true');
+      }
+      expect(await aiModelsUnloadAllowed(page)).toBe(false);
+      await page.evaluate(() => {
+        document.documentElement.setAttribute('data-audit-ai-exit-allowed', 'true');
+        window.__app.setHash('#data');
+      });
+      await expect(page).toHaveURL(/#data$/);
+      await expect(page.locator('html')).toHaveAttribute('data-audit-ai-exit-count', '1');
+      for (const method of methods) await releaseTranscriptionWrite(page, method, 1);
+      await expect(page).toHaveURL(/#data$/);
+      await expect(page.locator('[data-recued-ai-models-page-state]')).toHaveCount(0);
+      expect(await aiModelsUnloadAllowed(page)).toBe(true);
+    });
+  }
+}
+
+for (const { field, value } of [
+  { field: 'model', value: 'whisper-edit' },
+  { field: 'language', value: 'fr' },
+  { field: 'daily-requests', value: '125' },
+  { field: 'provider', value: 'openai-compatible' },
+]) {
+  test(`Settings AI Models transcription ${field} keeps focus when a sibling save completes`, async ({ page }) => {
+    const { card } = await openTranscriptionSettings(
+      page,
+      'ai_pool=entry&ai_transcription=configured&hold_rpc=server.setFreePoolEntryEnabled',
+    );
+    const toggle = page.locator('[data-recued-ai-models-pool-toggle="groq"]');
+    await toggle.focus();
+    await page.keyboard.press('Enter');
+    await expect(toggle).toHaveText('Disabling…');
+
+    const input = card.locator(`[data-recued-ai-models-transcription-field="${field}"]`);
+    if (field === 'provider') {
+      await input.selectOption(value);
+      await input.focus();
+    } else {
+      await input.fill(value);
+      await input.evaluate((element: HTMLInputElement) => element.setSelectionRange(1, 1));
+    }
+    await releaseTranscriptionWrite(page, 'server.setFreePoolEntryEnabled', 1);
+    await expect(toggle).toHaveText('Enable');
+    await expect(input).toHaveValue(value);
+    await expect(input).toBeFocused();
+    if (field !== 'provider') {
+      expect(await input.evaluate((element: HTMLInputElement) => [element.selectionStart, element.selectionEnd]))
+        .toEqual([1, 1]);
+      await page.keyboard.type('x');
+      await expect(input).toHaveValue(`${value.slice(0, 1)}x${value.slice(1)}`);
+    }
+    expect(await page.evaluate(() => window.__app.rpcCallCount('server.setTranscriptionSlot'))).toBe(0);
+  });
+}
+
+test('Settings AI Models transcription Save owns all three writes and preserves sibling drafts', async ({ page }) => {
+  const fields = await openTranscriptionSettings(page, heldTranscriptionWrites);
+  await fillTranscriptionDraft(fields);
+  const siblingDraft = page.locator('[data-recued-ai-models-control="slot_2"]')
+    .getByRole('textbox', { name: 'Slot 2: better, slower thinking model', exact: true });
+  await siblingDraft.fill('unsaved-chat-model');
+  await fields.save.focus();
+  await page.keyboard.press('Enter');
+
+  for (const method of transcriptionWrites) {
+    await expect.poll(() => page.evaluate((rpc) => window.__app.rpcCallCount(rpc), method)).toBe(1);
+    await expect(fields.save).toHaveText('Saving slot…');
+    await expect(fields.save).toHaveAttribute('aria-disabled', 'true');
+    await expect(fields.save).toHaveAttribute('aria-busy', 'true');
+    await expect(fields.save).not.toHaveAttribute('disabled');
+    await expect(fields.save).toBeFocused();
+    await expect(fields.protocol).toBeDisabled();
+    await expect(fields.model).toHaveAttribute('readonly', '');
+    await expect(fields.language).toHaveAttribute('readonly', '');
+    await expect(fields.limit).toHaveAttribute('readonly', '');
+    await expect(siblingDraft).toHaveValue('unsaved-chat-model');
+    await page.keyboard.press('Enter');
+    await fields.clear.evaluate((button: HTMLElement) => button.click());
+    await expect(page.locator(`[${AI_MODELS_SLOT_CLEAR_DIALOG}]`)).toHaveCount(0);
+    await releaseTranscriptionWrite(page, method, 1);
+  }
+
+  await expect(fields.save).toHaveText('Save slot');
+  await expect(fields.save).not.toHaveAttribute('aria-busy');
+  await expect(fields.save).not.toHaveAttribute('aria-disabled');
+  await expect(fields.save).toBeFocused();
+  await expect(fields.protocol).toBeEnabled();
+  await expect(fields.model).toHaveValue('whisper-draft');
+  await expect(fields.key).toHaveValue('');
+  await expect(fields.language).toHaveValue('fr');
+  await expect(fields.limit).toHaveValue('12');
+  await expect(siblingDraft).toHaveValue('unsaved-chat-model');
+  for (const method of transcriptionWrites) {
+    expect(await page.evaluate((rpc) => window.__app.rpcCallCount(rpc), method)).toBe(1);
+  }
+
+  await page.evaluate(() => window.__app.setHash('#chat'));
+  await expect(page.locator('[data-recued-chat-route]')).toHaveCount(1);
+  await page.evaluate(() => window.__app.setHash('#settings/ai-models'));
+  await page.locator(`[${AI_MODELS_TAB}="providers"]`).click();
+  await expect(fields.card).toBeVisible();
+  await expect(fields.model).toHaveValue('whisper-draft');
+  await expect(fields.language).toHaveValue('fr');
+  await expect(fields.limit).toHaveValue('12');
+  await expect(fields.key).toHaveValue('');
+});
+
+for (const [failedIndex, failure] of [
+  { phase: 'slot', message: 'Transcription slot save unavailable.' },
+  { phase: 'language', message: 'Transcription language save unavailable.' },
+  { phase: 'limit', message: 'Transcription daily limit save unavailable.' },
+].entries()) {
+  test(`Settings AI Models transcription ${failure.phase} failure preserves the remaining retry draft`, async ({ page }) => {
+    const fields = await openTranscriptionSettings(
+      page,
+      `ai_transcription=configured&ai_transcription_fail_first=${failure.phase}&${heldTranscriptionWrites}`,
+    );
+    await fillTranscriptionDraft(fields);
+    await fields.save.focus();
+    await page.keyboard.press('Enter');
+    for (const method of transcriptionWrites.slice(0, failedIndex + 1)) {
+      await releaseTranscriptionWrite(page, method, 1);
+    }
+
+    const error = fields.card.locator('[data-recued-ai-models-form-error="transcription_slot:save"]');
+    await expect(error).toHaveText(failure.message);
+    await expect(page.locator('[data-recued-ai-models-action-error]')).toHaveCount(0);
+    await expect(fields.save).toHaveText('Save slot');
+    await expect(fields.save).toBeFocused();
+    await expect(fields.model).toHaveValue('whisper-draft');
+    await expect(fields.key).toHaveValue(failedIndex === 0 ? 'transcription-fixture-key' : '');
+    await expect(fields.language).toHaveValue(failedIndex === 2 ? 'fr' : ' fr ');
+    await expect(fields.limit).toHaveValue('12');
+    await expect(fields.language).not.toHaveAttribute('readonly');
+    await expect(fields.limit).not.toHaveAttribute('readonly');
+    for (const method of transcriptionWrites.slice(failedIndex + 1)) {
+      expect(await page.evaluate((rpc) => window.__app.rpcCallCount(rpc), method)).toBe(0);
+    }
+
+    await page.keyboard.press('Space');
+    await expect(error).toHaveCount(0);
+    await releaseTranscriptionWrite(page, transcriptionWrites[0], 2);
+    if (failedIndex < 2) {
+      await releaseTranscriptionWrite(page, transcriptionWrites[1], failedIndex === 1 ? 2 : 1);
+    }
+    await releaseTranscriptionWrite(page, transcriptionWrites[2], failedIndex === 2 ? 2 : 1);
+    await expect(fields.save).toHaveText('Save slot');
+    await expect(fields.save).toBeFocused();
+    await expect(fields.model).toHaveValue('whisper-draft');
+    await expect(fields.language).toHaveValue('fr');
+    await expect(fields.limit).toHaveValue('12');
+    await expect(fields.key).toHaveValue('');
+    await expect(error).toHaveCount(0);
+  });
+}
+
+test('Settings AI Models transcription Clear confirms only the slot and retains language drafts', async ({ page }) => {
+  const fields = await openTranscriptionSettings(
+    page,
+    'ai_transcription=configured&hold_rpc=server.setTranscriptionSlot',
+  );
+  await fields.model.fill('unsaved-transcription-model');
+  await fields.language.fill('fr');
+  await fields.limit.fill('12');
+  await fields.clear.focus();
+  await page.keyboard.press('Enter');
+  const dialog = page.locator(`[${AI_MODELS_SLOT_CLEAR_DIALOG}="transcription_slot"]`);
+  const cancel = dialog.locator(`[${AI_MODELS_SLOT_CLEAR_CANCEL}="transcription_slot"]`);
+  const confirm = dialog.locator(`[${AI_MODELS_SLOT_CLEAR_CONFIRM}="transcription_slot"]`);
+  await expect(dialog).toHaveAccessibleName('Clear Transcription slot?');
+  await expect(cancel).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(fields.clear).toBeFocused();
+  await expect(fields.model).toHaveValue('unsaved-transcription-model');
+  expect(await page.evaluate(() => window.__app.rpcCallCount('server.setTranscriptionSlot'))).toBe(0);
+
+  await page.keyboard.press('Enter');
+  await expect(cancel).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(confirm).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(dialog).toHaveAttribute('aria-busy', 'true');
+  await expect(confirm).toBeFocused();
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('Enter');
+  await expect(dialog).toBeVisible();
+  await releaseTranscriptionWrite(page, transcriptionWrites[0], 1);
+  await expect(dialog).toHaveCount(0);
+  await expect(fields.clear).toBeFocused();
+  await expect(fields.model).toHaveValue('');
+  await expect(fields.card).toContainText('Not set up. Voice notes need this.');
+  await expect(fields.language).toHaveValue('fr');
+  await expect(fields.limit).toHaveValue('12');
+  for (const method of transcriptionWrites.slice(1)) {
+    expect(await page.evaluate((rpc) => window.__app.rpcCallCount(rpc), method)).toBe(0);
+  }
+});
+
+test('Settings AI Models transcription failed Clear remains owned and retryable', async ({ page }) => {
+  const fields = await openTranscriptionSettings(
+    page,
+    'ai_transcription=configured&ai_transcription_fail_first=clear&hold_rpc=server.setTranscriptionSlot',
+  );
+  // Saving first must neither consume the injected Clear failure nor lose
+  // the existing key when the form leaves its password field blank.
+  await fields.save.focus();
+  await page.keyboard.press('Enter');
+  await releaseTranscriptionWrite(page, transcriptionWrites[0], 1);
+  await expect(fields.save).toHaveText('Save slot');
+  await expect(fields.model).toHaveValue('whisper-1');
+  await expect(fields.key).toHaveValue('');
+  await fields.clear.focus();
+  await page.keyboard.press('Enter');
+  const dialog = page.locator(`[${AI_MODELS_SLOT_CLEAR_DIALOG}="transcription_slot"]`);
+  const confirm = dialog.locator(`[${AI_MODELS_SLOT_CLEAR_CONFIRM}="transcription_slot"]`);
+  await page.keyboard.press('Shift+Tab');
+  await expect(confirm).toBeFocused();
+  await page.keyboard.press('Enter');
+  await releaseTranscriptionWrite(page, transcriptionWrites[0], 2);
+  await expect(page.locator('[data-recued-ai-models-action-error]'))
+    .toHaveText('Transcription slot clear unavailable.');
+  await expect(dialog).toBeVisible();
+  await expect(confirm).toBeFocused();
+  await expect(fields.model).toHaveValue('whisper-1');
+  await expect(confirm).not.toHaveAttribute('aria-disabled');
+  await page.keyboard.press('Enter');
+  await releaseTranscriptionWrite(page, transcriptionWrites[0], 3);
+  await expect(dialog).toHaveCount(0);
+  await expect(fields.clear).toBeFocused();
+  await expect(fields.model).toHaveValue('');
+});
+
+const heldTranscriptionProbe = 'ai_transcription=configured&hold_rpc=server.probeLlmSource';
+const probeMethod = 'server.probeLlmSource';
+
+test('Settings AI Models transcription probe shows the heard and expected text and owns keyboard focus', async ({ page }) => {
+  const fields = await openTranscriptionSettings(page, `${heldTranscriptionProbe}&ai_transcription_probe=mismatch`);
+  await fields.model.fill('whisper-unsaved');
+  await fields.key.fill('probe-fixture-key');
+  expect(await page.evaluate(() => window.__app.rpcCallCount('server.probeLlmSource'))).toBe(0);
+  await fields.test.focus();
+  await page.keyboard.press('Enter');
+  await expect(fields.test).toHaveText('Testing…');
+  await expect(fields.test).toHaveAttribute('aria-busy', 'true');
+  await expect(fields.test).toHaveAttribute('aria-disabled', 'true');
+  await expect(fields.test).not.toHaveAttribute('disabled');
+  await expect(fields.test).toBeFocused();
+  await expect(fields.probe).toHaveCount(0);
+  await page.keyboard.press('Enter');
+  await page.keyboard.press('Space');
+  const siblingTest = page.locator('[data-recued-ai-models-slot-test="slot_1"]');
+  await expect(siblingTest).toHaveAttribute('aria-disabled', 'true');
+  await siblingTest.evaluate((button: HTMLElement) => button.click());
+  await releaseTranscriptionWrite(page, probeMethod, 1);
+
+  await expect(fields.probe).toHaveAttribute('data-probe-ok', 'true');
+  await expect(fields.probe).toHaveAttribute('role', 'status');
+  expect(await fields.transcript.locator('dt').allTextContents()).toEqual(['Clip says', 'Heard', 'Language']);
+  expect(await fields.transcript.locator('dd').allTextContents()).toEqual([
+    'This is a transcript microphone test.',
+    'Bu bir transkript mikrofon testidir.',
+    'tr',
+  ]);
+  await expect(fields.probe.locator('[data-recued-ai-models-probe-pictures]')).toHaveCount(0);
+  await expect(fields.test).toHaveText('Test connection');
+  await expect(fields.test).not.toHaveAttribute('aria-busy');
+  await expect(siblingTest).not.toHaveAttribute('aria-disabled');
+  await expect(fields.test).toBeFocused();
+  await expect(fields.model).toHaveValue('whisper-unsaved');
+  await expect(fields.key).toHaveValue('probe-fixture-key');
+  for (const method of transcriptionWrites) {
+    expect(await page.evaluate((rpc) => window.__app.rpcCallCount(rpc), method)).toBe(0);
+  }
+});
+
+test('Settings AI Models transcription probe labels auto-detection explicitly', async ({ page }) => {
+  const fields = await openTranscriptionSettings(page, `${heldTranscriptionProbe}&ai_transcription_probe=auto`);
+  await expect(fields.language).toHaveValue('');
+  await fields.test.focus();
+  await page.keyboard.press('Space');
+  await releaseTranscriptionWrite(page, probeMethod, 1);
+  await expect(fields.transcript).toContainText('auto-detect');
+  await expect(fields.transcript).toContainText('This is a transcript microphone test.');
+  await expect(fields.test).toBeFocused();
+});
+
+for (const mode of ['rejected-first', 'rpc-fail-first']) {
+  test(`Settings AI Models transcription probe ${mode} is explained locally and retryable`, async ({ page }) => {
+    const fields = await openTranscriptionSettings(page, `${heldTranscriptionProbe}&ai_transcription_probe=${mode}`);
+    await fields.test.focus();
+    await page.keyboard.press('Enter');
+    await releaseTranscriptionWrite(page, probeMethod, 1);
+    if (mode === 'rejected-first') {
+      await expect(fields.probe).toHaveAttribute('data-probe-ok', 'false');
+      await expect(fields.probe).toContainText('That key was refused. Check it.');
+      await expect(fields.probe).toContainText('The fixture transcription endpoint refused the key.');
+      await expect(fields.probe.locator('.ai-models-probe-facts')).toHaveCount(0);
+      await expect(fields.testError).toHaveCount(0);
+    } else {
+      await expect(fields.testError).toHaveText('Transcription probe transport unavailable.');
+      await expect(fields.testError).toHaveAttribute('role', 'alert');
+      await expect(fields.probe).toHaveCount(0);
+    }
+    await expect(fields.transcript).toHaveCount(0);
+    await expect(page.locator('[data-recued-ai-models-action-error]')).toHaveCount(0);
+    await expect(fields.test).not.toHaveAttribute('aria-busy');
+    await expect(fields.test).toBeFocused();
+    await page.keyboard.press('Space');
+    await expect(fields.probe).toHaveCount(0);
+    await expect(fields.testError).toHaveCount(0);
+    await releaseTranscriptionWrite(page, probeMethod, 2);
+    await expect(fields.probe).toHaveAttribute('data-probe-ok', 'true');
+    await expect(fields.transcript).toBeVisible();
+    await expect(fields.test).toBeFocused();
+  });
+}
+
+test('Settings AI Models transcription probe with no sample reports that nothing was tested', async ({ page }) => {
+  const fields = await openTranscriptionSettings(page, `${heldTranscriptionProbe}&ai_transcription_probe=no-sample`);
+  await fields.test.focus();
+  await page.keyboard.press('Enter');
+  await releaseTranscriptionWrite(page, probeMethod, 1);
+  await expect(fields.probe).toHaveAttribute('data-probe-ok', 'false');
+  await expect(fields.probe).toContainText('The transcription test clip is unavailable in this fixture.');
+  await expect(fields.probe.locator('.ai-models-probe-facts')).toHaveCount(0);
+  await expect(fields.transcript).toHaveCount(0);
+  await expect(fields.test).toBeFocused();
+});
+
+for (const mode of ['draft', 'rejected-first', 'rpc-fail-first']) {
+  test(`Settings AI Models transcription probe ignores a stale ${mode} reply after a draft edit`, async ({ page }) => {
+    const fields = await openTranscriptionSettings(page, `${heldTranscriptionProbe}&ai_transcription_probe=${mode}`);
+    await fields.model.fill('whisper-first');
+    await fields.test.focus();
+    await page.keyboard.press('Enter');
+    await expect(fields.test).toHaveText('Testing…');
+    await fields.model.fill('whisper-second');
+    await fields.model.evaluate((element: HTMLInputElement) => element.setSelectionRange(5, 5));
+    await releaseTranscriptionWrite(page, probeMethod, 1);
+    await expect(fields.test).toHaveText('Test connection');
+    await expect(fields.probe).toHaveCount(0);
+    await expect(fields.testError).toHaveCount(0);
+    await expect(fields.model).toHaveValue('whisper-second');
+    await expect(fields.model).toBeFocused();
+    expect(await fields.model.evaluate((element: HTMLInputElement) => [element.selectionStart, element.selectionEnd]))
+      .toEqual([5, 5]);
+    expect(await page.evaluate(() => window.__app.rpcCallCount('server.probeLlmSource'))).toBe(1);
+
+    await fields.test.focus();
+    await page.keyboard.press('Enter');
+    await releaseTranscriptionWrite(page, probeMethod, 2);
+    await expect(fields.probe).toHaveAttribute('data-probe-ok', 'true');
+    await expect(fields.transcript).toContainText(mode === 'draft'
+      ? 'Fixture transcript from whisper-second.'
+      : 'This is a transcript microphone test.');
+  });
+}
+
+for (const mode of ['draft', 'rpc-fail-first']) {
+  test(`Settings AI Models transcription probe removes a completed ${mode} answer when its draft changes`, async ({ page }) => {
+    const fields = await openTranscriptionSettings(page, `${heldTranscriptionProbe}&ai_transcription_probe=${mode}`);
+    await fields.test.focus();
+    await page.keyboard.press('Enter');
+    await releaseTranscriptionWrite(page, probeMethod, 1);
+    if (mode === 'draft') await expect(fields.probe).toBeVisible();
+    else await expect(fields.testError).toBeVisible();
+    const originalInput = await fields.model.elementHandle();
+    await fields.model.fill('whisper-new-draft');
+    await expect(fields.probe).toHaveCount(0);
+    await expect(fields.testError).toHaveCount(0);
+    await expect(fields.model).toBeFocused();
+    expect(await originalInput!.evaluate((element) => element.isConnected)).toBe(true);
+    expect(await page.evaluate(() => window.__app.rpcCallCount('server.probeLlmSource'))).toBe(1);
+    await page.keyboard.type('-continued');
+    await expect(fields.model).toHaveValue('whisper-new-draft-continued');
+  });
+}
+
+test('Settings AI Models transcription probe preserves unsaved language and limit edits', async ({ page }) => {
+  const fields = await openTranscriptionSettings(page, `${heldTranscriptionProbe}&ai_transcription_probe=draft`);
+  await fields.test.focus();
+  await page.keyboard.press('Enter');
+  await fields.language.fill('fr');
+  await fields.limit.fill('22');
+  await fields.limit.evaluate((element: HTMLInputElement) => element.setSelectionRange(1, 1));
+  await releaseTranscriptionWrite(page, probeMethod, 1);
+  await expect(fields.probe).toHaveAttribute('data-probe-ok', 'true');
+  expect(await fields.transcript.locator('dd').allTextContents()).toEqual([
+    'This is a transcript microphone test.',
+    'Fixture transcript from whisper-1.',
+    'en',
+  ]);
+  await expect(fields.language).toHaveValue('fr');
+  await expect(fields.limit).toHaveValue('22');
+  await expect(fields.limit).toBeFocused();
+  expect(await fields.limit.evaluate((element: HTMLInputElement) => [element.selectionStart, element.selectionEnd]))
+    .toEqual([1, 1]);
+});
+
+test('Settings AI Models transcription probe cannot restore an answer after Clear', async ({ page }) => {
+  const fields = await openTranscriptionSettings(
+    page,
+    `${heldTranscriptionProbe}&ai_transcription_probe=draft&hold_rpc=server.setTranscriptionSlot`,
+  );
+  await fields.test.focus();
+  await page.keyboard.press('Enter');
+  await expect(fields.test).toHaveText('Testing…');
+  await fields.clear.focus();
+  await page.keyboard.press('Enter');
+  const dialog = page.locator(`[${AI_MODELS_SLOT_CLEAR_DIALOG}="transcription_slot"]`);
+  const confirm = dialog.locator(`[${AI_MODELS_SLOT_CLEAR_CONFIRM}="transcription_slot"]`);
+  await page.keyboard.press('Shift+Tab');
+  await expect(confirm).toBeFocused();
+  await page.keyboard.press('Enter');
+  await releaseTranscriptionWrite(page, transcriptionWrites[0], 1);
+  await expect(dialog).toHaveCount(0);
+  await expect(fields.model).toHaveValue('');
+  await releaseTranscriptionWrite(page, probeMethod, 1);
+  await expect(fields.probe).toHaveCount(0);
+  await expect(fields.clear).toBeFocused();
+});
+
+test('Settings AI Models transcription probe cannot restore an answer after saving the language', async ({ page }) => {
+  const fields = await openTranscriptionSettings(page, `${heldTranscriptionProbe}&ai_transcription_probe=draft`);
+  await fields.test.focus();
+  await page.keyboard.press('Enter');
+  await expect(fields.test).toHaveText('Testing…');
+  await fields.language.fill('fr');
+  await fields.save.focus();
+  await page.keyboard.press('Enter');
+  await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('server.setTranscriptionLanguage'))).toBe(1);
+  await expect(fields.save).toHaveText('Save slot');
+  await releaseTranscriptionWrite(page, probeMethod, 1);
+  await expect(fields.probe).toHaveCount(0);
+  await expect(fields.save).toBeFocused();
+  await fields.test.focus();
+  await page.keyboard.press('Enter');
+  await releaseTranscriptionWrite(page, probeMethod, 2);
+  await expect(fields.transcript).toContainText('fr');
+});
+
+const aiRefreshSources = ['BYOK', 'Embeddings', 'Transcription', 'pool row', 'pool add', 'pool edit'] as const;
+const openAiRefreshSource = async (page: Page, source: typeof aiRefreshSources[number], outcome = 'success') => {
+  const query = `hold_rpc=server.probeLlmSource&ai_source_probe=${outcome}`;
+  if (source === 'BYOK' || source === 'Embeddings') {
+    return openEditableProbeSettings(page, editableProbeSources[source === 'BYOK' ? 0 : 1], query);
+  }
+  if (source === 'Transcription') {
+    await page.setViewportSize({ width: 390, height: 844 });
+    return openTranscriptionSettings(page, `${query}&ai_transcription=configured&ai_transcription_probe=${outcome}`);
+  }
+  const fields = await openFreePoolProbeSettings(page, source === 'pool edit' ? 'edit' : 'add', query);
+  if (source === 'pool row') {
+    const card = fields.row('groq');
+    return {
+      ...fields, card,
+      test: card.locator('[data-recued-ai-models-slot-test="pool:groq"]'),
+      probe: card.locator('[data-recued-ai-models-slot-test-result="pool:groq"]'),
+      testError: card.locator('[data-recued-ai-models-form-error="pool:groq:test"]'),
+    };
+  }
+  return { ...fields, card: fields.form, testError: fields.error };
+};
+const startAiModelsRefresh = async (page: Page, config?: Record<string, unknown>, fail = false) => {
+  const before = await page.evaluate(() => window.__app.rpcCallCount('server.getLLMConfig'));
+  await page.evaluate(({ config, fail }) => {
+    if (config !== undefined) window.__app.setAiModelsConfig?.(config);
+    if (fail) window.__app.failNextAiModelsConfigRead?.();
+    window.__app.holdRpcResponses?.('server.getLLMConfig');
+    void window.__app.refreshAiModels?.();
+  }, { config, fail });
+  await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('server.getLLMConfig'))).toBe(before + 1);
+};
+const releaseAiModelsRefresh = async (page: Page, index = 0) => {
+  expect(await page.evaluate((index) => window.__app.releaseRpcResponses?.('server.getLLMConfig', index) ?? 0, index)).toBe(1);
+};
+const aiRefreshConfig = (model: string) => ({ slot_1: { provider: 'openai', model, has_key: true } });
+const aiRefreshState = (page: Page) => page.locator('[data-recued-ai-models-page-state]');
+
+for (const source of aiRefreshSources) {
+  test(`Settings AI Models saved-config refresh clears ${source} answers and preserves typing and caret`, async ({ page }) => {
+    const fields = await openAiRefreshSource(page, source);
+    await fields.model.fill('refresh-draft-model');
+    await fields.key.fill('refresh-fixture-key');
+    await fields.test.focus();
+    await page.keyboard.press('Enter');
+    await releaseEditableProbeRpc(page, probeMethod, 1);
+    await expect(fields.probe).toHaveAttribute('data-probe-ok', 'true');
+    await fields.model.focus();
+    await fields.model.evaluate((el: HTMLInputElement) => el.setSelectionRange(2, 6));
+    await startAiModelsRefresh(page);
+    await expect(fields.probe).toHaveCount(0);
+    await expect(fields.testError).toHaveCount(0);
+    await expect(fields.model).toHaveValue('refresh-draft-model');
+    await expect(fields.key).toHaveValue('refresh-fixture-key');
+    await expect(fields.model).toBeFocused();
+    expect(await fields.model.evaluate((el: HTMLInputElement) => [el.selectionStart, el.selectionEnd])).toEqual([2, 6]);
+    await fields.test.focus();
+    await expect(fields.test).toHaveAttribute('aria-disabled', 'true');
+    await expect(fields.test).not.toHaveAttribute('disabled');
+    await page.keyboard.press('Enter');
+    expect(await page.evaluate(() => window.__app.rpcCallCount('server.probeLlmSource'))).toBe(1);
+    await fields.model.focus();
+    await fields.model.evaluate((el: HTMLInputElement) => el.setSelectionRange(2, 2));
+    await page.keyboard.type('X');
+    await expect(fields.model).toHaveValue('reXfresh-draft-model');
+    await releaseAiModelsRefresh(page);
+    await expect(aiRefreshState(page)).toHaveAttribute('data-recued-ai-models-page-state', 'ready');
+    await expect(fields.model).toBeFocused();
+    expect(await fields.model.evaluate((el: HTMLInputElement) => [el.selectionStart, el.selectionEnd])).toEqual([3, 3]);
+    await expect(fields.test).not.toHaveAttribute('aria-disabled');
+    await expect(fields.probe).toHaveCount(0);
+    await fields.test.focus();
+    await page.keyboard.press('Enter');
+    await releaseEditableProbeRpc(page, probeMethod, 2);
+    await expect(fields.probe).toHaveAttribute('data-probe-ok', 'true');
+    expect(await page.evaluate(() => window.__app.rpcCallCount('server.setLLMSlot'))).toBe(0);
+    expect(await page.evaluate(() => window.__app.rpcCallCount('server.upsertFreePoolEntry'))).toBe(0);
+  });
+
+  const outcome = source === 'BYOK' || source === 'pool add' ? 'rpc-fail-first'
+    : source === 'Embeddings' || source === 'pool edit' ? 'rejected-first' : 'success';
+  test(`Settings AI Models saved-config refresh ignores pending ${source} ${outcome} and keeps probes single-flight`, async ({ page }) => {
+    const fields = await openAiRefreshSource(page, source, outcome);
+    await fields.test.focus();
+    await page.keyboard.press('Enter');
+    await expect(fields.test).toHaveText('Testing…');
+    await startAiModelsRefresh(page);
+    await releaseAiModelsRefresh(page);
+    await expect(aiRefreshState(page)).toHaveAttribute('data-recued-ai-models-page-state', 'ready');
+    await expect(fields.test).toHaveAttribute('aria-busy', 'true');
+    await page.keyboard.press('Enter');
+    expect(await page.evaluate(() => window.__app.rpcCallCount('server.probeLlmSource'))).toBe(1);
+    await releaseEditableProbeRpc(page, probeMethod, 1);
+    await expect(fields.test).not.toHaveAttribute('aria-busy');
+    await expect(fields.probe).toHaveCount(0);
+    await expect(fields.testError).toHaveCount(0);
+    await expect(fields.test).toBeFocused();
+    await page.keyboard.press('Enter');
+    await releaseEditableProbeRpc(page, probeMethod, 2);
+    await expect(fields.probe).toHaveAttribute('data-probe-ok', 'true');
+  });
+}
+
+for (const outcome of ['success', 'failure'] as const) {
+  test(`Settings AI Models saved-config refresh ignores an older ${outcome} after a newer read`, async ({ page }) => {
+    const fields = await openAiRefreshSource(page, 'BYOK');
+    await startAiModelsRefresh(page, aiRefreshConfig('older-model'), outcome === 'failure');
+    await startAiModelsRefresh(page, aiRefreshConfig('newest-model'));
+    await releaseAiModelsRefresh(page, 1);
+    await expect(fields.card).toContainText('OpenAI / newest-model');
+    await expect(aiRefreshState(page)).toHaveAttribute('data-recued-ai-models-page-state', 'ready');
+    await fields.test.focus();
+    await page.keyboard.press('Enter');
+    await releaseEditableProbeRpc(page, probeMethod, 1);
+    await expect(fields.probe).toHaveAttribute('data-probe-ok', 'true');
+    await releaseAiModelsRefresh(page);
+    await expect(fields.card).toContainText('OpenAI / newest-model');
+    await expect(aiRefreshState(page)).toHaveAttribute('data-recued-ai-models-page-state', 'ready');
+    await expect(fields.probe).toHaveAttribute('data-probe-ok', 'true');
+    await expect(fields.test).toBeFocused();
+  });
+}
+
+test('Settings AI Models saved-config refresh keeps the newer read pending when an older read finishes', async ({ page }) => {
+  const fields = await openAiRefreshSource(page, 'BYOK');
+  await startAiModelsRefresh(page, aiRefreshConfig('older-model'));
+  await startAiModelsRefresh(page, aiRefreshConfig('newest-model'));
+  await releaseAiModelsRefresh(page);
+  await expect(aiRefreshState(page)).toHaveAttribute('data-recued-ai-models-page-state', 'loading');
+  await fields.test.focus();
+  await expect(fields.test).toHaveAttribute('aria-disabled', 'true');
+  await page.keyboard.press('Enter');
+  expect(await page.evaluate(() => window.__app.rpcCallCount('server.probeLlmSource'))).toBe(0);
+  await releaseAiModelsRefresh(page);
+  await expect(fields.card).toContainText('OpenAI / newest-model');
+  await expect(fields.test).not.toHaveAttribute('aria-disabled');
+  await expect(fields.test).toBeFocused();
+});
+
+for (const source of editableProbeSources) {
+  test(`Settings AI Models saved-config refresh cannot overwrite a confirmed ${source.title} save`, async ({ page }) => {
+    const fields = await openEditableProbeSettings(page, source, '');
+    await fields.model.fill('confirmed-refresh-model');
+    await fields.key.fill('confirmed-fixture-key');
+    await startAiModelsRefresh(page);
+    await fields.save.focus();
+    await page.keyboard.press('Enter');
+    await expect(fields.card).toContainText('OpenAI / confirmed-refresh-model');
+    await expect(fields.save).not.toHaveAttribute('aria-busy');
+    await releaseAiModelsRefresh(page);
+    await expect(aiRefreshState(page)).toHaveAttribute('data-recued-ai-models-page-state', 'ready');
+    await expect(fields.card).toContainText('OpenAI / confirmed-refresh-model');
+    await expect(fields.model).toHaveValue('confirmed-refresh-model');
+    await expect(fields.save).toBeFocused();
+    expect(await page.evaluate((rpc) => window.__app.rpcCallCount(rpc), source.write)).toBe(1);
+  });
+}
+
+test('Settings AI Models saved-config refresh failure removes old answers and stays blocked until its read settles', async ({ page }) => {
+  const fields = await openAiRefreshSource(page, 'BYOK');
+  await fields.test.focus();
+  await page.keyboard.press('Enter');
+  await startAiModelsRefresh(page, undefined, true);
+  await releaseEditableProbeRpc(page, probeMethod, 1);
+  await expect(fields.test).not.toHaveAttribute('aria-busy');
+  await expect(fields.test).toHaveAttribute('aria-disabled', 'true');
+  await expect(fields.probe).toHaveCount(0);
+  await page.keyboard.press('Enter');
+  expect(await page.evaluate(() => window.__app.rpcCallCount('server.probeLlmSource'))).toBe(1);
+  await releaseAiModelsRefresh(page);
+  await expect(aiRefreshState(page)).toHaveAttribute('data-recued-ai-models-page-state', 'error');
+  await expect(page.getByText('LLM config: Saved AI configuration unavailable.', { exact: true })).toBeVisible();
+  await expect(fields.test).not.toHaveAttribute('aria-disabled');
+  await expect(fields.test).toBeFocused();
+  await startAiModelsRefresh(page);
+  await releaseAiModelsRefresh(page);
+  await expect(aiRefreshState(page)).toHaveAttribute('data-recued-ai-models-page-state', 'ready');
+  await expect(fields.probe).toHaveCount(0);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('server.probeLlmSource'))).toBe(1);
+  await page.keyboard.press('Enter');
+  await releaseEditableProbeRpc(page, probeMethod, 2);
+  await expect(fields.probe).toHaveAttribute('data-probe-ok', 'true');
+});
+
 test('Settings AI Models embeddings draft survives sibling actions and saves', async ({ page }) => {
   await page.goto(
     `${HARNESS_URL}?ai_pool=entry&ai_embeddings_save_response=slow`,
@@ -24939,7 +27151,10 @@ test('Settings AI Models embeddings Clear is confirmed and mutation-owned', asyn
   const pendingCancel = dialog.locator(
     `[${AI_MODELS_SLOT_CLEAR_CANCEL}="embeddings_slot"]`,
   );
-  await confirm.click();
+  await expect(pendingCancel).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(confirm).toBeFocused();
+  await page.keyboard.press('Enter');
   await page.waitForFunction(
     () => window.__app.rpcCallCount('server.setEmbeddingsSlot') === 2,
   );
@@ -25023,7 +27238,7 @@ test('Settings AI Models failed embeddings Clear stays owned and retryable', asy
   await expect(clear).toBeFocused();
 });
 
-test('Settings AI Models pool removal is confirmed and keyboard-owned', async ({ page }) => {
+test('Settings AI Models pool removal is confirmed and keyboard-owned', async ({ page, browserName }) => {
   await page.goto(`${HARNESS_URL}?ai_pool=entry`);
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#settings/ai-models'));
@@ -25063,7 +27278,8 @@ test('Settings AI Models pool removal is confirmed and keyboard-owned', async ({
 
   await page.keyboard.press('Enter');
   await expect(cancel).toBeFocused();
-  await page.keyboard.press('Tab');
+  // WebKit's full keyboard navigation includes ordinary buttons.
+  await page.keyboard.press(browserName === 'webkit' ? 'Alt+Tab' : 'Tab');
   await expect(confirm).toBeFocused();
   await page.keyboard.press('Enter');
   await page.waitForFunction(

@@ -1,110 +1,139 @@
-/** D-158 P2b inbound-email-answer funnel — the reply-by-email path.
+/** D-158 P2b inbound-email-answer funnel — the reply-by-email path, with the
+ *  sender proven (D-318 P23, 2026-10-14).
  *
- *  The companion to `wire-inbound-answer-dispatcher.ts` (Slack / Telegram)
- *  for the email channel. Slack / Telegram inbound replies arrive as
- *  verified vendor WEBHOOK payloads; email has no webhook — a reply lands
- *  in the user's OWN mirrored mailbox (`data.mail.<slug>`), which Recued
- *  already syncs. So this funnel is WATCHER-driven, not webhook-driven: it
- *  subscribes to the warehouse-event bus and, for each newly-synced mail
- *  record in the notification account's mailbox, tries to decode it as an
- *  answer to an open `ask`.
+ *  An ask goes out by email from the notification account's send-capable
+ *  mailbox (`sender_mail_instance`) to the owner's notification address
+ *  (`default_recipient`), with `[#ask-…]` in its subject. The owner replies
+ *  with an option. Until P23 a reply was trusted because it *"arrived in the
+ *  user's own mirrored inbox"* — and the sync authenticates nothing (D-315
+ *  ruling 3), so any message in that mailbox with an open ask's tag and an
+ *  option's text answered it, whoever sent it.
  *
- *  Per-event path (each guard falls through to a silent skip — one bad /
- *  irrelevant mail must never break the funnel or the bus emit):
- *    1. `event_kind === 'created'` — a reply is a NEW message; `updated`
- *       (an is-read flip, a re-sync) is not a fresh reply.
- *    2. `event.slug === the notification.email account's send-capable mail
- *       instance` — inbound replies land in THAT mailbox; ignore every
- *       other mail account. Re-resolved per event so a re-enrollment is
- *       picked up without a restart (mirrors the outbound sender seam).
- *    3. re-read the record — the warehouse event leaves `record` absent for
- *       adapter emits (mail / calendar / file), so the boot site supplies a
- *       reader over the mail collection + blob store.
- *    4. folder discrimination — skip the server's OWN sent ask-copy (the
- *       mail mirror also holds it when the Sent folder is synced). The leaf
- *       (`channels/email.ts`) flags this as a MUST; `parseEmailReply` is
- *       the correctness backstop (the sent copy's body is the prompt, which
- *       exact-match rejects), the folder filter is the intent-honoring one.
- *    5. `extractAskId(subject)` — no `[#ask-…]` tag ⇒ not a reply to an
- *       emailed ask.
- *    6. `block.getAsk(ask_id)` — load the ask to get its `options`
- *       (`parseEmailReply` needs them; unlike Slack/Telegram's self-
- *       contained `parseInboundReply`, email inbound needs external data).
- *       Unknown ask, or an ask no longer `open`, ⇒ skip (a late reply to a
- *       resolved ask is a no-op anyway).
- *    7. `parseEmailReply({subject, body_text}, options)` — exact-match the
- *       reply text to one option (safe for approvals: "do not approve"
- *       never matches `approve`). No usable answer ⇒ skip; the ask stays
- *       open, answerable on the always-on `ui` channel.
- *    8. `block.submitAnswer(reply)` — first-answer-wins dedup (I-6) makes a
- *       duplicate (a bus re-emit, a boot re-scan, the same reply seen
- *       twice) a no-op, so the funnel needs no idempotency ledger of its
- *       own; the block validates the option against the persisted ask and
- *       dispatches `on_answer`.
+ *  ⛔ A REPLY ANSWERS AN ASK ONLY WHEN IT IS PROVEN THE OWNER'S, one of two
+ *  ways — the same two D-318 §4.2 sets for its chat door:
  *
- *  Trust (I-9): a reply is trusted because it arrived in the user's own
- *  mirrored inbox — authentication is the mail sync path's concern,
- *  upstream of this funnel (the same contract Slack/Telegram's webhook
- *  signature verification holds for their inbound).
+ *    (a) the owner's own Sent record. The reply is the Sent copy in a mailbox
+ *        Recued reads, by the provider's own record (Gmail's `SENT`, the IMAP
+ *        Sent folder, Graph's `sentitems` — `CanonicalMessage.direction`),
+ *        addressed to the notification mailbox. Only something holding that
+ *        account can add to its Sent record. The STORED direction will not do:
+ *        it reads `outbound` whenever From equals the account
+ *        (`resolveMailMessageDirection`), and From is anyone's to write. That
+ *        is why this runs as a mail upsert hook, where the provider's record is
+ *        still in hand, instead of re-reading the stored row as it used to.
+ *    (b) a DMARC pass for the owner's notification address. The reply arrives
+ *        in the notification mailbox, its From is `default_recipient`, and the
+ *        receiving provider's `Authentication-Results` stamp says `dmarc=pass`
+ *        for that address's domain. The header map keeps a header's FIRST
+ *        value (`mailHeaderMap`), and a receiver prepends its stamp, so a
+ *        sender's planted stamp further down is never the one read. No stamp,
+ *        no pass.
  *
- *  Degraded paths (any required dep absent ⇒ the funnel is inert, never a
- *  partial wire): no `block` (notification block not composed — dbless
- *  harness), no `bus`, no `resolveEmailAccountSlug` / `readInboundMail`
- *  (no connection store / mail collection). `start()` logs + no-ops; the
- *  bus is never subscribed, so nothing fires.
+ *  Everything else is ignored, and the ask stays open, answerable in the web
+ *  app (the always-on `ui` channel).
  *
- *  Spec: D-158 § P2 / A.4 / I-9; leaf: `channels/email.ts`
- *  (`extractAskId` / `parseEmailReply`); outbound peer: `wire-email-channel.ts`. */
+ *  ⛔ NEWS ONLY. A mailbox's first backfill, a restart's re-list, or mail older
+ *  than its window answers nothing (`mailMayTrigger`), as no mail fact fires
+ *  from them. Recued's own mail (a reconciliation id) and drafts never count.
+ *
+ *  ⚠ The hook is bound by the listeners' composition (it needs the
+ *  notification block), after the mailboxes have started. `createLateEmailAnswerHook`
+ *  keeps the approval-tagged messages a boot scan reads before then and hands
+ *  them over when it is bound, so a reply sent while the server was off is
+ *  still checked.
+ *
+ *  Per message: the `[#ask-…]` tag → a proof → the open ask's options →
+ *  `parseEmailReply` exact-matches one ("do not approve" never matches
+ *  `approve`) → `block.submitAnswer`, whose first-answer-wins dedup (I-6) makes
+ *  a second sighting a no-op.
+ *
+ *  Spec: D-158 § P2 / A.4 / I-9; D-318 §2.4, P23;
+ *  leaf: `channels/email.ts` (`extractAskId` / `parseEmailReply`); outbound
+ *  peer: `wire-email-channel.ts`. */
 
+import { isMailReconciliationId } from '@recued/contracts';
 import {
   extractAskId,
   parseEmailReply,
   type NotificationBlock,
 } from '@recued/notification';
-import type {
-  WarehouseEvent,
-  WarehouseEventBus,
-} from '@recued/warehouse-events';
 
-/** The minimal inbound-mail projection the funnel needs, re-read from the
- *  warehouse by `(slug, record_id)`. The `WarehouseEvent` leaves `record`
- *  absent on mail adapter emits, so the boot site wires this reader over
- *  the mail collection (`hot_fields` → subject / folder / from) + the blob
- *  store (`materializeMailBody` → the reply text). */
-export interface InboundMailRecord {
-  /** The reply subject — carries the `[#ask-…]` tag through `Re:`. */
-  subject: string;
-  /** Primary folder / label (`INBOX` / `SENT` / …). Used to skip the
-   *  server's own sent ask-copy. Empty when the adapter reports none. */
-  folder: string;
-  /** The bare sender address (no display name), per the adapter contract. */
-  from: string;
-  /** The materialized reply body (inline ≤64 KB or hydrated from CAS). */
-  body_text: string;
+import type { MailUpsertContext } from '../../collections/mail/mail-collection.js';
+import type { CanonicalMessage } from '../../collections/mail/provider.js';
+import { mailMayTrigger } from '../../mail-facts/mail-ingest.js';
+
+/** Who sends asks and who answers them, read from the
+ *  `connection.notification.email` record at each message. */
+export interface EmailAnswerAccounts {
+  /** The mailbox asks are sent from, and replies arrive in. */
+  readonly sender_slug: string;
+  /** That mailbox's own address. */
+  readonly sender_address: string;
+  /** The owner's notification address — where asks are sent. */
+  readonly recipient_address: string;
 }
 
+export type EmailAnswerProof = 'own_sent_record' | 'dmarc_pass';
+
+/** `"Ann" <Ann@Example.com>` → `ann@example.com`. */
+const bareAddress = (address: string): string => {
+  const angled = /<([^<>]+)>/.exec(address);
+  return (angled?.[1] ?? address).trim().toLowerCase();
+};
+
+const domainOf = (address: string): string => {
+  const at = address.lastIndexOf('@');
+  return at < 0 ? '' : address.slice(at + 1);
+};
+
+/** Does an `Authentication-Results` value (RFC 8601) report a DMARC pass for
+ *  `domain`? Each `;`-separated result is read on its own, its comments
+ *  removed: `dmarc=pass (p=NONE) header.from=example.com`. A stamp with no
+ *  authserv-id (Microsoft's starts at its first result) reads the same. */
+export const dmarcPassFor = (header: string | undefined, domain: string): boolean => {
+  if (header === undefined || domain === '') return false;
+  const want = domain.toLowerCase();
+  for (const part of header.replace(/\([^()]*\)/g, ' ').split(';')) {
+    const result = part.trim().toLowerCase();
+    if (!/^dmarc\s*=\s*pass\b/.test(result)) continue;
+    const from = /\bheader\.from\s*=\s*"?([^\s;"]+)"?/.exec(result)?.[1];
+    if (from === want) return true;
+  }
+  return false;
+};
+
+/** How a message proves it is the owner's reply, or `null` when it does not. */
+export const emailAnswerProof = (
+  msg: CanonicalMessage,
+  ctx: Pick<MailUpsertContext, 'slug'>,
+  accounts: EmailAnswerAccounts,
+): EmailAnswerProof | null => {
+  if (isMailReconciliationId(msg.reconciliation_id) || msg.direction === 'draft') return null;
+  const sender = bareAddress(accounts.sender_address);
+  const recipient = bareAddress(accounts.recipient_address);
+  if (sender === '' || recipient === '') return null;
+
+  // (a) The Sent copy in another mailbox Recued reads, by the provider's record.
+  if (msg.direction === 'outbound') {
+    if (ctx.slug === accounts.sender_slug) return null;
+    return msg.to.some((address) => bareAddress(address) === sender) ? 'own_sent_record' : null;
+  }
+
+  // (b) In the notification mailbox, from the owner's address, DMARC-passed.
+  if (ctx.slug !== accounts.sender_slug) return null;
+  if (bareAddress(msg.from) !== recipient) return null;
+  return dmarcPassFor(msg.headers?.['authentication-results'], domainOf(recipient)) ? 'dmarc_pass' : null;
+};
+
 export interface ComposeInboundEmailAnswerDeps {
-  /** D-158 notification block — `getAsk(ask_id)` supplies the ask's
-   *  `options`, `submitAnswer(reply)` is the funnel target. Absent ⇒ the
-   *  funnel is inert. */
+  /** D-158 notification block — `getAsk(ask_id)` supplies the ask's options,
+   *  `submitAnswer(reply)` is the funnel target. Absent ⇒ inert. */
   block?: NotificationBlock;
-  /** Warehouse-event bus — the funnel subscribes to `data.mail.**` and
-   *  filters to `created`. Absent ⇒ inert. */
-  bus?: WarehouseEventBus;
-  /** Resolve the enrolled `connection.notification.email` account's
-   *  send-capable mail instance slug — the mailbox inbound replies land
-   *  in. Called PER EVENT so a re-enrollment / removal is picked up
-   *  without a restart. Null ⇒ not enrolled ⇒ the event is ignored.
+  /** The accounts, re-read per message so a re-enrollment is picked up
+   *  without a restart. `null` ⇒ email asks are not set up ⇒ ignored.
    *  Absent ⇒ inert. */
-  resolveEmailAccountSlug?: () => string | null;
-  /** Re-read one mail record's reply fields by `(slug, record_id)`. Null ⇒
-   *  the record is missing / unreadable (a race with a delete, an
-   *  unresolvable CAS blob). Absent ⇒ inert. */
-  readInboundMail?: (
-    slug: string,
-    record_id: string,
-  ) => Promise<InboundMailRecord | null>;
-  /** Optional logger — mirrors `composeInboundAnswerDispatcher`'s contract. */
+  resolveAccounts?: () => EmailAnswerAccounts | null;
+  now?: () => number;
   log?: (
     level: 'info' | 'warn',
     msg: string,
@@ -113,104 +142,106 @@ export interface ComposeInboundEmailAnswerDeps {
 }
 
 export interface InboundEmailAnswerFunnel {
-  /** Subscribe to `data.mail.**` created events. Idempotent (a second
-   *  `start()` is a no-op); inert when a required dep is absent. */
-  start(): void;
-  /** Close admission, unsubscribe, and await every already-admitted handler.
+  /** The mail upsert hook: a proven reply answers its open ask. Never throws;
+   *  the answer is submitted in the background. */
+  onMessageUpserted(msg: CanonicalMessage, ctx: MailUpsertContext): void;
+  /** Close admission and await every answer already being submitted.
    *  Idempotent and coalesced. */
   dispose(): Promise<void>;
 }
 
-/** Skip the server's own sent ask-copy: a genuine inbound reply lands in
- *  INBOX (never matches), while a synced Sent copy carries a `sent`-like
- *  folder / label across every provider (Gmail `SENT`, IMAP `Sent` /
- *  `Sent Items`, Graph `Sent Items`). Best-effort by design — a Graph
- *  `parentFolderId` GUID won't match, but `parseEmailReply` is the
- *  correctness backstop there (the sent copy's body is the prompt, which
- *  exact-match rejects). Case-insensitive; only excludes sent-like folders,
- *  so a real INBOX reply is never a false skip. */
-const isSentFolder = (folder: string): boolean => /sent/i.test(folder);
-
 export const composeInboundEmailAnswer = (
   deps: ComposeInboundEmailAnswerDeps,
 ): InboundEmailAnswerFunnel => {
-  const { block, bus, resolveEmailAccountSlug, readInboundMail, log } = deps;
-  let unsubscribe: (() => void) | null = null;
+  const { block, resolveAccounts, log } = deps;
+  const now = deps.now ?? Date.now;
   const inFlight = new Set<Promise<void>>();
   let disposed = false;
   let disposePromise: Promise<void> | undefined;
+  if (block === undefined || resolveAccounts === undefined) {
+    log?.('info', 'inbound email answer funnel inert — missing deps');
+  }
 
-  const handle = async (event: WarehouseEvent): Promise<void> => {
-    // A reply is a fresh message; ignore is-read flips / re-sync `updated`.
-    if (event.event_kind !== 'created') return;
-    // Only the notification account's mailbox carries inbound replies.
-    const accountSlug = resolveEmailAccountSlug!();
-    if (accountSlug === null || event.slug !== accountSlug) return;
-    // Re-read: the mail adapter emit leaves `event.record` absent.
-    const rec = await readInboundMail!(event.slug, event.record_id);
-    if (rec === null) return;
-    // Skip the server's own sent ask-copy (the leaf's MUST).
-    if (isSentFolder(rec.folder)) return;
-    const ask_id = extractAskId(rec.subject);
-    if (ask_id === null) return;
-    // Load the ask for its options; skip an unknown / already-resolved ask.
+  const answer = async (
+    msg: CanonicalMessage,
+    ask_id: string,
+    proof: EmailAnswerProof,
+  ): Promise<void> => {
     const ask = await block!.getAsk(ask_id);
     if (ask === null || ask.status !== 'open') return;
-    const reply = parseEmailReply(
-      { subject: rec.subject, body_text: rec.body_text },
-      ask.options,
-    );
+    const reply = parseEmailReply({ subject: msg.subject, body_text: msg.body_text }, ask.options);
     if (reply === null) return;
-    // First-answer-wins dedup (I-6) inside the block makes a re-seen reply
-    // a no-op; the block validates the option + dispatches `on_answer`.
     await block!.submitAnswer(reply);
-    log?.('info', 'inbound email reply recorded', {
-      ask_id,
-      option: reply.option,
-    });
+    log?.('info', 'inbound email reply recorded', { ask_id, option: reply.option, proof });
   };
 
   return {
-    start(): void {
-      if (disposed) return;
-      if (
-        block === undefined ||
-        bus === undefined ||
-        resolveEmailAccountSlug === undefined ||
-        readInboundMail === undefined
-      ) {
-        log?.('info', 'inbound email answer funnel inert — missing deps');
+    onMessageUpserted(msg, ctx): void {
+      if (disposed || block === undefined || resolveAccounts === undefined) return;
+      const ask_id = extractAskId(msg.subject);
+      if (ask_id === null) return;
+      if (!mailMayTrigger(msg, ctx, now())) return;
+      const accounts = resolveAccounts();
+      if (accounts === null) return;
+      const proof = emailAnswerProof(msg, ctx, accounts);
+      if (proof === null) {
+        // Only a would-be reply in the notification mailbox is worth a line:
+        // the same tag in another mailbox's inbox is the ask itself, delivered.
+        if (ctx.slug === accounts.sender_slug && msg.direction !== 'outbound') {
+          log?.('warn', 'inbound email reply ignored: not proven to be from the owner', { ask_id });
+        }
         return;
       }
-      if (unsubscribe !== null) return; // idempotent
-      unsubscribe = bus.subscribe('data.mail.**', (event) => {
-        // Fire-and-forget: a warehouse-bus listener must NEVER throw into the
-        // emit path (it would break every other subscriber, incl. the reactive
-        // trigger dispatcher). `handle` is async, so EVERY throw it can raise —
-        // including one from its pre-await prefix (an injected seam that throws)
-        // — surfaces as a promise rejection, so this single `.catch` is a
-        // complete guard; there is no synchronous throw path to guard.
-        if (disposed) return;
-        let tracked!: Promise<void>;
-        tracked = handle(event).catch((error) => {
-          log?.('warn', 'inbound email answer funnel — handler threw', {
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }).finally(() => {
-          inFlight.delete(tracked);
+      let tracked!: Promise<void>;
+      tracked = answer(msg, ask_id, proof).catch((error) => {
+        log?.('warn', 'inbound email answer funnel — answer failed', {
+          error: error instanceof Error ? error.message : String(error),
         });
-        inFlight.add(tracked);
+      }).finally(() => {
+        inFlight.delete(tracked);
       });
+      inFlight.add(tracked);
     },
     dispose(): Promise<void> {
-      if (disposePromise) return disposePromise;
+      if (disposePromise !== undefined) return disposePromise;
       disposed = true;
-      if (unsubscribe !== null) {
-        unsubscribe();
-        unsubscribe = null;
-      }
-      disposePromise = Promise.allSettled([...inFlight]).then(() => undefined);
+      disposePromise = Promise.all([...inFlight]).then(() => undefined);
       return disposePromise;
+    },
+  };
+};
+
+/** How many approval-tagged messages wait for the hook to be bound. A boot scan
+ *  reads at most what came while the server was off; past this, the oldest
+ *  wait is dropped and its ask stays open in the web app. */
+const LATE_HOOK_PENDING_MAX = 50;
+
+/** The holder the mail stack calls on every upsert, bound later by the
+ *  listeners' composition. Until then it keeps only messages carrying an ask
+ *  tag, and hands them to the hook when it is bound. */
+export interface LateEmailAnswerHook {
+  run(msg: CanonicalMessage, ctx: MailUpsertContext): void;
+  bind(hook: (msg: CanonicalMessage, ctx: MailUpsertContext) => void): void;
+}
+
+export const createLateEmailAnswerHook = (): LateEmailAnswerHook => {
+  let current: ((msg: CanonicalMessage, ctx: MailUpsertContext) => void) | undefined;
+  let pending: Array<[CanonicalMessage, MailUpsertContext]> = [];
+  return {
+    run(msg, ctx) {
+      if (current !== undefined) {
+        current(msg, ctx);
+        return;
+      }
+      if (extractAskId(msg.subject) === null) return;
+      pending.push([msg, ctx]);
+      if (pending.length > LATE_HOOK_PENDING_MAX) pending.shift();
+    },
+    bind(hook) {
+      current = hook;
+      const waiting = pending;
+      pending = [];
+      for (const [msg, ctx] of waiting) hook(msg, ctx);
     },
   };
 };

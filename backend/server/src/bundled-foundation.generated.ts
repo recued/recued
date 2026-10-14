@@ -141,7 +141,7 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
     "publisher": "recued-core",
     "name": "Reception — Approval",
     "description": "Use Reception — Approval in Recued. Review customer replies before creating promises, releasing quotes, completing local work or running saved recipes. Actions that change data use Recued's approval controls.",
-    "version": 4,
+    "version": 5,
     "pre_install": true,
     "recipes": [],
     "requires": [
@@ -159,6 +159,11 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
         "type": "recipe",
         "slug": "reception-quote-signoff-release",
         "version": 2
+      },
+      {
+        "type": "recipe",
+        "slug": "reception-quote-completion-review",
+        "version": 1
       },
       {
         "type": "recipe",
@@ -1810,6 +1815,45 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
         "args": {
           "endpoint_id": "{{context.event.payload.endpoint_id}}",
           "intent_id": "{{context.event.payload.intent_id}}",
+          "expected_plan_hash": "{{context.event.payload.expected_plan_hash}}",
+          "summary": "{{context.event.payload.summary}}"
+        }
+      }
+    ],
+    "output": {
+      "render": []
+    }
+  },
+  "reception-quote-completion-review": {
+    "recipe_id": "reception-quote-completion-review",
+    "version": 1,
+    "chat_exposed": false,
+    "ttl": 0,
+    "metadata": {
+      "name": "Review customer completion",
+      "description": "Use “Review customer completion” in Recued. Review the saved delivery and customer response, then approve closing or reopening the agreement’s local task. Apply the change while the agreement and task still match.",
+      "author": "recued-core",
+      "supported_platforms": [],
+      "recipe_bundle": "recued-core/reception-approval",
+      "tags": [
+        "pack:reception",
+        "quotes",
+        "completion"
+      ],
+      "budget_ms": 30000
+    },
+    "variables": {},
+    "event_triggers": [
+      {
+        "event": "composition.reception_quote_completion"
+      }
+    ],
+    "steps": [
+      {
+        "id": "review",
+        "op": "core.work-entity.quote-completion.review",
+        "args": {
+          "completion_id": "{{context.event.payload.completion_id}}",
           "expected_plan_hash": "{{context.event.payload.expected_plan_hash}}",
           "summary": "{{context.event.payload.summary}}"
         }

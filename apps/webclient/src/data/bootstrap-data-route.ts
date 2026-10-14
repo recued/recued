@@ -5067,11 +5067,12 @@ export const bootstrapDataRoute = (
 
   const routeRoot = doc.createElement('div');
   routeRoot.setAttribute(DATA_ROUTE_HOST_ATTR, '');
+  const collectionPickerBreakpoint = doc.defaultView?.matchMedia?.('(max-width: 640px)');
   // A focus fallback must address the navigation that is actually visible:
   // collection tabs on a wide screen, the same collections in a picker on a
   // phone. This also preserves the existing editor/discard-guard ownership.
   const collectionNavigationTarget = (tab: DataTabId): HTMLElement | null =>
-    routeRoot.querySelector?.<HTMLElement>(doc.defaultView?.matchMedia?.('(max-width: 640px)').matches
+    routeRoot.querySelector?.<HTMLElement>(collectionPickerBreakpoint?.matches
       ? `[${DATA_ROUTE_COLLECTION_PICKER_ATTR}]` : `[${DATA_ROUTE_TAB_ATTR}="${tab}"]`) ?? null;
   opts.root.appendChild(routeRoot);
 
@@ -7015,7 +7016,7 @@ export const bootstrapDataRoute = (
             verificationItemLoading,
             verificationItemReady,
           );
-    routeRoot.innerHTML = `
+    const markup = `
       ${opts.hideHeading ? '' : `<header class="data-header">
         <h1 class="data-title" ${DATA_ROUTE_HEADING_ATTR}>Data</h1>
       </header>`}
@@ -7045,6 +7046,28 @@ export const bootstrapDataRoute = (
           </div>`}
       ${verificationNext}
     `;
+    const picker = routeRoot.querySelector<HTMLSelectElement>(`[${DATA_ROUTE_COLLECTION_PICKER_ATTR}]`);
+    const pickerLabel = picker?.parentElement;
+    if (activeLens === 'data' && picker != null && pickerLabel?.parentElement === routeRoot) {
+      // Keep the native select connected and focused: replacing it resets its
+      // multi-letter typeahead and can close an open platform picker.
+      const nextRoot = doc.createElement('div');
+      nextRoot.innerHTML = markup;
+      const nextPicker = nextRoot.querySelector<HTMLSelectElement>(`[${DATA_ROUTE_COLLECTION_PICKER_ATTR}]`)!;
+      const nextLabel = nextPicker.parentElement!;
+      for (const child of Array.from(routeRoot.childNodes)) {
+        if (child !== pickerLabel) child.remove();
+      }
+      while (nextRoot.firstChild !== nextLabel) {
+        routeRoot.insertBefore(nextRoot.firstChild!, pickerLabel);
+      }
+      nextLabel.remove();
+      routeRoot.append(...nextRoot.childNodes);
+      if (picker.value !== activeTab) picker.value = activeTab;
+      picker.disabled = nextPicker.disabled;
+    } else {
+      routeRoot.innerHTML = markup;
+    }
     renderedActiveTab = activeTab;
     if (opts.savedView !== undefined && currentView() !== null
       && (activeLens === 'memory' ? !memoryLoading : !loading && !explorerLoading && !recordsState.loading)) {
@@ -14643,8 +14666,8 @@ export const bootstrapDataRoute = (
       const next = target.value;
       // A protected edit may refuse the switch. Keep the current collection
       // selected until the existing navigation guard accepts it.
-      target.value = activeTab;
       if (isDataTab(next)) void selectTab(next, true);
+      if (target.value !== activeTab) target.value = activeTab;
       return;
     }
     if (activeTab === 'mail_fact'
@@ -14876,6 +14899,35 @@ export const bootstrapDataRoute = (
   routeRoot.addEventListener('submit', onRecordsViewSubmit);
   routeRoot.addEventListener('change', onChange);
   routeRoot.addEventListener('keydown', onKeyDown);
+
+  const isCollectionNavigation = (target: EventTarget | null): boolean => {
+    const element = target as HTMLElement | null;
+    return element?.hasAttribute?.(DATA_ROUTE_TAB_ATTR) === true
+      || element?.hasAttribute?.(DATA_ROUTE_COLLECTION_PICKER_ATTR) === true;
+  };
+  let collectionNavigationHasFocus = false;
+  const onCollectionFocusIn = (event: FocusEvent): void => {
+    collectionNavigationHasFocus = isCollectionNavigation(event.target);
+  };
+  const onCollectionFocusOut = (event: FocusEvent): void => {
+    if (!isCollectionNavigation(event.target)) return;
+    const element = event.target as HTMLElement;
+    // Browsers can blur the now-hidden control before the media-query event.
+    // Retain ownership only for that transition, not for an ordinary blur.
+    const hiddenByBreakpoint = collectionPickerBreakpoint?.matches
+      ? element.hasAttribute(DATA_ROUTE_TAB_ATTR)
+      : element.hasAttribute(DATA_ROUTE_COLLECTION_PICKER_ATTR);
+    if (!hiddenByBreakpoint || event.relatedTarget !== null) collectionNavigationHasFocus = false;
+  };
+  const onCollectionBreakpointChange = (): void => {
+    if (disposed || activeLens !== 'data' || !collectionNavigationHasFocus) return;
+    const focused = doc.activeElement;
+    if (focused !== null && focused !== doc.body && !isCollectionNavigation(focused)) return;
+    collectionNavigationTarget(activeTab)?.focus({ preventScroll: true });
+  };
+  doc.addEventListener('focusin', onCollectionFocusIn);
+  doc.addEventListener('focusout', onCollectionFocusOut);
+  collectionPickerBreakpoint?.addEventListener?.('change', onCollectionBreakpointChange);
 
   startRefresh();
   // Bind the queued open to the route the user actually requested. Ordinary
@@ -15203,6 +15255,9 @@ export const bootstrapDataRoute = (
       routeRoot.removeEventListener('change', onChange);
       routeRoot.removeEventListener('submit', onRecordsViewSubmit);
       routeRoot.removeEventListener('keydown', onKeyDown);
+      doc.removeEventListener('focusin', onCollectionFocusIn);
+      doc.removeEventListener('focusout', onCollectionFocusOut);
+      collectionPickerBreakpoint?.removeEventListener?.('change', onCollectionBreakpointChange);
       try {
         opts.root.removeChild(routeRoot);
       } catch {

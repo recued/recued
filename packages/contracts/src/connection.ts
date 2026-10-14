@@ -1616,8 +1616,11 @@ export const foldConnectionDispatchHealth = (
   detail?: string,
 ): ConnectionHealth | null => {
   if (outcome === 'call_failed') return null;
+  // D-322 §22 — a recovered account must not retain its prior HTTP/auth error.
+  const previous: Partial<ConnectionHealth> = { ...prior };
+  delete previous.last_error;
   return {
-    ...(prior ?? {}),
+    ...previous,
     status: outcome,
     last_probed_at: at,
     ...(outcome === 'ok'

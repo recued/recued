@@ -34,6 +34,7 @@ import {
   deriveExchangeStatus,
 } from '@recued/contracts';
 import { createMailSendClaimStore } from '../../storage/mail-send-claim-store.js';
+import { RpcError, SIGNOFF_REMINDER_REFERENCE_PREFIX } from '@recued/contracts';
 import { raiseMailSendOutcomeAsk } from '../../mail-send-outcome-ask.js';
 import type { MailSentReconciliationResult } from '../../collections/mail/provider.js';
 import type {
@@ -238,6 +239,7 @@ export interface ComposeExecutorConfigDeps {
    *  seam the container-pick and saga wirings use for the same reason. Absent ⇒
    *  the door refuses rather than raising nothing silently. */
   getExecuteDeps?: () => { preflightNotifier?: unknown; auditLog?: unknown;
+    getQuoteSignoffReminderService?: () => import('../../quote-signoff-reminder-service.js').QuoteSignoffReminderService;
     mailDraft?: import('../../execute-handler.js').ExecuteHandlerDeps['mailDraft'];
     mailDraftSaveToMailbox?: import('../../execute-handler.js').ExecuteHandlerDeps['mailDraftSaveToMailbox'];
     preapprovalRequest?: import('../../execute-handler.js').ExecuteHandlerDeps['preapprovalRequest'] } | undefined;
@@ -822,6 +824,16 @@ export const composeExecutorConfig = async (
         },
       } : {}),
       ...(deps.db && deps.recordsStore && deps.receptionProjectionWorkEntityStore?.writeTask ? {
+        quoteCompletionReview: async (input) => {
+          const { createQuoteSignoffService, quoteSignoffManifestReader } = await import('../../quote-signoff-service.js');
+          const { createQuoteCompletionService } = await import('../../quote-completion-service.js');
+          const { createWorkEntityStore } = await import('../../storage/work-entity-store.js');
+          const manifest = await quoteSignoffManifestReader((slug) => deps.manifests.get(slug));
+          const work = { readTask: createWorkEntityStore(deps.db!).readTask,
+            writeTask: (task: import('@recued/contracts').Task, now: number) => deps.receptionProjectionWorkEntityStore!.writeTask!(task, now) };
+          const signoffs = createQuoteSignoffService({ db: deps.db!, records: deps.recordsStore!, manifest, work, now: Date.now });
+          return createQuoteCompletionService({ db: deps.db!, signoffs, work, now: Date.now }).review(input);
+        },
         quoteSignoffRelease: async (input) => {
           const { createQuoteSignoffService, quoteSignoffManifestReader } = await import('../../quote-signoff-service.js');
           const { createWorkEntityStore } = await import('../../storage/work-entity-store.js');
@@ -1785,8 +1797,18 @@ export const composeExecutorConfig = async (
       // from a kernel `mail-send` step or an external rpc client.
       mailSend: async (input) => {
         const { handleCollectionMailSend } = await import('../../collections/collection-handler.js');
+        let before_dispatch: (() => void) | undefined;
+        if (typeof input.reconciliation_id === 'string' && input.reconciliation_id.startsWith(SIGNOFF_REMINDER_REFERENCE_PREFIX)) {
+          const getReminders = deps.getExecuteDeps?.()?.getQuoteSignoffReminderService;
+          if (!getReminders) {
+            throw new RpcError('not_configured', 'Sign-off reminder validation is unavailable.', 503);
+          }
+          before_dispatch = await getReminders().guardSend(input);
+        }
         try {
-          return await handleCollectionMailSend({ registry: deps.collectionRegistry }, input);
+          return before_dispatch
+            ? await handleCollectionMailSend({ registry: deps.collectionRegistry }, input, { before_dispatch })
+            : await handleCollectionMailSend({ registry: deps.collectionRegistry }, input);
         } catch (err) {
           // A fenced send that ended without an outcome — this attempt, or an
           // earlier one a retry just ran into — is the OWNER's to settle: ask them

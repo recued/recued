@@ -288,6 +288,9 @@ const makeOptions = (
     // D-124 — the new mail's events a boot scan emitted before the dispatcher
     // subscribed: sealed as it composes, replayed once. Recording, as above.
     bootEvents: { seal: vi.fn(), replay: vi.fn(async () => {}) },
+    // D-318 P23 — the email-approval reply check's holder, bound once the
+    // notification block exists. Recording, as above.
+    emailAnswerHook: { run: vi.fn(), bind: vi.fn() },
     channelDispatchers: undefined,
     oauthClientConfigDeps: undefined,
   },
@@ -638,6 +641,16 @@ describe('composeListeners', () => {
     await composeListeners(options);
     const { open } = (options.collection as unknown as { mailFactEvents: { open: ReturnType<typeof vi.fn> } }).mailFactEvents;
     expect(open).toHaveBeenCalledTimes(1);
+  });
+
+  it('D-318 P23 — binds the email-approval reply check, once', async () => {
+    const options = makeOptions();
+    await composeListeners(options);
+    const { bind } = (options.collection as unknown as {
+      emailAnswerHook: { bind: ReturnType<typeof vi.fn> };
+    }).emailAnswerHook;
+    expect(bind).toHaveBeenCalledTimes(1);
+    expect(bind.mock.calls[0]![0]).toBeTypeOf('function');
   });
 
   it('seals the boot scan’s recorded mail events as the dispatcher composes, and replays them once, after', async () => {

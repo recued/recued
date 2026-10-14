@@ -125,6 +125,15 @@ export const buildChatModelDefaultModel = (
   };
 };
 
+/** A server timestamp cannot regress or poison the last known preference.
+ *  Equal timestamps remain valid: two writes may share a millisecond. */
+export const isChatModelDefaultSnapshotCurrent = (
+  current: { updated_at: number } | null | undefined,
+  snapshot: { updated_at: number },
+): boolean => Number.isFinite(snapshot.updated_at)
+  && snapshot.updated_at >= 0
+  && (current == null || snapshot.updated_at >= current.updated_at);
+
 /** Pure reducer over the `chat.default_model_pref_changed` broadcast. The
  *  page invokes this on each event to refresh the model against the current
  *  LLM config (the event's `source_id` is the source of truth; its transient
@@ -135,6 +144,6 @@ export const reduceChatDefaultModelPrefChanged = (
   event: { source_id?: unknown; updated_at: number },
   config: LlmConfigRecord | null,
 ): ChatModelDefaultRenderModel => {
-  void current;
+  if (!isChatModelDefaultSnapshotCurrent(current, event)) return current;
   return buildChatModelDefaultModel(event, config);
 };

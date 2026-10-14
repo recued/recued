@@ -1,0 +1,39 @@
+{
+  "recipe_id": "reception-quote-completion-review",
+  "version": 1,
+  "chat_exposed": false,
+  "ttl": 0,
+  "metadata": {
+    "name": "Review customer completion",
+    "description": "Use \u201cReview customer completion\u201d in Recued. Review the saved delivery and customer response, then approve closing or reopening the agreement\u2019s local task. Apply the change while the agreement and task still match.",
+    "author": "recued-core",
+    "supported_platforms": [],
+    "recipe_bundle": "recued-core/reception-approval",
+    "tags": [
+      "pack:reception",
+      "quotes",
+      "completion"
+    ],
+    "budget_ms": 30000
+  },
+  "variables": {},
+  "event_triggers": [
+    {
+      "event": "composition.reception_quote_completion"
+    }
+  ],
+  "steps": [
+    {
+      "id": "review",
+      "op": "core.work-entity.quote-completion.review",
+      "args": {
+        "completion_id": "{{context.event.payload.completion_id}}",
+        "expected_plan_hash": "{{context.event.payload.expected_plan_hash}}",
+        "summary": "{{context.event.payload.summary}}"
+      }
+    }
+  ],
+  "output": {
+    "render": []
+  }
+}

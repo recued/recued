@@ -1973,6 +1973,7 @@ export const APPROVAL_LINK_ON_APPROVE_ACTION_COPY: Readonly<
     label: 'Run a Recipe',
     help: 'After they accept, review the saved recipe and its main-dish settings before starting it.',
   },
+  quote_completion: { label: 'Customer completion', help: 'Prepare completion from a released agreement in Customer sign-offs.' },
   quote_signoff: {
     label: 'Customer quote sign-off',
     help: 'Review an exact quote revision and release work through Customer sign-offs.',

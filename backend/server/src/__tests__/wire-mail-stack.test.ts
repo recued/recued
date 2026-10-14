@@ -323,6 +323,21 @@ describe('composeMailBoot', () => {
     expect(contactStore.observeBatch).toHaveBeenCalledWith(observations);
   });
 
+  it('D-318 P23 — hands every upsert to the email-approval reply check, after a contact write that throws', () => {
+    const contactStore = makeContactStore();
+    vi.mocked(deriveContactsFromMail).mockImplementationOnce(() => { throw new Error('contact derive failed'); });
+    const emailAnswerHook = vi.fn();
+
+    composeMailBoot(buildDeps({ contactStore, emailAnswerHook }));
+    const [, storage] = lastComposeCall();
+    const msg = message();
+    const ctx = upsertCtx();
+    expect(() => storage.onMessageUpserted?.(msg, ctx)).toThrow('contact derive failed');
+
+    expect(emailAnswerHook).toHaveBeenCalledTimes(1);
+    expect(emailAnswerHook).toHaveBeenCalledWith(msg, ctx);
+  });
+
   it('does not observe contacts when derivation returns no observations', () => {
     const contactStore = makeContactStore();
     vi.mocked(deriveContactsFromMail).mockReturnValueOnce([]);

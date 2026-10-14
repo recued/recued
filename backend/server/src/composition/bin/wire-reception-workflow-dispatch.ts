@@ -39,7 +39,7 @@
  *  D-157 § A.2 / Flow 2. */
 
 import type { ExecutionSource } from '@recued/contracts';
-import { QUOTE_SIGNOFF_RELEASE_RECIPE, APPROVAL_WORKFLOW_RECIPE } from '@recued/contracts';
+import { QUOTE_SIGNOFF_RELEASE_RECIPE, QUOTE_COMPLETION_RECIPE, APPROVAL_WORKFLOW_RECIPE } from '@recued/contracts';
 import type { ExecuteHandlerDeps } from '../../execute-handler.js';
 import type { ExecuteRequest } from '../../types.js';
 import type { RecipeStore } from '../../recipe-store.js';
@@ -57,6 +57,7 @@ const PACK_SLUG_FOR_KIND: Readonly<Record<ReceptionWorkflowDispatch['kind'], str
   scheduling_link: 'reception-scheduling',
   drop_link: 'reception-drop',
   quote_signoff: 'reception-approval',
+  quote_completion: 'reception-approval',
   approval_workflow: 'reception-approval',
 };
 
@@ -116,10 +117,11 @@ export const composeReceptionWorkflowDispatch = (
     // trigger is a `composition.reception_*` event). `listForPack` yields the
     // recipe ids; `get` resolves each definition.
     for (const recipeId of deps.recipeStore.listForPack(slug)) {
-      const dedicated = kind === 'quote_signoff' ? QUOTE_SIGNOFF_RELEASE_RECIPE
+      const dedicated = kind === 'quote_completion' ? QUOTE_COMPLETION_RECIPE
+        : kind === 'quote_signoff' ? QUOTE_SIGNOFF_RELEASE_RECIPE
         : kind === 'approval_workflow' ? APPROVAL_WORKFLOW_RECIPE : undefined;
       if (dedicated ? recipeId !== dedicated
-        : recipeId === QUOTE_SIGNOFF_RELEASE_RECIPE || recipeId === APPROVAL_WORKFLOW_RECIPE) continue;
+        : recipeId === QUOTE_SIGNOFF_RELEASE_RECIPE || recipeId === QUOTE_COMPLETION_RECIPE || recipeId === APPROVAL_WORKFLOW_RECIPE) continue;
       const recipe = deps.recipeStore.get(recipeId);
       if (recipe === null) continue;
       const triggers = (recipe as { event_triggers?: ReadonlyArray<{ event?: string }> })
@@ -159,8 +161,9 @@ export const composeReceptionWorkflowDispatch = (
     // A unique synthetic run id per dispatch — the host's run-anchor identity
     // for this fresh fire. Includes the source ref + a monotone-ish stamp so
     // re-dispatches (a rare crash-window double-fire) don't collide anchors.
-    const dedicated = dispatch.kind === 'quote_signoff' || dispatch.kind === 'approval_workflow';
+    const dedicated = dispatch.kind === 'quote_signoff' || dispatch.kind === 'quote_completion' || dispatch.kind === 'approval_workflow';
     const runId = dispatch.kind === 'approval_workflow' ? `reception-approval-workflow-${dispatch.source_ref}`
+      : dispatch.kind === 'quote_completion' ? `reception-quote-completion-${dispatch.source_ref}`
       : dispatch.kind === 'quote_signoff' ? `reception-quote-signoff-${dispatch.source_ref}`
       : `reception-${dispatch.kind}-${dispatch.source_ref}-${now()}`;
 

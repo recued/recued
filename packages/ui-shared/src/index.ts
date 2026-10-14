@@ -249,6 +249,7 @@ export {
 } from './contacts/index.js';
 export {
   resolveConnectionSchema,
+  withAuthenticationSwitchSchema,
   resolveVendorSchema,
   initialVendorSchemaValues,
   syncVendorOAuthEndpointValue,

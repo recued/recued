@@ -105,6 +105,8 @@ export interface QuoteSignoffSummary {
   follow_up?: QuoteSignoffFollowUp;
   /** Owner-list eligibility, including amendments outside the current page. */
   can_add_work?: boolean;
+  /** Latest released agreement, with a bound local task. */
+  can_request_completion?: boolean;
 }
 
 export interface QuoteSignoffPrepareResult {
@@ -114,7 +116,11 @@ export interface QuoteSignoffPrepareResult {
   customer_preview: string;
 }
 
-export interface QuoteSignoffPublishInput { signoff_id: string; preview_hash: string }
+export interface QuoteSignoffPublishInput {
+  signoff_id: string; preview_hash: string;
+  /** Opt in to retaining the bearer link encrypted for reviewed follow-up mail. */
+  remember_link_for_reminders?: boolean;
+}
 export interface QuoteSignoffPublishResult { signoff: QuoteSignoffSummary; share_url: string }
 export interface QuoteSignoffListInput {
   limit?: number;
@@ -137,6 +143,59 @@ export interface QuoteSignoffQuoteChoice {
 }
 export interface QuoteSignoffQuotesResult { quotes: QuoteSignoffQuoteChoice[]; truncated: boolean }
 export interface QuoteSignoffCancelInput { signoff_id: string }
+
+export interface QuoteSignoffReceiptInput { signoff_id: string }
+
+/** Shareable historical projection. Never includes a raw quote/plan, visitor
+ * identity, reply comment, endpoint, bearer link or current work/payment data. */
+export interface QuoteSignoffReceiptEntry {
+  signoff_id: string;
+  parent_signoff_id: string | null;
+  revision: number;
+  business_name: string;
+  customer: string;
+  quote_label: string;
+  quote_reference: string | null;
+  quote_revision: number;
+  scope: string;
+  amount: string;
+  net: string;
+  vat_amount: string;
+  currency: string;
+  /** Saved offer text when available; older plans rebuild it from frozen terms. */
+  customer_preview: string;
+  offer_text_source: 'saved' | 'reconstructed';
+  state: QuoteSignoffState;
+  prepared_at: number;
+  expires_at: number;
+  response: {
+    decision: 'accepted' | 'declined' | 'not_recorded' | 'unavailable';
+    /** Visitor submission time from the encrypted intent's consumption record. */
+    received_at: number | null;
+    /** Time the sign-off processor recorded the reply; may still be pending. */
+    recorded_at: number | null;
+  };
+  release: null | {
+    recorded_at: number;
+    invoice_ref: string;
+    issued_on: string;
+    due_on: string;
+  };
+}
+
+/** Root and released ancestors through the selected request only. Later
+ * amendments and other pending offers never become part of an earlier receipt. */
+export interface QuoteSignoffReceipt {
+  format: 'recued.customer-signoff-receipt';
+  version: 1 | 2;
+  captured_at: number;
+  selected_signoff_id: string;
+  root_signoff_id: string;
+  requests: QuoteSignoffReceiptEntry[];
+  /** Present when this server supports delivery completion receipts. */
+  completions?: import('./quote-completion.js').QuoteCompletionReceiptEntry[];
+}
+
 export interface QuoteSignoffReleaseInput {
   signoff_id: string;
   /** Immutable plan digest. Editing an approval cannot substitute another plan. */

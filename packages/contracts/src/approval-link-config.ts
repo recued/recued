@@ -114,6 +114,7 @@ export const APPROVAL_LINK_ON_APPROVE_ACTIONS = [
   'create_commitment',
   'fire_recipe',
   'quote_signoff',
+  'quote_completion',
 ] as const;
 
 export type ApprovalLinkOnApproveAction =
@@ -129,12 +130,13 @@ export const APPROVAL_LINK_SUPPORTED_ON_APPROVE_ACTIONS = [
   'mark_resolved',
   'fire_recipe',
   'quote_signoff',
+  'quote_completion',
 ] as const satisfies readonly ApprovalLinkOnApproveAction[];
 
 /** Quote sign-offs are minted from a frozen quote by the dedicated owner
  * surface. A generic approval form cannot choose or retarget that effect. */
 export const APPROVAL_LINK_AUTHORABLE_ON_APPROVE_ACTIONS =
-  APPROVAL_LINK_SUPPORTED_ON_APPROVE_ACTIONS.filter((action) => action !== 'quote_signoff');
+  APPROVAL_LINK_SUPPORTED_ON_APPROVE_ACTIONS.filter((action) => action !== 'quote_signoff' && action !== 'quote_completion');
 
 export type ApprovalLinkSupportedOnApproveAction =
   (typeof APPROVAL_LINK_SUPPORTED_ON_APPROVE_ACTIONS)[number];
@@ -441,7 +443,7 @@ export const validateApprovalLinkConfig = (
         detail: 'context_raw.summary must be non-empty',
       });
     } else if ((ctx.summary as string).length > (
-      (c.on_action as { on_approve_action?: unknown } | undefined)?.on_approve_action === 'quote_signoff'
+      ['quote_signoff','quote_completion'].includes(String((c.on_action as { on_approve_action?: unknown } | undefined)?.on_approve_action))
         ? QUOTE_SIGNOFF_CONTEXT_MAX : APPROVAL_LINK_CONTEXT_SUMMARY_MAX
     )) {
       failures.push({
@@ -626,7 +628,7 @@ export const validateApprovalLinkConfig = (
         detail: `on_action.on_approve_action must be one of ${[...APPROVAL_LINK_ON_APPROVE_ACTION_SET].join(' | ')}`,
       });
     }
-    if (oa.on_approve_action === 'quote_signoff' && actionKind !== 'approve_wording') {
+    if ((oa.on_approve_action === 'quote_signoff' || oa.on_approve_action === 'quote_completion') && actionKind !== 'approve_wording') {
       failures.push({ code: 'on_action_invalid', detail: 'Quote sign-off requires approve_wording (accept or reject).' });
     }
     if (oa.target_kind !== undefined

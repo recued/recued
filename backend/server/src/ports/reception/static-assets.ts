@@ -374,6 +374,8 @@ body {
 }
 .rcp-context {
   margin-bottom: 18px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   padding: 12px 14px;
   border-left: 3px solid var(--accent);
   border-radius: 0 9px 9px 0;
@@ -677,6 +679,10 @@ export const RECEPTION_DROP_UPLOADER_SRC = `${RECEPTION_PAGE_STATIC_PATH_PREFIX}
   .update(RECEPTION_DROP_UPLOADER_BYTES)
   .digest('hex')
   .slice(0, 12)}`;
+
+/** Changed public form styles receive a new URL across server upgrades. */
+export const RECEPTION_PAGE_STYLE_SRC = `${RECEPTION_PAGE_STATIC_PATH_PREFIX}style.css?v=${createHash('sha256')
+  .update(RECEPTION_PAGE_STYLE_CSS).digest('hex').slice(0, 12)}`;
 
 const RECEPTION_STATIC_ASSETS: Readonly<Record<string, ReceptionStaticAsset>> = {
   'style.css': {

@@ -57,6 +57,34 @@ afterEach(() => {
 });
 
 describe('ensureConnectionSchema', () => {
+  it('upgrades the legacy credential auth CHECK without losing attempt history, indexes or triggers (D-322)', () => {
+    const legacy = new Database(':memory:');
+    try {
+      legacy.exec(`CREATE TABLE connection_credential_rotation_attempts (
+        attempt_id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending','failed','succeeded')),
+        started_at INTEGER NOT NULL, finished_at INTEGER, verified_at INTEGER,
+        auth_type TEXT CHECK (auth_type IS NULL OR auth_type IN ('bearer','oauth2_refresh')),
+        access_expires_at INTEGER, failure_reason TEXT
+      );
+      CREATE INDEX custom_attempt_lookup ON connection_credential_rotation_attempts(name,status);
+      CREATE TABLE attempt_events (attempt_id TEXT);
+      CREATE TRIGGER custom_attempt_update AFTER UPDATE ON connection_credential_rotation_attempts
+        BEGIN INSERT INTO attempt_events VALUES(NEW.attempt_id); END;
+      INSERT INTO connection_credential_rotation_attempts VALUES
+        ('old-pending','api','saved','pending',1,NULL,NULL,NULL,NULL,NULL),
+        ('old-failed','api','saved','failed',2,3,NULL,'bearer',NULL,'auth_failed'),
+        ('old-success','api','saved','succeeded',4,5,5,'oauth2_refresh',9,NULL);`);
+      const before = legacy.prepare('SELECT * FROM connection_credential_rotation_attempts ORDER BY attempt_id').all();
+      ensureConnectionSchema(legacy); ensureConnectionSchema(legacy);
+      const after = legacy.prepare('SELECT * FROM connection_credential_rotation_attempts ORDER BY attempt_id').all();
+      expect(after).toMatchObject(before);
+      expect(legacy.prepare("SELECT name FROM sqlite_master WHERE name='custom_attempt_lookup'").get()).toBeDefined();
+      legacy.prepare("UPDATE connection_credential_rotation_attempts SET auth_type='managed_oauth' WHERE attempt_id='old-pending'").run();
+      expect(legacy.prepare('SELECT * FROM attempt_events').all()).toEqual([{ attempt_id: 'old-pending' }]);
+      expect(() => legacy.prepare("UPDATE connection_credential_rotation_attempts SET auth_type='invented' WHERE attempt_id='old-pending'").run()).toThrow('CHECK');
+    } finally { legacy.close(); }
+  });
   it('creates the connections table + 2 indexes idempotently', () => {
     ensureConnectionSchema(db);
     ensureConnectionSchema(db);

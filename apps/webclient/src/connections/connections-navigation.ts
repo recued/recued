@@ -5,6 +5,7 @@ import {
   hierarchicalLevel,
   type HierarchicalAddress,
 } from '../shell/hierarchical-navigation.js';
+import { CONNECTION_NAME_REGEX } from '@recued/contracts';
 import type { ShellRoute } from '../shell/route.js';
 
 export const CONNECTIONS_TAB_IDS = [
@@ -87,6 +88,20 @@ export const connectionsEnrollAddress = (
     ...(pack.slot ? [hierarchicalLevel(`connections-enrollment-slot:${pack.slot}`, pack.slot)] : []),
   ] : []),
 );
+
+/** D-322 §24 — a saved account review carries no scope, credential or API URL. */
+export const connectionsReviewAccessAddress = (name: string): HierarchicalAddress => hierarchicalAddress(
+  'connections',
+  hierarchicalLevel('connections-lane:others', 'others'),
+  hierarchicalLevel('connections-flow:review-access', 'review-access'),
+  hierarchicalLevel('connections-kind:api', 'api'),
+  hierarchicalLevel('connections-review:' + name, name),
+);
+
+export const parseConnectionsReviewAccess = (segments: readonly string[]): { name: string } | null =>
+  segments.length === 4 && segments[0] === 'others' && segments[1] === 'review-access'
+  && segments[2] === 'api' && CONNECTION_NAME_REGEX.test(segments[3] ?? '')
+    ? { name: segments[3]! } : null;
 
 /** Parse only durable workspace places. One-shot recovery/credential tails are
  * deliberately left to their authority-specific parsers and resolve to the

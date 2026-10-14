@@ -1,7 +1,8 @@
 /** D-322 — broker setup, picker, popup and stale flow UI lifecycle. */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createManagedOAuthPanel, type ManagedOAuthPanelContext, type ManagedOAuthCaller } from '../settings/managed-oauth-panel.js';
-import type { ManagedOAuthAuth, ManagedOAuthRequest, ManagedOAuthResponse, ManagedOAuthPermissionPreview } from '@recued/contracts';
+import { CONNECTION_HEALTH_FRESH_MS } from '@recued/contracts';
+import type { ManagedOAuthAuth, ManagedOAuthRequest, ManagedOAuthResponse, ManagedOAuthPermissionPreview, ManagedOAuthImpactPreview } from '@recued/contracts';
 afterEach(() => vi.useRealTimers());
 
 const settle = async () => { for (let i = 0; i < 24; i += 1) await Promise.resolve(); };
@@ -13,7 +14,8 @@ const permissionPreview = (patch: Partial<ManagedOAuthPermissionPreview> = {}): 
 });
 const fixture = (ambiguous = false, intercept?: (request: ManagedOAuthRequest) => Promise<ManagedOAuthResponse> | undefined, manageProfiles = false,
   initialContext: Partial<ManagedOAuthPanelContext> = {}, allowPopup = true, confirmDiscard?: (prompt: string) => boolean,
-  afterAuthorized?: (auth: ManagedOAuthAuth) => void) => {
+  afterAuthorized?: (auth: ManagedOAuthAuth) => void,
+  accountActions: { openConnection?(name: string, expectedUpdatedAt: number): Promise<boolean>; checkConnection?(name: string, expectedUpdatedAt: number): Promise<void> } = {}) => {
   vi.useFakeTimers();
   const ctx: ManagedOAuthPanelContext = { enabled: true, mode: 'create', name: 'sheets', base_url: 'https://sheets.googleapis.com/v4', scopes: ['write'], profile_id: '', integration_id: '', ...initialContext };
   const calls: ManagedOAuthRequest[] = []; const authorized: ManagedOAuthAuth[] = [];
@@ -39,17 +41,25 @@ const fixture = (ambiguous = false, intercept?: (request: ManagedOAuthRequest) =
       case 'status': return completed ? { action: 'status', status: 'authorized', auth: { type: 'managed_oauth', broker_profile_id: 'cloud', integration_id: 'sheets-prod', connection_id: 'account', target_origin: 'https://sheets.googleapis.com', requested_scopes: [], authorization_receipt: 'opaque-private-receipt' } }
         : { action: 'status', status: 'pending' };
       case 'cancel': return { action: 'cancel' };
+      case 'account_impact': throw new Error('This fixture needs an explicit account impact response.');
+      case 'migration_candidates':
+      case 'migration_prepare':
+      case 'migration_apply':
+      case 'migration_status':
+      case 'migration_stop': throw new Error('This fixture does not handle a bulk migration.');
       case 'delete_profile': return { action: 'delete_profile' };
       case 'save_profile': return { action: 'save_profile', profile: { id: 'cloud', label: request.label, broker: 'nango', base_url: request.base_url, revision: 2 }, integrations: [] };
       case 'providers': return { action: 'providers', providers: [{ id: 'google-sheet', label: 'Google Sheets' }], selected_id: 'google-sheet' };
       case 'create_integration': return { action: 'create_integration', integration: { id: request.integration_id, label: request.label,
         provider: request.provider, default_scopes: [], scope_metadata: 'unknown' } };
       case 'remote_connections': return { action: 'remote_connections', connections: [{ id: 'existing-account', label: 'Work account', auth_error: false }], page: request.page ?? 0, has_more: false };
+      case 'account_usage': return { action: 'account_usage', usage: { connection_id: request.connection_id, auth_error: false, connections: [], warnings: [] } };
       case 'attach': return { action: 'attach', flow_id: 'attach-flow', claim_secret: 'attach-claim', expires_at: Date.now() + 600_000,
         auth: { type: 'managed_oauth', broker_profile_id: request.profile_id, integration_id: request.integration_id, connection_id: request.connection_id,
           target_origin: new URL(request.base_url).origin, requested_scopes: [], authorization_receipt: 'attach-receipt' } };
       case 'delete_remote_connection': return { action: 'delete_remote_connection' };
-      case 'save_reauthorization': throw new Error('Unexpected fixture action');
+      case 'save_reauthorization':
+      case 'apply_authentication_switch': throw new Error('Unexpected fixture action');
     }
   };
   const host = {
@@ -63,9 +73,9 @@ const fixture = (ambiguous = false, intercept?: (request: ManagedOAuthRequest) =
     authorized: (auth, grants) => { currentAuth = auth; authorized.push(auth); grantSets.push(grants); afterAuthorized?.(auth); },
     invalidate: () => { currentAuth = undefined; invalidations += 1; },
     changed: () => panel.mount(host as unknown as HTMLElement), open,
-    ...(confirmDiscard ? { confirmDiscard } : {}) });
-  const click = (action: string) => {
-    const target = { dataset: { managedAction: action }, disabled: false, closest: () => target };
+    ...(confirmDiscard ? { confirmDiscard } : {}), ...accountActions });
+  const click = (action: string, name?: string) => {
+    const target = { dataset: { managedAction: action, managedName: name }, disabled: false, closest: () => target };
     for (const listener of [...listeners.get('click') ?? []]) listener({ type: 'click', target, preventDefault() {} } as unknown as Event);
   };
   const input = (field: string, value: string, select = false) => {
@@ -79,6 +89,229 @@ const fixture = (ambiguous = false, intercept?: (request: ManagedOAuthRequest) =
 };
 
 describe('managed OAuth browser controller', () => {
+  it.each([false, true])('keeps a newly authorized switch account after an impact read fails, with recovery %s', async recover => {
+    const auth: ManagedOAuthAuth = { type: 'managed_oauth', broker_profile_id: 'cloud', integration_id: 'sheets-prod',
+      connection_id: 'account', target_origin: 'https://sheets.googleapis.com', requested_scopes: [], authorization_receipt: 'receipt' };
+    let reads = 0;
+    const f = fixture(false, request => {
+      if (request.action === 'remote_connections') return Promise.resolve({ action: 'remote_connections',
+        connections: [{ id: 'account', label: 'Completed account', auth_error: false }], page: 0, has_more: false });
+      if (request.action === 'status') return Promise.resolve({ action: 'status', status: 'authorized', auth, impact_available: true });
+      if (request.action === 'account_impact') {
+        if (++reads === 1) return Promise.reject(new Error('fixture identity read interrupted'));
+        return Promise.resolve({ action: 'account_impact', impact: { fingerprint: 'b'.repeat(64), phase: 'before_save', mode: 'switch', consent: 'request',
+          target: { authentication: 'broker', broker: { id: 'cloud', label: 'Cloud', broker: 'nango', base_url: 'https://api.nango.dev', revision: 1 },
+            integration_id: 'sheets-prod', connection_id: 'account', identity: { status: 'unknown', reason: 'unsupported' } }, connections: [], warnings: [] } });
+      }
+      return undefined;
+    }, false, { mode: 'switch', expected_updated_at: 7 });
+    await settle(); await f.authorizeNew(); await settle();
+    expect(f.authorized).toHaveLength(0); expect(f.currentAuth()).toBeUndefined();
+    expect(f.host.innerHTML).toContain('The account and impact could not be reviewed');
+    if (recover) {
+      f.click('refresh-impact'); await settle();
+      expect(f.currentAuth()?.connection_id).toBe('account');
+      expect(f.panel.impactFingerprint()).toBe('b'.repeat(64));
+    }
+    f.ctx.scopes = ['more']; f.panel.sync(); await settle();
+    expect(f.host.innerHTML).toContain('Review authorization again');
+    f.click('review-authorization'); await settle();
+    expect(f.calls.filter(request => request.action === 'preview').at(-1)).toMatchObject({ connection_id: 'account' });
+    expect(f.open).toHaveBeenCalledTimes(1); f.panel.dispose();
+  });
+  it.each([false, true])('waits for the actual authorized account and retires stale impact replies: %s', async stale => {
+    const impact = (phase: ManagedOAuthImpactPreview['phase']): ManagedOAuthImpactPreview => ({
+      fingerprint: 'a'.repeat(64), phase, mode: 'switch', consent: 'reuse',
+      target: { authentication: 'broker', broker: { id: 'cloud', label: 'Cloud', broker: 'nango', base_url: 'https://api.nango.dev', revision: 1 },
+        integration_id: 'sheets-prod', connection_id: 'existing-account', identity: { status: 'known', account_id: 'user', email: phase === 'before_save' ? 'actual@example.test' : 'previous@example.test' } },
+      connections: [], warnings: [],
+    });
+    let finish!: (value: ManagedOAuthResponse) => void;
+    const delayed = new Promise<ManagedOAuthResponse>(resolve => { finish = resolve; });
+    const f = fixture(false, request => {
+      if (request.action === 'preview') return Promise.resolve({ action: 'preview', preview: permissionPreview({ decision: 'reuse', account_impact: impact('before_authorization') }) });
+      if (request.action === 'start') return Promise.resolve({ action: 'reuse', flow_id: 'flow', claim_secret: 'claim', expires_at: Date.now() + 600000, impact_available: true,
+        auth: { type: 'managed_oauth', broker_profile_id: 'cloud', integration_id: 'sheets-prod', connection_id: 'existing-account',
+          target_origin: 'https://sheets.googleapis.com', requested_scopes: [], authorization_receipt: 'receipt' } });
+      if (request.action === 'account_impact') return delayed;
+      return undefined;
+    }, false, { mode: 'switch', expected_updated_at: 7 });
+    await settle(); f.input('account', 'existing-account', true); await settle(); f.click('authorize'); await settle();
+    expect(f.authorized).toHaveLength(0); expect(f.panel.busy()).toBe(true);
+    if (stale) { f.ctx.scopes = ['more']; f.panel.sync(); }
+    finish({ action: 'account_impact', impact: impact('before_save') }); await settle();
+    expect(f.authorized).toHaveLength(stale ? 0 : 1);
+    if (stale) expect(f.host.innerHTML).not.toContain('actual@example.test');
+    else { expect(f.host.innerHTML).toContain('actual@example.test'); expect(f.panel.impactFingerprint()).toBe('a'.repeat(64)); }
+    f.panel.dispose();
+  });
+  it('locks broker controls and ignores profile/account actions while the parent verifies a switch', async () => {
+    const f = fixture(false, undefined, false, { mode: 'switch', expected_updated_at: 7 }); await settle();
+    f.input('account', 'existing-account', true); await settle(); f.ctx.saving = true; f.panel.mount(f.host as unknown as HTMLElement);
+    const before = f.calls.length; f.input('profile', 'other-profile', true); f.input('account', 'other-account', true);
+    f.click('authorize'); f.click('force-reauthorize'); await settle();
+    expect(f.ctx.profile_id).toBe('cloud'); expect(f.calls.length).toBe(before);
+    expect(f.host.innerHTML).toMatch(/data-managed-field="profile"[^>]*disabled/); f.panel.dispose();
+  });
+  it('reviews a completed new switch account again after its receipt expires without creating another account', async () => {
+    const f = fixture(false, request => request.action === 'remote_connections' ? Promise.resolve({ action: 'remote_connections',
+      connections: [{ id: 'account', label: 'Completed account', auth_error: false }], page: 0, has_more: false })
+      : request.action === 'preview' && request.connection_id === 'account' ? Promise.resolve({ action: 'preview', preview: permissionPreview({ decision: 'reuse' }) })
+      : request.action === 'start' && request.connection_id === 'account' ? Promise.resolve({ action: 'reuse', flow_id: 'renewed-review', claim_secret: 'renewed-claim',
+          expires_at: Date.now() + 600_000, auth: { type: 'managed_oauth', broker_profile_id: request.profile_id, integration_id: request.integration_id,
+            connection_id: 'account', target_origin: 'https://sheets.googleapis.com', requested_scopes: ['write'], authorization_receipt: 'renewed-receipt' } }) : undefined,
+      false, { mode: 'switch', expected_updated_at: 7 });
+    await settle(); f.input('account-mode', 'new', true); await settle(); f.click('authorize'); await settle(); f.complete();
+    await vi.advanceTimersByTimeAsync(2500); await settle(); expect(f.currentAuth()?.connection_id).toBe('account');
+    await vi.advanceTimersByTimeAsync(600_001); await settle();
+    expect(f.host.innerHTML).toContain('Review authorization again'); f.click('review-authorization'); await settle();
+    expect(f.calls.filter(request => request.action === 'preview').at(-1)).toMatchObject({ connection_id: 'account', switch_authentication: true });
+    f.click('authorize'); await settle();
+    expect(f.currentAuth()?.authorization_receipt).toBe('renewed-receipt'); expect(f.open).toHaveBeenCalledTimes(1); f.panel.dispose();
+  });
+  it('keeps the completed switch account available when a review read fails, without permitting a duplicate new-account start', async () => {
+    let failRead = true;
+    const f = fixture(false, request => request.action === 'account_usage' && failRead ? Promise.reject(new Error('fixture read interrupted')) : undefined,
+      false, { mode: 'switch', expected_updated_at: 7 });
+    await settle(); f.input('account-mode', 'new', true); await settle(); f.click('authorize'); await settle(); f.complete();
+    await vi.advanceTimersByTimeAsync(2500); await settle(); f.ctx.scopes.push('extra-scope'); f.panel.sync(); await settle();
+    f.click('review-authorization'); await settle(); expect(f.host.innerHTML).toContain('fixture read interrupted');
+    expect(f.host.innerHTML).toContain('Review authorization again');
+    const starts = f.calls.filter(request => request.action === 'start').length;
+    f.click('authorize'); await settle(); expect(f.calls.filter(request => request.action === 'start')).toHaveLength(starts);
+    failRead = false; f.click('review-authorization'); await settle();
+    expect(f.calls.filter(request => request.action === 'preview').at(-1)).toMatchObject({ connection_id: 'account', scopes: expect.arrayContaining(['extra-scope']) });
+    expect(f.open).toHaveBeenCalledTimes(1); f.panel.dispose();
+  });
+  it('reviews and authorizes a selected replacement account bound to the existing name and revision', async () => {
+    const f = fixture(false, request => request.action === 'preview' ? Promise.resolve({ action: 'preview', preview: permissionPreview({ decision: 'reuse' }) })
+      : request.action === 'start' ? Promise.resolve({ action: 'reuse', flow_id: 'switch-flow', claim_secret: 'switch-claim', expires_at: Date.now() + 600_000,
+          auth: { type: 'managed_oauth', broker_profile_id: request.profile_id, integration_id: request.integration_id,
+            connection_id: request.connection_id!, target_origin: 'https://sheets.googleapis.com', requested_scopes: ['write'], authorization_receipt: 'switch-receipt' } }) : undefined,
+      false, { mode: 'switch', expected_updated_at: 7 });
+    await settle(); expect(f.host.innerHTML).toContain('Select an existing account');
+    expect(f.calls.some(request => request.action === 'preview')).toBe(false);
+    f.input('account', 'existing-account', true); await settle();
+    expect(f.host.innerHTML).toContain('Permission preview');
+    expect(f.host.innerHTML).not.toContain('data-managed-action="attach"');
+    f.click('attach'); await settle(); expect(f.calls.some(request => request.action === 'attach')).toBe(false);
+    f.click('authorize'); await settle();
+    expect(f.calls.find(request => request.action === 'preview')).toMatchObject({ name: 'sheets', switch_authentication: true,
+      expected_updated_at: 7, connection_id: 'existing-account' });
+    expect(f.calls.find(request => request.action === 'start')).toMatchObject({ name: 'sheets', switch_authentication: true,
+      expected_updated_at: 7, connection_id: 'existing-account', preview_fingerprint: 'reviewed-permissions' });
+    expect(f.currentAuth()?.authorization_receipt).toBe('switch-receipt'); expect(f.open).not.toHaveBeenCalled(); f.panel.dispose();
+  });
+  it('can authorize a new replacement account without pinning the previous remote ID', async () => {
+    const f = fixture(false, undefined, false, { mode: 'switch', expected_updated_at: 7, connection_id: 'original-account' });
+    await settle(); f.input('account-mode', 'new', true); await settle(); f.click('authorize'); await settle();
+    const request = f.calls.find(request => request.action === 'start');
+    expect(request).toMatchObject({ switch_authentication: true, name: 'sheets', expected_updated_at: 7 });
+    expect(request).not.toHaveProperty('connection_id'); f.panel.dispose();
+  });
+  it('lets a switch request fresh consent for the selected replacement account when reuse needs repair', async () => {
+    const f = fixture(false, undefined, false, { mode: 'switch', expected_updated_at: 7 });
+    await settle(); f.input('account', 'existing-account', true); await settle();
+    expect(f.host.innerHTML).toContain('Review sign-in again'); f.click('force-reauthorize'); await settle();
+    expect(f.calls.filter(request => request.action === 'preview').at(-1)).toMatchObject({
+      connection_id: 'existing-account', force_reauthorization: true, switch_authentication: true, expected_updated_at: 7 });
+    f.click('authorize'); await settle();
+    expect(f.calls.find(request => request.action === 'start')).toMatchObject({
+      connection_id: 'existing-account', force_reauthorization: true, switch_authentication: true, expected_updated_at: 7 });
+    expect(f.open).toHaveBeenCalledTimes(1);
+    f.click('cancel'); await settle();
+    f.input('account-mode', 'new', true); await settle(); f.click('authorize'); await settle();
+    const newAccount = f.calls.filter(request => request.action === 'start').at(-1);
+    expect(newAccount).not.toHaveProperty('connection_id'); expect(newAccount).not.toHaveProperty('force_reauthorization');
+    expect(f.open).toHaveBeenCalledTimes(2); f.panel.dispose();
+  });
+  it('expires a displayed successful check locally without creating consent or reading Nango again', async () => {
+    const checkedAt = Date.now();
+    const f = fixture(false, r => r.action === 'account_usage' ? Promise.resolve({ action: 'account_usage', usage: {
+      connection_id: r.connection_id, auth_error: false, warnings: [], connections: [{ name: 'saved-sheets',
+        display_name: 'Saved sheets', updated_at: 2, health: { status: 'ok', last_probed_at: checkedAt }, uses: [], usage_available: true }],
+    } }) : undefined, true);
+    await settle(); f.input('account', 'existing-account', true); await settle();
+    expect(f.host.innerHTML).toContain('data-managed-health="ok"');
+    await vi.advanceTimersByTimeAsync(CONNECTION_HEALTH_FRESH_MS + 1);
+    expect(f.host.innerHTML).toContain('data-managed-health="unknown"');
+    expect(f.calls.filter(call => call.action === 'account_usage')).toHaveLength(1);
+    expect(f.calls.some(call => call.action === 'start')).toBe(false);
+    f.panel.dispose(); expect(vi.getTimerCount()).toBe(0);
+  });
+  it.each(['account change', 'disposal'] as const)('retires a pending health expiry after $0', async phase => {
+    const checkedAt = Date.now();
+    const f = fixture(false, r => r.action === 'account_usage' ? Promise.resolve({ action: 'account_usage', usage: {
+      connection_id: r.connection_id, auth_error: false, warnings: [], connections: [{ name: 'saved-sheets',
+        display_name: 'Saved sheets', updated_at: 2, health: { status: 'ok', last_probed_at: checkedAt }, uses: [], usage_available: true }],
+    } }) : undefined, true);
+    await settle(); f.input('account', 'existing-account', true); await settle();
+    expect(vi.getTimerCount()).toBe(1);
+    if (phase === 'account change') f.input('account', '', true); else f.panel.dispose();
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(CONNECTION_HEALTH_FRESH_MS + 1);
+    expect(f.calls.filter(call => call.action === 'account_usage')).toHaveLength(1); f.panel.dispose();
+  });
+  it('loads selected account usage only in management and routes check and repair to that connection', async () => {
+    const openConnection = vi.fn(async () => true); const checkConnection = vi.fn(async () => {});
+    const f = fixture(false, r => r.action === 'account_usage' ? Promise.resolve({ action: 'account_usage', usage: {
+      connection_id: r.connection_id, auth_error: true, warnings: [], connections: [{ name: 'saved-sheets', display_name: 'Saved sheets', updated_at: 2,
+        health: { status: 'auth_failed' }, uses: [{ kind: 'pack', id: 'sheet-pack', label: 'Sheet pack' }], usage_available: true }],
+    } }) : undefined, true, {}, true, undefined, undefined, { openConnection, checkConnection });
+    await settle(); f.input('account', 'existing-account', true); await settle();
+    expect(f.host.innerHTML).toContain('Saved sheets'); expect(f.host.innerHTML).toContain('Sheet pack');
+    f.input('delete-confirmation', 'existing-account'); f.click('delete-account'); await settle();
+    expect(f.calls.some(call => call.action === 'delete_remote_connection')).toBe(false);
+    expect(f.host.innerHTML).toMatch(/data-managed-action="delete-account" disabled/);
+    f.click('open-connection', 'saved-sheets'); await settle(); expect(openConnection).toHaveBeenCalledWith('saved-sheets', 2);
+    f.click('check-connection', 'saved-sheets'); await settle(); expect(checkConnection).toHaveBeenCalledWith('saved-sheets', 2);
+    expect(f.calls.filter(call => call.action === 'account_usage')).toHaveLength(2);
+    f.click('check-connection', 'unrelated'); await settle(); expect(checkConnection).toHaveBeenCalledTimes(1);
+    expect(f.calls.some(call => call.action === 'start' || call.action === 'attach')).toBe(false);
+    expect(f.open).not.toHaveBeenCalled();
+  });
+  it('drops a late account usage response after selection changes', async () => {
+    let resolve: ((result: ManagedOAuthResponse) => void) | undefined;
+    const f = fixture(false, r => r.action === 'account_usage' ? new Promise(done => { resolve = done; }) : undefined, true);
+    await settle(); f.input('account', 'existing-account', true); await settle();
+    expect(f.host.innerHTML).toContain('Loading account usage');
+    f.input('account', '', true);
+    resolve!({ action: 'account_usage', usage: { connection_id: 'existing-account', auth_error: false,
+      connections: [{ name: 'late-account', display_name: 'Late account', updated_at: 2, health: { status: 'unknown' }, uses: [], usage_available: true }], warnings: [] } });
+    await settle(); expect(f.host.innerHTML).not.toContain('Late account');
+  });
+  it('keeps failed usage distinct from an empty account and lets the owner retry', async () => {
+    let fail = true;
+    const f = fixture(false, r => r.action === 'account_usage' && fail ? Promise.reject(new Error('Usage unavailable')) : undefined, true);
+    await settle(); f.input('account', 'existing-account', true); await settle();
+    expect(f.host.innerHTML).toContain('Usage unavailable'); expect(f.host.innerHTML).not.toContain('No saved Recued API connections');
+    fail = false; f.click('refresh-usage'); await settle();
+    expect(f.host.innerHTML).toContain('No saved Recued API connections');
+  });
+  it('does not read account usage while attaching an existing account in enrollment', async () => {
+    const f = fixture(); await settle(); f.input('account', 'existing-account', true); await settle();
+    expect(f.calls.some(call => call.action === 'account_usage')).toBe(false);
+  });
+  it('surfaces malformed usage instead of rendering an empty healthy account', async () => {
+    const f = fixture(false, r => r.action === 'account_usage'
+      ? Promise.resolve({ action: 'account_usage', usage: { connection_id: r.connection_id, connections: null } } as unknown as ManagedOAuthResponse) : undefined, true);
+    await settle(); f.input('account', 'existing-account', true); await settle();
+    expect(f.host.innerHTML).toContain('Account usage could not be verified'); expect(f.panel.busy()).toBe(false);
+    expect(f.host.innerHTML).not.toContain('No saved Recued API connections');
+  });
+  it('retires a probe indicator when the broker context changes before the probe settles', async () => {
+    let finish!: () => void;
+    const checkConnection = vi.fn(() => new Promise<void>(done => { finish = done; }));
+    const f = fixture(false, r => r.action === 'account_usage' ? Promise.resolve({ action: 'account_usage', usage: {
+      connection_id: r.connection_id, auth_error: false, warnings: [], connections: [{ name: 'saved-sheets', display_name: 'Saved sheets', updated_at: 2,
+        health: { status: 'unknown' }, uses: [], usage_available: true }],
+    } }) : undefined, true, {}, true, undefined, undefined, { checkConnection });
+    await settle(); f.input('account', 'existing-account', true); await settle(); f.click('check-connection', 'saved-sheets'); await settle();
+    expect(f.panel.busy()).toBe(true); f.ctx.profile_id = 'another-broker'; f.panel.mount(f.host as unknown as HTMLElement); await settle();
+    f.input('account', 'existing-account', true); await settle();
+    expect(f.host.innerHTML).not.toContain('Checking API access…'); expect(f.panel.busy()).toBe(false);
+    finish(); await settle(); expect(f.panel.busy()).toBe(false);
+  });
   it.each(['new consent', 'attach', 'imported reconnect'] as const)('preserves the receipt when the enrollment host applies %s account metadata', async phase => {
     const f = fixture(false, r => r.action === 'attach' ? Promise.resolve({ action: 'attach', flow_id: 'attached', claim_secret: 'attached-claim', expires_at: Date.now() + 600_000,
       auth: { type: 'managed_oauth', broker_profile_id: 'cloud', integration_id: 'sheets-prod', connection_id: 'account', target_origin: 'https://sheets.googleapis.com',
@@ -573,7 +806,7 @@ describe('managed OAuth browser controller', () => {
     expect(f.host.innerHTML).not.toContain('data-managed-action="authorize"');
     f.click('add'); expect(f.host.innerHTML).toContain('Environment API key'); expect(f.host.innerHTML).toContain('Environment Settings');
     f.click('close-setup'); f.input('integration', 'sheets-prod', true); f.input('account-mode', 'existing', true); await settle();
-    f.input('account', 'existing-account', true); expect(f.host.innerHTML).toContain('affects every tool using this account');
+    f.input('account', 'existing-account', true); await settle(); expect(f.host.innerHTML).toContain('affects every tool using this account');
     f.input('delete-confirmation', 'existing-account'); f.click('delete-account'); await settle();
     expect(f.calls).toContainEqual({ action: 'delete_remote_connection', profile_id: 'cloud', integration_id: 'sheets-prod',
       connection_id: 'existing-account', confirmation: 'existing-account' }); f.panel.dispose();

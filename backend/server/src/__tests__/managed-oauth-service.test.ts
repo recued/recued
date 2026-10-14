@@ -65,6 +65,28 @@ const savedAccount = async (f: ReturnType<typeof setup>) => {
   return { saved, row: f.connections.get('api', 'sheets')! };
 };
 const fullSheets = 'https://www.googleapis.com/auth/spreadsheets';
+describe('D-322 pack access diagnostic account fences', () => {
+  it('reads stable public account metadata without creating consent or changing scopes and connections', async () => {
+    const f = setup(); const { saved, row } = await savedAccount(f);
+    const auth = await f.decode(row);
+    if (auth.type !== 'managed_oauth') throw new Error('fixture account');
+    const before = f.connections.list(); const history = f.profiles.scopeHistorySignature();
+    const count = f.sessions.length;
+    expect(f.service.diagnosticProfileSignature!()).toContain(saved.profile.id);
+    expect(await f.service.inspectAccount!(auth)).toMatchObject({ profile_revision: saved.profile.revision, auth_error: false,
+      identity: JSON.stringify([101, Date.parse('2026-10-01T00:00:00.000Z')]) });
+    expect(f.connections.list()).toEqual(before);
+    expect(f.profiles.scopeHistorySignature()).toBe(history);
+    expect(f.sessions).toHaveLength(count);
+    expect(f.fetch.mock.calls.at(-1)![1]?.method).toBe('GET');
+  });
+  it('keeps a remote authorization error distinct from a successful native access check', async () => {
+    const f = setup(); const { row } = await savedAccount(f); const auth = await f.decode(row);
+    if (auth.type !== 'managed_oauth') throw new Error('fixture account');
+    f.failConsent();
+    expect(await f.service.inspectAccount!(auth)).toMatchObject({ auth_error: true });
+  });
+});
 // Fixture history represents prior completed consent, not this editor's desired scopes.
 const trackCompleted = (f: ReturnType<typeof setup>, scopes: readonly string[]) =>
   f.profiles.rememberAccountScopes('https://api.nango.dev', 'sheets-production',
@@ -76,9 +98,103 @@ const storeAccount = async (f: ReturnType<typeof setup>, name: string, auth: Man
     enrolled_at: 1, updated_at: 2, ...(grants === undefined ? {} : { granted_scopes_json: JSON.stringify(grants) }) });
 
 describe('managed OAuth service and production connection RPC', () => {
+  it('reads exact account dependencies and recorded health without creating consent or changing local state', async () => {
+    const f = setup(); const { saved, row } = await savedAccount(f); const auth = await f.decode(row);
+    if (auth.type !== 'managed_oauth') throw new Error('fixture auth');
+    await storeAccount(f, 'sheets-copy', auth);
+    await storeAccount(f, 'unrelated-account', { ...auth, connection_id: 'another-account' });
+    f.connections.upsert({ ...row, health_json: JSON.stringify({ status: 'auth_failed', last_probed_at: 100,
+      last_error: 'private-vendor-token' }), last_used_at: 200 });
+    const reader = createManagedOAuthService({ profiles: f.profiles, listConnections: () => f.connections.list(),
+      decodeAuth: f.decode, fetchImpl: f.fetch, connectionUses: name => ({ complete: true,
+        uses: name === 'sheets' ? [{ kind: 'pack', id: 'sheet-pack', label: 'Sheet pack' }] : [] }) });
+    const beforeRows = f.connections.list(); const beforeHistory = f.profiles.scopeHistorySignature();
+    f.fetch.mockClear(); const sessionCount = f.sessions.length;
+    const result = await reader.handle({ action: 'account_usage', profile_id: saved.profile.id,
+      integration_id: auth.integration_id, connection_id: auth.connection_id });
+    expect(result.action).toBe('account_usage'); if (result.action !== 'account_usage') throw new Error('fixture result');
+    expect(result.usage.connections.map(connection => connection.name)).toEqual(['sheets', 'sheets-copy']);
+    expect(result.usage.connections[0]).toMatchObject({ health: { status: 'auth_failed', last_probed_at: 100 },
+      last_used_at: 200, uses: [{ kind: 'pack', id: 'sheet-pack' }], usage_available: true });
+    expect(JSON.stringify(result)).not.toMatch(/private-vendor-token|ciphertext|api_key|authorization_receipt/);
+    expect(f.connections.list()).toEqual(beforeRows); expect(f.profiles.scopeHistorySignature()).toBe(beforeHistory);
+    expect(f.sessions.length).toBe(sessionCount);
+    expect(f.fetch.mock.calls.every(([, init]) => (init?.method ?? 'GET') === 'GET')).toBe(true);
+  });
+
+  it('includes aliases of the same environment but excludes an identical account ID in a different environment', async () => {
+    const f = setup(); const { saved, row } = await savedAccount(f); const auth = await f.decode(row);
+    if (auth.type !== 'managed_oauth') throw new Error('fixture auth');
+    const original = f.profiles.get(saved.profile.id)!;
+    f.profiles.save({ ...original, id: 'alias', label: 'Same environment', revision: 1 });
+    f.profiles.save({ ...original, id: 'foreign', label: 'Different environment', api_key: 'foreign-key', revision: 1 });
+    await storeAccount(f, 'alias-connection', { ...auth, broker_profile_id: 'alias' });
+    await storeAccount(f, 'foreign-connection', { ...auth, broker_profile_id: 'foreign' });
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+      if (new Headers(init?.headers).get('Authorization') === 'Bearer foreign-key') return Response.json({ connections: [{
+        connection_id: auth.connection_id, provider_config_key: auth.integration_id, id: 202, created: '2026-10-02T00:00:00.000Z',
+      }] });
+      return f.fetch(input, init);
+    });
+    const reader = createManagedOAuthService({ profiles: f.profiles, listConnections: () => f.connections.list(), decodeAuth: f.decode, fetchImpl: fetch });
+    const result = await reader.handle({ action: 'account_usage', profile_id: saved.profile.id,
+      integration_id: auth.integration_id, connection_id: auth.connection_id });
+    if (result.action !== 'account_usage') throw new Error('fixture result');
+    expect(result.usage.connections.map(connection => connection.name)).toEqual(['alias-connection', 'sheets']);
+    expect(result.usage.connections.every(connection => !connection.usage_available)).toBe(true);
+  });
+
+  it('reports a broker auth error, and refuses a disappeared account instead of returning empty healthy usage', async () => {
+    const f = setup(); const { saved, row } = await savedAccount(f); const auth = await f.decode(row);
+    if (auth.type !== 'managed_oauth') throw new Error('fixture auth');
+    f.failConsent();
+    const result = await f.rpc({ action: 'account_usage', profile_id: saved.profile.id,
+      integration_id: auth.integration_id, connection_id: auth.connection_id });
+    expect(result.action === 'account_usage' && result.usage.auth_error).toBe(true);
+    f.fetch.mockResolvedValue(Response.json({ connections: [] }));
+    await expect(f.rpc({ action: 'account_usage', profile_id: saved.profile.id,
+      integration_id: auth.integration_id, connection_id: auth.connection_id })).rejects.toThrow('Select an existing account');
+  });
+
+  it('matches aliases against the same public account snapshot as the reported broker status', async () => {
+    const f = setup(); const { saved, row } = await savedAccount(f); const auth = await f.decode(row);
+    if (auth.type !== 'managed_oauth') throw new Error('fixture auth');
+    f.profiles.save({ ...f.profiles.get(saved.profile.id)!, id: 'alias', label: 'Alias', api_key: 'alias-key', revision: 1 });
+    await storeAccount(f, 'alias-connection', { ...auth, broker_profile_id: 'alias' });
+    let selectedReads = 0;
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+      if (new URL(input.toString()).pathname !== '/connections') return f.fetch(input, init);
+      const alias = new Headers(init?.headers).get('Authorization') === 'Bearer alias-key';
+      const replaced = !alias && ++selectedReads > 1;
+      return Response.json({ connections: [{ connection_id: auth.connection_id, provider_config_key: auth.integration_id,
+        id: replaced ? 202 : 101, created: '2026-10-01T00:00:00.000Z', errors: replaced ? [{ type: 'auth' }] : [] }] });
+    });
+    const reader = createManagedOAuthService({ profiles: f.profiles, listConnections: () => f.connections.list(), decodeAuth: f.decode, fetchImpl: fetch });
+    const result = await reader.handle({ action: 'account_usage', profile_id: saved.profile.id,
+      integration_id: auth.integration_id, connection_id: auth.connection_id });
+    if (result.action !== 'account_usage') throw new Error('fixture result');
+    expect(result.usage.connections.map(connection => connection.name)).toEqual(['alias-connection', 'sheets']);
+    expect(result.usage.auth_error).toBe(false); expect(selectedReads).toBe(1);
+  });
+  it('keeps legacy accounts visible in their own profile without inventing a public identity', async () => {
+    const f = setup(); const { saved, row } = await savedAccount(f); const auth = await f.decode(row);
+    if (auth.type !== 'managed_oauth') throw new Error('fixture auth');
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({ connections: [{
+      connection_id: auth.connection_id, provider_config_key: auth.integration_id, errors: [],
+    }] }));
+    const reader = createManagedOAuthService({ profiles: f.profiles, listConnections: () => f.connections.list(), decodeAuth: f.decode, fetchImpl: fetch });
+    const result = await reader.handle({ action: 'account_usage', profile_id: saved.profile.id,
+      integration_id: auth.integration_id, connection_id: auth.connection_id });
+    if (result.action !== 'account_usage') throw new Error('fixture result');
+    expect(result.usage.connections.map(connection => connection.name)).toEqual(['sheets']);
+    expect(result.usage.warnings).toContain('Nango did not expose a stable account identity. Usage is limited to this broker profile.');
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
   it.each([
     { action: 'preview', phase: 'before discovery' }, { action: 'start', phase: 'before discovery' },
     { action: 'preview', phase: 'during discovery' }, { action: 'start', phase: 'during discovery' },
+    { action: 'account_usage', phase: 'before discovery' }, { action: 'account_usage', phase: 'during discovery' },
   ] as const)('blocks $action $phase while this account is being deleted, before creating consent', async ({ action, phase }) => {
     const f = setup(); const { saved } = await savedAccount(f); f.connections.delete('api', 'sheets');
     let deleted!: (response: Response) => void; let deleting!: () => void; let discovered!: (response: Response) => void; let discovering!: () => void;

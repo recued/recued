@@ -1796,7 +1796,8 @@ export const mountReceptionInboxPanel = (
       parent.appendChild(summary);
       const heading = doc.createElement(detailSubheadingTag);
       heading.className = 'reception-inbox-response-title';
-      heading.textContent = detail.item.operation_id === 'quote-signoff-release' ? 'Accepted quote and release plan' : 'Submitted answers';
+      heading.textContent = detail.item.operation_id === 'quote-signoff-release' ? 'Accepted quote and release plan'
+        : detail.item.operation_id === 'quote-completion-review' ? 'Delivery and completion review' : 'Submitted answers';
       summary.appendChild(heading);
       const body = doc.createElement('pre');
       body.className = 'reception-inbox-response-body';

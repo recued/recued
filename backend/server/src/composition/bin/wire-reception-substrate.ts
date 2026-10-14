@@ -115,6 +115,12 @@ import { DEFAULT_LOCAL_CALENDAR_SLUG } from '../../collections/calendar/local-pr
 import type { RecordsStore } from '../../records/store.js';
 import { assertRecordsNonOwnerRecipeExposure } from '../../records/non-owner-exposure.js';
 import { createQuoteSignoffService, quoteSignoffManifestReader, type QuoteSignoffService } from '../../quote-signoff-service.js';
+import { createQuoteCompletionService, type QuoteCompletionService } from '../../quote-completion-service.js';
+import { createQuoteSignoffReminderService, type QuoteSignoffReminderService } from '../../quote-signoff-reminder-service.js';
+import { createPreapprovalCodec } from '../../storage/preapproval-codec.js';
+import { createQuietHoursStore } from '../../storage/quiet-hours-store.js';
+import { createServerTimeZoneStore } from '../../storage/server-timezone-store.js';
+import { resolveServerTimeZone, shouldSuppressForQuietHours } from '@recued/contracts';
 import { createWorkEntityStore } from '../../storage/work-entity-store.js';
 
 /** Inputs to `composeReceptionSubstrate`. The six "required" handles
@@ -424,8 +430,37 @@ export const composeReceptionSubstrate = async (
     ? () => quoteSignoffs ??= createQuoteSignoffService({ db: deps.db!, records: deps.recordsStore!,
       manifest: signoffManifest, work: createWorkEntityStore(deps.db!), now: Date.now,
     }) : undefined;
+  let completions: QuoteCompletionService | undefined;
+  const getQuoteCompletionService = getQuoteSignoffService && deps.db
+    ? () => completions ??= createQuoteCompletionService({ db: deps.db!, signoffs: getQuoteSignoffService(),
+      work: createWorkEntityStore(deps.db!), now: Date.now }) : undefined;
+  let signoffReminders: QuoteSignoffReminderService | undefined;
+  const getQuoteSignoffReminderService = getQuoteSignoffService && deps.db
+    ? () => signoffReminders ??= createQuoteSignoffReminderService({ db: deps.db!,
+      signoffs: getQuoteSignoffService(), codec: createPreapprovalCodec(receptionKeyProvider),
+      endpoints: registryStore, pepper: getReceptionPepper, shareBaseUrl: getShareBaseUrl, now: Date.now,
+    }) : undefined;
+  if (deps.executeDeps && getQuoteSignoffReminderService) {
+    deps.executeDeps.getQuoteSignoffReminderService = getQuoteSignoffReminderService;
+  }
+  if (getQuoteSignoffReminderService && deps.executeDeps?.preflightNotifier && deps.db) {
+    const quietHours = createQuietHoursStore(deps.db);
+    const zone = createServerTimeZoneStore(deps.db);
+    deps.backgroundServices.registerInterval({ name: 'quote-signoff-reminders', intervalMs: 60_000,
+      fireImmediate: true, tick: async () => {
+        if (!receptionKeyProvider()) return;
+        await getQuoteSignoffReminderService().sweep(
+          message => deps.executeDeps!.preflightNotifier!.notify({ ...message, link_url: '#reception/signoffs' }),
+          at => shouldSuppressForQuietHours({ policy: quietHours.read(), instant: at,
+            timeZone: resolveServerTimeZone(zone.read(), Intl.DateTimeFormat().resolvedOptions().timeZone) }),
+        );
+      },
+    });
+  }
   const receptionRpcDepsBase: ReceptionRpcDeps = {
+    ...(getQuoteSignoffReminderService ? { getQuoteSignoffReminderService } : {}),
     ...(getQuoteSignoffService ? { getQuoteSignoffService } : {}),
+    ...(getQuoteCompletionService ? { getQuoteCompletionService } : {}),
     ...(getApprovalWorkflowService ? { getApprovalWorkflowService } : {}),
     getStore: () => registryStore,
     getPreviewStore: () => previewStore,
@@ -464,6 +499,7 @@ export const composeReceptionSubstrate = async (
     ...(deps.approvalIntentStore
       ? { getApprovalIntentStore: () => deps.approvalIntentStore! }
       : {}),
+    getApprovalIntentPiiKey: () => getApprovalIntentPiiKey(),
     // D-149 P9 § A.5.6 — seed the per-endpoint status projection row at
     // create time so the visitor GET path has a target to read.
     ...(deps.statusProjectionStore
@@ -984,6 +1020,8 @@ export const composeReceptionSubstrate = async (
   };
 
   const receptionPortDeps: ReceptionPortHandlerDeps = {
+    ...(getQuoteCompletionService ? { checkQuoteCompletionLink: (config, endpointId) =>
+      getQuoteCompletionService().checkLink(config.on_action.target_id, endpointId, config) } : {}),
     ...(getQuoteSignoffService ? { checkQuoteSignoffLink: (config, endpointId) =>
       getQuoteSignoffService().checkLink(config.on_action.target_id, endpointId, config) } : {}),
     getStore: () => registryStore,
@@ -1184,6 +1222,8 @@ export const composeReceptionSubstrate = async (
     const commitmentStore = deps.workEntityStore;
     drainProcessors.push(
       createApprovalLinkSubmissionProcessor({
+        ...(getQuoteCompletionService ? { recordQuoteCompletion: (targetId, endpointId, intentId, outcome, receivedAt) =>
+          getQuoteCompletionService().recordResponse(targetId, endpointId, intentId, outcome, receivedAt) } : {}),
         ...(getQuoteSignoffService ? { recordQuoteSignoff: (targetId, endpointId, intentId, affirmative) =>
           getQuoteSignoffService().recordResponse(targetId, endpointId, intentId, affirmative) } : {}),
         ...(getApprovalWorkflowService ? { applyEffect: composeApprovalWorkflowResponse(

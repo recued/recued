@@ -92,6 +92,7 @@ export type ReceptionInboxSourceKind =
   | 'drop_link'
   | 'approval_link'
   | 'quote_signoff'
+  | 'quote_completion'
   | 'status_link'
   | 'vendor';
 

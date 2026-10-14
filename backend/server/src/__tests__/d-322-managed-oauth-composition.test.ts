@@ -20,6 +20,7 @@ import { composeAppContext } from '../serve/compose-app-context.js';
 import { composeCollectionContext } from '../serve/compose-collection-context.js';
 import { composeExecutionContext, createExecutionLateBoundRefs } from '../serve/compose-execution-context.js';
 import { composeStorageContext } from '../serve/compose-storage-context.js';
+import { createInstanceStore } from '../collections/instance-store.js';
 
 const environmentKey = 'd322-fixture-environment-key';
 const native = { spreadsheetId: 'fixture-id', sheets: [{ properties: { sheetId: 7 } }],
@@ -166,6 +167,24 @@ describe('D-322 production composition and saved-account lifetime', () => {
       await composed.handlers['collection.connection.enroll']({ kind: 'api', name: 'sheets', display_name: 'Sheets',
         config: { vendor: 'google', base_url: 'https://sheets.googleapis.com/v4' }, auth: complete.auth }, undefined as never);
       const before = composed.app.connectionStoreRef!.get('api', 'sheets')!;
+      const instances = createInstanceStore({ db: composed.storage.db });
+      for (const platform of ['mail', 'calendar'] as const) instances.upsert({ platform, slug: `fixture-${platform}`,
+        adapter_type: 'fixture', config: { managed_oauth: { connection_name: 'sheets' }, secret: 'fixture-secret-no-proj' },
+        caps: { read: 'yes', write: 'no', delete: 'no', watch: 'poll', mirror: 'disabled', auth: 'oauth', path_style: 'uri' },
+        auth_state: 'healthy', last_synced_at: null });
+      composed.app.contractGrantStoreRef!.grantPackGroup('fixture-pack', 'fixture-catalog', 'sheets', 'read');
+      const usage = await composed.rpc({ action: 'account_usage', profile_id: saved.profile.id,
+        integration_id: 'sheets-fixture', connection_id: 'saved-account' });
+      if (usage.action !== 'account_usage') throw new Error('Usage fixture missing');
+      expect(usage.usage.connections).toHaveLength(1);
+      // This fixture composes execution, without maintenance's schedule store.
+      // The known source bindings remain visible; the expanded usage read is incomplete.
+      expect(usage.usage.connections[0]).toMatchObject({ name: 'sheets', usage_available: false, uses: [
+        { kind: 'calendar', id: 'fixture-calendar' }, { kind: 'file', id: 'google.sheets.file' },
+        { kind: 'mail', id: 'fixture-mail' }, { kind: 'pack', id: 'fixture-pack' },
+      ] });
+      expect(JSON.stringify(usage)).not.toContain('fixture-secret-no-proj');
+      expect(broker.sessionCount()).toBe(1);
       await runMetadata(composed);
       expect(broker.proxyRequests).toEqual([{ path: '/proxy/v4/spreadsheets/fixture-id?fields=spreadsheetId&fields=sheets',
         account: 'saved-account', integration: 'sheets-fixture', target: 'https://sheets.googleapis.com', retries: '0' }]);

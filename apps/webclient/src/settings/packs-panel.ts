@@ -465,6 +465,10 @@ import {
   type PackConnectionsCallers,
   type PackConnectionsController,
 } from './pack-connections-controls.js';
+// D-322 §24 — preserve the exact account/resource control across access checks.
+import {
+  packResourceAccessFocusOf, packResourceAccessFocusTargets, type PackResourceAccessFocus,
+} from './pack-resource-access-controls.js';
 // D-321 — the DETAIL tab's Programs block: whether the pack's programs are ready
 // on the server, the tested versions, Refuse / Warn, and how to install one.
 import {
@@ -1466,6 +1470,7 @@ export const mountPacksPanel = (
   /** D-321 — a Programs control that had focus while its action was in flight
    *  (it was disabled, so the page took focus): restored once it can take it. */
   let pendingProgramsFocus: PackProgramsFocus | null = null;
+  let pendingResourceAccessFocus: PackResourceAccessFocus | null = null;
   // ── Slice K state ────────────────────────────────────────────────
   /** Post-success runnability disclosure notice. Survives refreshes;
    *  cleared on dismiss / the next submit kickoff / replaced by the
@@ -4474,6 +4479,7 @@ export const mountPacksPanel = (
     let restoreDeleteAction = pendingDeleteActionFocus;
     let restoreInstallDialog = pendingInstallDialogFocus;
     let restorePrograms: PackProgramsFocus | null = null;
+    let restoreResourceAccess: PackResourceAccessFocus | null = null;
     pendingDetailTabFocus = null;
     if (activeElement !== null) {
       try {
@@ -4506,6 +4512,7 @@ export const mountPacksPanel = (
         restoreInstallDialog = installDialogFocusFrom(activeElement);
       }
       if (activeOwned) restorePrograms = packProgramsFocusOf(activeElement);
+      if (activeOwned) restoreResourceAccess = packResourceAccessFocusOf(activeElement);
     }
     // A Programs action still in flight keeps its place, unless focus has since
     // gone somewhere else on purpose.
@@ -4513,6 +4520,8 @@ export const mountPacksPanel = (
       || activeElement === (doc as unknown as { body?: HTMLElement | null }).body;
     if (restorePrograms === null && focusLost) restorePrograms = pendingProgramsFocus;
     pendingProgramsFocus = null;
+    if (restoreResourceAccess === null && focusLost) restoreResourceAccess = pendingResourceAccessFocus;
+    pendingResourceAccessFocus = null;
     clearChildren();
     switch (state) {
       case 'loading':
@@ -4555,6 +4564,18 @@ export const mountPacksPanel = (
       pendingDeleteActionFocus = restoreDeleteActionFocus(restoreDeleteAction)
         ? null
         : restoreDeleteAction;
+    } else if (restoreResourceAccess !== null && restoreResourceAccess.target.pack_slug === selectedSlug) {
+      let target: HTMLElement | null = null;
+      for (const matches of packResourceAccessFocusTargets(restoreResourceAccess)) {
+        target = findPanelElement(matches);
+        if (target !== null) break;
+      }
+      if (target !== null && (target as HTMLButtonElement).disabled !== true) {
+        focusPanelElement(target);
+        if (restoreResourceAccess.selection && target.hasAttribute('data-pack-access-input')) {
+          (target as HTMLInputElement).setSelectionRange?.(restoreResourceAccess.selection.start, restoreResourceAccess.selection.end);
+        }
+      } else pendingResourceAccessFocus = restoreResourceAccess;
     } else if (restorePrograms !== null) {
       let target: HTMLElement | null = null;
       for (const matches of packProgramsFocusTargets(restorePrograms)) {

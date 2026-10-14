@@ -288,7 +288,9 @@ import {
 
 export interface ReceptionRpcDeps {
   readonly getApprovalWorkflowService?: () => import('./approval-workflow-service.js').ApprovalWorkflowService;
+  readonly getQuoteCompletionService?: () => import('./quote-completion-service.js').QuoteCompletionService;
   readonly getQuoteSignoffService?: () => import('./quote-signoff-service.js').QuoteSignoffService;
+  readonly getQuoteSignoffReminderService?: () => import('./quote-signoff-reminder-service.js').QuoteSignoffReminderService;
   readonly getStore: () => PublicEndpointRegistryStore;
   readonly getPreviewStore: () => PreviewHashStore;
   /** Source the active reception pepper. Throws when the FileVault is
@@ -317,6 +319,8 @@ export interface ReceptionRpcDeps {
    *  the config); the visitor consume path returns the substrate
    *  placeholder until the store is wired. */
   readonly getApprovalIntentStore?: () => import('./storage/reception-approval-store.js').ApprovalIntentStore;
+  /** Owner receipt projection decrypts the outcome only, never visitor identity. */
+  readonly getApprovalIntentPiiKey?: () => Uint8Array;
   /** D-149 P9 § A.5.6 — status-projection store. When wired, the
    *  `endpoint.create` path seeds a 1:1 projection row for every
    *  newly-created `status_link` endpoint so the visitor GET path has
@@ -435,7 +439,17 @@ type ReceptionMethods =
   | 'reception.signoff.prepare_addition'
   | 'reception.signoff.publish'
   | 'reception.signoff.list'
+  | 'reception.jobs.list'
   | 'reception.signoff.cancel'
+  | 'reception.signoff.receipt'
+  | 'reception.signoff.completion.prepare'
+  | 'reception.signoff.completion.publish'
+  | 'reception.signoff.completion.list'
+  | 'reception.signoff.completion.cancel'
+  | 'reception.signoff.reminders.get'
+  | 'reception.signoff.reminders.set'
+  | 'reception.signoff.reminders.list'
+  | 'reception.signoff.reminders.draft'
   | 'reception.endpoints.list'
   | 'reception.endpoint.preview_draft'
   | 'reception.endpoint.create'
@@ -4350,7 +4364,17 @@ export const makeReceptionHandlers = (
       'reception.signoff.prepare_addition',
       'reception.signoff.publish',
       'reception.signoff.list',
+      'reception.jobs.list',
       'reception.signoff.cancel',
+      'reception.signoff.receipt',
+      'reception.signoff.completion.prepare',
+      'reception.signoff.completion.publish',
+      'reception.signoff.completion.list',
+      'reception.signoff.completion.cancel',
+      'reception.signoff.reminders.get',
+      'reception.signoff.reminders.set',
+      'reception.signoff.reminders.list',
+      'reception.signoff.reminders.draft',
       'reception.endpoints.list',
       'reception.endpoint.preview_draft',
       'reception.endpoint.create',
@@ -4375,7 +4399,43 @@ export const makeReceptionHandlers = (
       'reception.compose.propose',
     ],
     handlers: {
+      'reception.jobs.list': async (args, client) => {
+        const { handleCustomerJobsList } = await import('./customer-jobs-rpc-handler.js');
+        return handleCustomerJobsList(deps, args, client);
+      },
+      'reception.signoff.reminders.get': async (args, client) => {
+        const { handleSignoffReminderGet } = await import('./quote-signoff-reminder-rpc-handler.js');
+        return handleSignoffReminderGet(deps, args, client);
+      },
+      'reception.signoff.reminders.set': async (args, client) => {
+        const { handleSignoffReminderSet } = await import('./quote-signoff-reminder-rpc-handler.js');
+        return handleSignoffReminderSet(deps, args, client);
+      },
+      'reception.signoff.reminders.list': async (args, client) => {
+        const { handleSignoffReminderList } = await import('./quote-signoff-reminder-rpc-handler.js');
+        return handleSignoffReminderList(deps, args, client);
+      },
+      'reception.signoff.reminders.draft': async (args, client) => {
+        const { handleSignoffReminderDraft } = await import('./quote-signoff-reminder-rpc-handler.js');
+        return handleSignoffReminderDraft(deps, args, client);
+      },
       'reception.approval.targets': async (_args, client) => handleReceptionApprovalTargets(deps, client),
+      'reception.signoff.completion.prepare': async (args, client) => {
+        const { handleCompletionPrepare } = await import('./quote-completion-rpc-handler.js');
+        return handleCompletionPrepare(deps, args, client);
+      },
+      'reception.signoff.completion.publish': async (args, client) => {
+        const { handleCompletionPublish } = await import('./quote-completion-rpc-handler.js');
+        return handleCompletionPublish(deps, args, client);
+      },
+      'reception.signoff.completion.list': async (args, client) => {
+        const { handleCompletionList } = await import('./quote-completion-rpc-handler.js');
+        return handleCompletionList(deps, args, client);
+      },
+      'reception.signoff.completion.cancel': async (args, client) => {
+        const { handleCompletionCancel } = await import('./quote-completion-rpc-handler.js');
+        return handleCompletionCancel(deps, args, client);
+      },
       'reception.signoff.quotes': async (_args, client) => {
         const { handleSignoffQuotes } = await import('./quote-signoff-rpc-handler.js');
         return handleSignoffQuotes(deps, client);
@@ -4399,6 +4459,10 @@ export const makeReceptionHandlers = (
       'reception.signoff.cancel': async (args, client) => {
         const { handleSignoffCancel } = await import('./quote-signoff-rpc-handler.js');
         return handleSignoffCancel(deps, args, client);
+      },
+      'reception.signoff.receipt': async (args, client) => {
+        const { handleSignoffReceipt } = await import('./quote-signoff-rpc-handler.js');
+        return handleSignoffReceipt(deps, args, client);
       },
       'reception.endpoints.list': async (args, client) =>
         handleReceptionEndpointsList(

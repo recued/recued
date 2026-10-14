@@ -3,28 +3,46 @@ import { QUOTE_SIGNOFF_SEARCH_MAX, QUOTE_SIGNOFF_STATES,
   type QuoteSignoffState, type QuoteSignoffSummary } from '@recued/contracts';
 import { canRecordSignoffPayment, createQuoteSignoffPayment,
   type QuoteSignoffPaymentOptions } from './quote-signoff-payment.js';
+import { mountQuoteSignoffReminders, type QuoteSignoffReminderOptions } from './quote-signoff-reminders.js';
+import { mountQuoteCompletionPanel } from './quote-completion-panel.js';
+import { mountQuoteSignoffReceipt } from './quote-signoff-receipt.js';
 
 export type QuoteSignoffConn = Conn<Pick<ServerRpcRegistry,
   'reception.signoff.quotes' | 'reception.signoff.prepare' | 'reception.signoff.publish'
-  | 'reception.signoff.prepare_addition' | 'reception.signoff.list' | 'reception.signoff.cancel'>>;
+  | 'reception.signoff.prepare_addition' | 'reception.signoff.list' | 'reception.signoff.cancel'
+  | 'reception.signoff.receipt'
+  | 'reception.signoff.completion.prepare' | 'reception.signoff.completion.publish'
+  | 'reception.signoff.completion.list' | 'reception.signoff.completion.cancel'
+  | 'reception.signoff.reminders.get' | 'reception.signoff.reminders.set'
+  | 'reception.signoff.reminders.list' | 'reception.signoff.reminders.draft'>>;
 
 /** Customer acceptance and owner release are distinct decisions. All terms
  * and destinations come from the prepared server snapshot, never the DOM. */
 export const mountQuoteSignoffPanel = (opts: {
   host: HTMLElement; conn: QuoteSignoffConn; document: Document;
   payment?: QuoteSignoffPaymentOptions;
+  reminders?: QuoteSignoffReminderOptions;
 }) => {
   const { document: doc, conn } = opts;
   const root = doc.createElement('section'); root.setAttribute('data-recued-quote-signoffs', '');
   opts.host.appendChild(root);
   const style = doc.createElement('style'); style.textContent = `
     [data-recued-quote-signoffs] { display:grid; gap:18px; max-width:850px; }
+    [data-recued-quote-signoffs] [hidden] { display:none !important; }
+    [data-recued-quote-signoffs] [data-signoff-completions],
+    [data-recued-quote-signoffs] [data-completion-history],
+    [data-recued-quote-signoffs] [data-signoff-reminders],
+    [data-recued-quote-signoffs] [data-signoff-reminder-queue],
+    [data-recued-quote-signoffs] [data-signoff-reminder-editor] { display:grid; gap:12px; }
+    [data-recued-quote-signoffs] [data-signoff-receipt],
+    [data-recued-quote-signoffs] [data-signoff-receipt-requests] { display:grid; gap:12px; }
     [data-recued-quote-signoffs] h2, [data-recued-quote-signoffs] h3, [data-recued-quote-signoffs] p { margin:0; }
     [data-recued-quote-signoffs] form { display:grid; gap:12px; }
     [data-recued-quote-signoffs] label { display:grid; gap:5px; font-size:14px; }
     [data-recued-quote-signoffs] input, [data-recued-quote-signoffs] select,
     [data-recued-quote-signoffs] textarea { width:100%; padding:10px; border:1px solid var(--border); border-radius:8px; background:var(--surface); color:var(--fg); font:inherit; }
     [data-recued-quote-signoffs] textarea { min-height:130px; resize:vertical; }
+    [data-recued-quote-signoffs] input[type="checkbox"] { width:auto; }
     [data-recued-quote-signoffs] button { padding:9px 14px; border:1px solid var(--border); border-radius:8px; background:var(--surface); color:var(--fg); cursor:pointer; width:fit-content; }
     [data-recued-quote-signoffs] button:disabled { opacity:.6; cursor:default; }
     [data-recued-quote-signoffs] pre { white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; line-height:1.5; padding:16px; background:var(--surface-sunk); border-radius:10px; }
@@ -77,6 +95,7 @@ export const mountQuoteSignoffPanel = (opts: {
   const prepare = doc.createElement('button'); prepare.type = 'submit'; prepare.textContent = 'Preview customer sign-off'; form.appendChild(prepare);
   const previewHost = doc.createElement('div'); previewHost.setAttribute('data-signoff-preview', ''); root.appendChild(previewHost);
   const shareHost = doc.createElement('div'); shareHost.setAttribute('data-signoff-share', ''); root.appendChild(shareHost);
+  const reminders = opts.reminders ? mountQuoteSignoffReminders({ ...opts.reminders, host: root, document: doc, conn }) : null;
   const historyHead = doc.createElement('div'); historyHead.className = 'signoff-actions'; root.appendChild(historyHead);
   add('h3', 'Requests and responses', historyHead);
   const refresh = doc.createElement('button'); refresh.type = 'button'; refresh.textContent = 'Refresh'; historyHead.appendChild(refresh);
@@ -98,7 +117,17 @@ export const mountQuoteSignoffPanel = (opts: {
   const pages = doc.createElement('div'); pages.className = 'signoff-actions'; root.appendChild(pages);
   const newer = doc.createElement('button'); newer.type = 'button'; newer.textContent = 'Newer requests'; pages.appendChild(newer);
   const older = doc.createElement('button'); older.type = 'button'; older.textContent = 'Older requests'; pages.appendChild(older);
+  const receipts = mountQuoteSignoffReceipt({ document: doc, host: root,
+    read: signoff_id => conn('reception.signoff.receipt', { signoff_id }),
+    returnFocus: id => {
+      const buttons = root.querySelectorAll<HTMLButtonElement>('[data-signoff-receipt-open]');
+      const target = Array.from(buttons).find(button => button.getAttribute('data-signoff-receipt-open') === id);
+      (target ?? search).focus();
+    },
+  });
 
+  const completions = mountQuoteCompletionPanel({ document: doc,host: root,conn,
+    onChanged: () => { if (!disposed) void load(); } });
   let disposed = false; let busy = false; let generation = 0;
   let historyLoading = false;
   let currentSearch = ''; let currentState: QuoteSignoffState | undefined;
@@ -180,6 +209,9 @@ export const mountQuoteSignoffPanel = (opts: {
         add('p', `Task: ${offer.task_title}. Invoice ${offer.invoice_ref}, due ${offer.due_on}.`, card);
         const details = doc.createElement('details'); card.appendChild(details); add('summary', 'Offered scope', details);
         add('pre', offer.scope, details);
+        const receipt = doc.createElement('button'); receipt.type = 'button'; receipt.textContent = 'View receipt';
+        receipt.setAttribute('data-signoff-receipt-open', offer.signoff_id); card.appendChild(receipt); historyButtons.push(receipt);
+        receipt.addEventListener('click', () => { if (!busy && !disposed) void receipts.open(offer.signoff_id); });
         if (offer.state === 'accepted' && offer.availability === 'current' && offer.release_review === 'waiting') {
           const inbox = add('a', 'Review release in Reception Inbox', card); inbox.setAttribute('href', '#reception/inbox');
         }
@@ -191,8 +223,18 @@ export const mountQuoteSignoffPanel = (opts: {
         }
         if (offer.state === 'waiting' && offer.endpoint_id) {
           const manage = add('a', 'Manage share link', card); manage.setAttribute('href', `#reception/endpoints/${encodeURIComponent(offer.endpoint_id)}`);
+          if (reminders && offer.availability === 'current') {
+            const follow = doc.createElement('button'); follow.type = 'button'; follow.textContent = 'Set follow-up';
+            follow.addEventListener('click', () => { if (!busy) void reminders.open(offer); });
+            card.appendChild(follow); historyButtons.push(follow);
+          }
         }
         if (offer.state === 'released') {
+          if (offer.can_request_completion) {
+            const completion = doc.createElement('button'); completion.type = 'button'; completion.textContent = 'Request completion';
+            card.appendChild(completion); historyButtons.push(completion);
+            completion.addEventListener('click',() => { if (!busy && !disposed) completions.open(offer); });
+          }
           const follow = offer.follow_up;
           if (!follow) add('p', 'Current work and payment status is unavailable. Refresh to try again.', card);
           else {
@@ -246,6 +288,7 @@ export const mountQuoteSignoffPanel = (opts: {
           });
         }
       }
+      completions.update();
       if (!offers.signoffs.length) add('p', currentSearch || currentState ? 'No requests match this search.' : 'No customer sign-offs yet.', history);
       historyStatus.textContent = `Page ${previousCursors.length + 1} · ${offers.signoffs.length} request${offers.signoffs.length === 1 ? '' : 's'}.`;
       if (offers.truncated && !offers.next_cursor) add('p', 'Update Recued to browse more requests.', history);
@@ -294,12 +337,15 @@ export const mountQuoteSignoffPanel = (opts: {
       if (disposed) return; prepared = result;
       add('h3', 'What the customer will see', previewHost); add('pre', result.customer_preview, previewHost);
       add('p', `After acceptance and your approval: ${result.signoff.addition ? 'append the added scope to' : 'create'} “${result.signoff.task_title}” and ${result.signoff.addition ? 'create an additional' : 'create'} invoice ${result.signoff.invoice_ref}, dated ${result.signoff.issued_on}, due ${result.signoff.due_on}.`, previewHost);
+      const keepLink = doc.createElement('input'); keepLink.type = 'checkbox'; keepLink.setAttribute('name', 'remember_link_for_reminders');
+      if (reminders) add('label', 'Save this link for follow-up emails', previewHost).appendChild(keepLink);
       publish = doc.createElement('button'); publish.type = 'button'; publish.textContent = 'Publish sign-off link';
       publish.disabled = busy; previewHost.appendChild(publish);
       publish.addEventListener('click', async () => {
         if (busy || disposed || !prepared) return; const snapshot = prepared; setBusy(true);
         try {
-          const created = await conn('reception.signoff.publish', { signoff_id: snapshot.signoff.signoff_id, preview_hash: snapshot.preview_hash });
+          const created = await conn('reception.signoff.publish', { signoff_id: snapshot.signoff.signoff_id, preview_hash: snapshot.preview_hash,
+            ...(reminders && keepLink.checked ? { remember_link_for_reminders: true } : {}) });
           if (disposed) return; invalidate();
           add('p', 'Share this link with your customer. It accepts one response.', shareHost);
           const label = add('label', 'Customer sign-off link', shareHost);
@@ -316,8 +362,10 @@ export const mountQuoteSignoffPanel = (opts: {
     finally { if (!disposed) setBusy(false); }
   });
   refresh.addEventListener('click', () => { if (!busy && !disposed) void load(); });
-  const interval = setInterval(() => { if (!busy && !disposed && !historyLoading) void load(); }, 20_000);
-  void load();
-  return { update: () => { if (!disposed) void load(); }, hasInFlightWork: () => busy || payment?.hasInFlightWork() === true,
-    dispose: () => { disposed = true; generation++; clearInterval(interval); payment?.dispose(); root.remove(); } };
+  const interval = setInterval(() => { if (!busy && !disposed && !historyLoading) { void load(); reminders?.update(); } }, 20_000);
+  completions.update(); void load();
+  return { update: () => { if (!disposed) { void load(); reminders?.update(); } },
+    hasUnsavedChanges: () => reminders?.hasUnsavedChanges() === true || completions.hasUnsavedChanges(),
+    hasInFlightWork: () => busy || completions.hasInFlightWork() || payment?.hasInFlightWork() === true || reminders?.hasInFlightWork() === true,
+    dispose: () => { disposed = true; generation++; clearInterval(interval); payment?.dispose(); reminders?.dispose(); receipts.dispose(); completions.dispose(); root.remove(); } };
 };

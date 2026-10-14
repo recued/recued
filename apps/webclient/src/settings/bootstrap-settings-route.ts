@@ -1222,6 +1222,12 @@ export const SETTINGS_ROUTE_STYLES = `
   [${SETTINGS_ROUTE_NAV_ITEM_ATTR}][${SETTINGS_ROUTE_ACTIVE_ATTR}="true"] {
     box-shadow: inset 0 -2px 0 var(--accent);
   }
+  /* Keep keyboard focus inside the scrolling rail's clipping boundary. */
+  [${SETTINGS_ROUTE_ROOT_ATTR}] [${SETTINGS_ROUTE_NAV_ATTR}] [${SETTINGS_ROUTE_NAV_ITEM_ATTR}]:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -3px;
+    box-shadow: none;
+  }
 }
 /* R29 — Privacy directory: framing + a card list linking out to each
    control's real home. */
@@ -3162,6 +3168,35 @@ export const bootstrapSettingsRoute = (
   // `activateSubview` never has to read `navEl.children` — some fake
   // DOMs in the test suite don't implement a live `children` collection.
   const navItems: Array<{ id: string; el: HTMLElement }> = [];
+  let disposed = false;
+  let navigationRevealFrame: number | null = null;
+  const revealNavItem = (item: HTMLElement | undefined): void => {
+    if (item === undefined || navEl.scrollWidth <= navEl.clientWidth) return;
+    const itemBounds = item.getBoundingClientRect();
+    const railBounds = navEl.getBoundingClientRect();
+    const left = railBounds.left + navEl.clientLeft;
+    const right = left + navEl.clientWidth;
+    // Scroll only the rail: a resize must not move an editor or take focus.
+    if (itemBounds.left < left) navEl.scrollLeft += itemBounds.left - left;
+    else if (itemBounds.right > right) navEl.scrollLeft += itemBounds.right - right;
+  };
+  const revealNavigationOwner = (): void => {
+    if (disposed) return;
+    const owner = navItems.find((item) => item.el === doc.activeElement)
+      ?? navItems.find((item) => item.el.getAttribute(SETTINGS_ROUTE_ACTIVE_ATTR) === 'true');
+    revealNavItem(owner?.el);
+  };
+  const scheduleNavigationReveal = (): void => {
+    revealNavigationOwner();
+    if (navigationRevealFrame !== null) return;
+    // Native focus scrolling can run after the focus event. Correct its final
+    // position before the next paint, using the current owner rather than an
+    // earlier button that the user may already have left.
+    navigationRevealFrame = doc.defaultView?.requestAnimationFrame?.(() => {
+      navigationRevealFrame = null;
+      revealNavigationOwner();
+    }) ?? null;
+  };
   const activateSubview = (
     id: string,
     behaviour: { scroll: boolean },
@@ -3218,6 +3253,7 @@ export const bootstrapSettingsRoute = (
       // sub-page) skips the section the user actually came from.
       opts.onAddressChange?.(serializeShellRoute('settings', sv.id), 'push');
     });
+    item.addEventListener('focus', scheduleNavigationReveal);
     navEl.appendChild(item);
     navItems.push({ id: sv.id, el: item });
   }
@@ -3234,7 +3270,7 @@ export const bootstrapSettingsRoute = (
     activateSubview(initialSubviewId, { scroll: deepLinked });
   }
 
-  let disposed = false;
+  doc.defaultView?.addEventListener?.('resize', scheduleNavigationReveal);
   return {
     update: () => {
       /* v1 has no per-broadcast update path */
@@ -3307,6 +3343,11 @@ export const bootstrapSettingsRoute = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      doc.defaultView?.removeEventListener?.('resize', scheduleNavigationReveal);
+      if (navigationRevealFrame !== null) {
+        doc.defaultView?.cancelAnimationFrame?.(navigationRevealFrame);
+        navigationRevealFrame = null;
+      }
       // Dispose in reverse construction order so any in-flight
       // listener wired by a child panel detaches before the parent
       // section node is removed.

@@ -678,6 +678,7 @@ export interface KernelCustomerAccessCloseInput extends KernelCustomerAccessTarg
 
 export interface KernelDispatchers {
   approvalWorkflowContinue?: (input: import('@recued/contracts').ApprovalWorkflowContinueInput) => Promise<import('@recued/contracts').ApprovalWorkflowContinueResult>;
+  quoteCompletionReview?: (input: import('@recued/contracts').QuoteCompletionReviewInput) => Promise<import('@recued/contracts').QuoteCompletionReviewResult>;
   quoteSignoffRelease?: (input: QuoteSignoffReleaseInput) => Promise<QuoteSignoffReleaseResult>;
   /** D-234 § 234.4 — the asking half. Returns the recorded `PeerAnswer` when the
    *  conversation has one, and otherwise THROWS `PeerAnswerRequiredSignal`, which
@@ -2020,6 +2021,18 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
           throw new IngredientError('BAD_INPUT', 'Workflow approval input is invalid.', { slug });
         }
         return dispatchers.approvalWorkflowContinue({ endpoint_id, intent_id, expected_plan_hash, summary });
+      }
+      case 'quote-completion-review': {
+        if (!dispatchers.quoteCompletionReview) throw new IngredientError('SERVER_NOT_REACHABLE', 'Customer completion review is unavailable.', { slug });
+        const input = call.input as Record<string, unknown>;
+        assertOnlyKernelInputFields(input, ['completion_id','expected_plan_hash','summary'], slug);
+        const completion_id = requireKernelString(input.completion_id, 'completion_id', slug);
+        const expected_plan_hash = requireKernelString(input.expected_plan_hash, 'expected_plan_hash', slug);
+        const summary = requireKernelString(input.summary, 'summary', slug);
+        if (!/^[a-f0-9-]{36}$/.test(completion_id) || !/^[a-f0-9]{64}$/.test(expected_plan_hash) || summary.length > 10_000) {
+          throw new IngredientError('BAD_INPUT', 'Customer completion review input is invalid.', { slug });
+        }
+        return dispatchers.quoteCompletionReview({ completion_id, expected_plan_hash, summary });
       }
       case 'quote-signoff-release': {
         if (!dispatchers.quoteSignoffRelease) throw new IngredientError('SERVER_NOT_REACHABLE', 'Customer sign-off release is unavailable.', { slug });

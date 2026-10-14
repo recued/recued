@@ -73,6 +73,13 @@ const item = (over: Partial<InboxItem> = {}): InboxItem => ({
 });
 
 describe('D-173 P6 reception inbox - projection model', () => {
+  it('shows frozen completion delivery and owner action without editable authority fields',() => {
+    const detail = buildReceptionInboxDetailModel(item({ operation_id: 'quote-completion-review',top_tier_kind: 'task',
+      source: { kind: 'quote_completion',record_ref: 'completion' },arg_schema: { fields: [] },
+      args: { completion_id: 'completion',expected_plan_hash: 'a'.repeat(64),summary: 'Delivered the drawings.\nClose local task.' },
+    }),NOW);
+    expect(detail.review_body).toBe('Delivered the drawings.\nClose local task.');expect(detail.fields).toEqual([]);expect(detail.immutable_arg_keys).toEqual([]);
+  });
   it('shows accepted quote terms as fixed review content and keeps internal references out of the editor', () => {
     const detail = buildReceptionInboxDetailModel(item({ operation_id: 'quote-signoff-release', top_tier_kind: 'task',
       source: { kind: 'quote_signoff', record_ref: 'signoff' }, arg_schema: { fields: [] },

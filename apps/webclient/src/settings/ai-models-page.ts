@@ -35,6 +35,7 @@ import {
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import {
   buildChatModelDefaultModel,
+  isChatModelDefaultSnapshotCurrent,
   reduceChatDefaultModelPrefChanged,
   type ChatModelDefaultRenderModel,
 } from './chat-model-default.js';
@@ -1160,7 +1161,29 @@ export const mountAiModelsPage = (
   let modelPrefSnapshot:
     | { source_id: ChatModelSourceId | null; updated_at: number }
     | null = null;
+  // Confirmed writes and broadcasts supersede earlier reads of their own
+  // setting, without discarding independent reads in the same refresh.
+  let modelPrefVersion = 0;
+  let modelPrefUpdateOrder = 0;
+  let modelPrefSnapshotOrder = 0;
+  let modelPrefReadErrorOrder = 0;
+  const acceptModelPrefSnapshot = (
+    next: { source_id: ChatModelSourceId | null; updated_at: number },
+    order: number,
+  ): boolean => {
+    if (!isChatModelDefaultSnapshotCurrent(modelPrefSnapshot, next)
+      || (next.updated_at === modelPrefSnapshot?.updated_at && order < modelPrefSnapshotOrder)) return false;
+    // For timestamps shared by several changes, use when the read/save was
+    // requested or the broadcast observed. An earlier response cannot undo
+    // a later observation. Never lower that order after a newer timestamp.
+    modelPrefSnapshot = { ...next };
+    modelPrefSnapshotOrder = Math.max(modelPrefSnapshotOrder, order);
+    return true;
+  };
   let llmConfig: LlmConfigRecord | null = null;
+  let refreshVersion = 0;
+  let llmConfigWriteVersion = 0;
+  let configReadPending = false;
   /** Whether this server keeps a slot's `provider_name`. The field is shown
    *  only when it does: an older server would accept the name and lose it. */
   let slotProviderNameSupported = false;
@@ -1175,6 +1198,7 @@ export const mountAiModelsPage = (
   // half is PROJECTED from `llmConfig`, so both recompute together whenever
   // either input moves.
   let rollingBriefSnapshot: { enabled: boolean } | null = null;
+  let rollingBriefVersion = 0;
   let chatBehaviour: ChatBehaviourRenderModel = buildChatBehaviourModel(
     rollingBriefSnapshot,
     llmConfig,
@@ -1185,6 +1209,7 @@ export const mountAiModelsPage = (
   /** D-323 — the install-offers switch, its own read: a server from before
    *  D-323 answers nothing here, and the control stays away. */
   let installOffersSnapshot: { enabled: boolean } | null = null;
+  let installOffersVersion = 0;
   let installOffersPending = false;
   let configSchema: ServerConfigField[] = [];
   let housekeepingConfig: HousekeepingConfigRow | null = null;
@@ -1202,11 +1227,27 @@ export const mountAiModelsPage = (
   // it is single-flight per slot and never fires on its own.
   let slotProbePendingKey: string | null = null;
   const slotProbeResults = new Map<string, ServerLlmProbeResult>();
+  const sourceProbeVersions = new Map<string, number>();
+  const probeOutputElements = new Map<string, HTMLElement[]>();
   /** A Test that never reached the provider — the form was incomplete, or the
    *  rpc itself failed — keyed like `slotProbeResults` and shown under that
    *  Test button. It used to go to the page banner at the top, far from the
    *  button that caused it and styled as plain text. */
   const probeLocalErrors = new Map<string, string>();
+  const invalidateSourceProbe = (key: string): void => {
+    sourceProbeVersions.set(key, (sourceProbeVersions.get(key) ?? 0) + 1);
+    slotProbeResults.delete(key);
+    probeLocalErrors.delete(key);
+    // Remove only the obsolete answer. Rebuilding the form on every input
+    // would interrupt typing and native picker interaction.
+    for (const element of probeOutputElements.get(key) ?? []) element.remove();
+    probeOutputElements.delete(key);
+  };
+  const invalidateProbeAnswers = (): void => {
+    const keys = new Set([...slotProbeResults.keys(), ...probeLocalErrors.keys()]);
+    if (slotProbePendingKey !== null) keys.add(slotProbePendingKey);
+    for (const key of keys) invalidateSourceProbe(key);
+  };
   /** A slot save that failed, shown under that slot's buttons for the same
    *  reason. Keyed like `probeLocalErrors`. */
   const saveErrors = new Map<string, string>();
@@ -1246,6 +1287,8 @@ export const mountAiModelsPage = (
   const poolTogglePendingTargets = new Map<string, boolean>();
   /** The pool form's add or save is in flight. One form, so one flag. */
   let freePoolFormPending = false;
+  // Keep the write's entry id even if a refresh changes or closes its form.
+  let freePoolFormPendingId: string | null = null;
   /** Whether this server edits and tests pool drafts (see
    *  `supports.pool_entry_drafts`). An older one wrote a blank key AS the key,
    *  so Edit is not offered to it. */
@@ -1257,8 +1300,28 @@ export const mountAiModelsPage = (
   let freePoolEditNeedsFocus = false;
   /** The pool form's answers key (Save and Test), like a slot's key. */
   const POOL_FORM_KEY = 'free_pool:form';
+  const invalidatePoolEntryProbe = (id: string): void => {
+    invalidateSourceProbe(`pool:${id}`);
+    if (freePoolEdit?.id === id) invalidateSourceProbe(POOL_FORM_KEY);
+  };
+  const newPoolEntryId = (
+    draft: Pick<FreePoolAddDraft, 'id' | 'provider' | 'baseUrl'>,
+    entries: ReadonlyArray<FreePoolEntryRecord>,
+  ): string => {
+    const typed = draft.id.trim();
+    if (typed.length > 0) return typed;
+    const address = draft.baseUrl.trim();
+    return suggestFreePoolEntryId(
+      { provider: draft.provider, ...(address.length > 0 ? { base_url: address } : {}) },
+      new Set(entries.map((entry) => asString(entry.id)).filter((id) => id.length > 0)),
+    );
+  };
   let poolRemoveDialogId: string | null = null;
   let poolRemovePending = false;
+  const poolEntryWritePending = (id: string): boolean =>
+    freePoolFormPendingId === id
+    || poolTogglePendingTargets.has(id)
+    || (poolRemovePending && poolRemoveDialogId === id);
   let poolRemoveNeedsInitialFocus = false;
   let poolRemoveNeedsConfirmFocus = false;
   let poolFocusAfterRender: PoolFocusTarget | null = null;
@@ -1436,8 +1499,11 @@ export const mountAiModelsPage = (
       || aiPolicyPendingAction !== null
       || catalogModePending !== null
       || modelPreferencePendingId !== null
+      || rollingBriefPending
+      || installOffersPending
       || byokSlotSavePendingKey !== null
       || embeddingsSlotSavePending
+      || transcriptionSlotSavePending
       || chatSetupSubmitting
       || cacheCard?.hasInFlightWork() === true
     );
@@ -1674,7 +1740,10 @@ export const mountAiModelsPage = (
         ['aria-pressed', on ? 'true' : 'false'],
       ],
     );
-    if (installOffersPending) button.setAttribute('aria-busy', 'true');
+    if (installOffersPending) {
+      button.setAttribute('aria-busy', 'true');
+      button.setAttribute('aria-disabled', 'true');
+    }
   };
 
   /** Global chat behaviour. ⛔ ITS OWN SECTION, NOT A PER-SLOT CONTROL. Both
@@ -1720,7 +1789,10 @@ export const mountAiModelsPage = (
         ['aria-pressed', brief ? 'true' : 'false'],
       ],
     );
-    if (rollingBriefPending) briefButton.setAttribute('aria-busy', 'true');
+    if (rollingBriefPending) {
+      briefButton.setAttribute('aria-busy', 'true');
+      briefButton.setAttribute('aria-disabled', 'true');
+    }
     renderInstallOffers(section);
 
     const catalog = doc.createElement('p');
@@ -1896,13 +1968,14 @@ export const mountAiModelsPage = (
   };
 
   /** An error under the control that caused it, styled as one. */
-  const appendFormError = (parent: HTMLElement, key: string, text: string): void => {
+  const appendFormError = (parent: HTMLElement, key: string, text: string): HTMLElement => {
     const box = doc.createElement('div');
     box.className = 'ai-models-form-error';
     box.setAttribute(AI_MODELS_FORM_ERROR_ATTR, key);
     box.setAttribute('role', 'alert');
     box.textContent = text;
     parent.appendChild(box);
+    return box;
   };
 
   const renderSlot = (parent: HTMLElement, slotKey: LlmSlotKey): void => {
@@ -2008,7 +2081,8 @@ export const mountAiModelsPage = (
     );
     contextWindow.type = 'number';
     const syncDraft = (): void => {
-      byokSlotDrafts.set(slotKey, {
+      const previous = byokSlotDrafts.get(slotKey) ?? draft;
+      const next = {
         provider: provider.value,
         providerName: providerName?.value ?? draft.providerName,
         model: model.value,
@@ -2016,7 +2090,13 @@ export const mountAiModelsPage = (
         apiKey: apiKey.value,
         budget: budget.value,
         contextWindow: contextWindow.value,
-      });
+      };
+      // Display names, budgets, and context limits are not probe inputs.
+      if (next.provider !== previous.provider || next.model !== previous.model
+        || next.baseUrl !== previous.baseUrl || next.apiKey !== previous.apiKey) {
+        invalidateSourceProbe(slotKey);
+      }
+      byokSlotDrafts.set(slotKey, next);
     };
     for (const input of [
       ...(providerName !== null ? [providerName] : []),
@@ -2154,7 +2234,8 @@ export const mountAiModelsPage = (
       base_url?: string;
     },
   ): Promise<void> => {
-    if (disposed || slotProbePendingKey !== null || !opts.runProbeLlmSource) return;
+    if (disposed || configReadPending || slotProbePendingKey !== null || !opts.runProbeLlmSource) return;
+    const sourceVersion = sourceProbeVersions.get(resultKey) ?? 0;
     slotProbePendingKey = resultKey;
     actionError = null;
     slotProbeResults.delete(resultKey);
@@ -2167,10 +2248,10 @@ export const mountAiModelsPage = (
         // no draft and the server probes exactly what is stored.
         ...(draft !== undefined ? { draft } : {}),
       });
-      if (disposed) return;
+      if (disposed || sourceVersion !== (sourceProbeVersions.get(resultKey) ?? 0)) return;
       slotProbeResults.set(resultKey, result);
     } catch (err) {
-      if (disposed) return;
+      if (disposed || sourceVersion !== (sourceProbeVersions.get(resultKey) ?? 0)) return;
       probeLocalErrors.set(resultKey, stringifyError(err));
     } finally {
       if (!disposed) {
@@ -2393,13 +2474,19 @@ export const mountAiModelsPage = (
     // redacts to `has_key`), so mask it; leaving it blank keeps the stored key.
     apiKey.type = 'password';
     const syncDraft = (): void => {
-      embeddingsSlotDraft = {
+      const previous = embeddingsSlotDraft ?? draft;
+      const next = {
         provider: provider.value,
         providerName: providerName?.value ?? draft.providerName,
         model: model.value,
         baseUrl: baseUrl.value,
         apiKey: apiKey.value,
       };
+      if (next.provider !== previous.provider || next.model !== previous.model
+        || next.baseUrl !== previous.baseUrl || next.apiKey !== previous.apiKey) {
+        invalidateSourceProbe('embeddings_slot');
+      }
+      embeddingsSlotDraft = next;
     };
     for (const input of [...(providerName !== null ? [providerName] : []), model, baseUrl, apiKey]) {
       input.addEventListener('input', syncDraft);
@@ -2598,13 +2685,21 @@ export const mountAiModelsPage = (
       ],
     );
     const syncDraft = (): void => {
-      transcriptionSlotDraft = {
+      const previous = transcriptionSlotDraft ?? draft;
+      const next = {
         provider: provider.value,
         providerName: providerName?.value ?? draft.providerName,
         model: model.value,
         baseUrl: baseUrl.value,
         apiKey: apiKey.value,
       };
+      // These are the fields sent in a probe draft. Language and limit edits
+      // take effect on Save and do not change a pending probe's input.
+      if (next.provider !== previous.provider || next.model !== previous.model
+        || next.baseUrl !== previous.baseUrl || next.apiKey !== previous.apiKey) {
+        invalidateSourceProbe('transcription_slot');
+      }
+      transcriptionSlotDraft = next;
       transcriptionLanguageDraft = language.value;
       transcriptionCapDraft = cap.value;
     };
@@ -2772,7 +2867,7 @@ export const mountAiModelsPage = (
   };
 
   const openPoolRemoveDialog = (id: string): void => {
-    if (poolRemovePending) return;
+    if (disposed || poolRemovePending || poolEntryWritePending(id)) return;
     actionError = null;
     poolRemoveDialogId = id;
     poolRemoveNeedsInitialFocus = true;
@@ -2785,6 +2880,7 @@ export const mountAiModelsPage = (
       disposed
       || poolRemovePending
       || poolRemoveDialogId !== id
+      || poolEntryWritePending(id)
     ) return;
     poolRemovePending = true;
     poolRemoveNeedsConfirmFocus = false;
@@ -2830,13 +2926,15 @@ export const mountAiModelsPage = (
     validate?: () => string | null,
   ): void => {
     if (!opts.runProbeLlmSource) return;
+    const outputElements: HTMLElement[] = [];
+    probeOutputElements.set(resultKey, outputElements);
     const probing = slotProbePendingKey === resultKey;
     const test = appendButton(
       doc,
       parent,
       probing ? 'Testing…' : 'Test connection',
       () => {
-        if (slotProbePendingKey !== null) return;
+        if (configReadPending || slotProbePendingKey !== null) return;
         clearSourceAnswers(resultKey);
         const problem = validate?.() ?? null;
         if (problem !== null) {
@@ -2856,12 +2954,14 @@ export const mountAiModelsPage = (
         ['aria-label', `Test the ${label} connection`],
       ],
     );
-    if (slotProbePendingKey !== null) {
+    if (configReadPending || slotProbePendingKey !== null) {
       test.setAttribute('aria-disabled', 'true');
       if (probing) test.setAttribute('aria-busy', 'true');
     }
     const localError = probeLocalErrors.get(resultKey);
-    if (localError !== undefined) appendFormError(parent, `${resultKey}:test`, localError);
+    if (localError !== undefined) {
+      outputElements.push(appendFormError(parent, `${resultKey}:test`, localError));
+    }
     const probeResult = slotProbeResults.get(resultKey);
     if (probeResult === undefined) return;
     const box = doc.createElement('div');
@@ -2955,6 +3055,7 @@ export const mountAiModelsPage = (
       box.appendChild(detail);
     }
     parent.appendChild(box);
+    outputElements.push(box);
   };
 
   const renderPoolRemoveDialog = (parent: HTMLElement): void => {
@@ -3016,9 +3117,9 @@ export const mountAiModelsPage = (
     );
     if (poolRemovePending) {
       cancel.setAttribute('aria-disabled', 'true');
-      confirm.setAttribute('aria-disabled', 'true');
       confirm.setAttribute('aria-busy', 'true');
     }
+    if (poolEntryWritePending(id)) confirm.setAttribute('aria-disabled', 'true');
     panel.appendChild(actions);
     panel.addEventListener('keydown', (event) => {
       if (event.key !== 'Escape' || poolRemovePending) return;
@@ -3040,7 +3141,7 @@ export const mountAiModelsPage = (
     id: string,
     enabled: boolean,
   ): Promise<void> => {
-    if (disposed || poolTogglePendingTargets.has(id)) return;
+    if (disposed || poolEntryWritePending(id)) return;
     poolTogglePendingTargets.set(id, enabled);
     actionError = null;
     render();
@@ -3058,10 +3159,11 @@ export const mountAiModelsPage = (
   };
 
   const submitFreePoolAdd = async (
-    entry: Parameters<AiModelsPageMount['addFreePoolApiEntry']>[0],
+    entry: Parameters<AiModelsPageMount['addFreePoolApiEntry']>[0] & { id: string },
   ): Promise<void> => {
-    if (disposed || freePoolFormPending) return;
+    if (disposed || freePoolFormPending || poolEntryWritePending(entry.id)) return;
     freePoolFormPending = true;
+    freePoolFormPendingId = entry.id;
     actionError = null;
     saveErrors.delete(POOL_FORM_KEY);
     render();
@@ -3069,12 +3171,15 @@ export const mountAiModelsPage = (
       await api.addFreePoolApiEntry(entry);
       if (disposed) return;
       freePoolFormPending = false;
-      // The form is empty again; its last Test described what was added.
-      slotProbeResults.delete(POOL_FORM_KEY);
+      freePoolFormPendingId = null;
+      // The form is empty again; a Test started during the write also
+      // belongs to the draft that was added, not this fresh form.
+      invalidateSourceProbe(POOL_FORM_KEY);
       render();
     } catch (err) {
       if (disposed) return;
       freePoolFormPending = false;
+      freePoolFormPendingId = null;
       // Under the form's buttons, where the owner is looking.
       saveErrors.set(POOL_FORM_KEY, stringifyError(err));
       render();
@@ -3085,8 +3190,9 @@ export const mountAiModelsPage = (
     id: string,
     patch: Parameters<AiModelsPageMount['saveFreePoolEntry']>[1],
   ): Promise<void> => {
-    if (disposed || freePoolFormPending) return;
+    if (disposed || freePoolFormPending || poolEntryWritePending(id)) return;
     freePoolFormPending = true;
+    freePoolFormPendingId = id;
     actionError = null;
     saveErrors.delete(POOL_FORM_KEY);
     render();
@@ -3094,13 +3200,15 @@ export const mountAiModelsPage = (
       await api.saveFreePoolEntry(id, patch);
       if (disposed) return;
       freePoolFormPending = false;
+      freePoolFormPendingId = null;
       freePoolEdit = null;
-      slotProbeResults.delete(POOL_FORM_KEY);
+      invalidateSourceProbe(POOL_FORM_KEY);
       poolFocusAfterRender = { attr: AI_MODELS_POOL_EDIT_ATTR, value: id };
       render();
     } catch (err) {
       if (disposed) return;
       freePoolFormPending = false;
+      freePoolFormPendingId = null;
       saveErrors.set(POOL_FORM_KEY, stringifyError(err));
       render();
     }
@@ -3108,7 +3216,7 @@ export const mountAiModelsPage = (
 
   const openFreePoolEdit = (entry: FreePoolEntryRecord): void => {
     const id = asString(entry.id);
-    if (freePoolFormPending || poolTogglePendingTargets.has(id)) return;
+    if (freePoolFormPending || poolEntryWritePending(id)) return;
     freePoolEdit = {
       id,
       draft: {
@@ -3121,7 +3229,7 @@ export const mountAiModelsPage = (
       },
     };
     clearSourceAnswers(POOL_FORM_KEY);
-    slotProbeResults.delete(POOL_FORM_KEY);
+    invalidateSourceProbe(POOL_FORM_KEY);
     freePoolEditNeedsFocus = true;
     render();
   };
@@ -3150,6 +3258,7 @@ export const mountAiModelsPage = (
     for (const entry of entries) {
       const id = asString(entry.id);
       const togglePending = poolTogglePendingTargets.has(id);
+      const entryWritePending = poolEntryWritePending(id);
       const pendingTarget = poolTogglePendingTargets.get(id);
       const enabling = entry.enabled === false;
       const row = doc.createElement('div');
@@ -3226,7 +3335,6 @@ export const mountAiModelsPage = (
           row,
           'Remove',
           () => {
-            if (poolTogglePendingTargets.has(id)) return;
             openPoolRemoveDialog(id);
           },
           [[AI_MODELS_POOL_REMOVE_ATTR, id]],
@@ -3241,11 +3349,13 @@ export const mountAiModelsPage = (
           { kind: 'pool_entry', entry_id: id },
         );
         if (togglePending) {
-          toggle.setAttribute('aria-disabled', 'true');
           toggle.setAttribute('aria-busy', 'true');
+        }
+        if (entryWritePending) {
+          toggle.setAttribute('aria-disabled', 'true');
           remove.setAttribute('aria-disabled', 'true');
         }
-        if (edit !== null && (togglePending || freePoolFormPending || editingThis)) {
+        if (edit !== null && (entryWritePending || freePoolFormPending || editingThis)) {
           edit.setAttribute('aria-disabled', 'true');
         }
       }
@@ -3324,14 +3434,20 @@ export const mountAiModelsPage = (
     );
     contextWindow.type = 'number';
     const syncDraft = (): void => {
-      Object.assign(draft, {
+      const next = {
         id: name?.value ?? draft.id,
         provider: provider.value,
         model: model.value,
         apiKey: key.value,
         baseUrl: baseUrl.value,
         contextWindow: contextWindow.value,
-      });
+      };
+      // The name addresses a new entry; the context limit is not a probe
+      // input. Keep the input connected while removing an obsolete answer.
+      if (next.id !== draft.id || next.provider !== draft.provider
+        || next.model !== draft.model || next.apiKey !== draft.apiKey
+        || next.baseUrl !== draft.baseUrl) invalidateSourceProbe(POOL_FORM_KEY);
+      Object.assign(draft, next);
     };
     for (const input of [...(name !== null ? [name] : []), model, key, baseUrl, contextWindow]) {
       input.addEventListener('input', syncDraft);
@@ -3342,13 +3458,7 @@ export const mountAiModelsPage = (
     // The id a new entry gets: the owner's, or one named from its address.
     const entryId = (): string => {
       if (editing !== null) return editing.id;
-      const typed = (name?.value ?? '').trim();
-      if (typed.length > 0) return typed;
-      const address = baseUrl.value.trim();
-      return suggestFreePoolEntryId(
-        { provider: provider.value, ...(address.length > 0 ? { base_url: address } : {}) },
-        takenIds,
-      );
+      return newPoolEntryId({ id: name?.value ?? '', provider: provider.value, baseUrl: baseUrl.value }, entries);
     };
     const formProblem = (): string | null => {
       if (editing === null) {
@@ -3373,7 +3483,7 @@ export const mountAiModelsPage = (
         ? (freePoolFormPending ? 'Adding entry…' : 'Add API entry')
         : (freePoolFormPending ? 'Saving entry…' : 'Save entry'),
       () => {
-        if (freePoolFormPending) return;
+        if (freePoolFormPending || poolEntryWritePending(entryId())) return;
         clearSourceAnswers(POOL_FORM_KEY);
         const problem = formProblem();
         if (problem !== null) {
@@ -3407,10 +3517,10 @@ export const mountAiModelsPage = (
           ['aria-label', `Save free-pool entry ${editing.id}`],
         ],
     );
-    if (freePoolFormPending) {
+    if (freePoolFormPending || (editing !== null && poolEntryWritePending(editing.id))) {
       submit.setAttribute('aria-disabled', 'true');
-      submit.setAttribute('aria-busy', 'true');
     }
+    if (freePoolFormPending) submit.setAttribute('aria-busy', 'true');
     if (editing !== null) {
       const cancel = appendButton(
         doc,
@@ -3420,7 +3530,7 @@ export const mountAiModelsPage = (
           if (freePoolFormPending) return;
           freePoolEdit = null;
           clearSourceAnswers(POOL_FORM_KEY);
-          slotProbeResults.delete(POOL_FORM_KEY);
+          invalidateSourceProbe(POOL_FORM_KEY);
           poolFocusAfterRender = { attr: AI_MODELS_POOL_EDIT_ATTR, value: editing.id };
           render();
         },
@@ -3838,6 +3948,16 @@ export const mountAiModelsPage = (
     parent.appendChild(section);
   };
 
+  const clearSettingReadError = (prefix: string): void => {
+    loadErrors = loadErrors.filter((error) => !error.startsWith(prefix));
+    if (state === 'error' && loadErrors.length === 0) state = 'ready';
+  };
+  const clearModelPrefReadError = (order: number): void => {
+    if (order < modelPrefReadErrorOrder) return;
+    clearSettingReadError('model preference:');
+    modelPrefReadErrorOrder = 0;
+  };
+
   /** Persist a known source as Chat's global default. The setup journey calls
    * this immediately after creating slot_1, so it must not depend on a prior
    * preference read having succeeded. The public picker still applies its own
@@ -3850,9 +3970,15 @@ export const mountAiModelsPage = (
         'AI / Models: chat.default_model_pref.set caller is not wired',
       );
     }
+    const order = ++modelPrefUpdateOrder;
     const next = await opts.runSetDefaultModelPref({ source_id: sourceId });
     if (disposed) return;
-    modelPrefSnapshot = next;
+    if (!isChatModelDefaultSnapshotCurrent(null, next)) {
+      throw new Error('Invalid model preference timestamp.');
+    }
+    if (!acceptModelPrefSnapshot(next, order)) return;
+    modelPrefVersion += 1;
+    clearModelPrefReadError(order);
     recomputeModelPreference();
     render();
   };
@@ -3892,7 +4018,10 @@ export const mountAiModelsPage = (
     render();
     try {
       const next = await opts.runSetInstallOffers({ enabled });
-      if (!disposed) installOffersSnapshot = next;
+      if (!disposed) {
+        installOffersVersion += 1;
+        installOffersSnapshot = next;
+      }
     } catch (err) {
       actionError = stringifyError(err);
     } finally {
@@ -3909,6 +4038,8 @@ export const mountAiModelsPage = (
     }
     const next = await opts.runSetRollingBrief({ enabled });
     if (disposed) return;
+    rollingBriefVersion += 1;
+    clearSettingReadError('chat behaviour:');
     rollingBriefSnapshot = next;
     recomputeChatBehaviour();
     render();
@@ -4403,6 +4534,7 @@ export const mountAiModelsPage = (
     AI_MODELS_PROMPT_TRANSPORT_RESET_ATTR,
     AI_MODELS_SLOT_FIELD_ATTR,
     AI_MODELS_EMBEDDINGS_FIELD_ATTR,
+    AI_MODELS_TRANSCRIPTION_FIELD_ATTR,
     AI_MODELS_SLOT_SAVE_ATTR,
     AI_MODELS_SLOT_TEST_ATTR,
     AI_MODELS_SLOT_CLEAR_ATTR,
@@ -4419,6 +4551,8 @@ export const mountAiModelsPage = (
     AI_MODELS_POOL_REMOVE_CONFIRM_ATTR,
     AI_MODELS_CATALOG_MODE_SELECT_ATTR,
     AI_MODELS_MODEL_PREF_BUTTON_ATTR,
+    AI_MODELS_ROLLING_BRIEF_ATTR,
+    AI_MODELS_INSTALL_OFFERS_ATTR,
     AI_MODELS_BUDGET_INPUT_ATTR,
     AI_MODELS_BUDGET_SAVE_ATTR,
     AI_MODELS_ALLOW_BYOK_TOGGLE_ATTR,
@@ -4465,6 +4599,10 @@ export const mountAiModelsPage = (
       return false;
     }
     const candidates = dynamicHost.querySelectorAll(`[${snapshot.attr}]`);
+    // Each global chat switch has one control. Its marker carries the current
+    // on/off state, which can change in the reply without changing the owner.
+    const chatSwitch = snapshot.attr === AI_MODELS_ROLLING_BRIEF_ATTR
+      || snapshot.attr === AI_MODELS_INSTALL_OFFERS_ATTR;
     for (const candidate of Array.from(candidates)) {
       const element = candidate as HTMLElement & {
         setSelectionRange?: (
@@ -4473,7 +4611,7 @@ export const mountAiModelsPage = (
           direction?: 'forward' | 'backward' | 'none',
         ) => void;
       };
-      if (element.getAttribute(snapshot.attr) !== snapshot.value) continue;
+      if (!chatSwitch && element.getAttribute(snapshot.attr) !== snapshot.value) continue;
       element.focus?.({ preventScroll: true });
       if (
         snapshot.selection !== null
@@ -4511,6 +4649,7 @@ export const mountAiModelsPage = (
   const render = (): void => {
     if (disposed) return;
     const ownedFocus = captureOwnedFocus();
+    probeOutputElements.clear();
     poolRemoveFocusTrap?.release();
     poolRemoveFocusTrap = null;
     renderedPoolRemovePanel = null;
@@ -4727,28 +4866,58 @@ export const mountAiModelsPage = (
   };
 
   const refresh = async (): Promise<void> => {
+    if (disposed) return;
+    const version = ++refreshVersion;
+    const configWriteVersion = llmConfigWriteVersion;
+    const modelPrefReadVersion = modelPrefVersion;
+    const rollingBriefReadVersion = rollingBriefVersion;
+    const installOffersReadVersion = installOffersVersion;
+    const isCurrentRefresh = (): boolean => !disposed && version === refreshVersion;
+    configReadPending = opts.runGetLLMConfig !== undefined;
+    if (configReadPending) {
+      // Reads redact stored keys to has_key, so even an unchanged-looking
+      // snapshot cannot verify that a prior answer used the current key.
+      // Keep drafts editable, but require an explicit Test after this read.
+      // An actual in-flight provider request retains its single-flight lock.
+      invalidateProbeAnswers();
+    }
     state = 'loading';
     loadErrors = [];
+    modelPrefReadErrorOrder = 0;
     render();
     const tasks: Array<Promise<void>> = [];
     if (!chatSetupMode && opts.runGetLlmPrompts) {
       tasks.push(
         opts.runGetLlmPrompts()
           .then((snapshot) => {
+            if (!isCurrentRefresh()) return;
             llmPrompts = [...snapshot.prompts];
           })
           .catch((err) => {
+            if (!isCurrentRefresh()) return;
             loadErrors.push(`system prompts: ${stringifyError(err)}`);
           }),
       );
     }
     if (opts.runGetDefaultModelPref) {
+      const order = ++modelPrefUpdateOrder;
+      // Reads requested after a pending save may answer later with newer
+      // state or a current failure. Reads issued before the confirmed
+      // change are superseded; timestamp/order checks still reject old data.
+      const isCurrentModelPrefRead = (): boolean => isCurrentRefresh()
+        && (modelPrefReadVersion === modelPrefVersion || order >= modelPrefSnapshotOrder);
       tasks.push(
         opts.runGetDefaultModelPref()
           .then((snapshot) => {
-            modelPrefSnapshot = snapshot;
+            if (!isCurrentModelPrefRead()) return;
+            if (!isChatModelDefaultSnapshotCurrent(null, snapshot)) {
+              throw new Error('Invalid model preference timestamp.');
+            }
+            acceptModelPrefSnapshot(snapshot, order);
           })
           .catch((err) => {
+            if (!isCurrentModelPrefRead()) return;
+            modelPrefReadErrorOrder = order;
             loadErrors.push(`model preference: ${stringifyError(err)}`);
           }),
       );
@@ -4757,6 +4926,7 @@ export const mountAiModelsPage = (
       tasks.push(
         opts.runGetInstallOffers()
           .then((snapshot) => {
+            if (!isCurrentRefresh() || installOffersReadVersion !== installOffersVersion) return;
             installOffersSnapshot = typeof snapshot?.enabled === 'boolean' ? snapshot : null;
           })
           // A server from before D-323 has no such setting: no control, and
@@ -4768,9 +4938,11 @@ export const mountAiModelsPage = (
       tasks.push(
         opts.runGetRollingBrief()
           .then((snapshot) => {
+            if (!isCurrentRefresh() || rollingBriefReadVersion !== rollingBriefVersion) return;
             rollingBriefSnapshot = snapshot;
           })
           .catch((err) => {
+            if (!isCurrentRefresh() || rollingBriefReadVersion !== rollingBriefVersion) return;
             // ⛔ A FAILED READ LEAVES THE SNAPSHOT NULL, so the projection stays
             //   'loading' and the control renders as unknown. Defaulting to
             //   `false` here would show the brief as OFF on a server where it is
@@ -4784,11 +4956,13 @@ export const mountAiModelsPage = (
       tasks.push(
         opts.runGetLLMConfig()
           .then((snapshot) => {
+            if (!isCurrentRefresh() || configWriteVersion !== llmConfigWriteVersion) return;
             llmConfig = cloneConfig(snapshot.config);
             slotProviderNameSupported = snapshot.supports?.slot_provider_name === true;
             poolDraftsSupported = snapshot.supports?.pool_entry_drafts === true;
           })
           .catch((err) => {
+            if (!isCurrentRefresh() || configWriteVersion !== llmConfigWriteVersion) return;
             loadErrors.push(`LLM config: ${stringifyError(err)}`);
           }),
       );
@@ -4796,21 +4970,23 @@ export const mountAiModelsPage = (
     if (opts.runGetLLMUsage) {
       tasks.push(
         opts.runGetLLMUsage()
-          .then((usage) => { llmUsage = usage; })
+          .then((usage) => { if (isCurrentRefresh()) llmUsage = usage; })
           // ⛔ SOFT, unlike the config read above. A server too old to answer,
           // or one with no tracker wired, must not put an error banner on a
           // page that is otherwise working — the usage lines simply do not
           // render, which is honest: nothing was learned, so nothing is shown.
-          .catch(() => { llmUsage = null; }),
+          .catch(() => { if (isCurrentRefresh()) llmUsage = null; }),
       );
     }
     if (!chatSetupMode && opts.runGetConfigSchema) {
       tasks.push(
         opts.runGetConfigSchema()
           .then((snapshot) => {
+            if (!isCurrentRefresh()) return;
             configSchema = [...snapshot.schema];
           })
           .catch((err) => {
+            if (!isCurrentRefresh()) return;
             loadErrors.push(`config schema: ${stringifyError(err)}`);
           }),
       );
@@ -4819,15 +4995,18 @@ export const mountAiModelsPage = (
       tasks.push(
         opts.runReadHousekeepingConfig()
           .then((snapshot) => {
+            if (!isCurrentRefresh()) return;
             housekeepingConfig = snapshot;
           })
           .catch((err) => {
+            if (!isCurrentRefresh()) return;
             loadErrors.push(`How Recued may use AI: ${stringifyError(err)}`);
           }),
       );
     }
     await Promise.all(tasks);
-    if (disposed) return;
+    if (!isCurrentRefresh()) return;
+    configReadPending = false;
     // Both the default snapshot + the LLM config have settled — derive the
     // picker model from BOTH (the options are the configured sources).
     recomputeModelPreference();
@@ -4844,6 +5023,9 @@ export const mountAiModelsPage = (
   // (Writes go through the field-level `runSetLLMSlot` / `runUpsert…` /
   // `runRemove…` callers; this only mirrors the confirmed result in the UI.)
   const commitLocal = (next: LlmConfigRecord): void => {
+    // A read begun before this confirmed write must not restore its old
+    // snapshot (or report its failure against the newly saved config).
+    llmConfigWriteVersion += 1;
     llmConfig = cloneConfig(next);
     recomputeModelPreference();
     recomputeChatBehaviour();
@@ -4883,6 +5065,7 @@ export const mountAiModelsPage = (
       if (!opts.runSetLLMSlot) {
         throw new Error('AI / Models: server.setLLMSlot caller is not wired');
       }
+      invalidateSourceProbe(slotKey);
       const current = getSlot(llmConfig, slotKey) ?? {};
       // `current` is the REDACTED slot (carries `has_key`, never `api_key`).
       // Strip the wire-only fields so they don't ride back to the server.
@@ -4977,6 +5160,7 @@ export const mountAiModelsPage = (
       if (!opts.runSetLLMSlot) {
         throw new Error('AI / Models: server.setLLMSlot caller is not wired');
       }
+      invalidateSourceProbe(slotKey);
       await opts.runSetLLMSlot({ slot_key: slotKey, slot: null });
       const next = cloneConfig(llmConfig);
       next[slotKey] = null;
@@ -4987,6 +5171,7 @@ export const mountAiModelsPage = (
       if (!opts.runSetEmbeddingsSlot) {
         throw new Error('AI / Models: server.setEmbeddingsSlot caller is not wired');
       }
+      invalidateSourceProbe('embeddings_slot');
       const current = getEmbeddingsSlot(llmConfig) ?? {};
       // `current` is the REDACTED slot (carries `has_key`, never `api_key`).
       const carry = { ...current };
@@ -5045,6 +5230,7 @@ export const mountAiModelsPage = (
       if (!opts.runSetTranscriptionSlot) {
         throw new Error('AI / Models: server.setTranscriptionSlot caller is not wired');
       }
+      invalidateSourceProbe('transcription_slot');
       const current = asRecord(llmConfig?.transcription_slot) ?? {};
       const carry = { ...current };
       delete carry.has_key;
@@ -5096,6 +5282,7 @@ export const mountAiModelsPage = (
       if (!opts.runSetTranscriptionSlot) {
         throw new Error('AI / Models: server.setTranscriptionSlot caller is not wired');
       }
+      invalidateSourceProbe('transcription_slot');
       await opts.runSetTranscriptionSlot({ slot: null });
       const next = cloneConfig(llmConfig);
       next.transcription_slot = null;
@@ -5128,6 +5315,7 @@ export const mountAiModelsPage = (
       if (!opts.runSetEmbeddingsSlot) {
         throw new Error('AI / Models: server.setEmbeddingsSlot caller is not wired');
       }
+      invalidateSourceProbe('embeddings_slot');
       await opts.runSetEmbeddingsSlot({ slot: null });
       const next = cloneConfig(llmConfig);
       next.embeddings_slot = null;
@@ -5149,6 +5337,8 @@ export const mountAiModelsPage = (
           },
           new Set(getPoolEntries(llmConfig).map((row) => asString(row.id))),
         );
+      invalidatePoolEntryProbe(id);
+      if (freePoolEdit === null) invalidateSourceProbe(POOL_FORM_KEY);
       const record: FreePoolEntryRecord = {
         id,
         type: 'api',
@@ -5166,6 +5356,8 @@ export const mountAiModelsPage = (
           : {}),
       };
       await opts.runUpsertFreePoolEntry({ entry: record });
+      invalidatePoolEntryProbe(id);
+      if (freePoolEdit === null) invalidateSourceProbe(POOL_FORM_KEY);
       // Mirror the redacted server shape locally — drop the plaintext key and
       // carry `has_key`, so page state matches what a re-read returns and the
       // typed secret doesn't linger in the local config clone.
@@ -5184,6 +5376,7 @@ export const mountAiModelsPage = (
       }
       const current = getPoolEntries(llmConfig).find((row) => asString(row.id) === id);
       if (current === undefined) throw new Error(`There is no free-pool entry named ${id}.`);
+      invalidatePoolEntryProbe(id);
       // The redacted row carries `has_key`, never `api_key`; neither goes back.
       const carry: FreePoolEntryRecord = { ...current };
       delete carry.has_key;
@@ -5221,6 +5414,7 @@ export const mountAiModelsPage = (
         delete record.context_window_tokens;
       }
       await opts.runUpsertFreePoolEntry({ entry: record });
+      invalidatePoolEntryProbe(id);
       const keyProvided = asString(record.api_key).length > 0;
       const sameContext = asString(current.provider) === record.provider
         && asString(current.base_url) === asString(record.base_url);
@@ -5252,10 +5446,18 @@ export const mountAiModelsPage = (
       if (!opts.runRemoveFreePoolEntry) {
         throw new Error('AI / Models: server.removeFreePoolEntry caller is not wired');
       }
+      invalidatePoolEntryProbe(id);
       await opts.runRemoveFreePoolEntry({ id });
+      invalidatePoolEntryProbe(id);
       const currentPool = getPoolEntries(llmConfig);
       const removedIndex = currentPool.findIndex((entry) => asString(entry.id) === id);
       const remainingPool = currentPool.filter((entry) => asString(entry.id) !== id);
+      // With an automatic name, removing a taken id can change the form's
+      // target even though none of its input values changed.
+      if (freePoolEdit === null
+        && newPoolEntryId(freePoolAddDraft, currentPool) !== newPoolEntryId(freePoolAddDraft, remainingPool)) {
+        invalidateSourceProbe(POOL_FORM_KEY);
+      }
       if (poolRemoveDialogId === id) {
         const fallbackEntry = remainingPool.length > 0
           ? remainingPool[Math.min(Math.max(removedIndex, 0), remainingPool.length - 1)]
@@ -5410,6 +5612,8 @@ export const mountAiModelsPage = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      probeOutputElements.clear();
+      sourceProbeVersions.clear();
       for (const unsubscribe of unsubscribers) unsubscribe();
       if (cacheCard !== null) cacheCard.dispose();
       poolRemoveFocusTrap?.release();
@@ -5436,7 +5640,8 @@ export const mountAiModelsPage = (
           updated_at?: unknown;
         };
         if (
-          maybe.kind !== 'chat.default_model_pref_changed'
+          disposed
+          || maybe.kind !== 'chat.default_model_pref_changed'
           || typeof maybe.updated_at !== 'number'
         ) {
           return;
@@ -5445,15 +5650,19 @@ export const mountAiModelsPage = (
         // event's transient `{layer, model_hint}` snapshot is for the chat-
         // thread reducer, not here). An off-list / absent id reads as `null`
         // (no selection) via `isChatModelSourceId` inside the builder.
-        modelPrefSnapshot = {
+        const next = {
           source_id: isChatModelSourceId(maybe.source_id)
             ? maybe.source_id
             : null,
           updated_at: maybe.updated_at,
         };
+        const order = ++modelPrefUpdateOrder;
+        if (!acceptModelPrefSnapshot(next, order)) return;
+        modelPrefVersion += 1;
+        clearModelPrefReadError(order);
         modelPreference = reduceChatDefaultModelPrefChanged(
           modelPreference,
-          modelPrefSnapshot,
+          next,
           llmConfig,
         );
         render();

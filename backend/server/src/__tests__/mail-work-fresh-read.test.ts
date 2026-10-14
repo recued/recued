@@ -158,7 +158,10 @@ const fixture = (db = new Database(':memory:'), names: string[] = []) => {
   const send = async (message = 'Investigate seed in work. Save this work only if permitted.', prepared = true) => {
     const ack = await handleSend(deps, { session_id: 's', message,
       picker_state: { current: 'self' }, ...(prepared ? { mail_work: request } : {}), repeat: true });
-    await vi.waitFor(async () => expect((await orchestrator.turnQueue!.snapshot('s')).turns.find(t => t.turn_id === ack.turn_id)?.status).toBe('completed'));
+    // D-322 §24 audit: full-suite scheduling can exceed the default one-second
+    // fixture wait. Keep the durable completion assertion and a bounded deadline.
+    await vi.waitFor(async () => expect((await orchestrator.turnQueue!.snapshot('s')).turns.find(t => t.turn_id === ack.turn_id)?.status).toBe('completed'),
+      { timeout: 5000 });
     return (await store.listMessages('s')).filter(message => message.role === 'assistant').at(-1)!;
   };
   return { db, add, table, control, events, packets, schemas, prompts, dispatched, send, store, orchestrator, deps, briefCalls: () => briefCalls,

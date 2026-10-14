@@ -969,6 +969,17 @@ describe('reception inbox panel — destination ref-picker', () => {
     expect(text).not.toContain('@');
   });
 
+  it('renders frozen completion review text without editable fields or active markup',async () => {
+    const text = 'Delivered drawings <img src=x>.\nCustomer accepted completion.\nClose local task.';
+    const h = setup({ items: [item({ operation_id: 'quote-completion-review',top_tier_kind: 'task',
+      source: { kind: 'quote_completion',record_ref: 'completion' },arg_schema: { fields: [] },
+      args: { completion_id: 'completion',expected_plan_hash: 'a'.repeat(64),summary: text },
+    })] });
+    await flush();
+    const summary = allNodes(h.root).find(node => node.className === 'reception-inbox-response-summary');
+    expect(summary?.children.map(node => node.textContent)).toEqual(['Delivery and completion review',text]);
+    expect(allNodes(h.root).filter(node => node.tagName === 'IMG')).toEqual([]);h.mount.dispose();
+  });
   it('renders the complete accepted quote and release plan without editable fields', async () => {
     const text = 'Quote Q-1\nFull accepted scope <img src=x>\nCreate task: Plans\nIssue invoice INV-101';
     const h = setup({ items: [item({ operation_id: 'quote-signoff-release', top_tier_kind: 'task',

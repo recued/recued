@@ -861,6 +861,13 @@ const AUTOMATION_ROUTE_STYLES = `
   font-weight: 600;
   border-bottom-color: var(--accent, var(--fg));
 }
+/* Keep keyboard focus inside the scrolling row instead of clipping the
+   shell's outer button shadow. */
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-subnav .automation-subnav-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
+  box-shadow: none;
+}
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-subnav-count {
   font-size: 11px;
   color: var(--fg-muted);

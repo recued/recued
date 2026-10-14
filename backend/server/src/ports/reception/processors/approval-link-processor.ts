@@ -115,6 +115,8 @@ export interface ReceptionApprovalNotice {
 }
 
 export interface ApprovalLinkProcessorDeps {
+  readonly recordQuoteCompletion?: (targetId: string, endpointId: string, intentId: string, outcome: string, receivedAt: number) =>
+    import('@recued/contracts').QuoteCompletionReviewInput | null;
   readonly recordQuoteSignoff?: (targetId: string, endpointId: string, intentId: string, affirmative: boolean) =>
     import('@recued/contracts').QuoteSignoffReleaseInput | null;
   readonly registryStore: ReceptionDrainRegistry;
@@ -242,7 +244,8 @@ export const createApprovalLinkSubmissionProcessor = (
         // budget that create_commitment rows need. The row stays pending;
         // it drains once a workflow can be queued. (Budget is now spent per
         // actually-drained row, not per row listed.)
-        if (config.on_action.on_approve_action === 'quote_signoff'
+        if (config.on_action.on_approve_action === 'quote_completion' ? !deps.recordQuoteCompletion
+          : config.on_action.on_approve_action === 'quote_signoff'
           ? !deps.recordQuoteSignoff
           : config.on_action.on_approve_action !== 'create_commitment' && !deps.applyEffect) {
           continue;
@@ -279,7 +282,18 @@ export const createApprovalLinkSubmissionProcessor = (
           const onApprove = config.on_action.on_approve_action;
           let createdCommitmentId: string | undefined;
 
-          if (onApprove === 'quote_signoff') {
+          if (onApprove === 'quote_completion') {
+            if (config.action_kind !== 'approve_wording' || row.action_kind !== config.action_kind
+              || row.target_id !== config.on_action.target_id || row.endpoint_id !== endpoint.endpoint_id
+              || row.intent_id !== endpoint.endpoint_id || row.consumed_at === null) throw new Error('Invalid completion response binding.');
+            const review = deps.recordQuoteCompletion!(config.on_action.target_id, endpoint.endpoint_id, row.intent_id, outcomeWire, row.consumed_at);
+            if (review) {
+              if (!deps.fireReceptionWorkflow) continue;
+              const fired = await deps.fireReceptionWorkflow({ kind: 'quote_completion', payload: { ...review },
+                source_ref: row.intent_id, endpoint_id: endpoint.endpoint_id });
+              if (!fired.dispatched) continue;
+            }
+          } else if (onApprove === 'quote_signoff') {
             if (config.action_kind !== 'approve_wording' || !/^(approve|reject(?::.*)?)$/s.test(outcomeWire)) {
               throw new Error('Quote sign-off requires an accept or reject response.');
             }

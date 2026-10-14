@@ -40,6 +40,7 @@ import {
 } from '@recued/contracts';
 import { htmlEscape } from './reception-page-render.js';
 import { renderVisitorReceiptBlock } from './visitor-receipt.js';
+import { RECEPTION_PAGE_STYLE_SRC } from '../static-assets.js';
 
 // ────────────────────────────────────────────────────────────────
 // Inputs
@@ -50,6 +51,7 @@ export interface ApprovalLinkRenderInput {
    *  handle). */
   readonly display_name: string;
   /** The closed-list action_kind — drives the per-kind form body. */
+  readonly completion?: boolean;
   readonly action_kind: ApprovalLinkActionKind;
   /** Visitor-facing prompt (htmlEscape'd at emit time). */
   readonly prompt: string;
@@ -93,7 +95,7 @@ const renderHead = (title: string): string => `<!DOCTYPE html>
 <meta name="robots" content="noindex,nofollow">
 <title>${htmlEscape(title)}</title>
 <link rel="icon" href="${RECEPTION_PAGE_STATIC_PATH_PREFIX}favicon.ico">
-<link rel="stylesheet" href="${RECEPTION_PAGE_STATIC_PATH_PREFIX}style.css">
+<link rel="stylesheet" href="${RECEPTION_PAGE_STYLE_SRC}">
 </head>`;
 
 /** D-149 P12 § A.20.7 — `trust_footer` comes from `buildTrustFooter`
@@ -143,8 +145,14 @@ const renderConfirmAttendanceBody = (): string =>
 </label>
 </fieldset>`;
 
-const renderApproveWordingBody = (): string =>
-  `<fieldset class="rcp-fieldset">
+const renderApproveWordingBody = (completion = false): string =>
+  completion ? `<div class="rcp-field">
+<label for="rcp-comment">Corrections (required when requesting changes)</label>
+<textarea id="rcp-comment" name="comment" rows="4" maxlength="${APPROVAL_LINK_VISITOR_COMMENT_MAX}" required></textarea>
+</div>
+<button type="submit" name="decision" value="approve" formnovalidate class="rcp-button rcp-button-primary">Accept completion</button>
+<button type="submit" name="decision" value="reject" class="rcp-button">Request corrections</button>`
+  : `<fieldset class="rcp-fieldset">
 <legend class="rcp-legend">Your decision</legend>
 <label class="rcp-option">
 <input type="radio" name="decision" value="approve" required>
@@ -176,6 +184,7 @@ const renderUploadDocBody = (): string =>
 const renderActionBody = (
   action_kind: ApprovalLinkActionKind,
   options: ReadonlyArray<ApprovalLinkOption> | undefined,
+  completion = false,
 ): string => {
   switch (action_kind) {
     case 'pick_time':
@@ -183,7 +192,7 @@ const renderActionBody = (
     case 'confirm_attendance':
       return renderConfirmAttendanceBody();
     case 'approve_wording':
-      return renderApproveWordingBody();
+      return renderApproveWordingBody(completion);
     case 'answer_question':
       return renderAnswerQuestionBody();
     case 'upload_doc':
@@ -263,7 +272,7 @@ ${renderFooter()}
 };
 
 export const renderApprovalLinkHtml = (input: ApprovalLinkRenderInput): string => {
-  const body = renderActionBody(input.action_kind, input.options);
+  const body = renderActionBody(input.action_kind, input.options, input.completion);
   const identityFields = renderVisitorIdentityFields(input.visitor_field_constraints);
   return `${renderHead(`Response requested — ${input.display_name}`)}
 <body>
@@ -273,7 +282,7 @@ export const renderApprovalLinkHtml = (input: ApprovalLinkRenderInput): string =
 <div>
 <h1 class="rcp-name">Response requested — ${htmlEscape(input.display_name)}</h1>
 <p class="rcp-tagline">${htmlEscape(input.prompt)}</p>
-${input.context_summary.length > 0 ? `<p class="rcp-context" style="white-space:pre-wrap;overflow-wrap:anywhere">${htmlEscape(input.context_summary)}</p>` : ''}
+${input.context_summary.length > 0 ? `<p class="rcp-context">${htmlEscape(input.context_summary)}</p>` : ''}
 <p class="rcp-meta">${htmlEscape(input.expiry_display)}</p>
 </div>
 </div>
@@ -281,7 +290,7 @@ ${input.context_summary.length > 0 ? `<p class="rcp-context" style="white-space:
 <input type="hidden" name="form_nonce" value="${htmlEscape(input.form_nonce)}">
 ${identityFields}
 ${body}
-<button type="submit" class="rcp-button rcp-button-primary">${htmlEscape(input.submit_button_label)}</button>
+${input.completion ? '' : `<button type="submit" class="rcp-button rcp-button-primary">${htmlEscape(input.submit_button_label)}</button>`}
 </form>
 ${renderFooter(input.trust_footer ?? null)}
 </div>

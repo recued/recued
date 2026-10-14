@@ -35,6 +35,10 @@ import {
   type ConnectionNotificationBundle,
 } from '../composition/bin/wire-connection-notification.js';
 import { composeMailBoot } from '../composition/bin/wire-mail-stack.js';
+import {
+  createLateEmailAnswerHook,
+  type LateEmailAnswerHook,
+} from '../composition/bin/wire-inbound-email-answer.js';
 import { createMailFactAnnouncer } from '../mail-facts/announcer.js';
 import { createMailFactWriter, sweepGoneEmails, type MailFactWriter } from '../mail-facts/fact-writer.js';
 import { createHeldMailFactEvents, type HeldMailFactEvents } from '../mail-facts/held-events.js';
@@ -167,6 +171,11 @@ export interface CollectionContext extends ConnectionNotificationBundle {
    *  is composed (after this context): an AI answer that may start recipes
    *  waits for it. Unbound, nothing waits. */
   mailFactTriggerRoom: { current?: () => Promise<void> };
+  /** D-318 P23 — the email-approval reply check's holder. The mail stack calls
+   *  it on every upsert; the listeners' composition binds it once the
+   *  notification block exists, and until then it keeps the approval-tagged
+   *  mail a boot scan reads. */
+  emailAnswerHook: LateEmailAnswerHook;
   /** D-315 §6.3 — resolves once no AI call holding news waits on an email,
    *  with the events its answers told: a backfill that runs recipes waits
    *  for it before the next email. With no AI pass, at once. */
@@ -424,6 +433,7 @@ export const composeCollectionContext = (
       })
     : undefined;
 
+  const emailAnswerHook = createLateEmailAnswerHook();
   const mailStack = composeMailBoot({
     ...(options.managedOAuthConsumers ? { managedOAuth: options.managedOAuthConsumers } : {}),
     db,
@@ -433,6 +443,8 @@ export const composeCollectionContext = (
     ...(contactStore ? { contactStore } : {}),
     // D-315 — every upsert is read for mail facts, through the one writer.
     ...(mailFactWriter ? { mailFactWriter } : {}),
+    // D-318 P23 — and checked for a proven reply to an emailed ask.
+    emailAnswerHook: (msg, ctx) => emailAnswerHook.run(msg, ctx),
     gateRegistry,
     ...(accountStore ? { accountStore } : {}),
     isVaultUnlocked,
@@ -654,6 +666,7 @@ export const composeCollectionContext = (
     mailStack,
     mailFactWriter,
     mailFactTriggerRoom,
+    emailAnswerHook,
     mailFactAiSettled: (email: MailFactEmailRef) => mailFactAi?.untilSettled(email) ?? Promise.resolve(0),
     mailFactEvents,
     bootEvents,

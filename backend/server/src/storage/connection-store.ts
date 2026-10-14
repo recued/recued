@@ -36,6 +36,26 @@ const CONNECTION_TABLE = 'connections';
 const CREDENTIAL_ROTATION_ATTEMPT_TABLE =
   'connection_credential_rotation_attempts';
 
+/** D-322 §23 — SQLite cannot widen a CHECK with ADD COLUMN. Preserve old outcomes and schema objects. */
+const allowManagedOAuthAttempts = (db: Database.Database): void => {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?")
+    .get(CREDENTIAL_ROTATION_ATTEMPT_TABLE) as { sql: string } | undefined;
+  if (!row || row.sql.includes("'managed_oauth'")) return;
+  const widened = row.sql.replace(/(auth_type\s+TEXT\s+CHECK\s*\(\s*auth_type\s+IS\s+NULL\s+OR\s+auth_type\s+IN\s*\()([^)]*)(\)\s*\))/i,
+    "$1$2, 'managed_oauth'$3");
+  if (widened === row.sql) return; // Older unconstrained columns already accept this type.
+  const temp = CREDENTIAL_ROTATION_ATTEMPT_TABLE + '_d322_upgrade';
+  const objects = db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name=? AND type IN ('index','trigger') AND sql IS NOT NULL")
+    .all(CREDENTIAL_ROTATION_ATTEMPT_TABLE) as { sql: string }[];
+  db.transaction(() => {
+    db.exec(widened.replace(CREDENTIAL_ROTATION_ATTEMPT_TABLE, temp));
+    db.exec(`INSERT INTO ${temp} SELECT * FROM ${CREDENTIAL_ROTATION_ATTEMPT_TABLE}`);
+    db.exec(`DROP TABLE ${CREDENTIAL_ROTATION_ATTEMPT_TABLE}`);
+    db.exec(`ALTER TABLE ${temp} RENAME TO ${CREDENTIAL_ROTATION_ATTEMPT_TABLE}`);
+    for (const object of objects) db.exec(object.sql);
+  })();
+};
+
 /** Install the connections table + indexes. Idempotent — every
  *  statement uses `IF NOT EXISTS`. Safe to call on every boot. */
 export const ensureConnectionSchema = (db: Database.Database): void => {
@@ -72,7 +92,7 @@ export const ensureConnectionSchema = (db: Database.Database): void => {
       auth_type        TEXT CHECK (
         auth_type IS NULL OR auth_type IN (
           'none', 'bearer', 'basic', 'header', 'query',
-          'oauth2_refresh', 'oauth2_client_credentials', 'atproto_session'
+          'oauth2_refresh', 'oauth2_client_credentials', 'atproto_session', 'managed_oauth'
         )
       ),
       access_expires_at INTEGER,
@@ -137,6 +157,7 @@ export const ensureConnectionSchema = (db: Database.Database): void => {
     db.exec(`ALTER TABLE ${CREDENTIAL_ROTATION_ATTEMPT_TABLE}
       ADD COLUMN safe_stop_acknowledged_at INTEGER`);
   }
+  allowManagedOAuthAttempts(db);
 };
 
 interface ConnectionDbRow {

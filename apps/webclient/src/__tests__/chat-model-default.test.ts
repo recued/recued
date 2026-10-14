@@ -136,3 +136,45 @@ describe('reduceChatDefaultModelPrefChanged', () => {
     if (next.kind === 'resolved') expect(next.matched).toBe(false);
   });
 });
+
+describe('Default model ordering', () => {
+  const current = buildChatModelDefaultModel({ source_id: 'slot_2', updated_at: 20 }, config);
+
+  it('keeps the latest selection when an older broadcast arrives', () => {
+    expect(reduceChatDefaultModelPrefChanged(current, { source_id: 'slot_1', updated_at: 10 }, config))
+      .toBe(current);
+  });
+
+  it('keeps an empty projection when an older broadcast arrives', () => {
+    const empty = buildChatModelDefaultModel({ source_id: 'slot_2', updated_at: 20 }, {});
+    expect(reduceChatDefaultModelPrefChanged(empty, { source_id: 'slot_1', updated_at: 10 }, config))
+      .toBe(empty);
+  });
+
+  it.each([NaN, Infinity, -1])('ignores an invalid broadcast timestamp (%s)', (updated_at) => {
+    expect(reduceChatDefaultModelPrefChanged(current, { source_id: 'slot_1', updated_at }, config))
+      .toBe(current);
+  });
+
+  it('accepts two broadcast changes within the same millisecond', () => {
+    const next = reduceChatDefaultModelPrefChanged(current, { source_id: 'slot_1', updated_at: 20 }, config);
+    expect(next.kind).toBe('resolved');
+    if (next.kind === 'resolved') expect(next.source_id).toBe('slot_1');
+  });
+
+  it('accepts a newer broadcast and preserves its server timestamp', () => {
+    const next = reduceChatDefaultModelPrefChanged(current, { source_id: 'slot_1', updated_at: 30 }, config);
+    expect(next.kind).toBe('resolved');
+    if (next.kind === 'resolved') {
+      expect(next.source_id).toBe('slot_1');
+      expect(next.updated_at).toBe(30);
+    }
+  });
+
+  it('keeps a newer unavailable source explicit instead of selecting an older available source', () => {
+    const missing = buildChatModelDefaultModel({ source_id: 'free_pool', updated_at: 20 }, { slot_1: config.slot_1 });
+    expect(reduceChatDefaultModelPrefChanged(missing, { source_id: 'slot_1', updated_at: 10 }, config))
+      .toBe(missing);
+    if (missing.kind === 'resolved') expect(missing.matched).toBe(false);
+  });
+});

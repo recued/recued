@@ -7,6 +7,16 @@ const config: ApprovalLinkConfig = { display_name: 'Studio', action_kind: 'appro
   expiry_days: 7, on_action: { target_id: 'signoff', on_approve_action: 'quote_signoff' } };
 
 describe('customer sign-off approval contract', () => {
+  it('binds completion to a bounded delivery with explicit approval decisions',() => {
+    const completion: ApprovalLinkConfig = { ...config,on_action: { target_id: 'completion',on_approve_action: 'quote_completion' },context_raw: { summary: 's'.repeat(8000) } };
+    expect(validateApprovalLinkConfig(completion)).toEqual([]);
+    expect(validateApprovalLinkConfig({ ...completion,action_kind: 'answer_question' }).map(f => f.code)).toContain('on_action_invalid');
+    expect(APPROVAL_LINK_AUTHORABLE_ON_APPROVE_ACTIONS).not.toContain('quote_completion');
+    for (const ceiling of ['read','admin'] as const) {
+      const decision = admitByOpRisk({ slug: 'quote-completion-review',risk_tier: 'write',ceiling,source: { channel: 'user',actor: 'user_self',user_id: 'owner',client_token_id: 'owner-client' },owner_override: { approval: 'never' } });
+      expect(decision).toMatchObject({ verdict: 'ask',authorization_provenance: { lift_reason: 'review_quote_signoff' } });
+    }
+  });
   it('shows the full bounded scope without widening generic approval forms', () => {
     expect(validateApprovalLinkConfig({ ...config, context_raw: { summary: 's'.repeat(8000) } })).toEqual([]);
     expect(validateApprovalLinkConfig({ ...config, context_raw: { summary: 's'.repeat(8001) } }).map((f) => f.code)).toContain('context_summary_too_long');

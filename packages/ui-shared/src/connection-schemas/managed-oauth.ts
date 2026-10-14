@@ -1,6 +1,16 @@
 /** D-322 — managed OAuth is an API credential transport, independent of the pack. */
 import type { ConnectionSchema } from './types.js';
 
+/** D-322 §23 — authentication can change while the named service and its config stay pinned. */
+export const withAuthenticationSwitchSchema = (schema: ConnectionSchema): ConnectionSchema => ({
+  ...schema, label: 'authentication', onboarding: undefined, probe: undefined,
+  description: 'Choose a broker account, review permissions, then verify API access before applying. Your connection name and bindings stay in place.',
+  fields: [...schema.fields.map(field => field.key === 'auth.type' ? { ...field, hidden: true }
+    : field.key.startsWith('auth.') ? field : { ...field, readonly: true }),
+    { key: 'switch.verification_url', label: 'Read-only access check URL', type: 'text',
+      help: 'Use a resource this account can read within the saved API. For Google Sheets, paste a spreadsheet link. The response body is discarded.' }],
+});
+
 export const withManagedOAuthSchema = (schema: ConnectionSchema, authType?: string): ConnectionSchema => {
   if (schema.kind !== 'api' || authType === undefined) return schema;
   const selector = schema.fields.find((field) => field.key === 'auth.type');

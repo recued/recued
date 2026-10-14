@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "source": {
-    "commit": "a47292cd5acd56caa24fb23cdd782d5d436416ef",
-    "tree": "9b4531cd4558aceaac6f7eecac1370884af42d75",
-    "committed_at": "2026-10-13T03:19:33-07:00"
+    "commit": "42cc6bd2d167b6d7984c98bd8d962ee36cc523f4",
+    "tree": "0db791af7984485552639b858d8aaa36519a73cb",
+    "committed_at": "2026-10-14T03:21:51-07:00"
   },
-  "export_manifest_sha256": "cf4b7f1cd676b71c7753daeacc4c55b71f920b6a0c6dd8146eb47527b71f9a67",
-  "version": "26.10.13",
+  "export_manifest_sha256": "f2e245071ba9877c31e6dea8e2aff4ca4547664020247e2d51a2deef914216e3",
+  "version": "26.10.14",
   "license": "AGPL-3.0-only",
   "entrypoints": [
     "backend/server",
@@ -16,6 +16,8 @@
     "apps/webclient/e2e/paired",
     "apps/webclient/e2e/harness/kitchen-harness.ts",
     "apps/webclient/e2e/kitchen-render.spec.ts",
+    "apps/webclient/e2e/harness/customer-jobs-harness.ts",
+    "apps/webclient/e2e/customer-jobs.spec.ts",
     "apps/webclient/e2e/staging-smoke.spec.ts",
     "apps/webclient/src/__tests__/d-282-list-detail-guide.test.ts",
     "apps/webclient/wrangler.toml",
@@ -91,6 +93,7 @@
       "backend/server/src/__tests__/client-document-intake-chase-drive.test.ts",
       "backend/server/src/__tests__/codex-pack-live-drive.test.ts",
       "backend/server/src/__tests__/commitment-writes-reach-the-store.test.ts",
+      "backend/server/src/__tests__/customer-jobs.test.ts",
       "backend/server/src/__tests__/d-125-in-app-notification-delivery.test.ts",
       "backend/server/src/__tests__/d-145-pa10-pack-list-rpc.test.ts",
       "backend/server/src/__tests__/d-145-phase-10-foundation-pack-pre-install.test.ts",
@@ -301,6 +304,7 @@
       "backend/server/src/__tests__/pack-install-first-party-op-steps.test.ts",
       "backend/server/src/__tests__/pack-reparse-corpus.test.ts",
       "backend/server/src/__tests__/pack-resolve-bundled-records.test.ts",
+      "backend/server/src/__tests__/pack-resource-access.test.ts",
       "backend/server/src/__tests__/parcels-pack-live.test.ts",
       "backend/server/src/__tests__/peer-appointment-semi-live.test.ts",
       "backend/server/src/__tests__/photo-attribution-drive.test.ts",
@@ -321,10 +325,13 @@
       "backend/server/src/__tests__/queue-desk-door-mechanisms.test.ts",
       "backend/server/src/__tests__/queue-desk-mcp-staff-lane.test.ts",
       "backend/server/src/__tests__/queue-desk-reception-door-drive.test.ts",
+      "backend/server/src/__tests__/quote-completion.test.ts",
       "backend/server/src/__tests__/quote-signoff-additions.test.ts",
       "backend/server/src/__tests__/quote-signoff-follow-up.test.ts",
       "backend/server/src/__tests__/quote-signoff-list.test.ts",
       "backend/server/src/__tests__/quote-signoff-pack-versions.test.ts",
+      "backend/server/src/__tests__/quote-signoff-receipt.test.ts",
+      "backend/server/src/__tests__/quote-signoff-reminders.test.ts",
       "backend/server/src/__tests__/quote-signoff-service.test.ts",
       "backend/server/src/__tests__/quote-signoff-workflow.test.ts",
       "backend/server/src/__tests__/re-read-after-write-cache.test.ts",
@@ -395,6 +402,7 @@
       "packages/contracts/src/__tests__/d-220-slice-b-pack-intake-template.test.ts",
       "packages/contracts/src/__tests__/declared-pattern.test.ts",
       "packages/contracts/src/__tests__/managed-oauth.test.ts",
+      "packages/contracts/src/__tests__/pack-resource-access.test.ts",
       "packages/contracts/src/__tests__/value-hint-authored-set.test.ts",
       "packages/engine/src/__tests__/any-all-shipped-steps.test.ts",
       "packages/engine/src/__tests__/authored-pii-content-roundtrip.test.ts",
@@ -784,7 +792,7 @@
       "packages/ui-shared/src/__tests__/d-129-phase-1-vendor-schemas-corpus.test.ts",
       "packages/ui-shared/src/__tests__/timer-events.test.ts"
     ],
-    "sha256": "5ac60d22920f27a11878c362b071ea596b253fe8e31e146f00c41394de31f88c",
+    "sha256": "4d42484278da326f4d33fb4a04ff150bba1d0a9965784739c4278e08450ca2b7",
     "roots": [
       "apps/auth-worker",
       "apps/bridge",
@@ -834,8 +842,8 @@
       "id": "foundation-packs",
       "root": "community",
       "derivation": "foundation_pack_closure",
-      "file_count": 23,
-      "sha256": "d206fe252afa70f3e33f1daf0f8fc772e481e9d5378e66b8e033c7ad7836badb",
+      "file_count": 24,
+      "sha256": "4039132cd237f17499a4868f62a063a67e345b5d84fa7015444d8f9db1d44e26",
       "paths": [
         "community/packs/personal-organizer-foundation.json",
         "community/packs/recued-core/mail-compose-foundation.json",
@@ -848,6 +856,7 @@
         "community/recipes/open-commitments.json",
         "community/recipes/recent-notes-by-topic.json",
         "community/recipes/reception-approval-workflow.json",
+        "community/recipes/reception-quote-completion-review.json",
         "community/recipes/reception-quote-signoff-release.json",
         "community/recipes/remind-me-of.json",
         "community/recipes/reminder-due-notifier.json",
@@ -900,7 +909,7 @@
     "packages/warehouse-events"
   ],
   "payload": {
-    "file_count": 6589,
-    "sha256": "778919f42a1ddfec85642fa5445f85cf0efd5b8fec0ff4e588c3fcee730ed93e"
+    "file_count": 6634,
+    "sha256": "d565d0668c50a44f74c77b2881f179d6df39694d1b2c53a2ea27f7db851dc58a"
   }
 }

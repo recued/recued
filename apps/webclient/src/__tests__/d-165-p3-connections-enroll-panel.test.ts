@@ -569,6 +569,7 @@ const salesforceReprobe = (): ReprobeEngagementCapabilitiesResponse => ({
 });
 
 interface MountOpts {
+  runManagedOAuth?: import('../settings/managed-oauth-panel.js').ManagedOAuthCaller;
   connections?: ReadonlyArray<ConnectionView>;
   runList?: ConnectionsEnrollListCaller;
   runEnroll?: ConnectionsEnrollCaller;
@@ -599,6 +600,7 @@ interface MountOpts {
   initialCredentialRotationServerUpdateRetry?:
     CredentialRotationServerUpdateTarget;
   initialPostSafeStopRecovery?: CredentialRotationServerUpdateTarget;
+  initialConnectionAccessReview?: { name: string };
   postSafeStopProfileLabel?: string;
   postSafeStopProfileHandoff?: ConnectionsPostSafeStopProfileHandoff;
   onOpenPostSafeStopServerProfiles?: () => void;
@@ -731,6 +733,7 @@ const mountPanel = (opts: MountOpts = {}) => {
     runList,
     runEnroll,
     runUpdate,
+    ...(opts.initialConnectionAccessReview ? { initialConnectionAccessReview: opts.initialConnectionAccessReview } : {}),
     ...(opts.runRotateCredentials !== null ? { runRotateCredentials } : {}),
     ...(opts.runCredentialRotationStatus !== undefined
       ? { runCredentialRotationStatus }
@@ -809,6 +812,7 @@ const mountPanel = (opts: MountOpts = {}) => {
       ?? (() => 'rotation-panel-test-0001'),
     runDelete,
     runProbe,
+    ...(opts.runManagedOAuth ? { runManagedOAuth: opts.runManagedOAuth } : {}),
     ...(opts.runMcpPackPreview !== undefined
       ? { runMcpPackPreview: opts.runMcpPackPreview }
       : {}),
@@ -871,6 +875,139 @@ const mountPanel = (opts: MountOpts = {}) => {
 
 // ── Vendor OAuth popup fakes (D-165 slice 3) ──────────────────────
 const flushAsync = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+describe('D-322 pack access review entry point', () => {
+  it('opens the fresh saved API editor without starting consent or creating a connection', async () => {
+    const current: ConnectionView = { name: 'work-sheets', kind: 'api', display_name: 'Work sheets',
+      auth_type: 'oauth2_refresh', vendor: 'google', base_url: 'https://sheets.googleapis.com/v4', enrolled_at: 1, updated_at: 2 };
+    const f = mountPanel({ connections: [current], initialConnectionAccessReview: { name: 'work-sheets' } });
+    await f.mount.whenLoaded(); await flushAsync();
+    expect(f.mount.getState().dialog).toMatchObject({ stage: 'form', mode: 'edit', values: { name: 'work-sheets' } });
+    expect(f.calls.runEnroll).not.toHaveBeenCalled();
+    f.mount.dispose();
+  });
+  it('does not recreate a connection deleted before the review opens', async () => {
+    const f = mountPanel({ initialConnectionAccessReview: { name: 'gone-sheets' } });
+    await f.mount.whenLoaded(); await flushAsync();
+    expect(f.mount.getState().dialog.stage).toBe('closed');
+    expect(f.mount.getState().error).toContain('no longer saved');
+    expect(f.calls.runEnroll).not.toHaveBeenCalled();
+    f.mount.dispose();
+  });
+});
+
+describe('D-322 switch authentication editor', () => {
+  const saved = (): ConnectionView => ({ name: 'saved-sheets', kind: 'api', display_name: 'Saved sheets', auth_type: 'oauth2_refresh',
+    vendor: 'google', base_url: 'https://sheets.googleapis.com/v4', enrolled_at: 1, updated_at: 2 });
+  it('uses a fresh saved row, keeps its identity and clears direct credential fields before broker selection', async () => {
+    let current = saved(); const call = vi.fn<import('../settings/managed-oauth-panel.js').ManagedOAuthCaller>(async () => ({ action: 'profiles', profiles: [] }));
+    const f = mountPanel({ runList: async () => ({ connections: [current] }), runManagedOAuth: call }); await f.mount.whenLoaded();
+    f.click({ action: 'connections-edit', kind: 'api', name: 'saved-sheets' });
+    current = { ...current, display_name: 'Current saved sheets', updated_at: 3 };
+    f.click({ action: 'connections-switch-authentication' }); await tick();
+    const dialog = f.mount.getState().dialog;
+    expect(dialog.mode).toBe('edit'); expect(dialog.authenticationSwitch?.updated_at).toBe(3);
+    expect(dialog.values.name).toBe('saved-sheets'); expect(dialog.values.display_name).toBe('Current saved sheets');
+    expect(dialog.values['auth.type']).toBe('managed_oauth');
+    expect(dialog.values['auth.refresh_token']).toBeUndefined(); expect(dialog.values['auth.client_secret']).toBeUndefined();
+    expect(f.getHtml()).toContain('Verify and switch'); expect(f.getHtml()).toContain('Read-only access check URL');
+    expect(f.mount.hasUnsavedChanges()).toBe(true); expect(f.calls.runEnroll).not.toHaveBeenCalled(); expect(f.calls.runUpdate).not.toHaveBeenCalled();
+    f.mount.dispose();
+  });
+  it('keeps a draft when the owner declines to switch and retires a late switch read after navigation', async () => {
+    const confirmDiscardDraft = vi.fn(() => false);
+    const f = mountPanel({ connections: [saved()], runManagedOAuth: async () => ({ action: 'profiles', profiles: [] }), confirmDiscardDraft });
+    await f.mount.whenLoaded(); f.click({ action: 'connections-edit', kind: 'api', name: 'saved-sheets' });
+    f.field('display_name', 'Keep this draft'); f.click({ action: 'connections-switch-authentication' }); await tick();
+    expect(f.mount.getState().dialog.authenticationSwitch).toBeNull(); expect(f.mount.getState().dialog.values.display_name).toBe('Keep this draft');
+    confirmDiscardDraft.mockReturnValue(true); const list = deferred<{ connections: ConnectionView[] }>();
+    f.calls.runList.mockImplementationOnce(() => list.promise); f.click({ action: 'connections-switch-authentication' });
+    f.click({ action: 'connections-cancel-dialog' }); list.resolve({ connections: [saved()] }); await tick();
+    expect(f.mount.getState().dialog.stage).toBe('closed'); expect(f.mount.getState().dialog.authenticationSwitch).toBeNull(); f.mount.dispose();
+  });
+  it('applies through the reviewed switch RPC with the durable attempt and never falls back to metadata update or enrollment', async () => {
+    const call = vi.fn<import('../settings/managed-oauth-panel.js').ManagedOAuthCaller>(async request => {
+      if (request.action === 'apply_authentication_switch') return { action: 'apply_authentication_switch', connection: saved(),
+        verification: { status: 'verified', auth_type: 'managed_oauth', verified_at: 5 } };
+      if (request.action === 'remote_connections') return { action: 'remote_connections', connections: [], page: 0, has_more: false };
+      if (request.action === 'preview') return { action: 'preview', preview: { fingerprint: 'preview', decision: 'reuse', scope_metadata: 'available',
+        required_scopes: [], previous_scopes: [], sources: [], warnings: [] } };
+      return { action: 'profiles', profiles: [] };
+    });
+    const f = mountPanel({ connections: [saved()], runManagedOAuth: call }); await f.mount.whenLoaded();
+    f.click({ action: 'connections-edit', kind: 'api', name: 'saved-sheets' }); f.click({ action: 'connections-switch-authentication' }); await tick();
+    const values = f.mount.getState().dialog.values;
+    Object.assign(values, { 'auth.broker_profile_id': 'cloud', 'auth.integration_id': 'sheets', 'auth.connection_id': 'new-account',
+      'auth.target_origin': 'https://sheets.googleapis.com', 'auth.requested_scopes': '[]', 'switch.verification_url': 'https://docs.google.com/spreadsheets/d/test-sheet/edit' });
+    // Selecting the new broker retires the previous receipt. Settle that
+    // context change before receiving the replacement authorization result.
+    f.field('auth.scopes', 'write'); await tick();
+    f.field('auth.authorization_receipt', 'switch-receipt'); await tick();
+    f.click({ action: 'connections-submit-form' }); await tick(30);
+    expect(f.mount.getState().dialog.error).toBeNull();
+    expect(call.mock.calls.find(([request]) => request.action === 'apply_authentication_switch')?.[0]).toMatchObject({
+      name: 'saved-sheets', expected_updated_at: 2, attempt_id: 'rotation-panel-test-0001',
+      verification_url: 'https://sheets.googleapis.com/v4/spreadsheets/test-sheet?fields=spreadsheetId',
+      auth: { type: 'managed_oauth', connection_id: 'new-account', authorization_receipt: 'switch-receipt' },
+    });
+    expect(f.calls.runEnroll).not.toHaveBeenCalled(); expect(f.calls.runUpdate).not.toHaveBeenCalled(); expect(f.calls.runRotateCredentials).not.toHaveBeenCalled();
+    expect(f.mount.getState().dialog.recentProbe).toMatchObject({ name: 'saved-sheets', status: 'verified', auth_type: 'managed_oauth' }); f.mount.dispose();
+  });
+});
+
+describe('D-322 broker usage connection entry point', () => {
+  const connection = (): ConnectionView => ({ kind: 'api', name: 'broker-sheets', display_name: 'Broker sheets',
+    config: { base_url: 'https://sheets.googleapis.com/v4' }, enrolled_at: 1, updated_at: 2, auth_type: 'managed_oauth' });
+  it('re-reads the saved row before opening the editor', async () => {
+    const rows = [connection()]; const runList = vi.fn(async () => ({ connections: rows }));
+    const f = mountPanel({ runList }); await f.mount.whenLoaded();
+    rows[0] = { ...rows[0]!, display_name: 'Current broker sheets', updated_at: 3 };
+    expect(await f.mount.openConnection('api', 'broker-sheets')).toBe(true);
+    expect(f.mount.getState().dialog.values.display_name).toBe('Current broker sheets');
+    expect(f.mount.getState().dialog.mode).toBe('edit');
+  });
+  it('preserves a credential draft when the owner declines to leave it', async () => {
+    const confirmDiscardDraft = vi.fn(() => false); const f = mountPanel({ connections: [connection()], confirmDiscardDraft });
+    await f.mount.whenLoaded(); f.click({ action: 'connections-edit', kind: 'api', name: 'broker-sheets' });
+    f.field('display_name', 'Unsaved draft');
+    expect(await f.mount.openConnection('api', 'broker-sheets')).toBe(false);
+    expect(f.mount.getState().dialog.values.display_name).toBe('Unsaved draft'); expect(confirmDiscardDraft).toHaveBeenCalledOnce();
+  });
+  it('rejects a deleted connection and drops an opening request after navigation', async () => {
+    let rows = [connection()]; let resolve: ((value: { connections: ConnectionView[] }) => void) | undefined;
+    const runList = vi.fn(async () => ({ connections: rows })); const f = mountPanel({ runList }); await f.mount.whenLoaded();
+    rows = []; await expect(f.mount.openConnection('api', 'broker-sheets')).rejects.toThrow('no longer saved');
+    runList.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    const opening = f.mount.openConnection('api', 'broker-sheets'); f.click({ action: 'connections-open-add' });
+    resolve!({ connections: [connection()] }); expect(await opening).toBe(false);
+    expect(f.mount.getState().dialog.stage).toBe('kind-picker');
+  });
+  it.each(['before opening', 'during the read'] as const)('protects a probe started $0', async phase => {
+    const probe = deferred<{ health: ConnectionHealth }>();
+    const list = deferred<{ connections: ConnectionView[] }>();
+    const f = mountPanel({ connections: [connection()], runProbe: () => probe.promise });
+    await f.mount.whenLoaded();
+    f.click({ action: 'connections-edit', kind: 'api', name: 'broker-sheets' });
+    if (phase === 'before opening') f.click({ action: 'connections-probe', kind: 'api', name: 'broker-sheets' });
+    else f.calls.runList.mockImplementationOnce(() => list.promise);
+    const opening = f.mount.openConnection('api', 'broker-sheets');
+    const rejected = expect(opening).rejects.toThrow('Finish the current connection action');
+    if (phase === 'during the read') {
+      f.click({ action: 'connections-probe', kind: 'api', name: 'broker-sheets' });
+      list.resolve({ connections: [{ ...connection(), display_name: 'Later row' }] });
+    }
+    await rejected;
+    expect(f.mount.getState().dialog.values.display_name).toBe('Broker sheets');
+    expect(f.mount.hasInFlightWork()).toBe(true);
+    probe.resolve({ health: { status: 'ok' } }); await tick(); f.mount.dispose();
+  });
+  it('refuses a changed row rather than opening a different revision from the account card', async () => {
+    const f = mountPanel({ connections: [{ ...connection(), updated_at: 3 }] });
+    await f.mount.whenLoaded();
+    await expect(f.mount.openConnection('api', 'broker-sheets', 2)).rejects.toThrow('changed');
+    expect(f.mount.getState().dialog.stage).toBe('closed'); f.mount.dispose();
+  });
+});
 
 // The popup carries its OWN sessionStorage (modeled SEPARATELY from any opener
 // store) — the jwks handshake writes into the popup's browsing context, which
@@ -11532,17 +11669,16 @@ describe('R26.2 Option B — a LOOPBACK PWA authorizes without a public server',
     setInterval: () => () => undefined,
   });
 
-  it('never calls startVendorOAuth, and exchanges through completeVendorOAuth', async () => {
+  it.each(['complete', 'navigate away'] as const)('keeps loopback OAuth work protected through token exchange: $0', async phase => {
     const popup = makeFakePopup();
     const oauthEnv = makeFakeOAuthEnv(popup);
     const bus: { fire?: (ev: { origin: string; data: unknown }) => void } = {};
     const runStart = vi.fn();
-    const runComplete = vi.fn(async () => ({
-      refresh_token: 'RT-loopback',
-      granted_scopes: ['Contacts.Read'],
-    }));
+    const exchange = deferred<{ refresh_token: string; granted_scopes: string[] }>();
+    const runComplete = vi.fn(() => exchange.promise);
     const { mount, click, field } = mountPanel({
-      connections: [],
+      connections: [connection('broker-sheets', { updated_at: 2, auth_type: 'managed_oauth',
+        config: { base_url: 'https://sheets.googleapis.com/v4' } })],
       oauth: {
         env: oauthEnv.env,
         runStart: runStart as never,
@@ -11567,6 +11703,9 @@ describe('R26.2 Option B — a LOOPBACK PWA authorizes without a public server',
     // ⛔ The point of the whole change: the rpc that demands a public HTTPS
     // server URL is never reached.
     expect(runStart).not.toHaveBeenCalled();
+    expect(mount.hasInFlightWork()).toBe(true);
+    await expect(mount.openConnection('api', 'broker-sheets', 2)).rejects.toThrow('Finish the current connection action');
+    expect(mount.getState().dialog.values.name).toBe('ms-contacts');
 
     // The popup went to the provider with OUR OWN origin as the callback.
     const navigated = String(popup.location.href);
@@ -11586,6 +11725,22 @@ describe('R26.2 Option B — a LOOPBACK PWA authorizes without a public server',
     await new Promise((r) => setTimeout(r, 0));
 
     expect(runComplete).toHaveBeenCalledTimes(1);
+    expect(mount.hasInFlightWork()).toBe(true);
+    await expect(mount.openConnection('api', 'broker-sheets', 2)).rejects.toThrow('Finish the current connection action');
+    if (phase === 'navigate away') {
+      click({ action: 'connections-cancel-dialog' });
+      click({ action: 'connections-open-add' });
+      click({ action: 'connections-pick-kind', kind: 'api' });
+      field('name', 'newer-editor');
+      exchange.resolve({ refresh_token: 'RT-loopback', granted_scopes: ['Contacts.Read'] });
+      await tick();
+      expect(mount.getState().dialog.values.name).toBe('newer-editor');
+      expect(mount.getState().dialog.values['auth.refresh_token']).toBeUndefined();
+      expect(mount.getState().dialog.oauthGrantedScopes).toBeNull();
+      mount.dispose(); return;
+    }
+    exchange.resolve({ refresh_token: 'RT-loopback', granted_scopes: ['Contacts.Read'] });
+    await tick();
     const calls = runComplete.mock.calls as unknown as readonly (readonly Record<string, unknown>[])[];
     const sent = calls[0]![0]!;
     expect(sent.code).toBe('CODE');
@@ -11593,6 +11748,7 @@ describe('R26.2 Option B — a LOOPBACK PWA authorizes without a public server',
     expect(sent.token_endpoint).toBe('https://login.microsoftonline.com/common/oauth2/v2.0/token');
     // The returned token lands in the form, so Save persists a working connection.
     expect(mount.getState().dialog.values['auth.refresh_token']).toBe('RT-loopback');
+    expect(mount.hasInFlightWork()).toBe(false);
     mount.dispose();
   });
 

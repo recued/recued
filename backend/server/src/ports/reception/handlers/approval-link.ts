@@ -305,6 +305,7 @@ const describeApprovalOutcome = (
 // ────────────────────────────────────────────────────────────────
 
 export interface ApprovalLinkPacketHandlerDeps {
+  readonly checkQuoteCompletionLink?: (config: ApprovalLinkConfig, endpointId: string) => string | null;
   readonly checkQuoteSignoffLink?: (config: ApprovalLinkConfig, endpointId: string) => string | null;
   readonly getStore: () => PublicEndpointRegistryStore;
   readonly getApprovalIntentStore: () => ApprovalIntentStore;
@@ -355,6 +356,11 @@ export const createApprovalLinkPacketHandler = (
       return;
     }
 
+    if (config.on_action.on_approve_action === 'quote_completion') {
+      const refusal = deps.checkQuoteCompletionLink?.(config, endpoint_id) ??
+        (deps.checkQuoteCompletionLink ? null : 'This completion request is unavailable. Ask the business for a new link.');
+      if (refusal) { writeErrorPage(res, config.display_name, refusal, 409); return; }
+    }
     if (config.on_action.on_approve_action === 'quote_signoff') {
       const refusal = deps.checkQuoteSignoffLink?.(config, endpoint_id) ??
         (deps.checkQuoteSignoffLink ? null : 'This quote sign-off is unavailable. Ask the business for a new link.');
@@ -389,6 +395,7 @@ export const createApprovalLinkPacketHandler = (
       display_name: config.display_name,
       action_kind: config.action_kind,
       prompt: config.prompt,
+      completion: config.on_action.on_approve_action === 'quote_completion',
       context_summary: config.context_raw.summary,
       visitor_field_constraints: config.visitor_field_constraints,
       expiry_display: source.expiry_display,
@@ -410,6 +417,7 @@ export const createApprovalLinkPacketHandler = (
 // ────────────────────────────────────────────────────────────────
 
 export interface ApprovalLinkConsumeHandlerDeps {
+  readonly checkQuoteCompletionLink?: (config: ApprovalLinkConfig, endpointId: string) => string | null;
   readonly checkQuoteSignoffLink?: (config: ApprovalLinkConfig, endpointId: string) => string | null;
   readonly getStore: () => PublicEndpointRegistryStore;
   readonly getApprovalIntentStore: () => ApprovalIntentStore;
@@ -530,6 +538,9 @@ export const createApprovalLinkConsumeHandler = (
       return;
     }
 
+    if (config.on_action.on_approve_action === 'quote_completion' && built.kind === 'reject' && !built.comment?.trim()) {
+      writeErrorPage(res, display_name, 'Describe the corrections you need, then submit your response again.', 400); return;
+    }
     const consumeInput: ApprovalLinkConsumeInput = {
       ...(visitorName.length > 0 ? { visitor_name: visitorName } : {}),
       ...(visitorEmail.length > 0 ? { visitor_email: visitorEmail } : {}),
@@ -600,6 +611,11 @@ export const createApprovalLinkConsumeHandler = (
 
     // Re-read after sealing (an async boundary): a quote edited while the
     // visitor filled in the page must not receive a success receipt.
+    if (config.on_action.on_approve_action === 'quote_completion') {
+      const refusal = deps.checkQuoteCompletionLink?.(config, endpoint_id) ??
+        (deps.checkQuoteCompletionLink ? null : 'This completion request is unavailable. Ask the business for a new link.');
+      if (refusal) { writeErrorPage(res, config.display_name, refusal, 409); return; }
+    }
     if (config.on_action.on_approve_action === 'quote_signoff') {
       const refusal = deps.checkQuoteSignoffLink?.(config, endpoint_id) ??
         (deps.checkQuoteSignoffLink ? null : 'This quote sign-off is unavailable. Ask the business for a new link.');

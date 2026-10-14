@@ -5682,6 +5682,11 @@ export type ServerRpcRegistry = {
    *  Connections block: its list (the connections its catalog is bound to), which
    *  one is the default, and the owner's other connections that could join.
    *  Read-only. */
+  /** D-322 §24 — review and run one declared, read-only pack resource check. */
+  'packs.connections.access': RpcMethodSpec<
+    import('../pack-access.js').PackAccessRequest,
+    import('../pack-access.js').PackAccessResponse
+  >;
   'packs.connections.list': RpcMethodSpec<
     { pack_slug: string },
     import('../pack-connections.js').PackConnectionsView
@@ -7606,8 +7611,24 @@ export type ServerRpcRegistry = {
     import('../quote-signoff.js').QuoteSignoffPublishResult>;
   'reception.signoff.list': RpcMethodSpec<import('../quote-signoff.js').QuoteSignoffListInput | void,
     import('../quote-signoff.js').QuoteSignoffListResult>;
+  'reception.jobs.list': RpcMethodSpec<import('../customer-jobs.js').CustomerJobsListInput | void,
+    import('../customer-jobs.js').CustomerJobsListResult>;
   'reception.signoff.cancel': RpcMethodSpec<import('../quote-signoff.js').QuoteSignoffCancelInput,
     import('../quote-signoff.js').QuoteSignoffSummary>;
+  'reception.signoff.completion.prepare': RpcMethodSpec<import('../quote-completion.js').QuoteCompletionPrepareInput, import('../quote-completion.js').QuoteCompletionPrepareResult>;
+  'reception.signoff.completion.publish': RpcMethodSpec<import('../quote-completion.js').QuoteCompletionPublishInput, import('../quote-completion.js').QuoteCompletionPublishResult>;
+  'reception.signoff.completion.list': RpcMethodSpec<import('../quote-completion.js').QuoteCompletionListInput | void, import('../quote-completion.js').QuoteCompletionListResult>;
+  'reception.signoff.completion.cancel': RpcMethodSpec<import('../quote-completion.js').QuoteCompletionCancelInput, import('../quote-completion.js').QuoteCompletionSummary>;
+  'reception.signoff.receipt': RpcMethodSpec<import('../quote-signoff.js').QuoteSignoffReceiptInput,
+    import('../quote-signoff.js').QuoteSignoffReceipt>;
+  'reception.signoff.reminders.get': RpcMethodSpec<import('../quote-signoff-reminders.js').QuoteSignoffReminderGetInput,
+    import('../quote-signoff-reminders.js').QuoteSignoffReminder>;
+  'reception.signoff.reminders.set': RpcMethodSpec<import('../quote-signoff-reminders.js').QuoteSignoffReminderSetInput,
+    import('../quote-signoff-reminders.js').QuoteSignoffReminder>;
+  'reception.signoff.reminders.list': RpcMethodSpec<import('../quote-signoff-reminders.js').QuoteSignoffReminderListInput | void,
+    import('../quote-signoff-reminders.js').QuoteSignoffReminderListResult>;
+  'reception.signoff.reminders.draft': RpcMethodSpec<import('../quote-signoff-reminders.js').QuoteSignoffReminderDraftInput,
+    import('../quote-signoff-reminders.js').QuoteSignoffReminderDraftResult>;
   // D-210 Appendix B — mint an on-the-go reschedule link for one booking.
   'reception.manage.mint': RpcMethodSpec<
     import('../reception-manage.js').ReceptionManageMintInput,
@@ -8471,6 +8492,7 @@ export const SERVER_RPC_METHODS = [
   'packs.tool_status',
   'packs.uninstall',
   'packs.uninstall_preview',
+  'packs.connections.access',
   'packs.connections.list',
   'packs.connections.add',
   'packs.connections.remove',
@@ -8759,7 +8781,17 @@ export const SERVER_RPC_METHODS = [
   'reception.signoff.prepare_addition',
   'reception.signoff.publish',
   'reception.signoff.list',
+  'reception.jobs.list',
   'reception.signoff.cancel',
+  'reception.signoff.receipt',
+  'reception.signoff.completion.prepare',
+  'reception.signoff.completion.publish',
+  'reception.signoff.completion.list',
+  'reception.signoff.completion.cancel',
+  'reception.signoff.reminders.get',
+  'reception.signoff.reminders.set',
+  'reception.signoff.reminders.list',
+  'reception.signoff.reminders.draft',
   // D-210 Appendix B — mint an on-the-go reschedule link. Admin-only; reserved prefix.
   'reception.manage.mint',
   'reception.lookup.revoke',

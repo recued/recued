@@ -683,7 +683,7 @@ export const handleCollectionMailSend = async (
    *  which is a worse defect than the leak this closes. Only a server-internal
    *  seam that KNOWS its recipient is sealed visitor PII passes this, and the
    *  rpc path never passes it at all. ⇒ [[separate_authorization_axes]] */
-  internal?: { readonly redact_audit_recipients?: boolean },
+  internal?: { readonly redact_audit_recipients?: boolean; readonly before_dispatch?: () => void },
 ): Promise<{
   source_id: string;
   message_id: string;
@@ -731,6 +731,7 @@ export const handleCollectionMailSend = async (
     ...(internal?.redact_audit_recipients === true
       ? { redact_audit_recipients: true as const }
       : {}),
+    ...(internal?.before_dispatch ? { before_dispatch: internal.before_dispatch } : {}),
   });
 };
 

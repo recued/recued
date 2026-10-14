@@ -166,6 +166,8 @@ export interface ConnectionsDialogState {
   /** Edit-mode origin id — `${kind}/${name}` of the record being
    *  patched. Null in create mode. */
   editingId: string | null;
+  /** D-322 §23 — original safe view while preparing a replacement broker account. */
+  authenticationSwitch: ConnectionView | null;
   /** Set by authoritative sibling/focus reconciliation. This warning never
    * replaces `values`; it is the explicit stale-editor boundary. */
   externalChange: ConnectionsDialogExternalChangeState | null;
@@ -535,6 +537,7 @@ export const initialConnectionsDialogState = (): ConnectionsDialogState => ({
   vendor: null,
   values: {},
   editingId: null,
+  authenticationSwitch: null,
   externalChange: null,
   credentialRotationOwnership: null,
   saving: false,

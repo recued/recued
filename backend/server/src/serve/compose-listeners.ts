@@ -27,6 +27,7 @@ import { getMessengerNotificationRefresher } from '../composition/bin/wire-messe
 import { composeSessionGrantPasses } from '../composition/bin/wire-session-grant-passes.js';
 import { composeReceptionInboxDeps } from '../composition/bin/wire-reception-inbox-deps.js';
 import { countCalendarOverlap } from '../collections/calendar/overlap-counter.js';
+import type { MailCollection } from '../collections/mail/mail-collection.js';
 import { createInMemoryAskLandingNonceStore } from '../ask-landing-nonce-store.js';
 import { createAskLandingDetailResolver } from '../ask-landing-held-op-details.js';
 import { createAskCardDetailResolver } from '../ask-card-held-op-details.js';
@@ -461,6 +462,8 @@ export interface ComposeListenersOptions {
     // D-315 §6.3 — the one fact writer, for a backfill.
     | 'mailFactWriter'
     | 'mailFactTriggerRoom'
+    // D-318 P23 — bound here once the notification block exists.
+    | 'emailAnswerHook'
     | 'mailFactAiSettled'
     | 'mailFactEvents'
     | 'bootEvents'
@@ -914,52 +917,33 @@ export const composeListeners = async (
         },
       })
     : undefined;
-  // D-158 P2b — the inbound reply-by-email funnel: the watcher-driven peer
-  // of the Slack / Telegram webhook dispatcher above. Email has no webhook —
-  // a reply lands in the notification account's own mirrored mailbox — so
-  // this subscribes to the warehouse bus and decodes each newly-synced mail
-  // record as a possible answer to an open ask. Inert unless the block +
-  // bus + connection store (to resolve the notification.email account) +
-  // blob store (to materialize the reply body) are all composed.
+  // D-158 P2b — the inbound reply-by-email funnel, the peer of the Slack /
+  // Telegram webhook dispatcher above. Email has no webhook: a reply arrives in
+  // the notification account's own mailbox, and a mail upsert hook checks it
+  // there. D-318 P23 — only a reply proven to be the owner's answers an ask:
+  // the Sent copy in a mailbox Recued reads, or the owner's notification
+  // address with a DMARC pass (wire-inbound-email-answer.ts). Inert unless the
+  // block and the connection store are composed.
   const emailReplyConnStore = app.connectionStoreRef;
-  const emailReplyBlobs = app.cacheBlobs;
   const inboundEmailAnswer = composeInboundEmailAnswer({
     ...(execution.notificationBlock ? { block: execution.notificationBlock } : {}),
-    bus: app.warehouseBus,
     ...(emailReplyConnStore
       ? {
-          resolveEmailAccountSlug: (): string | null => {
+          resolveAccounts: () => {
             const record = emailReplyConnStore.get('notification', 'email');
             if (record === null) return null;
+            let cfg: { sender_mail_instance?: unknown; default_recipient?: unknown };
             try {
-              const cfg = JSON.parse(record.config_json) as {
-                sender_mail_instance?: unknown;
-              };
-              return typeof cfg.sender_mail_instance === 'string' &&
-                cfg.sender_mail_instance.length > 0
-                ? cfg.sender_mail_instance
-                : null;
+              cfg = JSON.parse(record.config_json) as typeof cfg;
             } catch {
               return null;
             }
-          },
-        }
-      : {}),
-    ...(emailReplyBlobs
-      ? {
-          readInboundMail: async (slug, record_id) => {
-            const mailCollection = collection.collectionRegistry.get('mail', slug);
-            if (mailCollection === undefined) return null;
-            const rec = mailCollection.get(record_id);
-            if (rec === null) return null;
-            const body = await materializeMailBody(rec, emailReplyBlobs);
-            const hf = rec.hot_fields;
-            return {
-              subject: typeof hf.subject === 'string' ? hf.subject : '',
-              folder: typeof hf.folder === 'string' ? hf.folder : '',
-              from: typeof hf.from === 'string' ? hf.from : '',
-              body_text: body ?? '',
-            };
+            const sender_slug = typeof cfg.sender_mail_instance === 'string' ? cfg.sender_mail_instance : '';
+            const recipient_address = typeof cfg.default_recipient === 'string' ? cfg.default_recipient : '';
+            if (sender_slug === '' || recipient_address === '') return null;
+            const sender = collection.collectionRegistry.get('mail', sender_slug) as MailCollection | undefined;
+            const sender_address = sender?.accountEmail ?? '';
+            return sender_address === '' ? null : { sender_slug, sender_address, recipient_address };
           },
         }
       : {}),
@@ -968,7 +952,7 @@ export const composeListeners = async (
       fn(`[email-reply] ${msg}`, data ?? '');
     },
   });
-  inboundEmailAnswer.start();
+  collection.emailAnswerHook.bind((msg, ctx) => inboundEmailAnswer.onMessageUpserted(msg, ctx));
 
   const vendorWebhookListener = composeVendorWebhookPort({
     webhooksEnabled,

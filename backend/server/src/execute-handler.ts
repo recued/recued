@@ -1339,6 +1339,9 @@ export interface ExecuteHandlerDeps {
    *  (which also defers the server-side notification-block
    *  construction to a downstream slice). */
   preflightNotifier?: PreflightNotifier;
+  /** Reception's live address/key/offer validator, wired after composition.
+   * Protected reminder mail refuses dispatch while this seam is unavailable. */
+  getQuoteSignoffReminderService?: () => import('./quote-signoff-reminder-service.js').QuoteSignoffReminderService;
   /** D-157 A.1 step 1, runtime half — the same block, threaded as the
    *  in-doubt notifier and handed to the commit Gateway.
    *

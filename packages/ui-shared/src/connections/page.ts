@@ -56,6 +56,7 @@ import {
   isCompleteMatchPatternRow,
   isHalfFilledMatchPatternRow,
   resolveConnectionSchema,
+  withAuthenticationSwitchSchema,
   resolveVendorSchema,
   type ConnectionField,
   type ConnectionFormValues,
@@ -112,6 +113,8 @@ export interface ConnectionsPageProps extends ConnectionsPageState {
    *  it as stand-alone; the options page (if it ever rehosts the
    *  page in-place post-P7.3) would mount it embedded. */
   layout?: 'standalone' | 'embedded';
+  /** D-322 §23 — hide the switch entry point when the host has no broker RPC. */
+  managedOAuthAvailable?: boolean;
   /** The host can open the persistent Account/server-profile guide from an
    * unsupported safe-start receipt. Absent hosts keep the direct recheck and
    * dismiss actions, rather than rendering a dead guide button. */
@@ -1789,6 +1792,9 @@ export const connectionFormValidationIssue = (
   dynamicOptions: Record<string, readonly string[]> | undefined,
   mode: ConnectionsDialogState['mode'],
 ): ConnectionFormValidationIssue | null => {
+  if (schema.fields.some(field => field.key === 'switch.verification_url') && !values['auth.authorization_receipt']?.trim()) {
+    return formValidationIssue('auth.broker_profile_id', 'Broker account', 'Review permissions and authorize the selected account before switching authentication.');
+  }
   const name = values.name?.trim() ?? '';
   if (!name) return formValidationIssue('name', 'Name', 'Name is required.');
   if (mode === 'create' && !CONNECTION_NAME_REGEX.test(name)) {
@@ -3015,6 +3021,9 @@ const renderCredentialRotation = (
   schema: ConnectionSchema,
 ): string => {
   if (dialog.mode !== 'edit') return '';
+  if (dialog.authenticationSwitch) {
+    return '<p role="status">Verify and switch reads the chosen resource through the new account. It does not prove every scope or write permission. Your saved authentication stays active until this check passes.</p>';
+  }
   if (dialog.values['auth.type'] === 'managed_oauth') {
     return '<p role="status">Reauthorize in the broker to request additional permissions. This updates the broker account immediately; save the verified authorization in Recued when complete.</p>';
   }
@@ -3255,12 +3264,13 @@ const renderConnectionOnboarding = (
 const renderForm = (
   dialog: ConnectionsDialogState,
   dynamicOptions: Record<string, readonly string[]> | undefined,
+  managedOAuthAvailable = false,
 ): string => {
   const kind = dialog.kind;
   if (!kind) {
     return inlineError('Connection kind missing — pick a kind to continue.');
   }
-  const schema = resolveConnectionSchema(
+  let schema = resolveConnectionSchema(
     kind,
     dialog.subtype ?? undefined,
     dialog.vendor ?? undefined,
@@ -3271,6 +3281,7 @@ const renderForm = (
       `No schema for ${kind}${dialog.subtype ? `/${dialog.subtype}` : ''} — pick a different subtype.`,
     );
   }
+  if (dialog.authenticationSwitch) schema = withAuthenticationSwitchSchema(schema);
   const validationIssue = connectionFormValidationIssue(
     schema,
     dialog.values,
@@ -3329,9 +3340,14 @@ const renderForm = (
   return `
     <div class="connections-form" data-stage="form"${dialog.vendor ? ` data-vendor="${e(dialog.vendor)}"` : ''}>
       <h3 class="connections-form-title">
-        ${e(dialog.mode === 'edit' ? 'Edit ' : 'Add ')}${e(schema.label)}
+        ${e(dialog.authenticationSwitch ? 'Switch ' : dialog.mode === 'edit' ? 'Edit ' : 'Add ')}${e(schema.label)}
       </h3>
       <p class="connections-form-description">${e(schema.description)}</p>
+      ${dialog.authenticationSwitch ? `<section class="connections-auth-switch-summary" data-authentication-switch-summary>
+        <p><strong>${e(dialog.authenticationSwitch.display_name)}</strong> (<code>${e(dialog.authenticationSwitch.name)}</code>)</p>
+        <p>${dialog.authenticationSwitch.managed_oauth ? `Current Nango account: <code>${e(dialog.authenticationSwitch.managed_oauth.connection_id)}</code>.` : 'Current authentication: your saved direct credential.'}</p>
+        <p>A different account may see different data. The saved authentication stays active until the access check passes.</p>
+      </section>` : ''}
       <p class="connections-form-draft-protection" data-connection-draft-protection>
         Changes you make stay only in this tab. Recued will ask before you leave.
         Credential fields are not saved in your browser, so they cannot be
@@ -3367,6 +3383,13 @@ const renderForm = (
         ? inlineError(dialog.error)
         : ''}
       <div class="connections-dialog-actions">
+        ${managedOAuthAvailable && dialog.mode === 'edit' && kind === 'api' && !dialog.authenticationSwitch
+          && ['oauth2_refresh', 'bearer', 'managed_oauth'].includes(dialog.values['auth.type'] ?? '')
+          && schema.fields.some(field => field.key === 'auth.type' && field.options?.includes('managed_oauth'))
+          ? button({ label: 'Switch authentication', size: 'sm', action: 'connections-switch-authentication',
+              disabled: dialog.saving || dialog.oauthInFlight || dialog.externalChange !== null }) : ''}
+        ${dialog.authenticationSwitch ? button({ label: 'Keep current authentication', size: 'sm',
+          action: 'connections-cancel-authentication-switch', disabled: dialog.saving || dialog.oauthInFlight }) : ''}
         ${/* Back means "I picked the wrong kind" — it returns to the picker and
               WIPES `values`. Once a provider consent has completed in this
               session that is a strictly worse Cancel: same exit, same discard,
@@ -3389,9 +3412,11 @@ const renderForm = (
         })}
         ${button({
           label: dialog.saving
-            ? credentialRotation && !managedConsent
+            ? dialog.authenticationSwitch ? 'Verifying and switching…'
+              : credentialRotation && !managedConsent
               ? 'Verifying replacement…'
               : 'Saving…'
+            : dialog.authenticationSwitch ? 'Verify and switch'
             : dialog.mode === 'edit'
               ? credentialRotation
                 ? managedConsent ? 'Save authorization' : 'Verify and replace'
@@ -3426,7 +3451,7 @@ const renderDialog = (props: ConnectionsPageProps): string => {
     } else {
       body = inlineError('Subtype picker requested for a kind without subtypes.');
     }
-  } else if (d.stage === 'form') body = renderForm(d, props.dynamicOptions);
+  } else if (d.stage === 'form') body = renderForm(d, props.dynamicOptions, props.managedOAuthAvailable);
   return `
     <div class="connections-dialog" role="dialog" aria-label="Connection enrollment">
       ${body}
@@ -3895,6 +3920,15 @@ ${REFERENCE_PROVENANCE_STYLES}
 .connections-managed-oauth .managed-oauth-preview h5 { margin: 0; font-size: 13px; }
 .connections-managed-oauth .managed-oauth-preview ul { margin: 0; padding-left: 20px; min-width: 0; }
 .connections-managed-oauth .managed-oauth-preview code { overflow-wrap: anywhere; }
+.connections-managed-oauth .managed-oauth-account-usage { display: grid; gap: 10px; min-width: 0; padding: 14px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-sunk); }
+.connections-managed-oauth .managed-oauth-account-usage :is(h5, p) { margin: 0; }
+.connections-managed-oauth .managed-oauth-account-connections { display: grid; gap: 12px; list-style: none; padding: 0; margin: 0; }
+.connections-managed-oauth .managed-oauth-account-connection { display: grid; gap: 8px; min-width: 0; padding-top: 12px; border-top: 1px solid var(--border); }
+.connections-managed-oauth .managed-oauth-account-connection code { overflow-wrap: anywhere; }
+.connections-managed-oauth .managed-oauth-account-connection dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; margin: 0; }
+.connections-managed-oauth .managed-oauth-account-connection dt { color: var(--fg-muted); }
+.connections-managed-oauth .managed-oauth-account-connection dd { margin: 0; }
+.connections-managed-oauth [data-managed-health="auth_failed"], .connections-managed-oauth [data-managed-health="unreachable"] { color: var(--danger); }
 @media (max-width: 560px) {
   .connections-managed-oauth { padding: 14px; }
   .connections-managed-oauth .managed-oauth-editor { padding: 12px; }
@@ -3913,6 +3947,17 @@ ${REFERENCE_PROVENANCE_STYLES}
   color: var(--fg-muted);
   margin: 0 0 12px;
 }
+.connections-auth-switch-summary {
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 10px 12px;
+  margin: 0 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+.connections-auth-switch-summary p { margin: 0 0 6px; }
+.connections-auth-switch-summary p:last-child { margin-bottom: 0; }
+.connections-auth-switch-summary code { overflow-wrap: anywhere; }
 .connections-form-draft-protection {
   font-size: 12px;
   line-height: 1.45;

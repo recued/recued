@@ -4,10 +4,16 @@ import {
   RpcError, managedOAuthProvidersForTarget, managedOAuthScopeUnion,
   type ConnectionAuth, type ConnectionRow, type ManagedOAuthAuth,
   type ManagedOAuthRequest, type ManagedOAuthResponse, type ManagedOAuthProfileView, type ManagedOAuthPermissionPreview,
+  type ManagedOAuthConnectionUse, type ManagedOAuthImpactPreview, type ManagedOAuthAccountPreview,
+  type ManagedOAuthMigrationCandidate,
+  managedOAuthDefaultVerificationUrl, MANAGED_OAUTH_MIGRATION_LIMIT,
 } from '@recued/contracts';
 import type { ManagedOAuthProfile, ManagedOAuthProfileStore } from './managed-oauth-profile-store.js';
 import { createNangoOAuthAdapter, managedOAuthServerUrl } from './managed-oauth-nango.js';
 import { IngredientError } from '@recued/ingredients';
+import { managedOAuthConnectionUsage } from './managed-oauth-account-usage.js';
+import { readManagedOAuthAccountIdentity } from './managed-oauth-account-preview.js';
+import { managedOAuthImpact, managedOAuthImpactSignature } from './managed-oauth-impact.js';
 
 interface Flow {
   claim: string; expires: number; profile: ManagedOAuthProfileView; integration: string;
@@ -15,15 +21,44 @@ interface Flow {
   requiredScopes?: string[]; snapshot?: string; grantedScopes?: string[];
   packRequirements?: { vendor: string; baseUrl: string; scopes: string[] };
   auth?: ManagedOAuthAuth; busy: boolean;
+  switchAuthentication?: true;
+  remoteIdentity?: string;
+  baseUrl?: string;
+  impactConsent?: 'reuse' | 'request';
+  impactNames?: string[];
+  impactSnapshot?: string;
 }
 interface Receipt { flow: Flow; expires: number }
+const switchAccountRefused = (message: string, unavailable = false): RpcError => new RpcError(
+  'credential_verification_failed', `${message} Your saved authentication was kept.`, 422, 'collection.connection.managedOAuth', {
+    verification_status: unavailable ? 'unreachable' : 'unknown',
+    reason: unavailable ? 'broker_account_check_unavailable' : 'broker_account_changed', existing_credential_preserved: true,
+  },
+);
 export interface ManagedOAuthService {
   handle(args: ManagedOAuthRequest): Promise<ManagedOAuthResponse>;
-  /** Verify after encryption, immediately before the synchronous write. Returns receipt-free auth. */
-  authorizeForSave(auth: ManagedOAuthAuth, baseUrl: string, name: string, existing?: ConnectionRow): {
-    auth: ManagedOAuthAuth; granted_scopes?: readonly string[];
+  /** Verify after encryption. Deferred consumption follows the durable switch commit. */
+  authorizeForSave(auth: ManagedOAuthAuth, baseUrl: string, name: string, existing?: ConnectionRow,
+    options?: { consume?: false; switchAuthentication?: true }): {
+    auth: ManagedOAuthAuth; granted_scopes?: readonly string[]; consume(): void;
   };
+  verifySwitchAccount(auth: ManagedOAuthAuth): Promise<void>;
+  verifyImpact?(auth: ManagedOAuthAuth, fingerprint: string): Promise<void>;
+  migrationCandidates?(names?: readonly string[]): Promise<ManagedOAuthMigrationCandidate[]>;
+  migrationSignature?(names: readonly string[]): string;
+  claimMigration?(auth: ManagedOAuthAuth, names: readonly string[]): Promise<ManagedOAuthMigrationAuthority>;
+  /** D-322 §24 — read-only diagnostic fences, independent of consent receipts. */
+  diagnosticProfileSignature?(): string;
+  inspectAccount?(auth: ManagedOAuthAuth): Promise<{ identity?: string; profile_revision: number; auth_error: boolean }>;
   fetch(auth: ManagedOAuthAuth, target: string, init: RequestInit): Promise<Response>;
+}
+/** Backend-only authority transferred from one reviewed consent to its selected rows. */
+export interface ManagedOAuthMigrationAuthority {
+  expires_at: number;
+  names: readonly string[];
+  signature: string;
+  issue(name: string): Promise<{ auth: ManagedOAuthAuth; impact: ManagedOAuthImpactPreview; retire(): void }>;
+  close(): void;
 }
 export interface ManagedOAuthServiceDeps {
   profiles: ManagedOAuthProfileStore;
@@ -33,6 +68,7 @@ export interface ManagedOAuthServiceDeps {
   clearGrantedScopes?(names: readonly string[]): void;
   requiredScopes?(vendor: string, baseUrl: string): readonly string[];
   requiredScopeSources?(vendor: string, baseUrl: string): readonly { slug: string; name: string; scopes: readonly string[] }[];
+  connectionUses?(name: string): { uses: readonly ManagedOAuthConnectionUse[]; complete: boolean };
   fetchImpl?: typeof fetch;
   now?: () => number;
 }
@@ -100,6 +136,7 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
   const deletingAccounts = new Set<string>();
   const startingAccounts = new Set<string>();
   let accountRevision = 0;
+  const migrationAccounts = new Map<string, { expires: number }>();
   const accountKey = (base: string, integration: string, id: string): string => JSON.stringify([base, integration, id]);
   const prune = (): void => {
     for (const [id, value] of flows) if (value.expires <= now()) flows.delete(id);
@@ -133,11 +170,45 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
     return JSON.stringify([connectionSignature(rows), deps.profiles.list().map(p => [p.id, p.revision]).sort(), deps.profiles.scopeHistorySignature(),
       rows.map(row => [row.name, requirements(row)]).sort()]);
   };
-  const accountScopes = async (saved: ManagedOAuthProfile, integration: string, id: string) => {
+  const publicProfile = (value: ManagedOAuthProfile): ManagedOAuthProfileView => {
+    const { api_key: ignored, ...view } = value; void ignored; return view;
+  };
+  const accountPreview = async (auth: ConnectionAuth | undefined, baseUrl: string,
+    selected?: { profile: ManagedOAuthProfile; integration: string; id?: string }): Promise<ManagedOAuthAccountPreview> => {
+    const identity = await readManagedOAuthAccountIdentity({ auth, base_url: baseUrl, now: now(),
+      fetch: deps.fetchImpl ?? globalThis.fetch.bind(globalThis),
+      managedFetch: (value, url, init) => adapter.fetch(profile(value.broker_profile_id), value, url, init) });
+    if (selected) return { authentication: 'broker', broker: publicProfile(selected.profile),
+      integration_id: selected.integration, ...(selected.id ? { connection_id: selected.id } : {}), identity };
+    if (auth?.type !== 'managed_oauth') return { authentication: auth?.type === 'oauth2_refresh' ? 'direct_oauth' : 'token', identity };
+    const saved = deps.profiles.get(auth.broker_profile_id);
+    return { authentication: 'broker', ...(saved ? { broker: publicProfile(saved) } : {}),
+      integration_id: auth.integration_id, connection_id: auth.connection_id, identity };
+  };
+  const impactFor = async (input: {
+    phase: ManagedOAuthImpactPreview['phase']; mode: ManagedOAuthImpactPreview['mode']; consent: 'reuse' | 'request';
+    row?: ConnectionRow; old?: ConnectionAuth; profile: ManagedOAuthProfile; integration: string; id?: string;
+    targetAuth?: ManagedOAuthAuth; baseUrl: string; members: readonly ConnectionRow[]; membership_known?: boolean;
+  }): Promise<ManagedOAuthImpactPreview> => {
+    const names = [...new Set([...input.members.map(row => row.name), ...(input.row ? [input.row.name] : [])])];
+    const before = managedOAuthImpactSignature(names, deps.connectionUses);
+    const current = input.row ? await accountPreview(input.old, input.baseUrl) : undefined;
+    const identical = input.old?.type === 'managed_oauth' && input.old.broker_profile_id === input.profile.id
+      && input.old.integration_id === input.integration && input.old.connection_id === input.id;
+    const target = identical && current ? current : await accountPreview(input.targetAuth, input.baseUrl,
+      { profile: input.profile, integration: input.integration, id: input.id });
+    if (before !== managedOAuthImpactSignature(names, deps.connectionUses)) throw new RpcError('conflict', 'Local usage changed. Refresh the account and impact preview.');
+    return managedOAuthImpact({ ...input, current, target, read: deps.connectionUses });
+  };
+  const accountScopes = async (saved: ManagedOAuthProfile, integration: string, id: string, selected?: { identity?: string }) => {
     const snapshot = scopeSnapshot();
     const members: { row: ConnectionRow; auth: ManagedOAuthAuth }[] = [];
     const identities = new Map<string, string>();
     const identity = async (p: ManagedOAuthProfile): Promise<string> => {
+      if (p.id === saved.id && selected !== undefined) {
+        if (selected.identity === undefined) throw new RpcError('bad_request', 'Nango did not expose a stable identity for this saved account.');
+        return selected.identity;
+      }
       const known = identities.get(p.id);
       if (known !== undefined) return known;
       const value = await adapter.connectionIdentity(p, integration, id);
@@ -166,6 +237,9 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
       grants: members.flatMap(m => { const grants = recordedGrants(m.row); return grants === undefined ? [] : [grants]; }) };
   };
   const assertCurrent = (flow: Flow): void => {
+    if (flow.impactSnapshot !== undefined && flow.impactSnapshot !== managedOAuthImpactSignature(flow.impactNames ?? [], deps.connectionUses)) {
+      throw new RpcError('conflict', 'Local usage changed after review. Refresh the account and impact preview.');
+    }
     assertPackRequirements(flow.packRequirements);
     if (flow.remoteId !== undefined && deletingAccounts.has(accountKey(flow.profile.base_url, flow.integration, flow.remoteId))) {
       throw new RpcError('conflict', 'This Nango account is being deleted. Refresh accounts before saving.');
@@ -192,6 +266,9 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
       throw new RpcError('conflict', 'The Nango account changed while verifying completed consent. Refresh accounts and authorize again.');
     }
     if (checkCurrent) assertCurrent(flow);
+    if (flow.switchAuthentication && completed.identity === undefined) throw new RpcError('conflict',
+      'Nango did not expose a stable account identity. Refresh accounts and review authorization again.');
+    flow.remoteIdentity = completed.identity;
     // A later row cannot supply the identity missing from the tagged completion.
     if (completed.identity !== undefined) deps.profiles.rememberAccountScopes(saved.base_url, flow.integration, completed.identity, flow.scopes);
     flow.snapshot = scopeSnapshot();
@@ -249,18 +326,35 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
     if (!readOnly && flows.size + receipts.size >= 128) throw new RpcError('conflict', 'Too many OAuth authorizations are pending. Cancel one or wait for it to expire.');
     const initialSnapshot = scopeSnapshot();
     const requested = scopeList(a.scopes);
+    if (a.switch_authentication !== undefined && a.switch_authentication !== true) throw new RpcError('bad_request', 'Choose a valid authentication switch.');
     if (a.force_reauthorization !== undefined && typeof a.force_reauthorization !== 'boolean') throw new RpcError('bad_request', 'Choose a valid reauthorization option.');
+    if (a.include_account_impact !== undefined && a.include_account_impact !== true) throw new RpcError('bad_request', 'Choose a valid account and impact preview.');
     const saved = profile(a.profile_id);
     const target = targetOrigin(text(a.base_url, 'Vendor API URL'));
-    const packs = packRequirements(a.vendor, a.base_url);
-    const integration = await adapter.integration(saved, text(a.integration_id, 'Integration'));
     const row = a.name === undefined ? undefined : deps.listConnections().find((row) => row.kind === 'api' && row.name === a.name);
     if (a.name !== undefined && row === undefined) throw new RpcError('not_found', 'The connection to reauthorize no longer exists.');
+    const config = row === undefined ? undefined : JSON.parse(row.config_json) as { base_url?: string; vendor?: string };
+    if (a.switch_authentication) {
+      if (!row || !Number.isSafeInteger(a.expected_updated_at) || a.expected_updated_at !== row.updated_at) {
+        throw new RpcError('conflict', 'The saved connection changed. Reopen it before switching authentication.');
+      }
+      if (typeof config?.base_url !== 'string' || managedOAuthServerUrl(config.base_url) !== managedOAuthServerUrl(a.base_url)
+        || (a.vendor !== undefined && a.vendor !== config.vendor)) throw new RpcError('bad_request', 'Switch authentication keeps the saved vendor API and connection name.');
+    }
+    const packs = packRequirements(a.switch_authentication ? config?.vendor : a.vendor, a.base_url);
+    const integration = await adapter.integration(saved, text(a.integration_id, 'Integration'));
     const old = row === undefined ? undefined : await deps.decodeAuth(row);
-    if (old !== undefined && (old.type !== 'managed_oauth' || old.broker_profile_id !== saved.id || old.integration_id !== integration.id || old.target_origin !== target)) {
+    if (a.switch_authentication && (!old || !['oauth2_refresh', 'bearer', 'managed_oauth'].includes(old.type))) {
+      throw new RpcError('bad_request', 'Switch authentication supports API connections using OAuth, bearer tokens or a broker account.');
+    }
+    if (old !== undefined && !a.switch_authentication && (old.type !== 'managed_oauth' || old.broker_profile_id !== saved.id || old.integration_id !== integration.id || old.target_origin !== target)) {
       throw new RpcError('bad_request', 'Reauthorization must keep the saved broker, integration and vendor. Create another connection to change them.');
     }
-    const previous = old?.type === 'managed_oauth' ? old : undefined;
+    const previous = !a.switch_authentication && old?.type === 'managed_oauth' ? old : undefined;
+    if (a.switch_authentication && old?.type === 'managed_oauth' && old.broker_profile_id === saved.id
+      && old.integration_id === integration.id && old.connection_id === a.connection_id) {
+      throw new RpcError('bad_request', 'Choose another broker account, or use the current connection’s reauthorization flow.');
+    }
     if (previous !== undefined && a.connection_id !== undefined && a.connection_id !== previous.connection_id) {
       throw new RpcError('bad_request', 'Reauthorization must keep the saved Nango account.');
     }
@@ -270,7 +364,7 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
       if (key !== undefined && deletingAccounts.has(key)) throw new RpcError('conflict', 'This Nango account is being deleted. Refresh accounts before authorizing.');
     };
     assertNotDeleting();
-    if (key !== undefined && (startingAccounts.has(key) || [...flows.values()].some((flow) => flow.remoteId !== undefined
+    if (key !== undefined && ((migrationAccounts.get(key)?.expires ?? 0) > now() || startingAccounts.has(key) || [...flows.values()].some((flow) => flow.remoteId !== undefined
       && flow.expires > now() && accountKey(flow.profile.base_url, flow.integration, flow.remoteId) === key))) {
       throw new RpcError('conflict', 'Authorization for this Nango account is already pending. Complete or cancel it before authorizing again.');
     }
@@ -286,7 +380,9 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
       if (profile(saved.id).revision !== saved.revision) throw new RpcError('conflict', 'The OAuth broker profile changed. Authorize again.');
       assertPackRequirements(packs);
       if (scopeSnapshot() !== initialSnapshot) throw new RpcError('conflict', 'Connections or scope requirements changed. Refresh before authorizing.');
-      const requiredScopes = managedOAuthScopeUnion(requested, packs?.scopes ?? []);
+      const requiredScopes = managedOAuthScopeUnion(requested, packs?.scopes ?? [],
+        ...(a.switch_authentication && row ? [requirements(row), old?.type === 'managed_oauth'
+          ? old.required_scopes ?? old.requested_scopes : []] : []));
       const needed = managedOAuthScopeUnion(requiredScopes, integration.default_scopes,
         ...(account?.members.filter(m => m.row.name !== row?.name).map(m => managedOAuthScopeUnion(
           m.auth.required_scopes ?? m.auth.requested_scopes, requirements(m.row))) ?? []));
@@ -333,7 +429,7 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
       source('integration', 'Broker app defaults', integration.default_scopes);
       source('history', 'Previous requested permissions', account?.requested ?? []);
       if (!reuse) source('grants', 'Previously reported permissions', granted);
-      packSources(a.vendor, a.base_url);
+      packSources(a.switch_authentication ? config?.vendor : a.vendor, a.base_url);
       for (const member of account?.members ?? []) {
         if (member.row.name === row?.name) continue;
         source('connection', member.row.display_name || member.row.name,
@@ -346,11 +442,23 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
       else if (integration.scope_metadata === 'unknown') warnings.push('The broker did not expose its app scopes. Its existing scope profile will be preserved; additional permissions may need an app change in Nango.');
       if (remote?.auth_error) warnings.push('This account needs sign-in again to repair its authorization.');
       const effective = reuse ? account!.requested : requestScopes;
+      const impactNames = [...new Set([...(account?.members.map(m => m.row.name) ?? []), ...(row ? [row.name] : [])])];
+      const impactSnapshot = a.include_account_impact ? managedOAuthImpactSignature(impactNames, deps.connectionUses) : undefined;
+      const accountImpact = a.include_account_impact ? await impactFor({ phase: 'before_authorization',
+        mode: a.switch_authentication ? 'switch' : row ? 'reauthorize' : 'create', consent: reuse ? 'reuse' : 'request',
+        row, old, profile: saved, integration: integration.id, id: remoteId, baseUrl: a.base_url,
+        members: account?.members.map(m => m.row) ?? [], membership_known: remoteId === undefined ? undefined : account?.remoteIdentity !== undefined,
+        targetAuth: remoteId === undefined ? undefined : { type: 'managed_oauth', broker_profile_id: saved.id,
+          integration_id: integration.id, connection_id: remoteId, target_origin: target, requested_scopes: [] } }) : undefined;
+      if (impactSnapshot !== undefined && impactSnapshot !== managedOAuthImpactSignature(impactNames, deps.connectionUses)) {
+        throw new RpcError('conflict', 'Local usage changed. Refresh the account and impact preview.');
+      }
       assertPackRequirements(packs);
       if (scopeSnapshot() !== initialSnapshot) throw new RpcError('conflict', 'Connections or scope requirements changed. Refresh before authorizing.');
       assertNotDeleting();
       const preview: ManagedOAuthPermissionPreview = {
         fingerprint: '', decision: blocked ? 'blocked' : reuse ? 'reuse' : remoteId === undefined ? 'authorize' : 'reconnect',
+        ...(accountImpact ? { account_impact: accountImpact } : {}),
         scope_metadata: staticGraph ? 'fixed' : integration.scope_metadata,
         required_scopes: requiredScopes, previous_scopes: account?.requested ?? [], sources, warnings,
         ...(integration.scope_metadata === 'unknown' ? {} : { requested_scopes: effective,
@@ -362,8 +470,11 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
       preview.fingerprint = createHash('sha256').update(JSON.stringify([
         preview, initialSnapshot, accountVersion, saved.id, saved.revision, integration, target,
         a.base_url, a.vendor, row?.name, remoteId, remote?.auth_error, account?.remoteIdentity, !!a.force_reauthorization,
+        !!a.switch_authentication, a.expected_updated_at,
       ])).digest('hex');
       if (readOnly) return { action: 'preview', preview };
+      if (a.switch_authentication && a.preview_fingerprint === undefined) throw new RpcError('bad_request',
+        'Review permissions before authorizing an authentication switch.');
       if (a.preview_fingerprint !== undefined && (typeof a.preview_fingerprint !== 'string'
         || !/^[a-f0-9]{64}$/.test(a.preview_fingerprint)
         || !same(a.preview_fingerprint, preview.fingerprint))) {
@@ -375,9 +486,11 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
         const { api_key: ignored, ...view } = saved; void ignored;
         // Completed requests avoid duplicate consent; they never prove vendor grants.
         const flow: Flow = { claim: nonce(), expires: now() + 10 * 60_000, profile: view,
+          baseUrl: a.base_url, impactConsent: 'reuse', ...(impactSnapshot ? { impactNames, impactSnapshot } : {}),
           integration: integration.id, target, scopes: account!.requested, requiredScopes,
           packRequirements: packs,
-          snapshot: account!.snapshot, remoteId, busy: false,
+          snapshot: account!.snapshot, remoteId, remoteIdentity: account!.remoteIdentity, busy: false,
+          ...(a.switch_authentication ? { switchAuthentication: true as const } : {}),
           ...(row === undefined ? {} : { name: row.name, revision: row.updated_at, row_fingerprint: connectionFingerprint(row) }) };
         const auth: ManagedOAuthAuth = { type: 'managed_oauth', broker_profile_id: saved.id, integration_id: integration.id,
           connection_id: remote.id, target_origin: target, requested_scopes: flow.scopes, required_scopes: requiredScopes,
@@ -386,7 +499,7 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
         prune();
         if (flows.size + receipts.size >= 128) throw new RpcError('conflict', 'Too many OAuth authorizations are pending. Cancel one or wait for it to expire.');
         flows.set(flowId, flow); receipts.set(receipt, { flow, expires: flow.expires });
-        return { action: 'reuse', flow_id: flowId, claim_secret: flow.claim, auth, expires_at: flow.expires };
+        return { action: 'reuse', flow_id: flowId, claim_secret: flow.claim, auth, expires_at: flow.expires, impact_available: true };
       }
       const flowId = nonce(); const claim = nonce();
       const defaults = requestScopes.length === 0 || staticGraph ? {} : { integrations_config_defaults: {
@@ -411,8 +524,10 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
       if (accountRevision !== accountVersion) throw new RpcError('conflict', 'Nango accounts changed while creating this authorization. Refresh and authorize again.');
       const { api_key: ignored, ...view } = saved; void ignored;
       const flow: Flow = { claim, expires: Math.min(link.expires_at, now() + 10 * 60_000), profile: view,
+        baseUrl: a.base_url, impactConsent: 'request', ...(impactSnapshot ? { impactNames, impactSnapshot } : {}),
         integration: integration.id, target, scopes: requestScopes, requiredScopes, busy: false,
         packRequirements: packs,
+        ...(a.switch_authentication ? { switchAuthentication: true as const } : {}),
         ...(snapshot === undefined ? {} : { snapshot }),
         ...(remoteId === undefined ? {} : { remoteId }),
         ...(row === undefined ? {} : { name: row.name, revision: row.updated_at, row_fingerprint: connectionFingerprint(currentRow!) }) };
@@ -420,7 +535,7 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
       prune();
       if (flows.size + receipts.size >= 128) throw new RpcError('conflict', 'Too many OAuth authorizations are pending. Cancel one or wait for it to expire.');
       flows.set(flowId, flow);
-      return { action: 'start', flow_id: flowId, claim_secret: claim, connect_link: link.connect_link,
+      return { action: 'start', flow_id: flowId, claim_secret: claim, connect_link: link.connect_link, impact_available: true,
         expires_at: flow.expires, requested_scopes: requestScopes, scope_metadata: staticGraph ? 'fixed' : integration.scope_metadata };
     } finally { if (key !== undefined && !readOnly) startingAccounts.delete(key); }
   };
@@ -439,7 +554,7 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
     if (accountRevision !== accountVersion) throw new RpcError('conflict', 'Nango accounts changed while verifying this authorization. Refresh accounts and try again.');
     if (connection.auth_error) throw new RpcError('bad_request', 'This Nango account needs reauthorization. Reauthorize the selected account before saving.');
     const { api_key: ignored, ...view } = saved; void ignored;
-    const flow: Flow = { claim: nonce(), expires: now() + 10 * 60_000, profile: view,
+    const flow: Flow = { claim: nonce(), expires: now() + 10 * 60_000, profile: view, baseUrl: a.base_url, impactConsent: 'reuse',
       integration: integration.id, target, scopes: account.known ? account.requested : [], requiredScopes,
       packRequirements: packs,
       snapshot: account.snapshot, remoteId: connection.id, busy: false };
@@ -451,7 +566,7 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
       connection_id: connection.id, target_origin: target, requested_scopes: flow.scopes, required_scopes: requiredScopes,
       ...(account.known ? {} : { imported: true as const }), authorization_receipt: receipt };
     flow.auth = auth; flows.set(flowId, flow); receipts.set(receipt, { flow, expires: flow.expires });
-    return { action: 'attach', flow_id: flowId, claim_secret: flow.claim, auth, expires_at: flow.expires };
+    return { action: 'attach', flow_id: flowId, claim_secret: flow.claim, auth, expires_at: flow.expires, impact_available: true };
   };
 
   const deleteRemote = async (a: Extract<ManagedOAuthRequest, { action: 'delete_remote_connection' }>): Promise<ManagedOAuthResponse> => {
@@ -491,7 +606,7 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
     if (flow === undefined || !same(flow.claim, text(a.claim_secret, 'Authorization claim'))) return { action: 'status', status: 'expired' };
     assertCurrent(flow);
     if (flow.auth !== undefined) return { action: 'status', status: 'authorized', auth: flow.auth,
-      ...(flow.grantedScopes === undefined ? {} : { granted_scopes: flow.grantedScopes }) };
+      impact_available: true, ...(flow.grantedScopes === undefined ? {} : { granted_scopes: flow.grantedScopes }) };
     if (flow.busy) return { action: 'status', status: 'pending' };
     flow.busy = true;
     const accountVersion = accountRevision;
@@ -514,16 +629,148 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
       flow.auth = auth;
       receipts.set(receipt, { flow, expires: flow.expires });
       // Tags prove new consent, not which permissions the vendor actually granted.
-      return { action: 'status', status: 'authorized', auth };
+      return { action: 'status', status: 'authorized', auth, impact_available: true };
     } finally { flow.busy = false; }
   };
 
+  const accountUsage = async (a: Extract<ManagedOAuthRequest, { action: 'account_usage' }>): Promise<ManagedOAuthResponse> => {
+    const saved = profile(a.profile_id); const integration = text(a.integration_id, 'Integration');
+    const id = text(a.connection_id, 'Nango account'); const revision = accountRevision;
+    const key = accountKey(saved.base_url, integration, id);
+    if (deletingAccounts.has(key)) throw new RpcError('conflict', 'This Nango account is being deleted. Refresh accounts.');
+    const remote = await adapter.accountSnapshot(saved, integration, id);
+    if (deletingAccounts.has(key)) throw new RpcError('conflict', 'This Nango account is being deleted. Refresh accounts.');
+    const account = await accountScopes(saved, integration, id, remote);
+    if (profile(saved.id).revision !== saved.revision || revision !== accountRevision || deletingAccounts.has(key)) {
+      throw new RpcError('conflict', 'The broker or accounts changed. Refresh account usage.');
+    }
+    const current = deps.listConnections();
+    const connections = account.members.map(({ row }) => managedOAuthConnectionUsage(
+      current.find(candidate => candidate.pk === row.pk) ?? row, now(), deps.connectionUses?.(row.name)));
+    const warnings = ['Usage covers this Recued server. Other tools may also use this Nango account.'];
+    if (connections.some(connection => !connection.usage_available)) warnings.push('Some local usage could not be read. Open the connection to review its bindings.');
+    if (account.remoteIdentity === undefined) warnings.push('Nango did not expose a stable account identity. Usage is limited to this broker profile.');
+    return { action: 'account_usage', usage: { connection_id: id, auth_error: remote.connection.auth_error,
+      connections: connections.sort((a, b) => a.name.localeCompare(b.name)), warnings } };
+  };
+
+  const completedImpact = async (flow: Flow): Promise<ManagedOAuthImpactPreview> => {
+    assertCurrent(flow);
+    if (!flow.auth || flow.expires <= now()) throw new RpcError('conflict', 'Authorization expired. Review it again before checking the account.');
+    const saved = profile(flow.profile.id);
+    const remote = await adapter.accountSnapshot(saved, flow.integration, flow.auth.connection_id);
+    if (remote.connection.auth_error || flow.remoteIdentity !== undefined && remote.identity !== flow.remoteIdentity) {
+      throw new RpcError('conflict', 'The broker account changed after authorization. Review it again.');
+    }
+    const account = await accountScopes(saved, flow.integration, flow.auth.connection_id, remote);
+    const row = flow.name ? deps.listConnections().find(r => r.kind === 'api' && r.name === flow.name) : undefined;
+    const old = row ? await deps.decodeAuth(row) : undefined;
+    const impact = await impactFor({ phase: 'before_save', mode: flow.switchAuthentication ? 'switch' : row ? 'reauthorize' : 'create',
+      consent: flow.impactConsent ?? 'reuse', row, old, profile: saved, integration: flow.integration, id: flow.auth.connection_id,
+      targetAuth: flow.auth, baseUrl: flow.baseUrl ?? flow.target, members: account.members.map(m => m.row), membership_known: remote.identity !== undefined });
+    const after = await adapter.accountSnapshot(saved, flow.integration, flow.auth.connection_id);
+    assertCurrent(flow);
+    if (after.identity !== remote.identity || after.connection.auth_error) throw new RpcError('conflict', 'The broker account changed while checking its impact. Review it again.');
+    return impact;
+  };
+  const migrationCandidates = async (names?: readonly string[]): Promise<ManagedOAuthMigrationCandidate[]> => {
+    const candidates: ManagedOAuthMigrationCandidate[] = [];
+    for (const row of deps.listConnections().filter(r => r.kind === 'api')) {
+      if (names && !names.includes(row.name)) continue;
+      try {
+        const auth = await deps.decodeAuth(row);
+        if (!['managed_oauth', 'oauth2_refresh', 'bearer'].includes(auth.type)) continue;
+        const config = JSON.parse(row.config_json) as { base_url?: string; vendor?: string };
+        if (typeof config.base_url !== 'string') continue;
+        const base = managedOAuthServerUrl(config.base_url);
+        candidates.push({ name: row.name, display_name: row.display_name || row.name, updated_at: row.updated_at,
+          base_url: base, ...(config.vendor ? { vendor: config.vendor } : {}),
+          authentication: auth.type === 'managed_oauth' ? 'broker' : auth.type === 'oauth2_refresh' ? 'direct_oauth' : 'token',
+          required_scopes: managedOAuthScopeUnion(requirements(row), auth.type === 'managed_oauth' ? auth.required_scopes ?? auth.requested_scopes : []),
+          verification_url: managedOAuthDefaultVerificationUrl(base),
+          ...(names ? { current: await accountPreview(auth, base) } : {}) });
+      } catch { /* Invalid or unsupported saved credentials cannot join a migration. */ }
+    }
+    return candidates.sort((a, b) => a.name.localeCompare(b.name));
+  };
+  const migrationSignature = (names: readonly string[]): string => createHash('sha256').update(JSON.stringify([
+    managedOAuthImpactSignature(names, deps.connectionUses), names.map(name => {
+      const row = deps.listConnections().find(r => r.kind === 'api' && r.name === name);
+      return [name, row ? requirements(row) : null];
+    }).sort(), deps.profiles.scopeHistorySignature(), deps.profiles.list().map(p => [p.id, p.revision]).sort(),
+  ])).digest('hex');
+  const claimMigration: NonNullable<ManagedOAuthService['claimMigration']> = async (auth, names) => {
+    const receipt = auth.authorization_receipt ? receipts.get(auth.authorization_receipt) : undefined;
+    const source = receipt?.flow;
+    if (!source?.auth || !source.switchAuthentication || !source.remoteIdentity || names.length === 0
+      || names.length > MANAGED_OAUTH_MIGRATION_LIMIT || source.name !== names[0] || new Set(names).size !== names.length) {
+      throw new RpcError('bad_request', 'Review authorization for the first selected connection before preparing this migration.');
+    }
+    const rows = names.map(name => deps.listConnections().find(r => r.kind === 'api' && r.name === name));
+    if (rows.some(r => !r)) throw new RpcError('conflict', 'A selected connection is no longer available.');
+    const candidates = await migrationCandidates();
+    const selected = names.map(name => candidates.find(c => c.name === name));
+    if (selected.some(c => !c || c.base_url !== source.baseUrl || c.vendor !== selected[0]?.vendor
+      || c.required_scopes.some(scope => !source.requiredScopes?.includes(scope)))) {
+      throw new RpcError('conflict', 'Review all selected permission needs for one vendor API before migrating.');
+    }
+    const first = rows[0]!;
+    const saved = authorizeForSave(auth, source.baseUrl!, first.name, first, { consume: false, switchAuthentication: true });
+    await verifySwitchAccount(auth);
+    if (receipts.get(auth.authorization_receipt!) !== receipt) throw new RpcError('conflict', 'Authorization was retired during migration review.');
+    const key = accountKey(source.profile.base_url, source.integration, auth.connection_id);
+    if ((migrationAccounts.get(key)?.expires ?? 0) > now()) throw new RpcError('conflict', 'Another migration uses this broker account.');
+    const allowed = new Map(rows.map(row => [row!.name, connectionFingerprint(row!)]));
+    const rowScopes = new Map(selected.map(c => [c!.name, [...c!.required_scopes]]));
+    const expires = now() + 30 * 60_000; const issued = new Map<string, Flow>(); let closed = false;
+    const reservation = { expires }; migrationAccounts.set(key, reservation); saved.consume();
+    const retire = (id: string, flow: Flow): void => {
+      flows.delete(id); issued.delete(id);
+      if (flow.auth?.authorization_receipt) receipts.delete(flow.auth.authorization_receipt);
+    };
+    const allNames = [...new Set([...names, ...(source.impactNames ?? [])])];
+    return { expires_at: expires, names: allNames, signature: migrationSignature(allNames),
+      close: () => { closed = true; if (migrationAccounts.get(key) === reservation) migrationAccounts.delete(key); for (const [id, flow] of issued) retire(id, flow); },
+      issue: async name => {
+        if (closed || now() >= expires) throw new RpcError('conflict', 'This migration review expired. Review the remaining connections again.');
+        const row = deps.listConnections().find(r => r.kind === 'api' && r.name === name);
+        if (!row || connectionFingerprint(row) !== allowed.get(name) || profile(source.profile.id).revision !== source.profile.revision) {
+          throw new RpcError('conflict', 'The selected connection or broker changed after migration review.');
+        }
+        prune();
+        if (flows.size + receipts.size >= 128) throw new RpcError('conflict', 'Too many authorizations are pending.');
+        const id = nonce(); const receiptId = nonce();
+        const flow: Flow = { claim: nonce(), expires: Math.min(expires, now() + 10 * 60_000), profile: source.profile,
+          integration: source.integration, target: source.target, scopes: [...source.scopes], requiredScopes: rowScopes.get(name),
+          remoteId: auth.connection_id, remoteIdentity: source.remoteIdentity, name, revision: row.updated_at,
+          row_fingerprint: connectionFingerprint(row), snapshot: scopeSnapshot(), busy: false, switchAuthentication: true,
+          baseUrl: source.baseUrl, impactConsent: 'reuse', packRequirements: packRequirements(selected[0]?.vendor, source.baseUrl!) };
+        flow.auth = { ...saved.auth, required_scopes: flow.requiredScopes, authorization_receipt: receiptId };
+        flows.set(id, flow); issued.set(id, flow); receipts.set(receiptId, { flow, expires: flow.expires });
+        try {
+          const impact = await completedImpact(flow);
+          if (closed || now() >= expires || flows.get(id) !== flow) throw new RpcError('conflict', 'Migration was stopped during account review.');
+          flow.impactNames = impact.connections.map(c => c.name);
+          flow.impactSnapshot = managedOAuthImpactSignature(flow.impactNames, deps.connectionUses);
+          return { auth: flow.auth, impact, retire: () => retire(id, flow) };
+        } catch (error) { retire(id, flow); throw error; }
+      },
+    };
+  };
   const handle = async (a: ManagedOAuthRequest): Promise<ManagedOAuthResponse> => {
     if (a === null || typeof a !== 'object') throw new RpcError('bad_request', 'Managed OAuth request is required.');
-    if (a.action !== 'preview') prune();
+    if (a.action !== 'preview' && a.action !== 'account_usage') prune();
     switch (a.action) {
+      case 'account_usage': return accountUsage(a);
       case 'preview': return start(a);
       case 'profiles': return { action: 'profiles', profiles: deps.profiles.list() };
+      case 'account_impact': {
+        const flow = flows.get(text(a.flow_id, 'Authorization flow'));
+        if (!flow || !same(flow.claim, text(a.claim_secret, 'Authorization claim'))) throw new RpcError('conflict', 'The authorization claim is unavailable. Review authorization again.');
+        const impact = await completedImpact(flow);
+        if (flows.get(a.flow_id) !== flow || flow.expires <= now()) throw new RpcError('conflict', 'The authorization was retired while reading its impact.');
+        return { action: 'account_impact', impact };
+      }
       case 'save_profile': return saveProfile(a);
       case 'delete_profile': {
         const saved = profile(a.id);
@@ -599,11 +846,13 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
     }
   };
 
-  const authorizeForSave: ManagedOAuthService['authorizeForSave'] = (auth, baseUrl, name, existing) => {
+  const authorizeForSave: ManagedOAuthService['authorizeForSave'] = (auth, baseUrl, name, existing, options) => {
     prune();
     const receipt = auth.authorization_receipt === undefined ? undefined : receipts.get(auth.authorization_receipt);
     if (receipt === undefined) throw new RpcError('bad_request', 'Authorize this managed OAuth connection before saving.');
     const flow = receipt.flow;
+    if (flow.switchAuthentication !== options?.switchAuthentication) throw new RpcError('bad_request',
+      'Use the reviewed authentication switch and verify API access before applying this authorization.');
     assertCurrent(flow);
     if (existing !== undefined && flow.name === undefined) throw new RpcError('conflict', 'That connection name already exists. Reauthorize it from its editor or choose another name.');
     const expected = flow.auth;
@@ -615,13 +864,57 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
       || (flow.name !== undefined && (flow.name !== name || existing?.updated_at !== flow.revision))) {
       throw new RpcError('bad_request', 'The connection changed after authorization. Authorize again before saving.');
     }
-    receipts.delete(auth.authorization_receipt!);
-    for (const [id, value] of flows) if (value === flow) flows.delete(id);
+    const receiptId = auth.authorization_receipt!;
+    const consume = (): void => {
+      receipts.delete(receiptId);
+      for (const [id, value] of flows) if (value === flow) flows.delete(id);
+    };
+    if (options?.consume !== false) consume();
     const { authorization_receipt: ignored, ...stored } = expected; void ignored;
-    return { auth: stored, ...(flow.grantedScopes === undefined ? {} : { granted_scopes: flow.grantedScopes }) };
+    return { auth: stored, consume, ...(flow.grantedScopes === undefined ? {} : { granted_scopes: flow.grantedScopes }) };
   };
 
-  return { handle, authorizeForSave, fetch: (auth, target, init) => {
+  /** Public-row identity must still match the reviewed account around the native resource check. */
+  const verifySwitchAccount = async (auth: ManagedOAuthAuth): Promise<void> => {
+    prune(); const receipt = auth.authorization_receipt === undefined ? undefined : receipts.get(auth.authorization_receipt);
+    const flow = receipt?.flow;
+    if (!flow?.switchAuthentication || !flow.remoteIdentity || flow.auth?.connection_id !== auth.connection_id) {
+      throw switchAccountRefused('The reviewed Nango account cannot be verified. Review authorization again.');
+    }
+    assertCurrent(flow);
+    let remote: Awaited<ReturnType<typeof adapter.accountSnapshot>>;
+    try { remote = await adapter.accountSnapshot(profile(flow.profile.id), flow.integration, auth.connection_id); }
+    catch (error) {
+      if (error instanceof RpcError && error.code === 'broker_unavailable') throw switchAccountRefused('The Nango account check could not be reached. Try again.', true);
+      throw switchAccountRefused('The Nango account changed or cannot be verified. Refresh accounts and review authorization again.');
+    }
+    prune(); assertCurrent(flow);
+    if (receipts.get(auth.authorization_receipt!) !== receipt || remote.identity !== flow.remoteIdentity || remote.connection.auth_error) {
+      throw switchAccountRefused('The Nango account changed after authorization. Refresh accounts and review authorization again.');
+    }
+  };
+
+  return {
+    handle, authorizeForSave, verifySwitchAccount, migrationCandidates, migrationSignature, claimMigration,
+    verifyImpact: async (auth, fingerprint) => {
+      if (typeof fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(fingerprint)) throw new RpcError('bad_request', 'Review the account and impact before saving.');
+      const receipt = auth.authorization_receipt ? receipts.get(auth.authorization_receipt) : undefined;
+      const flow = receipt?.flow;
+      if (!flow?.auth || flow.auth.connection_id !== auth.connection_id) throw new RpcError('conflict', 'Authorization is no longer current. Review it again.');
+      const impact = await completedImpact(flow);
+      if (receipts.get(auth.authorization_receipt!) !== receipt) throw new RpcError('conflict', 'Authorization was retired while checking its impact.');
+      if (impact.fingerprint !== fingerprint) throw new RpcError('conflict', 'The account or its local usage changed. Review the impact again before saving.');
+      flow.impactNames = impact.connections.map(c => c.name);
+      flow.impactSnapshot = managedOAuthImpactSignature(flow.impactNames, deps.connectionUses);
+    },
+    diagnosticProfileSignature: () => JSON.stringify(deps.profiles.list().map(p => [p.id, p.revision]).sort()),
+    inspectAccount: async (auth) => {
+      const saved = profile(auth.broker_profile_id);
+      const remote = await adapter.accountSnapshot(saved, auth.integration_id, auth.connection_id);
+      if (profile(auth.broker_profile_id).revision !== saved.revision) throw new RpcError('conflict', 'The broker profile changed during the access check.');
+      return { identity: remote.identity, profile_revision: saved.revision, auth_error: remote.connection.auth_error };
+    },
+    fetch: (auth, target, init) => {
     let saved: ManagedOAuthProfile;
     try { saved = profile(auth.broker_profile_id); }
     catch { throw new IngredientError('CONNECTION_REFUSED', 'The managed OAuth broker profile is unavailable. Check it in Connections.'); }

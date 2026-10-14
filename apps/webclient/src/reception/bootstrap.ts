@@ -121,7 +121,9 @@ import {
   mountReceptionRecordsSection,
 } from './records-section.js';
 import { mountQuoteSignoffPanel } from './quote-signoff-panel.js';
+import { mountCustomerJobsPanel } from './customer-jobs-panel.js';
 import type { QuoteSignoffPaymentOptions } from './quote-signoff-payment.js';
+import type { QuoteSignoffReminderOptions } from './quote-signoff-reminders.js';
 import {
   mountReceptionInboxPanel,
 } from './inbox-panel.js';
@@ -172,6 +174,7 @@ export interface BootstrapReceptionRouteOptions
   serverTimeZone?: () => string | undefined;
   /** Installed Invoice Book workflow, using the shell's normal run caller. */
   signoffPayment?: QuoteSignoffPaymentOptions;
+  signoffReminders?: QuoteSignoffReminderOptions;
   /** Root element where the route chrome (header + tab bar + content) is
    *  appended. The caller chooses the root's width / height / position
    *  (in the PWA this is the app shell's content root). */
@@ -218,6 +221,7 @@ export interface BootstrapReceptionRoute {
    *  has no `update`). */
   update(): void;
   hasInFlightWork(): boolean;
+  hasUnsavedChanges?: () => boolean;
   /** Route-scoped shell copy for unresolved Reception mutations. */
   inFlightWorkPrompt(): string | null;
   /** Tear down the active section mount + remove the route chrome.
@@ -398,6 +402,7 @@ export const bootstrapReceptionRoute = (
   let mount: {
     update?: () => void;
     hasInFlightWork?: () => boolean;
+    hasUnsavedChanges?: () => boolean;
     dispose: () => void;
   };
 
@@ -543,9 +548,13 @@ export const bootstrapReceptionRoute = (
         ? { enablePendingAsks: opts.enablePendingAsks }
         : {}),
     }) satisfies ReceptionRoute;
+  } else if (section === 'jobs') {
+    mount = mountCustomerJobsPanel({ host: content,conn: opts.conn,document: doc,
+      ...(opts.signoffPayment ? { payment: opts.signoffPayment } : {}) });
   } else if (section === 'signoffs') {
     mount = mountQuoteSignoffPanel({ host: content, conn: opts.conn, document: doc,
       ...(opts.signoffPayment ? { payment: opts.signoffPayment } : {}),
+      ...(opts.signoffReminders ? { reminders: opts.signoffReminders } : {}),
     });
   } else if (section === 'records') {
     // D-210 §4c — the IMMUTABLE reception layers: Requests (sealed, redacted)
@@ -591,6 +600,7 @@ export const bootstrapReceptionRoute = (
       mount.update?.();
     },
     hasInFlightWork: () => mount.hasInFlightWork?.() ?? false,
+    hasUnsavedChanges: () => mount.hasUnsavedChanges?.() ?? false,
     // Keep the copy available for the outer bootstrap's tracked mutation
     // owner too: authoring/wizard writes are tracked above this route, while
     // the Inbox reports its own decision state through `hasInFlightWork`.

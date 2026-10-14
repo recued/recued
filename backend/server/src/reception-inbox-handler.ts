@@ -657,6 +657,11 @@ export const defaultResolveInboxSource: ResolveInboxSource = ({ anchor, checkpoi
       preview: { title: 'Customer-accepted workflow', subtitle: args.summary.split('\n')[0] },
       proposed_action: args.summary };
   }
+  if (anchor.recipe_id === 'reception-quote-completion-review' && typeof args.completion_id === 'string'
+    && typeof args.summary === 'string') {
+    return { top_tier_kind: 'task', source: { kind: 'quote_completion', record_ref: args.completion_id }, args,
+      preview: { title: 'Customer completion response', subtitle: args.summary.split('\n')[0] }, proposed_action: args.summary };
+  }
   if (anchor.recipe_id === 'reception-quote-signoff-release' && typeof args.signoff_id === 'string'
     && typeof args.summary === 'string') {
     return { top_tier_kind: 'task', source: { kind: 'quote_signoff', record_ref: args.signoff_id }, args,

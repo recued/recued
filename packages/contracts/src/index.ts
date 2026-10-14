@@ -4534,6 +4534,9 @@ export {
 } from './approval-link-config.js';
 
 export * from './quote-signoff.js';
+export * from './quote-signoff-reminders.js';
+export * from './quote-completion.js';
+export * from './customer-jobs.js';
 export * from './approval-workflow.js';
 export type {
   ApprovalLinkConfig,
@@ -6858,3 +6861,5 @@ export * from './mail-facts.js';
 export * from './mail-work.js';
 // D-322 — owner-selected managed OAuth brokers.
 export * from './managed-oauth.js';
+export * from './pack-access.js';
+export type { PackConnectionChange, PackConnectionsView } from './pack-connections.js';

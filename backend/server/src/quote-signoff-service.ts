@@ -22,6 +22,7 @@ import {
   type QuoteSignoffFollowUp,
   type QuoteSignoffListInput,
   type QuoteSignoffListResult,
+  type QuoteSignoffReceipt,
   type QuoteSignoffReleaseInput,
   type QuoteSignoffReleaseResult,
   type QuoteSignoffState,
@@ -56,6 +57,8 @@ export class QuoteSignoffError extends Error {
 }
 
 interface Plan {
+  /** Stored with the plan digest so future renderers cannot restate an offer. */
+  customer_preview?: string;
   display_name: string;
   scope: string;
   task_title: string;
@@ -404,8 +407,22 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
     } catch { /* Preserve changed for malformed records; unavailable for read failures. */ }
     return result;
   };
+  const ownerSummary = (row: Row): QuoteSignoffSummary => {
+    const result = summary(row);
+    if (row.state === 'released') {
+      result.follow_up = followUp(row);
+      result.can_request_completion = result.follow_up.task.availability === 'current'
+        && !deps.db.prepare(`SELECT 1 FROM ${TABLE} WHERE state='released'
+          AND json_extract(plan_json,'$.addition.parent_signoff_id')=? LIMIT 1`).get(row.signoff_id);
+      result.can_add_work = result.follow_up.task.availability === 'current' && !result.follow_up.task.done
+        && !deps.db.prepare(`SELECT 1 FROM ${TABLE} WHERE quote_id=? AND state='released'
+          AND json_extract(plan_json,'$.addition.parent_signoff_id')=? LIMIT 1`).get(row.quote_id, row.signoff_id);
+    }
+    return result;
+  };
   const customerPreview = (row: Row): string => {
     const quote = quoteOf(row); const plan = planOf(row);
+    if (plan.customer_preview !== undefined) return plan.customer_preview;
     if (plan.addition) return `Added work ${plan.addition.revision} for quote ${String(quote.reference || quote.label)} — ${String(quote.customer)}\n`
       + `Previously agreed: ${plan.addition.base_amount} ${String(quote.currency)} total\n`
       + `Added amount: ${plan.amount} ${String(quote.currency)} total\n`
@@ -416,6 +433,15 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
       + `Revision ${quote._record.revision}\n${plan.amount} ${String(quote.currency)} total\n`
       + `Net: ${plan.net}; VAT included: ${plan.vat_amount} ${String(quote.currency)}\n`
       + `Valid through ${String(quote.valid_until)}\n\n${plan.scope}`;
+  };
+  const freezeCustomerPreview = (row: Row): void => {
+    const quote = quoteOf(row); const plan = planOf(row);
+    const preview = customerPreview(row);
+    if (preview.length > QUOTE_SIGNOFF_CONTEXT_MAX) {
+      throw new QuoteSignoffError('quote_signoff_invalid', 'The customer-visible agreement is too long.', 400);
+    }
+    plan.customer_preview = preview;
+    row.plan_json = JSON.stringify(plan); row.plan_hash = hash({ quote, plan });
   };
   const approvalConfig = (id: string): ApprovalLinkConfig => {
     const row = load(id); const plan = planOf(row);
@@ -441,6 +467,80 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
         + `dated ${plan.issued_on}, due ${plan.due_on}. No email or payment is sent.`,
     };
   };
+  const receipt = <T,C = undefined>(id: string, readResponse: (endpointId: string | null) => T,
+    readCompletions?: (signoffIds: string[]) => C): {
+      receipt: QuoteSignoffReceipt; responses: Array<{ endpoint_id: string | null; snapshot: T }>; completionSnapshot?: C;
+    } => {
+      return deps.db.transaction(() => {
+        const rows: Row[] = [];
+        const seen = new Set<string>();
+        let row = load(id);
+        while (true) {
+          if (seen.has(row.signoff_id) || rows.length >= 100) {
+            throw new QuoteSignoffError('quote_signoff_history_unavailable', 'The saved agreement history cannot be exported completely.');
+          }
+          seen.add(row.signoff_id); rows.unshift(row);
+          if (!QUOTE_SIGNOFF_STATES.includes(row.state)
+            || (row.state === 'released') !== (row.released_at !== null)
+            || [row.created_at, row.expires_at, row.responded_at, row.released_at]
+              .some(at => at !== null && (!Number.isSafeInteger(at) || at < 0))) {
+            throw new QuoteSignoffError('quote_signoff_history_unavailable', 'The saved request or release dates are inconsistent.');
+          }
+          const plan = planOf(row);
+          if (row.plan_hash !== hash({ quote: quoteOf(row), plan })
+            || plan.customer_preview !== undefined && (typeof plan.customer_preview !== 'string'
+              || !plan.customer_preview.trim() || plan.customer_preview.length > QUOTE_SIGNOFF_CONTEXT_MAX)) {
+            throw new QuoteSignoffError('quote_signoff_history_unavailable', 'The saved offer no longer matches its original terms digest.');
+          }
+          const addition = plan.addition;
+          if (!addition) break;
+          const parent = load(addition.parent_signoff_id);
+          if (parent.state !== 'released' || parent.quote_id !== row.quote_id) {
+            throw new QuoteSignoffError('quote_signoff_history_unavailable', 'An earlier released agreement is missing or changed.');
+          }
+          row = parent;
+        }
+        const root = rows[0]!;
+        const rootQuote = quoteOf(root);
+        const rootPlan = planOf(root);
+        let scope = rootPlan.scope; let amount = units(rootPlan.amount);
+        for (const [index, item] of rows.entries()) {
+          if (index === 0) continue;
+          const plan = planOf(item); const addition = plan.addition;
+          const quote = quoteOf(item);
+          if (!addition || addition.root_signoff_id !== root.signoff_id
+            || addition.parent_signoff_id !== rows[index - 1]!.signoff_id || addition.revision !== index
+            || quote.currency !== rootQuote.currency || quote.customer !== rootQuote.customer
+            || addition.base_scope !== scope || units(addition.base_amount) !== amount
+            || units(addition.total_amount) !== amount + units(plan.amount)) {
+            throw new QuoteSignoffError('quote_signoff_history_unavailable', 'The saved added-work history is inconsistent.');
+          }
+          scope += `\n\nAdded work ${index}:\n${plan.scope}`; amount += units(plan.amount);
+        }
+        const receipt: QuoteSignoffReceipt = {
+          format: 'recued.customer-signoff-receipt', version: 1, captured_at: deps.now(),
+          selected_signoff_id: id, root_signoff_id: root.signoff_id,
+          requests: rows.map(item => {
+            const quote = quoteOf(item); const plan = planOf(item);
+            return { signoff_id: item.signoff_id, parent_signoff_id: plan.addition?.parent_signoff_id ?? null,
+              revision: plan.addition?.revision ?? 0, business_name: plan.display_name, customer: String(quote.customer),
+              quote_label: String(quote.label), quote_reference: typeof quote.reference === 'string' && quote.reference ? quote.reference : null,
+              quote_revision: quote._record.revision, scope: plan.scope, amount: plan.amount, net: plan.net,
+              vat_amount: plan.vat_amount, currency: String(quote.currency), customer_preview: customerPreview(item),
+              offer_text_source: plan.customer_preview === undefined ? 'reconstructed' : 'saved',
+              state: item.state, prepared_at: item.created_at, expires_at: item.expires_at,
+              response: { decision: item.responded_at === null ? 'not_recorded' : 'unavailable',
+                received_at: null, recorded_at: item.responded_at },
+              release: item.state === 'released' && item.released_at !== null ? {
+                recorded_at: item.released_at, invoice_ref: plan.invoice_ref, issued_on: plan.issued_on, due_on: plan.due_on,
+              } : null };
+          }),
+        };
+        return { receipt, responses: rows.map(item => ({ endpoint_id: item.endpoint_id, snapshot: readResponse(item.endpoint_id) })),
+          ...(readCompletions ? { completionSnapshot: readCompletions(rows.map(item => item.signoff_id)) } : {}) };
+      })();
+    };
+
   return {
     prepare(input: QuoteSignoffPrepareInput): QuoteSignoffSummary {
       const quoteId = text(input.quote_id, 'Quote', 512);
@@ -478,7 +578,7 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
           created_at: deps.now(), expires_at: deps.now() + expiry * DAY,
           endpoint_id: null, responded_at: null, released_at: null, intent_id: null,
         };
-        if (customerPreview(row).length > QUOTE_SIGNOFF_CONTEXT_MAX) throw new QuoteSignoffError('quote_signoff_invalid', 'The customer-visible quote is too long.', 400);
+        freezeCustomerPreview(row);
         // A new scope for the same quote supersedes every earlier offer, even
         // when the quote row itself did not change. Old held releases stay closed.
         deps.db.prepare(`UPDATE ${TABLE} SET state='superseded' WHERE quote_id=? AND state IN ('draft','publishing','waiting','accepted')`).run(quoteId);
@@ -516,7 +616,7 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
           plan_json: JSON.stringify(plan), plan_hash: hash({ quote: base.quote, plan }), state: 'draft',
           created_at: deps.now(), expires_at: deps.now() + expiry * DAY,
           endpoint_id: null, responded_at: null, released_at: null, intent_id: null };
-        if (customerPreview(row).length > QUOTE_SIGNOFF_CONTEXT_MAX) throw new QuoteSignoffError('quote_signoff_invalid', 'The customer-visible agreement and added scope are too long.', 400);
+        freezeCustomerPreview(row);
         deps.db.prepare(`UPDATE ${TABLE} SET state='superseded' WHERE state IN ('draft','publishing','waiting','accepted')
           AND json_extract(plan_json,'$.addition.root_signoff_id')=?`).run(base.root.signoff_id);
         deps.db.prepare(`INSERT INTO ${TABLE} (signoff_id,quote_id,quote_json,plan_json,plan_hash,state,created_at,expires_at)
@@ -525,6 +625,91 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
       }).immediate();
     },
     get: (id: string): QuoteSignoffSummary => summary(load(id)),
+    /** Freeze task, invoice and canonical reply reads together. A large or
+     * corrupt history fails explicitly rather than returning a partial job. */
+    customerJobsSnapshot<T,C>(readIntent: (endpoint: string | null) => T, readCompletion: (root: string) => C) {
+      return deps.db.transaction(() => {
+        const captured_at = deps.now();
+        const rows = deps.db.prepare(`SELECT * FROM ${TABLE}
+          ORDER BY rowid LIMIT 10001`).all() as Row[];
+        if (rows.length > 10000) throw new QuoteSignoffError('customer_jobs_too_large', 'The job history is too large to read completely. Browse saved requests in Customer sign-offs.');
+        const groups = new Map<string, Row[]>(); const originals = new Map<string, Row>();
+        for (const row of rows) {
+          if (!QUOTE_SIGNOFF_STATES.includes(row.state) || (row.state === 'released') !== (row.released_at !== null)
+            || [row.created_at,row.expires_at,row.responded_at,row.released_at].some(at => at !== null && (!Number.isSafeInteger(at) || at < 0))) {
+            throw new QuoteSignoffError('customer_jobs_unavailable', 'Saved job dates or release state are inconsistent. Review its history in Records.');
+          }
+          const plan = planOf(row);
+          if (row.plan_hash !== hash({ quote: quoteOf(row),plan })) throw new QuoteSignoffError('customer_jobs_unavailable', 'A saved agreement has changed. Review its history in Records.');
+          const root = plan.addition?.root_signoff_id ?? row.signoff_id;
+          const group = groups.get(root) ?? []; group.push(row);groups.set(root,group);
+          if (!plan.addition) originals.set(row.quote_id,row);
+        }
+        const roots = rows.filter(row => !planOf(row).addition
+          && (row.state === 'released' || originals.get(row.quote_id)?.signoff_id === row.signoff_id));
+        const originalIds = new Set(rows.filter(row => !planOf(row).addition).map(row => row.signoff_id));
+        if ([...groups.keys()].some(root => !originalIds.has(root))) throw new QuoteSignoffError('customer_jobs_unavailable', 'A job is missing its original agreement. Review saved requests in Records.');
+        if (roots.length > 2000) throw new QuoteSignoffError('customer_jobs_too_large', 'Too many jobs to read completely. Browse saved requests in Customer sign-offs.');
+        return { captured_at, jobs: roots.map(root => {
+          const group = groups.get(root.signoff_id)!;
+          const released = group.filter(row => row.state === 'released')
+            .sort((a,b) => (planOf(a).addition?.revision ?? 0) - (planOf(b).addition?.revision ?? 0));
+          if (released.length > 100) throw new QuoteSignoffError('customer_jobs_too_large', 'A job has too many released agreements to show completely. Browse saved requests in Customer sign-offs.');
+          const latest = released.at(-1);
+          const pending = group.filter(row => ['draft','publishing','waiting','accepted'].includes(row.state)).at(-1);
+          const offer = pending ?? group.filter(row => row.state !== 'superseded').at(-1) ?? latest ?? root;
+          let agreed_scope: string | null = null; let agreement_available = released.length === 0;
+          if (latest) {
+            try {
+              const saved = receipt(latest.signoff_id,() => null).receipt.requests;
+              if (saved[0]?.signoff_id !== root.signoff_id || saved.length !== released.length
+                || saved.some((entry,index) => entry.signoff_id !== released[index]?.signoff_id)) throw new Error('Invalid released chain');
+              agreed_scope = saved.map((entry,index) => index === 0 ? entry.scope : `Added work ${index}:\n${entry.scope}`).join('\n\n');
+              agreement_available = true;
+            } catch { /* Do not combine a broken amendment chain into current scope. */ }
+          }
+          return { job_id: root.signoff_id,created_at: root.created_at,agreement_available,agreed_scope,
+            offer: ownerSummary(offer),agreement: latest ? ownerSummary(latest) : null,
+            invoices: released.map(row => {
+              // Payment needs the invoice target, not every cumulative scope
+              // copied into its amendment metadata. Keep the full scope once.
+              const { addition: _addition,...invoice } = ownerSummary(row);return invoice;
+            }),offer_intent: readIntent(offer.endpoint_id),completion: readCompletion(root.signoff_id) };
+        }) };
+      })();
+    },
+    receipt,
+    /** Bind a completion to immutable released terms and one exact local task.
+     * Payment records are deliberately outside this completion transaction. */
+    completionBase(id: string) {
+      return deps.db.transaction(() => {
+        const snapshot = receipt(id, () => null).receipt;
+        const last = snapshot.requests.at(-1)!;
+        if (last.state !== 'released') throw new QuoteSignoffError('quote_signoff_not_released', 'Choose a released agreement before requesting completion.');
+        const root = snapshot.root_signoff_id;
+        const released = deps.db.prepare(`SELECT count(*) AS count FROM ${TABLE} WHERE state='released'
+          AND json_extract(plan_json,'$.addition.root_signoff_id')=?`).get(root) as { count: number };
+        if (released.count !== snapshot.requests.length - 1) throw new QuoteSignoffError('quote_signoff_superseded', 'Choose the latest released agreement before requesting completion.');
+        if (deps.db.prepare(`SELECT 1 FROM ${TABLE} WHERE state IN ('draft','publishing','waiting','accepted')
+          AND json_extract(plan_json,'$.addition.root_signoff_id')=? LIMIT 1`).get(root)) {
+          throw new QuoteSignoffError('quote_signoff_superseded', 'Review or cancel the pending added work before requesting completion.');
+        }
+        const task = deps.work?.readTask(`quote_signoff_${root}`);
+        if (!task || task.deleted_at !== undefined || task.sync_state !== 'live'
+          || task.source_id !== RECUED_BUILTIN_SOURCE_ID('task')
+          || task.source_extension_blob?.quote_signoff_id !== root
+          || task.source_extension_blob?.quote_id !== load(root).quote_id) {
+          throw new QuoteSignoffError('quote_signoff_task_unavailable', 'The agreement’s local task is missing or changed. Review it before requesting completion.');
+        }
+        ensureTaskVersions();
+        deps.db.prepare('INSERT OR IGNORE INTO quote_signoff_task_versions (task_id,revision) VALUES (?,0)').run(task.id);
+        return { root_signoff_id: root, signoff_id: id, business_name: last.business_name,
+          customer: last.customer, quote_label: last.quote_label,
+          quote_reference: last.quote_reference, task, task_revision: taskRevision(task.id),
+          agreed_scope: snapshot.requests.map(entry => entry.revision === 0 ? entry.scope : `Added work ${entry.revision}:\n${entry.scope}`).join('\n\n'),
+          agreement_hash: hash(snapshot.requests) };
+      }).immediate();
+    },
     quotes(limit: number) {
       binding(QUOTES, 'get', 'quote'); binding(INVOICES, 'create', 'invoice');
       const result = deps.records.ownerSearch({ owner: QUOTES, entity: 'quote', filters: { status: 'open' }, limit });
@@ -585,16 +770,7 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
         const truncated = rows.length > limit;
         const last = rows[limit - 1];
         return {
-          signoffs: rows.slice(0, limit).map(row => {
-            const result = summary(row);
-            if (row.state === 'released') {
-              result.follow_up = followUp(row);
-              result.can_add_work = result.follow_up.task.availability === 'current' && !result.follow_up.task.done
-                && !deps.db.prepare(`SELECT 1 FROM ${TABLE} WHERE quote_id=? AND state='released'
-                  AND json_extract(plan_json,'$.addition.parent_signoff_id')=? LIMIT 1`).get(row.quote_id, row.signoff_id);
-            }
-            return result;
-          }),
+          signoffs: rows.slice(0, limit).map(ownerSummary),
           truncated,
           ...(truncated && last ? { next_cursor: Buffer.from(JSON.stringify({
             v: 1, created_at: last.created_at, signoff_id: last.signoff_id, query,

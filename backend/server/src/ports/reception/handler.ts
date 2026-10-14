@@ -241,6 +241,7 @@ export interface ReceptionPortHandlerDeps {
   readonly getApprovalIntentStore?: () => ApprovalIntentStore;
   readonly getApprovalLinkNonceStore?: () => ApprovalLinkNonceStore;
   readonly getApprovalIntentPiiKey?: () => Uint8Array;
+  readonly checkQuoteCompletionLink?: (config: import('@recued/contracts').ApprovalLinkConfig, endpointId: string) => string | null;
   readonly checkQuoteSignoffLink?: (config: import('@recued/contracts').ApprovalLinkConfig, endpointId: string) => string | null;
   /** D-149 P9 § A.5.6 — status_link dependencies. Both are required
    *  for the kind's GET render (HTML + JSON polling) to be live; when
@@ -739,6 +740,7 @@ export const createReceptionPortHandler = (
 
   const approvalLinkGetHandler = approvalLinkGetReady
     ? createApprovalLinkPacketHandler({
+        ...(deps.checkQuoteCompletionLink ? { checkQuoteCompletionLink: deps.checkQuoteCompletionLink } : {}),
         ...(deps.checkQuoteSignoffLink ? { checkQuoteSignoffLink: deps.checkQuoteSignoffLink } : {}),
         getStore: deps.getStore,
         getApprovalIntentStore: deps.getApprovalIntentStore!,
@@ -752,6 +754,7 @@ export const createReceptionPortHandler = (
 
   const approvalLinkConsumeHandler = approvalLinkPostReady
     ? createApprovalLinkConsumeHandler({
+        ...(deps.checkQuoteCompletionLink ? { checkQuoteCompletionLink: deps.checkQuoteCompletionLink } : {}),
         ...(deps.checkQuoteSignoffLink ? { checkQuoteSignoffLink: deps.checkQuoteSignoffLink } : {}),
         getStore: deps.getStore,
         getApprovalIntentStore: deps.getApprovalIntentStore!,

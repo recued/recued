@@ -427,7 +427,7 @@ const liftCommitmentProposal = (
       ...res.authorization_provenance, lift_reason: 'review_approval_workflow',
     } };
   }
-  if (stripCorePrefix(slug) === 'quote-signoff-release' && res.verdict !== 'deny') {
+  if (['quote-signoff-release', 'quote-completion-review'].includes(stripCorePrefix(slug)) && res.verdict !== 'deny') {
     return { ...res, verdict: 'ask', approval: 'ask', authorization_provenance: {
       ...res.authorization_provenance, lift_reason: 'review_quote_signoff',
     } };
@@ -504,6 +504,8 @@ const mapResolutionToAdmission = (
               + `— preflight approval required`
             : stripCorePrefix(slug) === 'approval-workflow-continue'
               ? 'The customer accepted. Review the linked work or saved recipe before continuing.'
+            : stripCorePrefix(slug) === 'quote-completion-review'
+              ? 'Review the customer completion response before closing or reopening its local task.'
             : stripCorePrefix(slug) === 'quote-signoff-release'
               ? 'The customer accepted this quote. Review the task and invoice before releasing work.'
             : isCommitmentProposalSlug(slug)

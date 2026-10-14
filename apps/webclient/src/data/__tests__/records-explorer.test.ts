@@ -414,6 +414,7 @@ interface FakeEl {
   readonly firstChild: FakeEl | null;
   setAttribute(key: string, value: string): void;
   getAttribute(key: string): string | null;
+  querySelector(selector: string): FakeEl | null;
   appendChild(child: FakeEl): FakeEl;
   removeChild(child: FakeEl): FakeEl;
   addEventListener(type: string, listener: (event: Event) => void): void;
@@ -427,6 +428,8 @@ const fakeElement = (): FakeEl => {
     get firstChild() { return element.children[0] ?? null; },
     setAttribute(key, value) { element.attrs.set(key, value); },
     getAttribute(key) { return element.attrs.get(key) ?? null; },
+    // This string-render fixture has no parsed descendants.
+    querySelector() { return null; },
     appendChild(child) { child.parent = element; element.children.push(child); return child; },
     removeChild(child) { element.children.splice(element.children.indexOf(child), 1); child.parent = null; return child; },
     addEventListener(type, listener) { element.listeners.set(type, [...(element.listeners.get(type) ?? []), listener]); },

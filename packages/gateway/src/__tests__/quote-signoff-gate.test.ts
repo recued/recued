@@ -5,14 +5,14 @@ import { wrapWithCommitGateway, type CommitGatewayDeps, type SessionGrantHooks }
 
 const source: ExecutionSource = { channel: 'chat', actor: 'user_self', chat_session_id: 's', user_id: 'owner' };
 const plan = { signoff_id: 'frozen-quote', expected_plan_hash: 'a'.repeat(64), summary: 'Accepted terms and fixed release plan.' };
-const fixture = (ceiling: 'read' | 'admin') => {
+const fixture = (ceiling: 'read' | 'admin',slug = 'quote-signoff-release') => {
   const grants: SessionGrantHooks = { match: vi.fn(() => 'broad-session-grant'),
     consume: vi.fn(() => true), mint: vi.fn() };
   const deps: CommitGatewayDeps = {
     commitStore: createCommitStore(createInMemoryCollection<Commit>()),
     identity: { request_id: 'run', source, channel_session_id: 's', correlation_id: 'corr', dispatch_depth: 0 },
     getIngredientCategory: () => 'action', genCommitId: () => 'commit', genIdempotencyKey: () => 'idem', now: () => 1,
-    evaluateAdmission: () => admitByOpRisk({ slug: 'quote-signoff-release', risk_tier: 'write', ceiling,
+    evaluateAdmission: () => admitByOpRisk({ slug, risk_tier: 'write', ceiling,
       source, owner_override: { approval: 'never' } }),
     resolveArgsForHash: () => plan, sessionGrants: grants,
   };
@@ -36,5 +36,23 @@ describe('customer sign-off release always needs its own owner decision', () => 
     })).resolves.toEqual({ released: true });
     expect(inner).toHaveBeenCalledTimes(1); expect(grants.match).not.toHaveBeenCalled();
     expect(grants.mint).not.toHaveBeenCalled(); expect(grants.consume).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('customer completion review requires its own owner decision',() => {
+  it.each(['read','admin'] as const)('cannot use a broad session grant at ceiling %s',async ceiling => {
+    const { executor,grants,inner } = fixture(ceiling,'quote-completion-review');
+    await expect(executor('quote-completion-review',plan)).rejects.toBeInstanceOf(PreflightRequiredSignal);
+    expect(inner).not.toHaveBeenCalled();expect(grants.match).not.toHaveBeenCalled();expect(grants.consume).not.toHaveBeenCalled();
+  });
+  it('resumes the explicit owner decision without minting reusable authority',async () => {
+    const { executor,grants,inner } = fixture('admin','quote-completion-review');
+    await expect(executor('quote-completion-review',plan,undefined,undefined,{
+      step_id: 'review',recipe_id: 'reception-quote-completion-review',preflight_admitted: true,
+      preflight_approved_target: { ingredient_slug: 'quote-completion-review' },
+      preflight_session_grant: { ttl_ms: 3_600_000,max_uses: 10,risk_tier: 'write' },
+    })).resolves.toEqual({ released: true });
+    expect(inner).toHaveBeenCalledTimes(1);expect(grants.mint).not.toHaveBeenCalled();
   });
 });

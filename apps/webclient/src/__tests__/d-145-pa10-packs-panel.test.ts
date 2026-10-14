@@ -57,7 +57,9 @@
  *      - dispose is idempotent
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { PackConnectionsCallers } from '../settings/pack-connections-controls.js';
+import type { PackAccessPlan, PackAccessResult } from '@recued/contracts';
 
 import {
   PACKS_DIALOG_ATTR,
@@ -330,6 +332,7 @@ const failInstallResult = (
 // ──────────────────────────────────────────────────────────────────
 
 interface SetupOptions {
+  runPackConnections?: PackConnectionsCallers;
   runList?: PacksListCaller;
   runInstall?: PacksInstallCaller | null; // null → omit (read-only mode)
   /** Seed the DETAIL selection on mount (else the first pack auto-opens). */
@@ -386,6 +389,7 @@ const setupMount = (
     document: doc as unknown as Document,
     runList: overrides.runList ?? defaultRunList,
     onSelectSlug: (slug) => selectCalls.push(slug),
+    ...(overrides.runPackConnections ? { runPackConnections: overrides.runPackConnections } : {}),
     ...(autoSlug !== undefined ? { initialSlug: autoSlug } : {}),
     ...(overrides.runInstall === null
       ? {}
@@ -408,6 +412,40 @@ const setupMount = (
 // ══════════════════════════════════════════════════════════════════
 // Construction
 // ══════════════════════════════════════════════════════════════════
+
+it.each([false, true])('D-322 restores resource focus unless it moved elsewhere: %s', async moved => {
+  const target = { pack_slug: 'test-pack', slot: 'google', connection_name: 'work-sheets' };
+  const plan: PackAccessPlan = { ...target, action: 'plan', fingerprint: 'a'.repeat(64), connection_updated_at: 1,
+    checks: [{ id: 'sheet', label: 'Read sheet metadata', operation: 'spreadsheet.read', required_scopes: [],
+      input: { key: 'id', label: 'Spreadsheet ID', format: 'id', default_value: 'resource' } }], other_operation_count: 1 };
+  let finish!: (result: PackAccessResult) => void;
+  const result = new Promise<PackAccessResult>(resolve => { finish = resolve; });
+  const view = { pack_slug: target.pack_slug, slots: [{ slot: 'google', catalogs: ['google-sheets'], candidates: [],
+    connections: [{ connection_name: target.connection_name, display_name: 'Work sheets', enrolled: true, is_default: true }] }] };
+  const m = setupMount([baseEntry({ installed: true })], { runPackConnections: {
+    list: async () => view, add: async () => view, remove: async () => view, setDefault: async () => view,
+    access: async request => request.action === 'plan' ? plan : result,
+  } });
+  try {
+    await m.mount.whenLoaded();
+    findByAttrValue(m.host, 'data-recued-packs-detail-tab', 'access')!.click();
+    await vi.waitFor(() => expect(findByAttrValue(m.host, 'data-pack-access-action', 'open')).not.toBeNull());
+    const open = findByAttrValue(m.host, 'data-pack-access-action', 'open')!;
+    open.focus(); open.click(); m.doc.activeElement = null; // A removed control leaves browser focus on the page.
+    await vi.waitFor(() => {
+      const input = findByAttr(m.host, 'data-pack-access-input');
+      expect(input).not.toBeNull(); expect(m.doc.activeElement).toBe(input);
+    });
+    const check = findByAttrValue(m.host, 'data-pack-access-action', 'sheet')!;
+    check.focus(); check.click(); m.doc.activeElement = null;
+    const outside = m.doc.createElement('button');
+    if (moved) outside.focus();
+    finish({ ...target, action: 'check', fingerprint: plan.fingerprint, connection_updated_at: 1, check_id: 'sheet',
+      status: 'passed', reason: 'protected_read_passed', checked_at: 1000, http_status: 200 });
+    await vi.waitFor(() => expect(findByAttr(m.host, 'data-pack-access-result')).not.toBeNull());
+    expect(m.doc.activeElement).toBe(moved ? outside : findByAttrValue(m.host, 'data-pack-access-action', 'sheet'));
+  } finally { m.mount.dispose(); }
+});
 
 describe('D-145 PA10 follow-on — mountPacksPanel: construction', () => {
   const originalDoc = (globalThis as { document?: unknown }).document;

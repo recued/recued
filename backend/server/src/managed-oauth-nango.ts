@@ -123,19 +123,26 @@ export const createNangoOAuthAdapter = (fetchImpl: typeof fetch = globalThis.fet
     });
     return { connections, page, has_more: connectionId === undefined && value.connections.length === 100 };
   };
-  const existing = async (profile: ManagedOAuthProfile, integrationId: string, connectionId: string) => {
-    const found = await remoteConnections(profile, integrationId, 0, connectionId);
-    if (found.connections.length !== 1) throw new RpcError('bad_request', 'Select an existing account in this Nango integration. Refresh accounts and try again.');
-    return found.connections[0]!;
-  };
-  // Public row identity is stable across API keys; connection_id is only environment-local.
-  const connectionIdentity = async (profile: ManagedOAuthProfile, integrationId: string, connectionId: string): Promise<string> => {
+  // Account status and identity must come from one public row, even if another
+  // tool replaces an environment-local connection ID between broker reads.
+  const accountSnapshot = async (profile: ManagedOAuthProfile, integrationId: string, connectionId: string) => {
     const query = new URLSearchParams({ integrationId, connectionId, limit: '2', page: '0' });
     const value = await control(profile, `/connections?${query}`);
-    const found = Array.isArray(value.connections) ? value.connections.map(record).filter((row) =>
-      row.provider_config_key === integrationId && row.connection_id === connectionId) : [];
+    if (!Array.isArray(value.connections)) throw new RpcError('bad_request', 'Nango did not return its connection list.');
+    const found = value.connections.map(record).filter((row) =>
+      row.provider_config_key === integrationId && row.connection_id === connectionId);
     if (found.length !== 1) throw new RpcError('bad_request', 'Select an existing account in this Nango integration. Refresh accounts and try again.');
-    const identity = publicIdentity(found[0]!);
+    const row = found[0]!; const user = record(row.end_user);
+    const connection: ManagedOAuthRemoteConnection = { id: connectionId,
+      label: typeof user.display_name === 'string' ? user.display_name : connectionId,
+      auth_error: Array.isArray(row.errors) && row.errors.some(error => record(error).type === 'auth') };
+    return { connection, identity: publicIdentity(row) };
+  };
+  const existing = async (profile: ManagedOAuthProfile, integrationId: string, connectionId: string) =>
+    (await accountSnapshot(profile, integrationId, connectionId)).connection;
+  // Public row identity is stable across API keys; connection_id is only environment-local.
+  const connectionIdentity = async (profile: ManagedOAuthProfile, integrationId: string, connectionId: string): Promise<string> => {
+    const { identity } = await accountSnapshot(profile, integrationId, connectionId);
     if (identity === undefined) {
       throw new RpcError('bad_request', 'Nango did not expose a stable identity for this saved account.');
     }
@@ -210,5 +217,5 @@ export const createNangoOAuthAdapter = (fetchImpl: typeof fetch = globalThis.fet
       throw new Error('OAuth broker request failed.');
     }
   };
-  return { integrations, integration, providers, createIntegration, remoteConnections, existing, connectionIdentity, deleteRemoteConnection, start, completed, fetch };
+  return { integrations, integration, providers, createIntegration, remoteConnections, existing, accountSnapshot, connectionIdentity, deleteRemoteConnection, start, completed, fetch };
 };

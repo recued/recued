@@ -10,6 +10,7 @@ import type {
   HousekeepingConfigRow,
   ServerConfigField,
   ServerLlmPrompt,
+  ServerLlmProbeResult,
 } from '@recued/contracts';
 
 import {
@@ -3348,6 +3349,287 @@ describe('Test connection', () => {
   });
 });
 
+describe('BYOK and embeddings probe freshness', () => {
+  const probeOk: ServerLlmProbeResult = {
+    ok: true, diagnosis: 'ok', elapsed_ms: 120,
+  };
+  const fixture = (
+    runProbeLlmSource: AiModelsProbeSourceCaller,
+    overrides: Partial<Parameters<typeof mountAiModelsPage>[0]> = {},
+  ) => mountFixture({
+    runProbeLlmSource,
+    runGetLLMConfig: vi.fn(async () => ({
+      config: {
+        ...llmConfig(),
+        slot_2: { ...llmConfig().slot_1, model: 'other-chat-model' },
+        embeddings_slot: { ...llmConfig().slot_1, model: 'embedding-model' },
+      },
+      supports: { slot_provider_name: true },
+    })),
+    ...overrides,
+  });
+
+  for (const key of ['slot_1', 'slot_2', 'embeddings_slot'] as const) {
+    const attr = key === 'embeddings_slot' ? AI_MODELS_EMBEDDINGS_FIELD_ATTR : AI_MODELS_SLOT_FIELD_ATTR;
+    const fieldId = (field: string): string => key === 'embeddings_slot' ? field : `${key}:${field}`;
+    const expectNoAnswer = (host: FakeElement): void => {
+      expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_RESULT_ATTR, key)).toBeNull();
+      expect(findByAttrValue(host, AI_MODELS_FORM_ERROR_ATTR, `${key}:test`)).toBeNull();
+    };
+
+    describe(key, () => {
+      it.each(['success', 'rejected', 'rpc-error'])('ignores a late %s after editing and reverting the model', async (outcome) => {
+        let finish!: () => void;
+        const runProbeLlmSource = vi.fn<AiModelsProbeSourceCaller>()
+          .mockImplementationOnce(() => new Promise<ServerLlmProbeResult>((resolve, reject) => {
+            finish = () => {
+              if (outcome === 'rpc-error') reject(new Error('stale source transport error'));
+              else resolve(outcome === 'success' ? probeOk : {
+                ok: false, diagnosis: 'auth', detail: 'stale source rejection', elapsed_ms: 120,
+              });
+            };
+          }))
+          .mockResolvedValue(probeOk);
+        const { host, mount, opts } = fixture(runProbeLlmSource);
+        await mount.whenLoaded();
+        const originalModel = findByAttrValue(host, attr, fieldId('model'))!.value;
+        clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, key);
+        typeByAttrValue(host, attr, fieldId('model'), 'intervening-model');
+        typeByAttrValue(host, attr, fieldId('model'), originalModel);
+        clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, key);
+        clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, key === 'slot_1' ? 'embeddings_slot' : 'slot_1');
+        expect(runProbeLlmSource).toHaveBeenCalledTimes(1);
+        finish();
+        await flush();
+        expectNoAnswer(host);
+        expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, key)?.textContent).toBe('Test connection');
+        clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, key);
+        await flush();
+        expect(runProbeLlmSource).toHaveBeenCalledTimes(2);
+        expect(runProbeLlmSource).toHaveBeenLastCalledWith(expect.objectContaining({
+          target: { kind: 'slot', slot_key: key },
+          draft: expect.objectContaining({ model: originalModel }),
+        }));
+        expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_RESULT_ATTR, key)).not.toBeNull();
+        expect(opts.runSetLLMSlot).not.toHaveBeenCalled();
+        expect(opts.runSetEmbeddingsSlot).not.toHaveBeenCalled();
+        mount.dispose();
+      });
+
+      it.each([
+        { outcome: 'success', field: 'model', value: 'edited-model' },
+        { outcome: 'success', field: 'provider', value: 'openai' },
+        { outcome: 'success', field: 'base-url', value: 'https://changed.example.test/v1' },
+        { outcome: 'success', field: 'api-key', value: 'changed-fixture-key' },
+        { outcome: 'rejected', field: 'model', value: 'edited-model' },
+        { outcome: 'rpc-error', field: 'model', value: 'edited-model' },
+      ])('removes a completed $outcome after $field changes without replacing the input', async ({ outcome, field, value }) => {
+        const runProbeLlmSource = vi.fn(async (): Promise<ServerLlmProbeResult> => {
+          if (outcome === 'rpc-error') throw new Error('old source transport error');
+          return outcome === 'success' ? probeOk : {
+            ok: false, diagnosis: 'auth', detail: 'old source rejection', elapsed_ms: 120,
+          };
+        });
+        const { host, mount } = fixture(runProbeLlmSource);
+        await mount.whenLoaded();
+        clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, key);
+        await flush();
+        expect(findByAttrValue(host, outcome === 'rpc-error' ? AI_MODELS_FORM_ERROR_ATTR : AI_MODELS_SLOT_TEST_RESULT_ATTR,
+          outcome === 'rpc-error' ? `${key}:test` : key)).not.toBeNull();
+        const input = findByAttrValue(host, attr, fieldId(field));
+        if (field === 'provider') changeSelect(host, attr, fieldId(field), value);
+        else typeByAttrValue(host, attr, fieldId(field), value);
+        expectNoAnswer(host);
+        expect(findByAttrValue(host, attr, fieldId(field))).toBe(input);
+        await mount.refresh();
+        expectNoAnswer(host);
+        expect(runProbeLlmSource).toHaveBeenCalledTimes(1);
+        mount.dispose();
+      });
+
+      for (const action of ['save', 'clear'] as const) {
+        it.each([false, true])(`discards a pending answer as ${action} starts even if the write fails (%s)`, async (failWrite) => {
+          let finishProbe!: () => void;
+          let finishWrite!: () => void;
+          const runProbeLlmSource = vi.fn(() => new Promise<ServerLlmProbeResult>((resolve) => {
+            finishProbe = () => resolve(probeOk);
+          }));
+          const write = vi.fn(() => new Promise<{ ok: true }>((resolve, reject) => {
+            finishWrite = () => failWrite ? reject(new Error('source write failed')) : resolve({ ok: true });
+          }));
+          const { host, mount } = fixture(runProbeLlmSource, {
+            runSetLLMSlot: write,
+            runSetEmbeddingsSlot: write,
+          });
+          await mount.whenLoaded();
+          clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, key);
+          const patch = { provider: 'openai-compatible', model: 'saved-model', base_url: 'http://127.0.0.1:11434/v1' };
+          const pending = key === 'embeddings_slot'
+            ? action === 'save' ? mount.saveEmbeddingsSlot(patch) : mount.clearEmbeddingsSlot()
+            : action === 'save' ? mount.saveByokSlot(key, patch) : mount.clearByokSlot(key);
+          expect(write).toHaveBeenCalledTimes(1);
+          finishProbe();
+          await flush();
+          expectNoAnswer(host);
+          finishWrite();
+          if (failWrite) await expect(pending).rejects.toThrow('source write failed');
+          else await pending;
+          expectNoAnswer(host);
+          expect(runProbeLlmSource).toHaveBeenCalledTimes(1);
+          mount.dispose();
+        });
+      }
+
+      it('keeps an answer for edits to display and limit fields excluded from the probe', async () => {
+        let finish!: () => void;
+        const runProbeLlmSource = vi.fn(() => new Promise<ServerLlmProbeResult>((resolve) => {
+          finish = () => resolve(probeOk);
+        }));
+        const { host, mount } = fixture(runProbeLlmSource);
+        await mount.whenLoaded();
+        clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, key);
+        typeByAttrValue(host, attr, fieldId('provider-name'), 'My renamed source');
+        if (key !== 'embeddings_slot') {
+          typeByAttrValue(host, attr, fieldId('daily-budget'), '2500');
+          typeByAttrValue(host, attr, fieldId('context-window'), '64000');
+        }
+        finish();
+        await flush();
+        expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_RESULT_ATTR, key)).not.toBeNull();
+        typeByAttrValue(host, attr, fieldId('provider-name'), 'Another display name');
+        expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_RESULT_ATTR, key)).not.toBeNull();
+        expect(runProbeLlmSource).toHaveBeenCalledTimes(1);
+        mount.dispose();
+      });
+
+      it('keeps a pending answer when a different source changes and saves', async () => {
+        let finish!: () => void;
+        const runProbeLlmSource = vi.fn(() => new Promise<ServerLlmProbeResult>((resolve) => {
+          finish = () => resolve(probeOk);
+        }));
+        const { host, mount } = fixture(runProbeLlmSource);
+        await mount.whenLoaded();
+        clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, key);
+        if (key === 'slot_1') {
+          typeByAttrValue(host, AI_MODELS_EMBEDDINGS_FIELD_ATTR, 'model', 'sibling-embedding');
+          await mount.saveEmbeddingsSlot({ provider: 'openai-compatible', model: 'sibling-embedding' });
+        } else {
+          typeByAttrValue(host, AI_MODELS_SLOT_FIELD_ATTR, 'slot_1:model', 'sibling-chat');
+          await mount.saveByokSlot('slot_1', { provider: 'openai-compatible', model: 'sibling-chat' });
+        }
+        finish();
+        await flush();
+        expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_RESULT_ATTR, key)).not.toBeNull();
+        expect(runProbeLlmSource).toHaveBeenCalledTimes(1);
+        mount.dispose();
+      });
+    });
+  }
+});
+
+describe('Transcription probe freshness', () => {
+  const probeOk: ServerLlmProbeResult = {
+    ok: true,
+    diagnosis: 'ok',
+    transcript: 'The tested transcript.',
+    expected_transcript: 'The sample transcript.',
+    probe_language: 'en',
+    elapsed_ms: 120,
+  };
+  const fixture = (runProbeLlmSource: AiModelsProbeSourceCaller) => mountFixture({
+    runProbeLlmSource,
+    runGetLLMConfig: vi.fn(async () => ({ config: {
+      ...llmConfig(),
+      transcription_slot: { provider: 'openai', model: 'whisper-1', has_key: true },
+      transcription_language: 'en',
+    } })),
+    runSetTranscriptionSlot: vi.fn(async () => ({ ok: true as const })),
+  });
+
+  it.each(['success', 'rejected', 'rpc-error'])('ignores a late %s after editing and reverting the model', async (outcome) => {
+    let finish!: () => void;
+    const runProbeLlmSource = vi.fn(() => new Promise<ServerLlmProbeResult>((resolve, reject) => {
+      finish = () => {
+        if (outcome === 'rpc-error') reject(new Error('stale transport error'));
+        else resolve(outcome === 'success' ? probeOk : {
+          ok: false, diagnosis: 'auth', detail: 'stale rejection', elapsed_ms: 120,
+        });
+      };
+    }));
+    const { host, mount } = fixture(runProbeLlmSource);
+    await mount.whenLoaded();
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'transcription_slot');
+    typeByAttrValue(host, AI_MODELS_TRANSCRIPTION_FIELD_ATTR, 'model', 'whisper-edit');
+    typeByAttrValue(host, AI_MODELS_TRANSCRIPTION_FIELD_ATTR, 'model', 'whisper-1');
+    expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'transcription_slot')?.textContent).toBe('Testing…');
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'transcription_slot');
+    expect(runProbeLlmSource).toHaveBeenCalledTimes(1);
+    finish();
+    await flush();
+    expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_RESULT_ATTR, 'transcription_slot')).toBeNull();
+    expect(findByAttrValue(host, AI_MODELS_FORM_ERROR_ATTR, 'transcription_slot:test')).toBeNull();
+    expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'transcription_slot')?.textContent).toBe('Test connection');
+    mount.dispose();
+  });
+
+  it.each([
+    { outcome: 'success', field: 'model', value: 'whisper-new' },
+    { outcome: 'success', field: 'provider', value: 'openai-compatible' },
+    { outcome: 'success', field: 'base-url', value: 'https://speech.example.test/v1' },
+    { outcome: 'success', field: 'api-key', value: 'new-fixture-key' },
+    { outcome: 'rpc-error', field: 'model', value: 'whisper-new' },
+  ])('removes a completed $outcome when $field changes without replacing the control', async ({ outcome, field, value }) => {
+    const runProbeLlmSource = vi.fn(async () => {
+      if (outcome === 'rpc-error') throw new Error('old transport error');
+      return probeOk;
+    });
+    const { host, mount } = fixture(runProbeLlmSource);
+    await mount.whenLoaded();
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'transcription_slot');
+    await flush();
+    const input = findByAttrValue(host, AI_MODELS_TRANSCRIPTION_FIELD_ATTR, field);
+    if (field === 'provider') changeSelect(host, AI_MODELS_TRANSCRIPTION_FIELD_ATTR, field, value);
+    else typeByAttrValue(host, AI_MODELS_TRANSCRIPTION_FIELD_ATTR, field, value);
+    expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_RESULT_ATTR, 'transcription_slot')).toBeNull();
+    expect(findByAttrValue(host, AI_MODELS_FORM_ERROR_ATTR, 'transcription_slot:test')).toBeNull();
+    expect(findByAttrValue(host, AI_MODELS_TRANSCRIPTION_FIELD_ATTR, field)).toBe(input);
+    await mount.refresh();
+    expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_RESULT_ATTR, 'transcription_slot')).toBeNull();
+    expect(findByAttrValue(host, AI_MODELS_FORM_ERROR_ATTR, 'transcription_slot:test')).toBeNull();
+    expect(runProbeLlmSource).toHaveBeenCalledTimes(1);
+    mount.dispose();
+  });
+
+  it('keeps a completed answer when only unsaved language and limit fields change', async () => {
+    const runProbeLlmSource = vi.fn(async () => probeOk);
+    const { host, mount } = fixture(runProbeLlmSource);
+    await mount.whenLoaded();
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'transcription_slot');
+    await flush();
+    typeByAttrValue(host, AI_MODELS_TRANSCRIPTION_FIELD_ATTR, 'language', 'fr');
+    typeByAttrValue(host, AI_MODELS_TRANSCRIPTION_FIELD_ATTR, 'daily-requests', '22');
+    expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_RESULT_ATTR, 'transcription_slot')).not.toBeNull();
+    expect(runProbeLlmSource).toHaveBeenCalledTimes(1);
+    mount.dispose();
+  });
+
+  it.each(['save', 'clear'])('ignores a late answer after the slot %s', async (action) => {
+    let finish!: () => void;
+    const runProbeLlmSource = vi.fn(() => new Promise<ServerLlmProbeResult>((resolve) => {
+      finish = () => resolve(probeOk);
+    }));
+    const { host, mount } = fixture(runProbeLlmSource);
+    await mount.whenLoaded();
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'transcription_slot');
+    if (action === 'save') await mount.saveTranscriptionSlot({ provider: 'openai', model: 'whisper-1' });
+    else await mount.clearTranscriptionSlot();
+    finish();
+    await flush();
+    expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_RESULT_ATTR, 'transcription_slot')).toBeNull();
+    mount.dispose();
+  });
+});
+
 /** A BYOK slot's PROTOCOL picks the adapter, from the four the server speaks;
  *  its NAME is the owner's word for the service. What would stop a draft
  *  working is said under the button that was pressed, before anything is sent,
@@ -3855,6 +4137,286 @@ describe('Set up Chat — the way to slot 1 and slot 2', () => {
 /** The free pool: an entry the owner does not name is named from its address,
  *  every saved entry can be edited, disabled, removed and tested, and the form
  *  tests a draft before it is added or saved. */
+describe('Free-pool probe freshness', () => {
+  const formKey = 'free_pool:form';
+  const probeOk: ServerLlmProbeResult = { ok: true, diagnosis: 'ok', elapsed_ms: 120 };
+  const groq = {
+    id: 'groq', type: 'api', provider: 'openai-compatible', model: 'llama-free',
+    base_url: 'https://api.groq.com/openai/v1', has_key: true, enabled: true,
+  };
+  const mistral = {
+    ...groq, id: 'mistral', model: 'mistral-small', base_url: 'https://api.mistral.ai/v1',
+  };
+  const fixture = (
+    runProbeLlmSource: AiModelsProbeSourceCaller,
+    overrides: Partial<Parameters<typeof mountAiModelsPage>[0]> = {},
+  ) => mountFixture({
+    runProbeLlmSource,
+    runGetLLMConfig: vi.fn(async () => ({
+      config: { ...llmConfig(), free_pool: [groq, mistral] },
+      supports: { slot_provider_name: true, pool_entry_drafts: true },
+    })),
+    ...overrides,
+  });
+  const type = (host: FakeElement, field: string, value: string): void =>
+    typeByAttrValue(host, AI_MODELS_POOL_ADD_FIELD_ATTR, field, value);
+  const setup = (host: FakeElement, mode: 'add' | 'edit'): void => {
+    for (const [field, value] of Object.entries({
+      id: 'new-source', model: 'new-model', 'api-key': 'pool-fixture-key',
+      'base-url': 'https://new.example.test/v1',
+    })) type(host, field, value);
+    if (mode === 'edit') clickByAttrValue(host, AI_MODELS_POOL_EDIT_ATTR, 'groq');
+  };
+  const expectNoAnswer = (host: FakeElement, key = formKey): void => {
+    expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_RESULT_ATTR, key)).toBeNull();
+    expect(findByAttrValue(host, AI_MODELS_FORM_ERROR_ATTR, `${key}:test`)).toBeNull();
+  };
+
+  for (const mode of ['add', 'edit'] as const) {
+    describe(mode, () => {
+      it.each(['success', 'rejected', 'rpc-error'])('ignores a late %s after editing and reverting the model', async (outcome) => {
+        let finish!: () => void;
+        const runProbeLlmSource = vi.fn<AiModelsProbeSourceCaller>()
+          .mockImplementationOnce(() => new Promise((resolve, reject) => {
+            finish = () => outcome === 'rpc-error' ? reject(new Error('old pool transport error'))
+              : resolve(outcome === 'success' ? probeOk : { ok: false, diagnosis: 'auth', detail: 'old rejection', elapsed_ms: 120 });
+          })).mockResolvedValue(probeOk);
+        const { host, mount, opts } = fixture(runProbeLlmSource);
+        await mount.whenLoaded();
+        setup(host, mode);
+        const originalModel = findByAttrValue(host, AI_MODELS_POOL_ADD_FIELD_ATTR, 'model')!.value;
+        clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, formKey);
+        type(host, 'model', 'intervening-model');
+        type(host, 'model', originalModel);
+        clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, formKey);
+        clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'pool:mistral');
+        expect(runProbeLlmSource).toHaveBeenCalledTimes(1);
+        finish();
+        await flush();
+        expectNoAnswer(host);
+        clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, formKey);
+        await flush();
+        expect(runProbeLlmSource).toHaveBeenLastCalledWith({
+          target: { kind: 'pool_entry', entry_id: mode === 'add' ? 'new-source' : 'groq' },
+          draft: expect.objectContaining({ model: originalModel }),
+        });
+        expect(runProbeLlmSource).toHaveBeenCalledTimes(2);
+        expect(opts.runUpsertFreePoolEntry).not.toHaveBeenCalled();
+        mount.dispose();
+      });
+
+      it.each([
+        { outcome: 'success', field: 'model', value: 'edited-model' },
+        { outcome: 'success', field: 'provider', value: 'openai' },
+        { outcome: 'success', field: 'base-url', value: 'https://changed.example.test/v1' },
+        { outcome: 'success', field: 'api-key', value: 'changed-fixture-key' },
+        ...(mode === 'add' ? [{ outcome: 'success', field: 'id', value: 'renamed-target' }] : []),
+        { outcome: 'rejected', field: 'model', value: 'edited-model' },
+        { outcome: 'rpc-error', field: 'model', value: 'edited-model' },
+      ])('clears a completed $outcome after $field changes without replacing the control', async ({ outcome, field, value }) => {
+        const runProbeLlmSource = vi.fn(async (): Promise<ServerLlmProbeResult> => {
+          if (outcome === 'rpc-error') throw new Error('old pool transport error');
+          return outcome === 'success' ? probeOk : { ok: false, diagnosis: 'auth', detail: 'old rejection', elapsed_ms: 120 };
+        });
+        const { host, mount } = fixture(runProbeLlmSource);
+        await mount.whenLoaded();
+        setup(host, mode);
+        clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, formKey);
+        await flush();
+        expect(findByAttrValue(host, outcome === 'rpc-error' ? AI_MODELS_FORM_ERROR_ATTR : AI_MODELS_SLOT_TEST_RESULT_ATTR,
+          outcome === 'rpc-error' ? `${formKey}:test` : formKey)).not.toBeNull();
+        const original = findByAttrValue(host, AI_MODELS_POOL_ADD_FIELD_ATTR, field);
+        if (field === 'provider') changeSelect(host, AI_MODELS_POOL_ADD_FIELD_ATTR, field, value);
+        else type(host, field, value);
+        expectNoAnswer(host);
+        expect(findByAttrValue(host, AI_MODELS_POOL_ADD_FIELD_ATTR, field)).toBe(original);
+        await mount.refresh();
+        expectNoAnswer(host);
+        expect(runProbeLlmSource).toHaveBeenCalledTimes(1);
+        mount.dispose();
+      });
+
+      it.each([false, true])('discards an older answer as the write starts even if it fails (%s)', async (failWrite) => {
+        let finishProbe!: () => void;
+        let finishWrite!: () => void;
+        const runProbeLlmSource = vi.fn(() => new Promise<ServerLlmProbeResult>((resolve) => { finishProbe = () => resolve(probeOk); }));
+        const write = vi.fn(() => new Promise<{ ok: true }>((resolve, reject) => {
+          finishWrite = () => failWrite ? reject(new Error('pool write failed')) : resolve({ ok: true });
+        }));
+        const { host, mount } = fixture(runProbeLlmSource, { runUpsertFreePoolEntry: write });
+        await mount.whenLoaded();
+        setup(host, mode);
+        clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, formKey);
+        clickByAttrValue(host, mode === 'add' ? AI_MODELS_POOL_ADD_ATTR : AI_MODELS_POOL_SAVE_ATTR, mode === 'add' ? '' : 'groq');
+        expect(write).toHaveBeenCalledTimes(1);
+        finishProbe();
+        await flush();
+        expectNoAnswer(host);
+        finishWrite();
+        await flush();
+        expectNoAnswer(host);
+        if (failWrite) expect(findByAttrValue(host, AI_MODELS_FORM_ERROR_ATTR, `${formKey}:save`)?.textContent).toBe('pool write failed');
+        mount.dispose();
+      });
+
+      it('discards a probe started during a successful write when the form resets', async () => {
+        let finishProbe!: () => void;
+        let finishWrite!: () => void;
+        const runProbeLlmSource = vi.fn(() => new Promise<ServerLlmProbeResult>((resolve) => { finishProbe = () => resolve(probeOk); }));
+        const { host, mount } = fixture(runProbeLlmSource, {
+          runUpsertFreePoolEntry: vi.fn(() => new Promise<{ ok: true }>((resolve) => { finishWrite = () => resolve({ ok: true }); })),
+        });
+        await mount.whenLoaded();
+        setup(host, mode);
+        clickByAttrValue(host, mode === 'add' ? AI_MODELS_POOL_ADD_ATTR : AI_MODELS_POOL_SAVE_ATTR, mode === 'add' ? '' : 'groq');
+        clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, formKey);
+        expect(runProbeLlmSource).toHaveBeenCalledTimes(1);
+        finishWrite();
+        await flush();
+        finishProbe();
+        await flush();
+        expectNoAnswer(host);
+        expect(findByAttrValue(host, AI_MODELS_POOL_ADD_FIELD_ATTR, 'model')?.value).toBe(mode === 'add' ? '' : 'new-model');
+        mount.dispose();
+      });
+
+      it('keeps a result when only the context limit changes', async () => {
+        let finish!: () => void;
+        const runProbeLlmSource = vi.fn(() => new Promise<ServerLlmProbeResult>((resolve) => { finish = () => resolve(probeOk); }));
+        const { host, mount } = fixture(runProbeLlmSource);
+        await mount.whenLoaded();
+        setup(host, mode);
+        clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, formKey);
+        type(host, 'context-window', '64000');
+        finish();
+        await flush();
+        type(host, 'context-window', '128000');
+        expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_RESULT_ATTR, formKey)).not.toBeNull();
+        expect(runProbeLlmSource).toHaveBeenCalledTimes(1);
+        mount.dispose();
+      });
+    });
+  }
+
+  for (const transition of ['add-to-edit', 'edit-to-edit', 'cancel', 'edit-away-and-back'] as const) {
+    it.each(['success', 'rejected', 'rpc-error'])(`drops a late %s across ${transition}`, async (outcome) => {
+      let finish!: () => void;
+      const runProbeLlmSource = vi.fn<AiModelsProbeSourceCaller>()
+        .mockImplementationOnce(() => new Promise((resolve, reject) => {
+          finish = () => outcome === 'rpc-error' ? reject(new Error('wrong form transport error'))
+            : resolve(outcome === 'success' ? probeOk : { ok: false, diagnosis: 'auth', detail: 'wrong form rejection', elapsed_ms: 120 });
+        })).mockResolvedValue(probeOk);
+      const { host, mount, opts } = fixture(runProbeLlmSource);
+      await mount.whenLoaded();
+      setup(host, transition === 'add-to-edit' ? 'add' : 'edit');
+      clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, formKey);
+      if (transition === 'cancel') clickByAttrValue(host, AI_MODELS_POOL_CANCEL_EDIT_ATTR, 'groq');
+      else {
+        clickByAttrValue(host, AI_MODELS_POOL_EDIT_ATTR, transition === 'add-to-edit' ? 'groq' : 'mistral');
+        if (transition === 'edit-away-and-back') clickByAttrValue(host, AI_MODELS_POOL_EDIT_ATTR, 'groq');
+      }
+      const currentModel = findByAttrValue(host, AI_MODELS_POOL_ADD_FIELD_ATTR, 'model')!.value;
+      finish();
+      await flush();
+      expectNoAnswer(host);
+      expect(findByAttrValue(host, AI_MODELS_POOL_ADD_FIELD_ATTR, 'model')?.value).toBe(currentModel);
+      if (transition === 'cancel') expect(findByAttrValue(host, AI_MODELS_POOL_ADD_FIELD_ATTR, 'api-key')?.value).toBe('pool-fixture-key');
+      clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, formKey);
+      await flush();
+      expect(runProbeLlmSource).toHaveBeenCalledTimes(2);
+      expect(runProbeLlmSource).toHaveBeenLastCalledWith(expect.objectContaining({
+        target: { kind: 'pool_entry', entry_id: transition === 'cancel' ? 'new-source' : transition === 'edit-to-edit' ? 'mistral' : 'groq' },
+      }));
+      expect(opts.runUpsertFreePoolEntry).not.toHaveBeenCalled();
+      mount.dispose();
+    });
+  }
+
+  it.each(['save', 'replace', 'remove-and-readd'])('drops a stored row reply across %s of that entry', async (action) => {
+    let finish!: () => void;
+    const runProbeLlmSource = vi.fn(() => new Promise<ServerLlmProbeResult>((resolve) => { finish = () => resolve(probeOk); }));
+    const { host, mount } = fixture(runProbeLlmSource);
+    await mount.whenLoaded();
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'pool:groq');
+    if (action === 'save') await mount.saveFreePoolEntry('groq', { provider: groq.provider, model: 'changed-model', base_url: groq.base_url });
+    else {
+      if (action === 'remove-and-readd') await mount.removeFreePoolEntry('groq');
+      await mount.addFreePoolApiEntry({ id: 'groq', provider: groq.provider, model: 'replacement-model', base_url: groq.base_url, api_key: 'replacement-fixture-key' });
+    }
+    finish();
+    await flush();
+    expectNoAnswer(host, 'pool:groq');
+    mount.dispose();
+  });
+
+  it('drops a stored row probe started during an update when that update confirms', async () => {
+    let finishProbe!: () => void;
+    let finishWrite!: () => void;
+    const runProbeLlmSource = vi.fn(() => new Promise<ServerLlmProbeResult>((resolve) => { finishProbe = () => resolve(probeOk); }));
+    const { host, mount } = fixture(runProbeLlmSource, {
+      runUpsertFreePoolEntry: vi.fn(() => new Promise<{ ok: true }>((resolve) => { finishWrite = () => resolve({ ok: true }); })),
+    });
+    await mount.whenLoaded();
+    const pending = mount.saveFreePoolEntry('groq', { provider: groq.provider, model: 'updated-model', base_url: groq.base_url });
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'pool:groq');
+    finishWrite();
+    await pending;
+    finishProbe();
+    await flush();
+    expectNoAnswer(host, 'pool:groq');
+    mount.dispose();
+  });
+
+  it('keeps a stored row answer for unsaved edits, Cancel, toggles, and a sibling save', async () => {
+    let finish!: () => void;
+    const runProbeLlmSource = vi.fn(() => new Promise<ServerLlmProbeResult>((resolve) => { finish = () => resolve(probeOk); }));
+    const { host, mount } = fixture(runProbeLlmSource);
+    await mount.whenLoaded();
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'pool:groq');
+    clickByAttrValue(host, AI_MODELS_POOL_EDIT_ATTR, 'groq');
+    type(host, 'model', 'unsaved-model');
+    clickByAttrValue(host, AI_MODELS_POOL_CANCEL_EDIT_ATTR, 'groq');
+    await mount.setFreePoolEntryEnabled('groq', false);
+    await mount.saveFreePoolEntry('mistral', { provider: mistral.provider, model: 'new-mistral', base_url: mistral.base_url });
+    finish();
+    await flush();
+    expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_RESULT_ATTR, 'pool:groq')).not.toBeNull();
+    expect(runProbeLlmSource).toHaveBeenCalledTimes(1);
+    mount.dispose();
+  });
+
+  it('keeps the edited form answer when another entry saves', async () => {
+    let finish!: () => void;
+    const runProbeLlmSource = vi.fn(() => new Promise<ServerLlmProbeResult>((resolve) => { finish = () => resolve(probeOk); }));
+    const { host, mount } = fixture(runProbeLlmSource);
+    await mount.whenLoaded();
+    setup(host, 'edit');
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, formKey);
+    await mount.saveFreePoolEntry('mistral', { provider: mistral.provider, model: 'new-mistral', base_url: mistral.base_url });
+    finish();
+    await flush();
+    expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_RESULT_ATTR, formKey)).not.toBeNull();
+    mount.dispose();
+  });
+
+  it('drops an automatic-name probe when a removal changes the name the form will get', async () => {
+    let finish!: () => void;
+    const runProbeLlmSource = vi.fn(() => new Promise<ServerLlmProbeResult>((resolve) => { finish = () => resolve(probeOk); }));
+    const { host, mount } = fixture(runProbeLlmSource);
+    await mount.whenLoaded();
+    setup(host, 'add');
+    type(host, 'id', '');
+    type(host, 'base-url', groq.base_url);
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, formKey);
+    expect(runProbeLlmSource).toHaveBeenCalledWith(expect.objectContaining({ target: { kind: 'pool_entry', entry_id: 'groq-2' } }));
+    await mount.removeFreePoolEntry('groq');
+    finish();
+    await flush();
+    expectNoAnswer(host);
+    mount.dispose();
+  });
+});
+
 describe('Free pool — names, Edit, and Test before adding', () => {
   const probeOk = {
     ok: true,
@@ -4124,10 +4686,842 @@ describe('Free pool — names, Edit, and Test before adding', () => {
   });
 });
 
-/** D-323 — the chat behaviour section's switches. The rolling brief's page
- *  code shipped on 2026-09-10 with no caller wired at the route, so the section
- *  never left "Loading"; these mount the page with the callers the route now
- *  passes. */
+describe('Saved-config refresh probe freshness', () => {
+  const probeOk: ServerLlmProbeResult = { ok: true, diagnosis: 'ok', elapsed_ms: 120 };
+  const deferred = <T>() => {
+    let resolve!: (value: T) => void;
+    let reject!: (reason: Error) => void;
+    const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+    return { promise, resolve, reject };
+  };
+  const config = (): Record<string, unknown> => ({
+    ...llmConfig(),
+    embeddings_slot: { provider: 'openai', model: 'embedding-saved', has_key: true },
+    transcription_slot: { provider: 'openai', model: 'whisper-saved', has_key: true },
+    transcription_language: 'en',
+    free_pool: [{
+      id: 'groq', type: 'api', provider: 'openai-compatible', model: 'llama-free',
+      base_url: 'https://api.groq.com/openai/v1', has_key: true, enabled: true,
+    }],
+  });
+  const snapshot = (value: Record<string, unknown>) => ({
+    config: structuredClone(value),
+    supports: { slot_provider_name: true, pool_entry_drafts: true },
+  });
+  const fixture = (
+    runProbeLlmSource: AiModelsProbeSourceCaller = vi.fn(async () => probeOk),
+    overrides: Partial<Parameters<typeof mountAiModelsPage>[0]> = {},
+  ) => {
+    let saved = config();
+    const reads: ReturnType<typeof deferred<ReturnType<typeof snapshot>>>[] = [];
+    let initial = true;
+    const runGetLLMConfig = vi.fn(() => {
+      if (initial) { initial = false; return Promise.resolve(snapshot(saved)); }
+      const read = deferred<ReturnType<typeof snapshot>>();
+      reads.push(read);
+      return read.promise;
+    });
+    return {
+      ...mountFixture({
+        runGetLLMConfig, runProbeLlmSource,
+        runSetTranscriptionSlot: vi.fn(async () => ({ ok: true as const })),
+        ...overrides,
+      }),
+      reads,
+      setSaved: (next: Record<string, unknown>) => { saved = next; },
+      resolveRead: (index = reads.length - 1) => reads[index]!.resolve(snapshot(saved)),
+    };
+  };
+  const sources = [
+    { key: 'slot_1', attr: AI_MODELS_SLOT_FIELD_ATTR, model: 'slot_1:model', mode: 'slot' },
+    { key: 'embeddings_slot', attr: AI_MODELS_EMBEDDINGS_FIELD_ATTR, model: 'model', mode: 'slot' },
+    { key: 'transcription_slot', attr: AI_MODELS_TRANSCRIPTION_FIELD_ATTR, model: 'model', mode: 'slot' },
+    { key: 'pool:groq', attr: AI_MODELS_POOL_ADD_FIELD_ATTR, model: 'model', mode: 'row' },
+    { key: 'free_pool:form', attr: AI_MODELS_POOL_ADD_FIELD_ATTR, model: 'model', mode: 'add' },
+    { key: 'free_pool:form', attr: AI_MODELS_POOL_ADD_FIELD_ATTR, model: 'model', mode: 'edit' },
+  ] as const;
+  const setup = (host: FakeElement, source: typeof sources[number]) => {
+    if (source.mode === 'add' || source.mode === 'edit' || source.mode === 'row') {
+      for (const [field, value] of Object.entries({
+        id: 'new-source', model: 'unsaved-pool-model', 'api-key': 'draft-fixture-key',
+        'base-url': 'https://new.example.test/v1',
+      })) typeByAttrValue(host, AI_MODELS_POOL_ADD_FIELD_ATTR, field, value);
+      if (source.mode === 'edit') clickByAttrValue(host, AI_MODELS_POOL_EDIT_ATTR, 'groq');
+    }
+  };
+  const expectNoAnswer = (host: FakeElement, key: string) => {
+    expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_RESULT_ATTR, key)).toBeNull();
+    expect(findByAttrValue(host, AI_MODELS_FORM_ERROR_ATTR, `${key}:test`)).toBeNull();
+  };
+  const outcomes = ['success', 'rejected', 'rpc-error'] as const;
+  const answer = (outcome: typeof outcomes[number]): ServerLlmProbeResult => outcome === 'rejected'
+    ? { ok: false, diagnosis: 'auth', detail: 'Old key rejected.', elapsed_ms: 120 } : probeOk;
+
+  for (const source of sources) {
+    describe(`${source.key} ${source.mode}`, () => {
+      it.each(outcomes)('clears a completed %s on an unchanged redacted read and preserves the draft', async (outcome) => {
+        const probe = vi.fn<AiModelsProbeSourceCaller>().mockImplementationOnce(async () => {
+          if (outcome === 'rpc-error') throw new Error('Old transport error.');
+          return answer(outcome);
+        }).mockResolvedValue(probeOk);
+        const { host, mount, reads, resolveRead, opts } = fixture(probe);
+        await mount.whenLoaded();
+        setup(host, source);
+        clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, source.key);
+        await flush();
+        expect(findByAttrValue(host, outcome === 'rpc-error' ? AI_MODELS_FORM_ERROR_ATTR : AI_MODELS_SLOT_TEST_RESULT_ATTR,
+          outcome === 'rpc-error' ? `${source.key}:test` : source.key)).not.toBeNull();
+        const draftValue = findByAttrValue(host, source.attr, source.model)!.value;
+        const pending = mount.refresh();
+        expectNoAnswer(host, source.key);
+        expect(reads).toHaveLength(1);
+        const test = findByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, source.key)!;
+        expect(test.disabled).toBe(false);
+        expect(test.getAttribute('aria-disabled')).toBe('true');
+        clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, source.key);
+        expect(probe).toHaveBeenCalledTimes(1);
+        expect(findByAttrValue(host, source.attr, source.model)!.value).toBe(draftValue);
+        resolveRead();
+        await pending;
+        expectNoAnswer(host, source.key);
+        expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, source.key)!.getAttribute('aria-disabled')).toBeNull();
+        expect(findByAttrValue(host, source.attr, source.model)!.value).toBe(draftValue);
+        clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, source.key);
+        await flush();
+        expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_RESULT_ATTR, source.key)).not.toBeNull();
+        expect(probe).toHaveBeenCalledTimes(2);
+        expect(opts.runSetLLMSlot).not.toHaveBeenCalled();
+        expect(opts.runUpsertFreePoolEntry).not.toHaveBeenCalled();
+        mount.dispose();
+      });
+
+      it.each(outcomes)('discards a pending %s without releasing the actual probe before it settles', async (outcome) => {
+        const held = deferred<ServerLlmProbeResult>();
+        const probe = vi.fn<AiModelsProbeSourceCaller>().mockReturnValueOnce(held.promise).mockResolvedValue(probeOk);
+        const { host, mount, resolveRead, setSaved } = fixture(probe);
+        await mount.whenLoaded();
+        setup(host, source);
+        clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, source.key);
+        const pending = mount.refresh();
+        setSaved({ ...config(), slot_2: { provider: 'openai', model: 'external-model', has_key: true } });
+        resolveRead();
+        await pending;
+        expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, source.key)!.getAttribute('aria-busy')).toBe('true');
+        clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'slot_2');
+        expect(probe).toHaveBeenCalledTimes(1);
+        if (outcome === 'rpc-error') held.reject(new Error('Old transport error.'));
+        else held.resolve(answer(outcome));
+        await flush();
+        expectNoAnswer(host, source.key);
+        expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, source.key)!.getAttribute('aria-disabled')).toBeNull();
+        clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, source.key);
+        await flush();
+        expect(probe).toHaveBeenCalledTimes(2);
+        expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_RESULT_ATTR, source.key)).not.toBeNull();
+        mount.dispose();
+      });
+    });
+  }
+
+  it('keeps probes blocked after the provider reply until the saved-config read settles, including a failed read', async () => {
+    const held = deferred<ServerLlmProbeResult>();
+    const probe = vi.fn<AiModelsProbeSourceCaller>().mockReturnValueOnce(held.promise).mockResolvedValue(probeOk);
+    const { host, mount, reads, resolveRead } = fixture(probe);
+    await mount.whenLoaded();
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'slot_1');
+    const pending = mount.refresh();
+    held.resolve(probeOk);
+    await flush();
+    expectNoAnswer(host, 'slot_1');
+    expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'slot_1')!.getAttribute('aria-disabled')).toBe('true');
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'slot_1');
+    expect(probe).toHaveBeenCalledTimes(1);
+    reads[0]!.reject(new Error('Read unavailable.'));
+    await pending;
+    expect(mount.getState().state).toBe('error');
+    expectNoAnswer(host, 'slot_1');
+    const retryRead = mount.refresh();
+    resolveRead();
+    await retryRead;
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'slot_1');
+    await flush();
+    expect(probe).toHaveBeenCalledTimes(2);
+    mount.dispose();
+  });
+
+  it.each(['success', 'error'])('ignores an older %s after a newer read succeeds', async (outcome) => {
+    const { host, mount, reads, setSaved, resolveRead } = fixture();
+    await mount.whenLoaded();
+    const older = mount.refresh();
+    const newer = mount.refresh();
+    setSaved({ ...config(), slot_1: { provider: 'openai', model: 'newest-model', has_key: true } });
+    resolveRead(1);
+    await newer;
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'slot_1');
+    await flush();
+    if (outcome === 'error') reads[0]!.reject(new Error('Older read unavailable.'));
+    else reads[0]!.resolve(snapshot(config()));
+    await older;
+    expect(mount.getState().state).toBe('ready');
+    expect(mount.getState().loadErrors).toEqual([]);
+    expect(mount.getState().llmConfig?.slot_1).toMatchObject({ model: 'newest-model' });
+    expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_RESULT_ATTR, 'slot_1')).not.toBeNull();
+    mount.dispose();
+  });
+
+  it('does not let an older successful read hide the latest read failure', async () => {
+    const { mount, reads } = fixture();
+    await mount.whenLoaded();
+    const older = mount.refresh();
+    const newer = mount.refresh();
+    reads[1]!.reject(new Error('Latest read unavailable.'));
+    await newer;
+    reads[0]!.resolve(snapshot({ ...config(), slot_1: { provider: 'openai', model: 'obsolete', has_key: true } }));
+    await older;
+    expect(mount.getState().state).toBe('error');
+    expect(mount.getState().loadErrors).toEqual(['LLM config: Latest read unavailable.']);
+    expect(mount.getState().llmConfig?.slot_1).toMatchObject({ model: 'local-model' });
+    mount.dispose();
+  });
+
+  it('keeps the newest read pending when an older read finishes first', async () => {
+    const probe = vi.fn(async () => probeOk);
+    const { host, mount, resolveRead } = fixture(probe);
+    await mount.whenLoaded();
+    const older = mount.refresh();
+    const newer = mount.refresh();
+    resolveRead(0);
+    await older;
+    expect(mount.getState().state).toBe('loading');
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'slot_1');
+    expect(probe).not.toHaveBeenCalled();
+    resolveRead(1);
+    await newer;
+    expect(mount.getState().state).toBe('ready');
+    mount.dispose();
+  });
+
+  for (const source of ['slot_1', 'embeddings_slot', 'transcription_slot', 'pool:groq'] as const) {
+    it(`does not overwrite a confirmed ${source} save with a read begun before it`, async () => {
+      const { mount, resolveRead } = fixture(undefined, {
+        runSetTranscriptionSlot: vi.fn(async () => ({ ok: true as const })),
+      });
+      await mount.whenLoaded();
+      const pending = mount.refresh();
+      const patch = { provider: 'openai', model: 'confirmed-model', api_key: 'fixture-key' };
+      if (source === 'slot_1') await mount.saveByokSlot(source, patch);
+      else if (source === 'embeddings_slot') await mount.saveEmbeddingsSlot(patch);
+      else if (source === 'transcription_slot') await mount.saveTranscriptionSlot(patch);
+      else await mount.saveFreePoolEntry('groq', patch);
+      resolveRead();
+      await pending;
+      if (source === 'pool:groq') expect(mount.getState().llmConfig?.free_pool).toEqual([
+        expect.objectContaining({ id: 'groq', model: 'confirmed-model', has_key: true }),
+      ]);
+      else expect(mount.getState().llmConfig?.[source]).toMatchObject({ model: 'confirmed-model', has_key: true });
+      mount.dispose();
+    });
+  }
+
+  it('ignores a config-read failure superseded by a confirmed save', async () => {
+    const { mount, reads } = fixture();
+    await mount.whenLoaded();
+    const pending = mount.refresh();
+    await mount.saveByokSlot('slot_1', { provider: 'openai', model: 'confirmed-model', api_key: 'fixture-key' });
+    reads[0]!.reject(new Error('Superseded read unavailable.'));
+    await pending;
+    expect(mount.getState().state).toBe('ready');
+    expect(mount.getState().loadErrors).toEqual([]);
+    expect(mount.getState().llmConfig?.slot_1).toMatchObject({ model: 'confirmed-model' });
+    mount.dispose();
+  });
+
+  it('ignores an obsolete sibling read while the latest refresh is ready', async () => {
+    const olderPrompt = deferred<{ prompts: ServerLlmPrompt[] }>();
+    const readPrompts = vi.fn().mockResolvedValueOnce({ prompts: llmPrompts() })
+      .mockReturnValueOnce(olderPrompt.promise).mockResolvedValue({ prompts: llmPrompts() });
+    const { mount, resolveRead } = fixture(undefined, { runGetLlmPrompts: readPrompts });
+    await mount.whenLoaded();
+    const older = mount.refresh();
+    const newer = mount.refresh();
+    resolveRead(1);
+    await newer;
+    olderPrompt.reject(new Error('Obsolete prompts unavailable.'));
+    resolveRead(0);
+    await older;
+    expect(mount.getState().state).toBe('ready');
+    expect(mount.getState().loadErrors).toEqual([]);
+    mount.dispose();
+  });
+
+  it('ignores late readers after disposal', async () => {
+    const { mount, resolveRead, setSaved } = fixture();
+    await mount.whenLoaded();
+    const before = mount.getState().llmConfig;
+    const pending = mount.refresh();
+    mount.dispose();
+    setSaved({ ...config(), slot_1: { provider: 'openai', model: 'after-disposal', has_key: true } });
+    resolveRead();
+    await pending;
+    expect(mount.getState().llmConfig).toEqual(before);
+  });
+});
+
+describe('AI settings refresh and confirmed changes', () => {
+  const deferred = <T>() => {
+    let resolve!: (value: T) => void;
+    let reject!: (reason: Error) => void;
+    const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+    return { promise, resolve, reject };
+  };
+  const preference = (changed: boolean, updatedAt?: number) => ({
+    source_id: changed ? 'free_pool' as const : 'slot_1' as const,
+    updated_at: updatedAt ?? (changed ? 3 : 1),
+  });
+  const toggle = (changed: boolean) => ({ enabled: !changed });
+  const queuedRead = <T>(initial: T) => {
+    const reads: ReturnType<typeof deferred<T>>[] = [];
+    const caller = vi.fn().mockResolvedValueOnce(initial).mockImplementation(() => {
+      const next = deferred<T>();
+      reads.push(next);
+      return next.promise;
+    });
+    return { caller, reads };
+  };
+  const controls = [
+    { key: 'model', attr: AI_MODELS_MODEL_PREF_BUTTON_ATTR, errorPrefix: 'model preference:' },
+    { key: 'brief', attr: AI_MODELS_ROLLING_BRIEF_ATTR, errorPrefix: 'chat behaviour:' },
+    { key: 'offers', attr: AI_MODELS_INSTALL_OFFERS_ATTR, errorPrefix: null },
+  ] as const;
+  type ControlKey = typeof controls[number]['key'];
+  const fixture = (overrides: Partial<Parameters<typeof mountAiModelsPage>[0]> = {}) => {
+    const model = queuedRead(preference(false));
+    const brief = queuedRead(toggle(false));
+    const offers = queuedRead(toggle(false));
+    const writes = {
+      model: deferred<ReturnType<typeof preference>>(),
+      brief: deferred<ReturnType<typeof toggle>>(),
+      offers: deferred<ReturnType<typeof toggle>>(),
+    };
+    const setters = {
+      model: vi.fn(() => writes.model.promise),
+      brief: vi.fn(() => writes.brief.promise),
+      offers: vi.fn(() => writes.offers.promise),
+    };
+    const mounted = mountFixture({
+      runGetDefaultModelPref: model.caller,
+      runSetDefaultModelPref: setters.model,
+      runGetRollingBrief: brief.caller,
+      runSetRollingBrief: setters.brief,
+      runGetInstallOffers: offers.caller,
+      runSetInstallOffers: setters.offers,
+      ...overrides,
+    });
+    return {
+      ...mounted, setters,
+      finishWrite: (key: ControlKey, changed = true, fail = false) => {
+        if (fail) writes[key].reject(new Error('Setting write unavailable.'));
+        else if (key === 'model') writes.model.resolve(preference(changed));
+        else writes[key].resolve(toggle(changed));
+      },
+      finishReads: (changes: Partial<Record<ControlKey, boolean>> = {}, fail?: ControlKey | readonly ControlKey[], index = 0, modelUpdatedAt?: number) => {
+        const failures = new Set(typeof fail === 'string' ? [fail] : fail ?? []);
+        if (failures.has('model')) model.reads[index]!.reject(new Error('Setting read unavailable.'));
+        else model.reads[index]!.resolve(preference(changes.model ?? false, modelUpdatedAt));
+        for (const [key, read] of [['brief', brief], ['offers', offers]] as const) {
+          if (failures.has(key)) read.reads[index]!.reject(new Error('Setting read unavailable.'));
+          else read.reads[index]!.resolve(toggle(changes[key] ?? false));
+        }
+      },
+    };
+  };
+  const button = (host: FakeElement, control: typeof controls[number]) => control.key === 'model'
+    ? findByAttrValue(host, control.attr, 'free_pool')! : findByAttr(host, control.attr)!;
+  const press = (host: FakeElement, control: typeof controls[number]) => {
+    const value = control.key === 'model' ? 'free_pool' : button(host, control).getAttribute(control.attr)!;
+    clickByAttrValue(host, control.attr, value);
+  };
+  const expectChanged = (host: FakeElement, control: typeof controls[number], changed: boolean) => {
+    expect(button(host, control).getAttribute('aria-pressed'))
+      .toBe(String(control.key === 'model' ? changed : !changed));
+  };
+
+  for (const control of controls) {
+    it(`${control.key} ignores a late read success after its write confirms`, async () => {
+      const { host, mount, setters, finishWrite, finishReads } = fixture();
+      await mount.whenLoaded();
+      const pending = mount.refresh();
+      press(host, control);
+      finishWrite(control.key);
+      await flush();
+      expectChanged(host, control, true);
+      finishReads();
+      await pending;
+      expectChanged(host, control, true);
+      expect(mount.getState().state).toBe('ready');
+      expect(setters[control.key]).toHaveBeenCalledTimes(1);
+      mount.dispose();
+    });
+
+    it(`${control.key} ignores a late read failure after its write confirms`, async () => {
+      const { host, mount, finishWrite, finishReads } = fixture();
+      await mount.whenLoaded();
+      const pending = mount.refresh();
+      press(host, control);
+      finishWrite(control.key);
+      await flush();
+      finishReads({}, control.key);
+      await pending;
+      expectChanged(host, control, true);
+      expect(mount.getState().state).toBe('ready');
+      expect(mount.getState().loadErrors).toEqual([]);
+      mount.dispose();
+    });
+
+    it(`${control.key} keeps the confirmed server value when the requested change was coerced`, async () => {
+      const { host, mount, finishWrite, finishReads } = fixture();
+      await mount.whenLoaded();
+      const pending = mount.refresh();
+      press(host, control);
+      finishWrite(control.key, false);
+      await flush();
+      expectChanged(host, control, false);
+      finishReads({ [control.key]: true });
+      await pending;
+      expectChanged(host, control, false);
+      mount.dispose();
+    });
+
+    it(`${control.key} accepts a read begun after the write confirmed`, async () => {
+      const { host, mount, finishWrite, finishReads } = fixture();
+      await mount.whenLoaded();
+      press(host, control);
+      finishWrite(control.key);
+      await flush();
+      expectChanged(host, control, true);
+      const pending = mount.refresh();
+      finishReads({}, undefined, 0, 4);
+      await pending;
+      expectChanged(host, control, false);
+      expect(mount.getState().state).toBe('ready');
+      mount.dispose();
+    });
+
+    it(`${control.key} does not supersede a read when the write fails`, async () => {
+      const { host, mount, finishWrite, finishReads } = fixture();
+      await mount.whenLoaded();
+      const pending = mount.refresh();
+      press(host, control);
+      finishWrite(control.key, true, true);
+      await flush();
+      expectChanged(host, control, false);
+      finishReads({ [control.key]: true });
+      await pending;
+      expectChanged(host, control, true);
+      expect(findByAttr(host, AI_MODELS_ACTION_ERROR_ATTR)?.textContent).toBe('Setting write unavailable.');
+      mount.dispose();
+    });
+
+    it(`${control.key} accepts a read while its write is still pending`, async () => {
+      const { host, mount, finishWrite, finishReads } = fixture();
+      await mount.whenLoaded();
+      const pending = mount.refresh();
+      press(host, control);
+      finishReads({ [control.key]: true });
+      await pending;
+      expectChanged(host, control, true);
+      expect(button(host, control).getAttribute('aria-busy')).toBe('true');
+      finishWrite(control.key, true, true);
+      await flush();
+      expectChanged(host, control, true);
+      expect(button(host, control).getAttribute('aria-busy')).toBeNull();
+      expect(findByAttr(host, AI_MODELS_ACTION_ERROR_ATTR)?.textContent).toBe('Setting write unavailable.');
+      mount.dispose();
+    });
+
+    if (control.errorPrefix !== null) {
+      it(`${control.key} clears an already displayed read error when a later write confirms`, async () => {
+        const { host, mount, finishWrite, finishReads } = fixture();
+        await mount.whenLoaded();
+        const pending = mount.refresh();
+        finishReads({}, control.key);
+        await pending;
+        expect(mount.getState().state).toBe('error');
+        press(host, control);
+        finishWrite(control.key);
+        await flush();
+        expectChanged(host, control, true);
+        expect(mount.getState().loadErrors).toEqual([]);
+        expect(mount.getState().state).toBe('ready');
+        mount.dispose();
+      });
+    }
+  }
+
+  it('a confirmed default change preserves independent switch reads and unrelated errors', async () => {
+    const readSchema = vi.fn().mockResolvedValueOnce({ schema: schema(5000) })
+      .mockRejectedValue(new Error('Schema unavailable.'));
+    const { host, mount, finishWrite, finishReads } = fixture({ runGetConfigSchema: readSchema });
+    await mount.whenLoaded();
+    const pending = mount.refresh();
+    press(host, controls[0]);
+    finishWrite('model');
+    await flush();
+    finishReads({ brief: true, offers: true });
+    await pending;
+    for (const control of controls) expectChanged(host, control, true);
+    expect(mount.getState().loadErrors).toEqual(['config schema: Schema unavailable.']);
+    expect(mount.getState().state).toBe('error');
+    mount.dispose();
+  });
+
+  it.each(['success', 'failure'])('a model-preference broadcast supersedes an older read %s', async (outcome) => {
+    const { host, mount, subscriptions, setters, finishReads } = fixture();
+    await mount.whenLoaded();
+    const pending = mount.refresh();
+    subscriptions.get('chat.default_model_pref_changed')![0]!({
+      kind: 'chat.default_model_pref_changed', source_id: 'free_pool', updated_at: 7,
+    });
+    expectChanged(host, controls[0], true);
+    finishReads({}, outcome === 'failure' ? 'model' : undefined);
+    await pending;
+    expectChanged(host, controls[0], true);
+    expect(mount.getState().loadErrors).toEqual([]);
+    expect(mount.getState().state).toBe('ready');
+    expect(setters.model).not.toHaveBeenCalled();
+    mount.dispose();
+  });
+
+  it('a model-preference broadcast clears its earlier read error without hiding a different read failure', async () => {
+    const { host, mount, subscriptions, finishReads } = fixture();
+    await mount.whenLoaded();
+    const pending = mount.refresh();
+    finishReads({}, ['model', 'brief']);
+    await pending;
+    expect(mount.getState().state).toBe('error');
+    subscriptions.get('chat.default_model_pref_changed')![0]!({
+      kind: 'chat.default_model_pref_changed', source_id: 'free_pool', updated_at: 7,
+    });
+    expectChanged(host, controls[0], true);
+    expect(mount.getState().loadErrors).toEqual(['chat behaviour: Setting read unavailable.']);
+    expect(mount.getState().state).toBe('error');
+    mount.dispose();
+  });
+
+  it('a model-preference broadcast resolves a failed preference read', async () => {
+    const { host, mount, subscriptions, finishReads } = fixture();
+    await mount.whenLoaded();
+    const pending = mount.refresh();
+    finishReads({}, 'model');
+    await pending;
+    subscriptions.get('chat.default_model_pref_changed')![0]!({
+      kind: 'chat.default_model_pref_changed', source_id: 'free_pool', updated_at: 7,
+    });
+    expectChanged(host, controls[0], true);
+    expect(mount.getState().loadErrors).toEqual([]);
+    expect(mount.getState().state).toBe('ready');
+    mount.dispose();
+  });
+
+  it('clears a preference read error while a sibling read still keeps the refresh pending', async () => {
+    const heldSchema = deferred<{ schema: ServerConfigField[] }>();
+    const readSchema = vi.fn().mockResolvedValueOnce({ schema: schema(5000) }).mockReturnValue(heldSchema.promise);
+    const { host, mount, finishWrite, finishReads } = fixture({ runGetConfigSchema: readSchema });
+    await mount.whenLoaded();
+    const pending = mount.refresh();
+    finishReads({}, 'model');
+    await flush();
+    expect(mount.getState().loadErrors).toEqual(['model preference: Setting read unavailable.']);
+    press(host, controls[0]);
+    finishWrite('model');
+    await flush();
+    expect(mount.getState().loadErrors).toEqual([]);
+    expect(mount.getState().state).toBe('loading');
+    heldSchema.resolve({ schema: schema(5000) });
+    await pending;
+    expectChanged(host, controls[0], true);
+    expect(mount.getState().state).toBe('ready');
+    mount.dispose();
+  });
+});
+
+describe('Default model ordering', () => {
+  type Preference = { source_id: 'slot_1' | 'slot_2' | 'free_pool' | null; updated_at: number };
+  type SavedPreference = { source_id: NonNullable<Preference['source_id']>; updated_at: number };
+  const pref = <S extends Preference['source_id']>(source_id: S, updated_at: number) => ({ source_id, updated_at });
+  const deferred = <T>() => {
+    let resolve!: (value: T) => void;
+    let reject!: (reason: Error) => void;
+    const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+    return { promise, resolve, reject };
+  };
+  const configured = () => ({
+    ...llmConfig(), slot_2: { provider: 'anthropic', model: 'thinking-model', has_key: true },
+  });
+  const fixture = (overrides: Partial<Parameters<typeof mountAiModelsPage>[0]> = {}) => {
+    const reads: ReturnType<typeof deferred<Preference>>[] = [];
+    const writes: ReturnType<typeof deferred<SavedPreference>>[] = [];
+    const mounted = mountFixture({
+      runGetLLMConfig: vi.fn(async () => ({ config: configured() })),
+      runGetDefaultModelPref: vi.fn().mockResolvedValueOnce(pref('slot_1', 10)).mockImplementation(() => {
+        const next = deferred<Preference>(); reads.push(next); return next.promise;
+      }),
+      runSetDefaultModelPref: vi.fn(() => {
+        const next = deferred<SavedPreference>(); writes.push(next); return next.promise;
+      }),
+      ...overrides,
+    });
+    return {
+      ...mounted, reads, writes,
+      broadcast: (source_id: string | null, updated_at: number) => mounted.subscriptions
+        .get('chat.default_model_pref_changed')![0]!({ kind: 'chat.default_model_pref_changed', source_id, updated_at }),
+    };
+  };
+  const expectPreference = (mount: ReturnType<typeof mountFixture>['mount'], source: Preference['source_id'], stamp: number) => {
+    expect(mount.getState().modelPreference).toMatchObject({ kind: 'resolved', source_id: source, updated_at: stamp });
+  };
+  const choose = (host: FakeElement, source: string) => clickByAttrValue(host, AI_MODELS_MODEL_PREF_BUTTON_ATTR, source);
+
+  it('ignores older broadcasts and retains the latest preference through a later refresh', async () => {
+    const { mount, broadcast, reads } = fixture();
+    await mount.whenLoaded();
+    broadcast('slot_2', 20);
+    broadcast('slot_1', 15);
+    expectPreference(mount, 'slot_2', 20);
+    const pending = mount.refresh();
+    reads[0]!.resolve(pref('slot_1', 10));
+    await pending;
+    expectPreference(mount, 'slot_2', 20);
+    mount.dispose();
+  });
+
+  it.each([
+    { replyStamp: 15, expected: 'free_pool' as const, stamp: 20 },
+    { replyStamp: 20, expected: 'free_pool' as const, stamp: 20 },
+    { replyStamp: 30, expected: 'slot_2' as const, stamp: 30 },
+  ])('orders a save reply at $replyStamp against an intervening broadcast at 20', async ({ replyStamp, expected, stamp }) => {
+    const { host, mount, writes, broadcast, opts } = fixture();
+    await mount.whenLoaded();
+    choose(host, 'slot_2');
+    expect(findByAttrValue(host, AI_MODELS_MODEL_PREF_BUTTON_ATTR, 'slot_2')!.getAttribute('aria-busy')).toBe('true');
+    broadcast('free_pool', 20);
+    writes[0]!.resolve(pref('slot_2', replyStamp));
+    await flush();
+    expectPreference(mount, expected, stamp);
+    expect(findByAttrValue(host, AI_MODELS_MODEL_PREF_BUTTON_ATTR, 'slot_2')!.getAttribute('aria-busy')).toBeNull();
+    expect(findByAttr(host, AI_MODELS_ACTION_ERROR_ATTR)).toBeNull();
+    expect(opts.runSetDefaultModelPref).toHaveBeenCalledTimes(1);
+    mount.dispose();
+  });
+
+  it('allows a new explicit save in the same millisecond after an obsolete reply settles', async () => {
+    const { host, mount, writes, broadcast } = fixture();
+    await mount.whenLoaded();
+    choose(host, 'slot_2');
+    broadcast('free_pool', 20);
+    writes[0]!.resolve(pref('slot_2', 20));
+    await flush();
+    expectPreference(mount, 'free_pool', 20);
+    choose(host, 'slot_1');
+    writes[1]!.resolve(pref('slot_1', 20));
+    await flush();
+    expectPreference(mount, 'slot_1', 20);
+    mount.dispose();
+  });
+
+  it('a duplicate acknowledgement leaves a read begun after its broadcast valid', async () => {
+    const { host, mount, writes, reads, broadcast } = fixture();
+    await mount.whenLoaded();
+    choose(host, 'slot_2');
+    broadcast('slot_2', 20);
+    const pending = mount.refresh();
+    writes[0]!.resolve(pref('slot_2', 20));
+    await flush();
+    expect(findByAttrValue(host, AI_MODELS_MODEL_PREF_BUTTON_ATTR, 'slot_2')!.getAttribute('aria-busy')).toBeNull();
+    reads[0]!.resolve(pref('free_pool', 21));
+    await pending;
+    expectPreference(mount, 'free_pool', 21);
+    mount.dispose();
+  });
+
+  it('accepts a fresh read within the same millisecond as the latest broadcast', async () => {
+    const { mount, reads, broadcast } = fixture();
+    await mount.whenLoaded();
+    broadcast('free_pool', 20);
+    const pending = mount.refresh();
+    reads[0]!.resolve(pref('slot_2', 20));
+    await pending;
+    expectPreference(mount, 'slot_2', 20);
+    mount.dispose();
+  });
+
+  it('a read started before a save cannot block its same-millisecond confirmation', async () => {
+    const { host, mount, reads, writes } = fixture();
+    await mount.whenLoaded();
+    const pending = mount.refresh();
+    choose(host, 'slot_2');
+    reads[0]!.resolve(pref('slot_1', 10));
+    await pending;
+    writes[0]!.resolve(pref('slot_2', 10));
+    await flush();
+    expectPreference(mount, 'slot_2', 10);
+    mount.dispose();
+  });
+
+  it('a read started after a save outranks its conflicting same-millisecond reply', async () => {
+    const { host, mount, reads, writes } = fixture();
+    await mount.whenLoaded();
+    choose(host, 'slot_2');
+    const pending = mount.refresh();
+    reads[0]!.resolve(pref('free_pool', 20));
+    await pending;
+    writes[0]!.resolve(pref('slot_2', 20));
+    await flush();
+    expectPreference(mount, 'free_pool', 20);
+    mount.dispose();
+  });
+
+  it('an ignored broadcast does not invalidate a newer pending read', async () => {
+    const { mount, reads, broadcast } = fixture();
+    await mount.whenLoaded();
+    const pending = mount.refresh();
+    broadcast('slot_2', 5);
+    reads[0]!.resolve(pref('free_pool', 20));
+    await pending;
+    expectPreference(mount, 'free_pool', 20);
+    mount.dispose();
+  });
+
+  it.each([20, 30])('a read issued after a save still applies at timestamp %s when its reply arrives last', async (stamp) => {
+    const { host, mount, reads, writes } = fixture();
+    await mount.whenLoaded();
+    choose(host, 'slot_2');
+    const pending = mount.refresh();
+    writes[0]!.resolve(pref('slot_2', 20));
+    await flush();
+    expectPreference(mount, 'slot_2', 20);
+    reads[0]!.resolve(pref('free_pool', stamp));
+    await pending;
+    expectPreference(mount, 'free_pool', stamp);
+    mount.dispose();
+  });
+
+  it.each(['read-first', 'save-first'])('a newer read failure survives an earlier save acknowledgement (%s)', async (arrival) => {
+    const { host, mount, reads, writes } = fixture();
+    await mount.whenLoaded();
+    choose(host, 'slot_2');
+    const pending = mount.refresh();
+    if (arrival === 'save-first') {
+      writes[0]!.resolve(pref('slot_2', 20));
+      await flush();
+    }
+    reads[0]!.reject(new Error('Preference offline.'));
+    await pending;
+    if (arrival === 'read-first') {
+      writes[0]!.resolve(pref('slot_2', 20));
+      await flush();
+    }
+    expectPreference(mount, 'slot_2', 20);
+    expect(mount.getState().loadErrors).toEqual(['model preference: Preference offline.']);
+    expect(mount.getState().state).toBe('error');
+    choose(host, 'slot_1');
+    writes[1]!.resolve(pref('slot_1', 21));
+    await flush();
+    expectPreference(mount, 'slot_1', 21);
+    expect(mount.getState().loadErrors).toEqual([]);
+    expect(mount.getState().state).toBe('ready');
+    mount.dispose();
+  });
+
+  it('an older broadcast cannot clear a current read error', async () => {
+    const { mount, reads, broadcast } = fixture();
+    await mount.whenLoaded();
+    broadcast('free_pool', 20);
+    const pending = mount.refresh();
+    reads[0]!.reject(new Error('Preference offline.'));
+    await pending;
+    broadcast('slot_1', 15);
+    expectPreference(mount, 'free_pool', 20);
+    expect(mount.getState().state).toBe('error');
+    expect(mount.getState().loadErrors).toEqual(['model preference: Preference offline.']);
+    broadcast('slot_2', 21);
+    expectPreference(mount, 'slot_2', 21);
+    expect(mount.getState().loadErrors).toEqual([]);
+    expect(mount.getState().state).toBe('ready');
+    mount.dispose();
+  });
+
+  it.each([NaN, Infinity, -1])('an invalid broadcast timestamp (%s) cannot poison or invalidate a pending read', async (stamp) => {
+    const { mount, reads, broadcast } = fixture();
+    await mount.whenLoaded();
+    const pending = mount.refresh();
+    broadcast('slot_2', stamp);
+    expectPreference(mount, 'slot_1', 10);
+    reads[0]!.resolve(pref('free_pool', 20));
+    await pending;
+    expectPreference(mount, 'free_pool', 20);
+    mount.dispose();
+  });
+
+  it.each([NaN, Infinity, -1])('reports an invalid save timestamp (%s) without losing the last known preference', async (stamp) => {
+    const { host, mount, writes, reads } = fixture();
+    await mount.whenLoaded();
+    choose(host, 'slot_2');
+    writes[0]!.resolve(pref('slot_2', stamp));
+    await flush();
+    expectPreference(mount, 'slot_1', 10);
+    expect(findByAttr(host, AI_MODELS_ACTION_ERROR_ATTR)?.textContent).toBe('Invalid model preference timestamp.');
+    const pending = mount.refresh();
+    reads[0]!.resolve(pref('free_pool', 20));
+    await pending;
+    expectPreference(mount, 'free_pool', 20);
+    mount.dispose();
+  });
+
+  it.each([NaN, Infinity, -1])('reports an invalid read timestamp (%s) and accepts a valid retry', async (stamp) => {
+    const { mount, reads } = fixture();
+    await mount.whenLoaded();
+    const pending = mount.refresh();
+    reads[0]!.resolve(pref('slot_2', stamp));
+    await pending;
+    expectPreference(mount, 'slot_1', 10);
+    expect(mount.getState().loadErrors).toEqual(['model preference: Invalid model preference timestamp.']);
+    expect(mount.getState().state).toBe('error');
+    const retry = mount.refresh();
+    reads[1]!.resolve(pref('free_pool', 20));
+    await retry;
+    expectPreference(mount, 'free_pool', 20);
+    expect(mount.getState().state).toBe('ready');
+    mount.dispose();
+  });
+
+  it('retains a broadcast received before config loads when a later read has an older timestamp', async () => {
+    const heldPref = deferred<Preference>();
+    const heldConfig = deferred<{ config: ReturnType<typeof configured> }>();
+    const { mount, broadcast } = fixture({
+      runGetDefaultModelPref: vi.fn(() => heldPref.promise),
+      runGetLLMConfig: vi.fn(() => heldConfig.promise),
+    });
+    broadcast('slot_2', 20);
+    const later = mount.refresh();
+    heldPref.resolve(pref('slot_1', 10));
+    await flush();
+    heldConfig.resolve({ config: configured() });
+    await later;
+    expectPreference(mount, 'slot_2', 20);
+    mount.dispose();
+  });
+
+  it('accepts the initial unset preference at timestamp zero', async () => {
+    const { mount } = fixture({ runGetDefaultModelPref: vi.fn(async () => pref(null, 0)) });
+    await mount.whenLoaded();
+    expectPreference(mount, null, 0);
+    mount.dispose();
+  });
+});
+
+/** D-323 — the chat behaviour section's switches. These mount the page with
+ *  the rolling-brief and install-offers callers supplied by the real route. */
 describe('chat behaviour switches — the rolling brief and install offers', () => {
   it('shows both switches once their reads land, offers on by default', async () => {
     const { host, mount } = mountFixture({
@@ -4167,6 +5561,329 @@ describe('chat behaviour switches — the rolling brief and install offers', () 
     const { host, mount } = mountFixture({ runGetInstallOffers: vi.fn(async () => ({ enabled: false })) });
     await mount.whenLoaded();
     expect(findByAttrValue(host, AI_MODELS_INSTALL_OFFERS_ATTR, 'off')).not.toBeNull();
+  });
+});
+
+describe('AI / Models pending settings navigation', () => {
+  const hold = <T>() => {
+    let resolve!: (value: T) => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+    return { promise, resolve, reject };
+  };
+
+  const startTranscriptionSave = async () => {
+    const writes = [hold<{ ok: true }>(), hold<{ ok: true }>(), hold<{ ok: true }>()];
+    const setters = writes.map((write) => vi.fn(() => write.promise));
+    const fixture = mountFixture({
+      runGetLLMConfig: vi.fn(async () => ({ config: {
+        ...llmConfig(),
+        transcription_slot: { provider: 'openai', model: 'whisper-saved', has_key: true },
+        transcription_language: 'en',
+      } })),
+      runSetTranscriptionSlot: setters[0]!,
+      runSetTranscriptionLanguage: setters[1]!,
+      runSetTranscriptionDailyRequests: setters[2]!,
+    });
+    await fixture.mount.whenLoaded();
+    expect(fixture.mount.hasInFlightWork()).toBe(false);
+    typeByAttrValue(fixture.host, AI_MODELS_TRANSCRIPTION_FIELD_ATTR, 'model', 'whisper-draft');
+    typeByAttrValue(fixture.host, AI_MODELS_TRANSCRIPTION_FIELD_ATTR, 'language', ' fr ');
+    typeByAttrValue(fixture.host, AI_MODELS_TRANSCRIPTION_FIELD_ATTR, 'daily-requests', '12');
+    clickByAttrValue(fixture.host, AI_MODELS_SLOT_SAVE_ATTR, 'transcription_slot');
+    return { ...fixture, writes, setters };
+  };
+
+  it('keeps Transcription navigation protected through slot, language, and limit writes', async () => {
+    const { mount, writes, setters } = await startTranscriptionSave();
+    for (const [index, write] of writes.entries()) {
+      expect(setters[index]).toHaveBeenCalledTimes(1);
+      expect(mount.hasInFlightWork()).toBe(true);
+      write.resolve({ ok: true });
+      await flush();
+      expect(mount.hasInFlightWork()).toBe(index < writes.length - 1);
+    }
+    expect(setters[1]).toHaveBeenCalledWith({ language: 'fr' });
+    expect(setters[2]).toHaveBeenCalledWith({ limit: 12 });
+    expect(mount.getState().llmConfig).toMatchObject({
+      transcription_slot: { model: 'whisper-draft' },
+      transcription_language: 'fr',
+      transcription_daily_requests: 12,
+    });
+    mount.dispose();
+  });
+
+  for (const [index, phase] of ['slot', 'language', 'limit'].entries()) {
+    it(`releases Transcription navigation after a ${phase} write fails`, async () => {
+      const { host, mount, writes, setters } = await startTranscriptionSave();
+      for (const write of writes.slice(0, index)) {
+        write.resolve({ ok: true });
+        await flush();
+      }
+      expect(setters[index]).toHaveBeenCalledTimes(1);
+      expect(mount.hasInFlightWork()).toBe(true);
+      writes[index]!.reject(new Error(`${phase} save unavailable`));
+      await flush();
+      expect(mount.hasInFlightWork()).toBe(false);
+      expect(findByAttrValue(host, AI_MODELS_FORM_ERROR_ATTR, 'transcription_slot:save')?.textContent)
+        .toBe(`${phase} save unavailable`);
+      for (const setter of setters.slice(index + 1)) expect(setter).not.toHaveBeenCalled();
+      mount.dispose();
+    });
+  }
+
+  const switches = [
+    { name: 'running note', attr: AI_MODELS_ROLLING_BRIEF_ATTR, setter: 'runSetRollingBrief' },
+    { name: 'pack suggestions', attr: AI_MODELS_INSTALL_OFFERS_ATTR, setter: 'runSetInstallOffers' },
+  ] as const;
+  const readSwitches = {
+    runGetRollingBrief: async () => ({ enabled: true }),
+    runGetInstallOffers: async () => ({ enabled: true }),
+  };
+
+  for (const outcome of ['success', 'failure'] as const) {
+    it.each(switches)(`protects $name navigation until its save settles with ${outcome}`, async (chatSwitch) => {
+      const write = hold<{ enabled: boolean }>();
+      const setter = vi.fn(() => write.promise);
+      const { host, mount } = mountFixture({ ...readSwitches, [chatSwitch.setter]: setter });
+      await mount.whenLoaded();
+      expect(mount.hasInFlightWork()).toBe(false);
+      clickByAttrValue(host, chatSwitch.attr, 'on');
+      expect(setter).toHaveBeenCalledWith({ enabled: false });
+      expect(mount.hasInFlightWork()).toBe(true);
+      if (outcome === 'success') write.resolve({ enabled: false });
+      else write.reject(new Error('switch save unavailable'));
+      await flush();
+      expect(mount.hasInFlightWork()).toBe(false);
+      expect(findByAttrValue(host, chatSwitch.attr, outcome === 'success' ? 'off' : 'on'))
+        .not.toBeNull();
+      if (outcome === 'failure') {
+        expect(findByAttr(host, AI_MODELS_ACTION_ERROR_ATTR)?.textContent).toBe('switch save unavailable');
+      }
+      mount.dispose();
+    });
+  }
+
+  it.each([0, 1])('keeps navigation protected when overlapping switch %i completes first', async (first) => {
+    const writes = [hold<{ enabled: boolean }>(), hold<{ enabled: boolean }>()];
+    const { host, mount } = mountFixture({
+      ...readSwitches,
+      runSetRollingBrief: () => writes[0]!.promise,
+      runSetInstallOffers: () => writes[1]!.promise,
+    });
+    await mount.whenLoaded();
+    for (const chatSwitch of switches) clickByAttrValue(host, chatSwitch.attr, 'on');
+    expect(mount.hasInFlightWork()).toBe(true);
+    writes[first]!.resolve({ enabled: false });
+    await flush();
+    expect(mount.hasInFlightWork()).toBe(true);
+    writes[1 - first]!.resolve({ enabled: false });
+    await flush();
+    expect(mount.hasInFlightWork()).toBe(false);
+    mount.dispose();
+  });
+
+  it('releases navigation when a pending Transcription page is disposed', async () => {
+    const { host, mount, writes } = await startTranscriptionSave();
+    expect(mount.hasInFlightWork()).toBe(true);
+    mount.dispose();
+    expect(mount.hasInFlightWork()).toBe(false);
+    for (const write of writes) write.resolve({ ok: true });
+    await flush();
+    expect(mount.hasInFlightWork()).toBe(false);
+    expect(host.children).toHaveLength(0);
+  });
+});
+
+describe('Free-pool entry write ownership', () => {
+  const hold = <T>() => {
+    let resolve!: (value: T) => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+    return { promise, resolve, reject };
+  };
+  type Options = Parameters<typeof mountAiModelsPage>[0];
+  const poolFixture = (enabled = true, failure?: 'edit' | 'toggle') => {
+    let rows: Array<Record<string, unknown>> = [
+      { ...llmConfig().free_pool[0], base_url: 'https://pool.example.test/v1', enabled },
+      { ...llmConfig().free_pool[0], id: 'mistral', base_url: 'https://sibling.example.test/v1' },
+    ];
+    const edits: ReturnType<typeof hold<{ ok: true }>>[] = [];
+    const toggles: ReturnType<typeof hold<{ ok: true; found: true }>>[] = [];
+    const removals: ReturnType<typeof hold<{ ok: true; removed: true }>>[] = [];
+    const runUpsertFreePoolEntry = vi.fn<NonNullable<Options['runUpsertFreePoolEntry']>>((args) => {
+      const write = hold<{ ok: true }>();
+      edits.push(write);
+      if (failure !== 'edit' || edits.length !== 1) {
+        const { api_key: _key, ...entry } = args.entry;
+        const saved = { ...entry, has_key: true };
+        rows = rows.some((row) => row.id === entry.id)
+          ? rows.map((row) => row.id === entry.id ? saved : row)
+          : [...rows, saved];
+      }
+      return write.promise;
+    });
+    const runSetFreePoolEntryEnabled = vi.fn<NonNullable<Options['runSetFreePoolEntryEnabled']>>((args) => {
+      const write = hold<{ ok: true; found: true }>();
+      toggles.push(write);
+      if (failure !== 'toggle' || toggles.length !== 1) {
+        rows = rows.map((row) => row.id === args.id ? { ...row, enabled: args.enabled } : row);
+      }
+      return write.promise;
+    });
+    const runRemoveFreePoolEntry = vi.fn<NonNullable<Options['runRemoveFreePoolEntry']>>((args) => {
+      const write = hold<{ ok: true; removed: true }>();
+      removals.push(write);
+      rows = rows.filter((row) => row.id !== args.id);
+      return write.promise;
+    });
+    const fixture = mountFixture({
+      runGetLLMConfig: async () => ({ config: { ...llmConfig(), free_pool: structuredClone(rows) }, supports: { pool_entry_drafts: true } }),
+      runUpsertFreePoolEntry,
+      runSetFreePoolEntryEnabled,
+      runRemoveFreePoolEntry,
+    });
+    return { ...fixture, edits, toggles, removals, runUpsertFreePoolEntry, storedRows: () => structuredClone(rows) };
+  };
+  const openEdit = async (fixture: ReturnType<typeof poolFixture>) => {
+    await fixture.mount.whenLoaded();
+    clickByAttrValue(fixture.host, AI_MODELS_POOL_EDIT_ATTR, 'groq');
+    typeByAttrValue(fixture.host, AI_MODELS_POOL_ADD_FIELD_ATTR, 'model', 'edited-model');
+  };
+
+  for (const enabled of [true, false]) {
+    for (const outcome of ['success', 'failure'] as const) {
+      it(`owns an edit before ${enabled ? 'disable' : 'enable'}, releasing it after ${outcome}`, async () => {
+        const fixture = poolFixture(enabled, outcome === 'failure' ? 'edit' : undefined);
+        const { host, mount, opts, edits, toggles } = fixture;
+        await openEdit(fixture);
+        clickByAttrValue(host, AI_MODELS_POOL_SAVE_ATTR, 'groq');
+        const toggle = findByAttrValue(host, AI_MODELS_POOL_TOGGLE_ATTR, 'groq')!;
+        expect(toggle.getAttribute('aria-disabled')).toBe('true');
+        expect(toggle.getAttribute('aria-busy')).toBeNull();
+        expect(toggle.disabled).toBe(false);
+        clickByAttrValue(host, AI_MODELS_POOL_TOGGLE_ATTR, 'groq');
+        clickByAttrValue(host, AI_MODELS_POOL_REMOVE_ATTR, 'groq');
+        expect(opts.runSetFreePoolEntryEnabled).not.toHaveBeenCalled();
+        expect(findByAttr(host, AI_MODELS_POOL_REMOVE_DIALOG_ATTR)).toBeNull();
+        expect(opts.runUpsertFreePoolEntry).toHaveBeenCalledTimes(1);
+        if (outcome === 'failure') edits[0]!.reject(new Error('edit unavailable'));
+        else edits[0]!.resolve({ ok: true });
+        await flush();
+        expect(findByAttrValue(host, AI_MODELS_POOL_TOGGLE_ATTR, 'groq')?.getAttribute('aria-disabled')).toBeNull();
+        clickByAttrValue(host, AI_MODELS_POOL_TOGGLE_ATTR, 'groq');
+        expect(opts.runSetFreePoolEntryEnabled).toHaveBeenCalledWith({ id: 'groq', enabled: !enabled });
+        toggles[0]!.resolve({ ok: true, found: true });
+        await flush();
+        if (outcome === 'failure') {
+          expect(findByAttrValue(host, AI_MODELS_POOL_ADD_FIELD_ATTR, 'model')?.value).toBe('edited-model');
+          clickByAttrValue(host, AI_MODELS_POOL_SAVE_ATTR, 'groq');
+          expect(fixture.runUpsertFreePoolEntry.mock.calls[1]?.[0].entry.enabled).toBe(!enabled);
+          edits[1]!.resolve({ ok: true });
+          await flush();
+        }
+        expect(mount.getState().llmConfig?.free_pool).toEqual(fixture.storedRows());
+        await mount.refresh();
+        expect(mount.getState().llmConfig?.free_pool).toEqual(fixture.storedRows());
+        expect(mount.hasInFlightWork()).toBe(false);
+        mount.dispose();
+      });
+
+      it(`owns ${enabled ? 'disable' : 'enable'} before an edit, preserving its draft after ${outcome}`, async () => {
+        const fixture = poolFixture(enabled, outcome === 'failure' ? 'toggle' : undefined);
+        const { host, mount, opts, edits, toggles } = fixture;
+        await openEdit(fixture);
+        clickByAttrValue(host, AI_MODELS_POOL_TOGGLE_ATTR, 'groq');
+        const save = findByAttrValue(host, AI_MODELS_POOL_SAVE_ATTR, 'groq')!;
+        expect(save.getAttribute('aria-disabled')).toBe('true');
+        expect(save.getAttribute('aria-busy')).toBeNull();
+        expect(save.disabled).toBe(false);
+        expect(findByAttrValue(host, AI_MODELS_POOL_ADD_FIELD_ATTR, 'model')?.readOnly).toBe(false);
+        typeByAttrValue(host, AI_MODELS_POOL_ADD_FIELD_ATTR, 'model', 'continued-model');
+        clickByAttrValue(host, AI_MODELS_POOL_SAVE_ATTR, 'groq');
+        expect(opts.runUpsertFreePoolEntry).not.toHaveBeenCalled();
+        expect(findByAttrValue(host, AI_MODELS_POOL_ADD_FIELD_ATTR, 'model')?.value).toBe('continued-model');
+        if (outcome === 'failure') toggles[0]!.reject(new Error('toggle unavailable'));
+        else toggles[0]!.resolve({ ok: true, found: true });
+        await flush();
+        expect(findByAttrValue(host, AI_MODELS_POOL_SAVE_ATTR, 'groq')?.getAttribute('aria-disabled')).toBeNull();
+        clickByAttrValue(host, AI_MODELS_POOL_SAVE_ATTR, 'groq');
+        expect(opts.runUpsertFreePoolEntry).toHaveBeenCalledTimes(1);
+        expect(fixture.runUpsertFreePoolEntry.mock.calls[0]?.[0].entry).toMatchObject({
+          id: 'groq', model: 'continued-model', enabled: outcome === 'success' ? !enabled : enabled,
+        });
+        edits[0]!.resolve({ ok: true });
+        await flush();
+        expect(mount.getState().llmConfig?.free_pool).toEqual(fixture.storedRows());
+        await mount.refresh();
+        expect(mount.getState().llmConfig?.free_pool).toEqual(fixture.storedRows());
+        expect(mount.hasInFlightWork()).toBe(false);
+        mount.dispose();
+      });
+    }
+  }
+
+  it('lets a sibling entry toggle while an edit remains owned through refresh', async () => {
+    const fixture = poolFixture();
+    const { host, mount, opts, edits, toggles } = fixture;
+    await openEdit(fixture);
+    clickByAttrValue(host, AI_MODELS_POOL_SAVE_ATTR, 'groq');
+    await mount.refresh();
+    expect(findByAttrValue(host, AI_MODELS_POOL_TOGGLE_ATTR, 'groq')?.getAttribute('aria-disabled')).toBe('true');
+    expect(findByAttrValue(host, AI_MODELS_POOL_TOGGLE_ATTR, 'mistral')?.getAttribute('aria-disabled')).toBeNull();
+    clickByAttrValue(host, AI_MODELS_POOL_TOGGLE_ATTR, 'groq');
+    clickByAttrValue(host, AI_MODELS_POOL_TOGGLE_ATTR, 'mistral');
+    expect(opts.runSetFreePoolEntryEnabled).toHaveBeenCalledExactlyOnceWith({ id: 'mistral', enabled: false });
+    toggles[0]!.resolve({ ok: true, found: true });
+    await flush();
+    expect(mount.hasInFlightWork()).toBe(true);
+    edits[0]!.resolve({ ok: true });
+    await flush();
+    expect(mount.getState().llmConfig?.free_pool).toEqual(fixture.storedRows());
+    expect(mount.hasInFlightWork()).toBe(false);
+    mount.dispose();
+  });
+
+  it('owns an added entry that appears in a refresh before its save reply', async () => {
+    const fixture = poolFixture();
+    const { host, mount, opts, edits, toggles } = fixture;
+    await mount.whenLoaded();
+    for (const [field, value] of [
+      ['id', 'new-source'], ['model', 'new-model'], ['api-key', 'pool-fixture-key'],
+      ['base-url', 'https://new.example.test/v1'],
+    ]) typeByAttrValue(host, AI_MODELS_POOL_ADD_FIELD_ATTR, field!, value!);
+    clickByAttrValue(host, AI_MODELS_POOL_ADD_ATTR, '');
+    await mount.refresh();
+    expect(findByAttrValue(host, AI_MODELS_POOL_TOGGLE_ATTR, 'new-source')?.getAttribute('aria-disabled')).toBe('true');
+    clickByAttrValue(host, AI_MODELS_POOL_TOGGLE_ATTR, 'new-source');
+    expect(opts.runSetFreePoolEntryEnabled).not.toHaveBeenCalled();
+    edits[0]!.resolve({ ok: true });
+    await flush();
+    clickByAttrValue(host, AI_MODELS_POOL_TOGGLE_ATTR, 'new-source');
+    expect(opts.runSetFreePoolEntryEnabled).toHaveBeenCalledExactlyOnceWith({ id: 'new-source', enabled: false });
+    toggles[0]!.resolve({ ok: true, found: true });
+    await flush();
+    expect(mount.getState().llmConfig?.free_pool).toEqual(fixture.storedRows());
+    mount.dispose();
+  });
+
+  it('keeps an edit and toggle from racing a confirmed removal of their entry', async () => {
+    const fixture = poolFixture();
+    const { host, mount, opts, removals } = fixture;
+    await openEdit(fixture);
+    clickByAttrValue(host, AI_MODELS_POOL_REMOVE_ATTR, 'groq');
+    clickByAttrValue(host, AI_MODELS_POOL_REMOVE_CONFIRM_ATTR, 'groq');
+    expect(findByAttrValue(host, AI_MODELS_POOL_SAVE_ATTR, 'groq')?.getAttribute('aria-disabled')).toBe('true');
+    clickByAttrValue(host, AI_MODELS_POOL_SAVE_ATTR, 'groq');
+    clickByAttrValue(host, AI_MODELS_POOL_TOGGLE_ATTR, 'groq');
+    expect(opts.runUpsertFreePoolEntry).not.toHaveBeenCalled();
+    expect(opts.runSetFreePoolEntryEnabled).not.toHaveBeenCalled();
+    removals[0]!.resolve({ ok: true, removed: true });
+    await flush();
+    expect(findByAttrValue(host, AI_MODELS_POOL_EDIT_ATTR, 'groq')).toBeNull();
+    expect(mount.getState().llmConfig?.free_pool).toEqual(fixture.storedRows());
+    expect(mount.hasInFlightWork()).toBe(false);
+    mount.dispose();
   });
 });
 

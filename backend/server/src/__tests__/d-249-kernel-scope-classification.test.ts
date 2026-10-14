@@ -108,10 +108,16 @@ describe('D-249 — kernel op scope classification', () => {
       'core.memory.link.delete => data.link',
       'core.memory.link.list => data.link',
       'core.work-entity.approval-workflow.continue => data.approval',
+      'core.work-entity.quote-completion.review => data.quote',
       'core.work-entity.quote-signoff.release => data.quote',
     ]);
   });
 
+  it('keeps completion and its frozen agreement denied behind a collection fence',() => {
+    const completion = rows({ kind: 'task' }).find(row => row.op === 'core.work-entity.quote-completion.review');
+    expect(completion?.scope).toBe('data.quote');
+    expect(evaluateScopeRestrictions(MAXIMAL_FENCE,completion!.scope!).verdict).toBe('deny');
+  });
   it('keeps quote, task and invoice release denied behind a collection fence', () => {
     const release = rows({ kind: 'task' }).find((r) => r.op === 'core.work-entity.quote-signoff.release');
     expect(release).toBeDefined();

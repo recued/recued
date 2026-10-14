@@ -675,6 +675,33 @@ describe('Connections route (R13–R16 restructure)', () => {
     expect(editor.innerHTML).not.toContain('private-broker-key'); route.dispose();
   });
 
+  it.each(['old cache', 'missing cache'] as const)('probes the revision shown in account usage with $0 (D-322)', async cache => {
+    const doc = makeFakeDocument(); const root = doc.createElement('div'); const callers = enrollCallers();
+    callers.connectionsEnrollListCaller.mockResolvedValue({ connections: cache === 'old cache'
+      ? [connection('saved-sheets', { updated_at: 1, auth_type: 'managed_oauth' })] : [] });
+    const call: import('../settings/managed-oauth-panel.js').ManagedOAuthCaller = async args => {
+      switch (args.action) {
+        case 'profiles': return { action: 'profiles', profiles: [{ id: 'cloud', label: 'Cloud', broker: 'nango', base_url: 'https://api.nango.dev', revision: 1 }] };
+        case 'integrations': return { action: 'integrations', integrations: [{ id: 'sheets', label: 'Sheets', provider: 'google-sheet', default_scopes: [], scope_metadata: 'unknown' }] };
+        case 'remote_connections': return { action: 'remote_connections', connections: [{ id: 'account', label: 'Account', auth_error: false }], page: 0, has_more: false };
+        case 'account_usage': return { action: 'account_usage', usage: { connection_id: 'account', auth_error: false, warnings: [],
+          connections: [{ name: 'saved-sheets', display_name: 'Sheets', updated_at: 7, health: { status: 'unknown' }, uses: [], usage_available: true }] } };
+        default: throw new Error('Unexpected broker request');
+      }
+    };
+    const route = bootstrapConnectionsRoute({ root: root as unknown as HTMLElement, document: doc as unknown as Document,
+      initialTab: 'others', ...callers, connectionsManagedOAuthCaller: call });
+    await route.whenLoaded(); const button = collectByAttr(root, CONNECTIONS_MANAGE_BROKERS_ATTR)[0]!;
+    button.click(); await tick(); const editor = button.parent!.children[2]!;
+    const select = (field: string, value: string) => fire(editor, 'change', {
+      type: 'change', target: { tagName: 'SELECT', dataset: { managedField: field }, value },
+    });
+    select('integration', 'sheets'); await tick(); select('account', 'account'); await tick();
+    clickAction(editor, { managedAction: 'check-connection', managedName: 'saved-sheets' }); await tick();
+    expect(callers.connectionsProbeCaller).toHaveBeenCalledWith({ kind: 'api', name: 'saved-sheets', expected_updated_at: 7 });
+    route.dispose();
+  });
+
   it('forwards an exact privacy-safe leave guard for a dirty connection editor', async () => {
     const doc = makeFakeDocument();
     const root = doc.createElement('div');

@@ -14,6 +14,7 @@ export type {
   ConnectionProbeSpec,
   ConnectionSchema,
 } from './types.js';
+export { withAuthenticationSwitchSchema } from './managed-oauth.js';
 export { collectHeaderRows, nameKeyForListField, type HeaderRow } from './header-list.js';
 export {
   collectMatchPatternRows,

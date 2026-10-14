@@ -50,6 +50,7 @@ import {
 } from '@recued/contracts';
 import {
   isMailReconciliationId,
+  SIGNOFF_REMINDER_REFERENCE_PREFIX,
   isMailSendClaimDelivered,
   isTempFileRef,
   type TempFileRef,
@@ -519,6 +520,9 @@ export interface MailSendInput {
    *  run — they just do not get a plaintext copy of a field the seal exists to
    *  hold. ⇒ [[provenance_that_lies_is_worse_than_absent]] */
   redact_audit_recipients?: boolean;
+  /** Trusted host assertion after asynchronous account/attachment reads.
+   * Wire and recipe inputs never populate this callback. */
+  before_dispatch?: () => void;
 }
 
 /** D-127 P1.6 — wire-shape return for `MailCollection.send`. Mirrors
@@ -1531,6 +1535,12 @@ export const createMailCollection = (
   const send = async (args: MailSendInput): Promise<MailSendResult> => {
     const reviewed = currentPreapprovalIo();
     reviewed?.validateMail(slug, args);
+    // The prefix identifies mail tied to a live customer offer. Every path
+    // through the collection must carry the host guard, including direct calls.
+    if (args.reconciliation_id?.startsWith(SIGNOFF_REMINDER_REFERENCE_PREFIX)
+      && typeof args.before_dispatch !== 'function') {
+      throw new IngredientError('BAD_INPUT', 'Sign-off reminder mail requires the live offer guard. Review it in Customer sign-offs.', { slug });
+    }
     const totalRecipients = args.to.length
       + (args.cc?.length ?? 0)
       + (args.bcc?.length ?? 0);
@@ -1858,6 +1868,7 @@ export const createMailCollection = (
     // delivered mail to the customer. Deleting the claim on a throw would let a
     // retry double-send, which is the exact bug this substrate exists to prevent.
     let claimRevision: number | null = null;
+    args.before_dispatch?.();
     if (args.reconciliation_id !== undefined) {
       const recipients = [...args.to, ...(args.cc ?? []), ...(args.bcc ?? [])];
       // ⛔ Refuse rather than under-prove. The reconciliation query matches ONE
@@ -1955,6 +1966,15 @@ export const createMailCollection = (
     let meta;
     await reviewed?.beforeMailProvider(slug, args);
     assertPreapprovalOrdinaryRun();
+    // A customer can reply while the reviewed-send check awaits. Refuse at
+    // the last synchronous boundary; this attempt provably never reached mail.
+    try { args.before_dispatch?.(); }
+    catch (error) {
+      if (args.reconciliation_id !== undefined && claimRevision !== null) {
+        claims.markNotSent({ reconciliation_id: args.reconciliation_id, expected_revision: claimRevision, now: nowOf() });
+      }
+      throw error;
+    }
     try {
       meta = await provider.send({
         to: args.to,

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { QuoteSignoffFollowUp, QuoteSignoffListInput, QuoteSignoffListResult, QuoteSignoffSummary } from '@recued/contracts';
+import type { QuoteSignoffFollowUp, QuoteSignoffListInput, QuoteSignoffListResult, QuoteSignoffSummary, QuoteCompletionSummary, QuoteCompletionListInput } from '@recued/contracts';
+import { mountQuoteCompletionPanel } from './quote-completion-panel.js';
 import { mountQuoteSignoffPanel, type QuoteSignoffConn } from './quote-signoff-panel.js';
 
 vi.mock('./quote-signoff-payment.js', async importOriginal => {
@@ -15,6 +16,8 @@ class Node {
   children: Node[] = []; parent: Node | null = null;
   attrs = new Map<string, string>(); listeners = new Map<string, Array<(event: { preventDefault: () => void }) => void>>();
   constructor(readonly tag: string) {}
+  querySelectorAll(selector: string): Node[] { return this.children.flatMap(child => [
+    ...(selector === '[data-completion-action]' && child.attrs.has('data-completion-action') ? [child] : []),...child.querySelectorAll(selector)]); }
   appendChild(node: Node) { node.parent = this; this.children.push(node); return node; }
   replaceChildren() { this.children.forEach(n => { n.parent = null; }); this.children = []; }
   setAttribute(key: string, value: string) { this.attrs.set(key, value); }
@@ -46,6 +49,7 @@ const setup = (withPayments = false) => {
   const requests: QuoteSignoffListInput[] = [];
   const host = new Node('main');
   const conn = (async (method: string, input?: QuoteSignoffListInput) => {
+    if (method === 'reception.signoff.completion.list') return { completions: [] };
     if (method === 'reception.signoff.quotes') {
       if (quoteError) throw quoteError;
       return { quotes: [], truncated: false };
@@ -287,5 +291,34 @@ describe('sign-off panel — search and older requests', () => {
       expect(button(h.host, 'Older requests').disabled).toBe(true);
       expect(button(h.host, 'Newer requests').disabled).toBe(true);
     } finally { h.panel.dispose(); }
+  });
+});
+
+
+describe('completion queue audit regressions',() => {
+  it('keeps the global completion queue visible when the current sign-off page has no released work',async () => {
+    const h = setup();
+    try {
+      h.respond(() => ({ signoffs: [],truncated: false }));h.panel.update();await flush();
+      expect(nodes(h.host).find(node => node.attrs.has('data-signoff-completions'))?.hidden).toBe(false);
+    } finally { h.panel.dispose(); }
+  });
+  it('does not advance the page history twice after a failed older page load',async () => {
+    const host = new Node('main');const calls: QuoteCompletionListInput[] = [];let fail = true;
+    const entry: QuoteCompletionSummary = { completion_id: 'c',signoff_id: 's',root_signoff_id: 's',customer: 'Morgan',quote_label: 'Drawings',business_name: 'Studio',
+      agreed_scope: 'Scope',delivery_summary: 'Delivery',customer_preview: 'Delivery',state: 'waiting',availability: 'current',created_at: 1,expires_at: 2,
+      endpoint_id: 'ep',response: { decision: 'not_recorded',received_at: null,recorded_at: null },owner_action: null };
+    const conn = (async (_method: string,input?: QuoteCompletionListInput) => {
+      calls.push(input ?? {});
+      if (input?.cursor && fail) { fail = false;throw new Error('Page unavailable'); }
+      return { completions: [entry],...(input?.cursor ? {} : { next_cursor: 'page-2' }) };
+    }) as QuoteSignoffConn;
+    const panel = mountQuoteCompletionPanel({ host: host as unknown as HTMLElement,document: { createElement: (tag: string) => new Node(tag) } as unknown as Document,conn,onChanged: () => {} });
+    const button = (label: string) => nodes(host).find(node => node.tag === 'button' && node.textContent === label)!;
+    try {
+      panel.update();await flush();button('Older completions').click();await flush();
+      expect(content(host)).toContain('Page unavailable');button('Older completions').click();await flush();
+      button('Newer completions').click();await flush();expect(calls.map(call => call.cursor)).toEqual([undefined,'page-2','page-2',undefined]);
+    } finally { panel.dispose(); }
   });
 });
