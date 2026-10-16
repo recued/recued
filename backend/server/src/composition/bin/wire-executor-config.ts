@@ -1,3 +1,4 @@
+import { isCustomerAccountPaymentReminderReference } from '@recued/contracts';
 /** Round 5 / executorConfig surgical extraction — boot composer for
  *  the `ServerExecutorConfig` object literal.
  *
@@ -34,7 +35,7 @@ import {
   deriveExchangeStatus,
 } from '@recued/contracts';
 import { createMailSendClaimStore } from '../../storage/mail-send-claim-store.js';
-import { RpcError, SIGNOFF_REMINDER_REFERENCE_PREFIX } from '@recued/contracts';
+import { RpcError,SIGNOFF_REMINDER_REFERENCE_PREFIX,PAYMENT_REMINDER_REFERENCE_PREFIX,isCustomerAccountPaymentReference,isCustomerAccountStatementReference,isCustomerJobPaymentStatementReference,isCustomerPaymentReceiptReference,isCustomerRefundReceiptReference,isGuardedCustomerMailReference } from '@recued/contracts';
 import { raiseMailSendOutcomeAsk } from '../../mail-send-outcome-ask.js';
 import type { MailSentReconciliationResult } from '../../collections/mail/provider.js';
 import type {
@@ -55,6 +56,7 @@ import type { ServerExecutorConfig } from '../../server-executor.js';
 import { createRunTokenUsageSink, type RunTokenUsageSink } from '../../run-token-usage.js';
 import { createRunKnownValues } from '../../run-known-values.js';
 import type { ConnectionStoreSqlite } from '../../storage/connection-store.js';
+import { persistNativeOAuthRenewal, decodeCurrentNativeOAuth, withCurrentConnectionRenewal } from '../../native-oauth-renewal.js';
 import type { SharedStore } from '../../storage/shared-store.js';
 import type { BlobStore } from '../../storage/blob-store.js';
 import type { EnrichmentStore } from '../../storage/enrichment-store.js';
@@ -81,6 +83,7 @@ import type { HousekeepingStateStore } from '../../housekeeping/index.js';
 import type { EngagementRateControlStore } from '../../storage/engagement-rate-control-store.js';
 import type { ConnectionLookup } from '../../housekeeping/reconciliation/vendor-reconciler.js';
 import type { createWorkEntityDispatchers } from '../../work-entity-ingredients.js';
+import type { ReminderDispatchers } from '../../reminders/reminder-service.js';
 import type { createWatcherDispatcher } from '../../watchers/index.js';
 import type { ManifestRegistry } from '../../manifest-loader.js';
 import type { BridgeDispatcher } from '../../bridges/dispatcher.js';
@@ -240,6 +243,17 @@ export interface ComposeExecutorConfigDeps {
    *  the door refuses rather than raising nothing silently. */
   getExecuteDeps?: () => { preflightNotifier?: unknown; auditLog?: unknown;
     getQuoteSignoffReminderService?: () => import('../../quote-signoff-reminder-service.js').QuoteSignoffReminderService;
+    getCustomerJobPaymentStatementService?: () => import('../../customer-job-payment-statement-service.js').CustomerJobPaymentStatementService;
+    getCustomerAccountStatementService?: () => import('../../customer-account-statement-service.js').CustomerAccountStatementService;
+    getCustomerAccountPaymentService?: () => import('../../customer-account-payment-service.js').CustomerAccountPaymentService;
+    getCustomerAccountPaymentCorrectionService?: () => import('../../customer-account-payment-correction-service.js').CustomerAccountPaymentCorrectionService;
+    getCustomerRefundService?: () => import('../../customer-refund-service.js').CustomerRefundService;
+    getCustomerInvoiceCreditService?: () => import('../../customer-invoice-credit-service.js').CustomerInvoiceCreditService;
+    getCustomerPaymentCorrectionService?: () => import('../../customer-payment-correction-service.js').CustomerPaymentCorrectionService;
+    getCustomerPaymentReceiptService?: () => import('../../customer-payment-receipt-service.js').CustomerPaymentReceiptService;
+    getQuotePaymentReminderService?: () => import('../../quote-payment-reminder-service.js').QuotePaymentReminderService;
+    getCustomerAccountPaymentReminderService?: () => import('../../customer-account-payment-reminder-service.js').CustomerAccountPaymentReminderService;
+    getQuoteCompletionReminderService?: () => import('../../quote-completion-reminder-service.js').QuoteCompletionReminderService;
     mailDraft?: import('../../execute-handler.js').ExecuteHandlerDeps['mailDraft'];
     mailDraftSaveToMailbox?: import('../../execute-handler.js').ExecuteHandlerDeps['mailDraftSaveToMailbox'];
     preapprovalRequest?: import('../../execute-handler.js').ExecuteHandlerDeps['preapprovalRequest'] } | undefined;
@@ -327,6 +341,9 @@ export interface ComposeExecutorConfigDeps {
   housekeepingState: HousekeepingStateStore | undefined;
   engagementRateControlStore: EngagementRateControlStore | undefined;
   workEntityDispatchers: WorkEntityDispatchers | undefined;
+  /** D-324 — the `core.reminder.*` dispatchers, over the reminders store.
+   *  Absent (dbless harness) ⇒ the ops answer SERVER_NOT_REACHABLE. */
+  reminderDispatchers?: ReminderDispatchers | undefined;
   getApprovalWorkflowExecuteDeps?: (() => import('../../execute-handler.js').ExecuteHandlerDeps | undefined) | undefined;
   /** D-173 P1-dispatch — the per-pair work-entity store the reception
    *  projection materialises task / note / commitment / project through (the
@@ -409,8 +426,14 @@ const makeRefreshPersistAuth = (
   connectionStore: ConnectionStoreSqlite,
   encodeAuthForStorage: EncodeAuthForStorage,
   keyProvider: Parameters<EncodeAuthForStorage>[2],
+  decodeAuthFromStorage: (typeof import('../../connection-handler.js'))['decodeAuthFromStorage'],
 ): ConnectionApiHandlerDeps['persistAuth'] =>
   async (row, newAuth, configPatch) => {
+    if (newAuth.type === 'oauth2_refresh' && newAuth.native_credential_id) {
+      await persistNativeOAuthRenewal({ store: connectionStore, encode: encodeAuthForStorage, decode: decodeAuthFromStorage,
+        key: keyProvider, now: Date.now }, row, newAuth, configPatch);
+      return;
+    }
     const auth_ciphertext = await encodeAuthForStorage(
       newAuth,
       { kind: row.kind, name: row.name },
@@ -452,6 +475,28 @@ const makeRefreshPersistAuth = (
       ...(row.granted_scopes_json !== undefined ? { granted_scopes_json: row.granted_scopes_json } : {}),
     });
   };
+
+/** D-318 follow-up 11 — the paths of the files a connected folder holds inside
+ *  its folders, read from its collection table: what `file-folders` lists as
+ *  the folders inside it. Bounded, and empty for a folder whose table is not
+ *  there yet. */
+const storedFilePaths = async (
+  deps: ComposeExecutorConfigDeps,
+): Promise<(slug: string, max: number) => readonly string[]> => {
+  const { collectionTableName } = await import('../../collections/table.js');
+  return (slug, max) => {
+    if (!deps.db) return [];
+    try {
+      const rows = deps.db.prepare(
+        `SELECT json_extract(hot_fields, '$.path') AS path FROM "${collectionTableName('file', slug)}"`
+        + ` WHERE json_extract(hot_fields, '$.path') LIKE '%/%' LIMIT ?`,
+      ).all(max) as Array<{ path: unknown }>;
+      return rows.flatMap((row) => (typeof row.path === 'string' ? [row.path] : []));
+    } catch {
+      return [];
+    }
+  };
+};
 
 /** Compose the executor config. Async because the
  *  `connection.api` / `connection.mcp` IIFEs `await import(...)` the
@@ -689,18 +734,15 @@ export const composeExecutorConfig = async (
             const keyProvider = deps.keys ? deps.keys.keyProvider('connection') : undefined;
             return {
               ...(deps.managedOAuthFetch ? { managedOAuthFetch: deps.managedOAuthFetch } : {}),
-              decodeAuth: (row) =>
-                decodeAuthFromStorage(
-                  row.auth_ciphertext,
-                  { kind: row.kind, name: row.name },
-                  keyProvider,
-                ),
+              decodeAuth: row => decodeCurrentNativeOAuth({ store: deps.connectionStore!, decode: decodeAuthFromStorage, key: keyProvider }, row),
+              withAuthRenewal: (row, run) => withCurrentConnectionRenewal(deps.connectionStore!, row, run),
               // Shared with connection.mcp via `makeRefreshPersistAuth` (the
               // `subresource_path` carry-forward invariant lives there).
               persistAuth: makeRefreshPersistAuth(
                 deps.connectionStore!,
                 encodeAuthForStorage,
                 keyProvider,
+                decodeAuthFromStorage,
               ),
               // D-218 — the swallowed-write signal. Absent in a dbless harness,
               // which keeps the old silent behaviour there rather than
@@ -741,6 +783,7 @@ export const composeExecutorConfig = async (
                 deps.connectionStore!,
                 encodeAuthForStorage,
                 keyProvider,
+                decodeAuthFromStorage,
               ),
               // D-232 § 22 — REAL TRAFFIC WRITES HEALTH. Without this the field is
               // a manual snapshot: a connection that has failed every call for a
@@ -816,6 +859,41 @@ export const composeExecutorConfig = async (
     // the same slug list; the ext implementation rpcs to the paired
     // server).
     kernelDispatchers: {
+      customerRefundCorrect: async (input,meta) => {
+        const getService=deps.getExecuteDeps?.()?.getCustomerRefundService;
+        if (!getService) throw new RpcError('not_configured','Customer refund corrections are unavailable.',503);
+        return getService().applyCorrection(input,meta);
+      },
+      customerRefundApply: async (input,meta) => {
+        const getService = deps.getExecuteDeps?.()?.getCustomerRefundService;
+        if (!getService) throw new RpcError('not_configured','Customer refunds are unavailable.',503);
+        return getService().apply(input,meta);
+      },
+      customerCreditCorrect: async (input,meta) => {
+        const getService = deps.getExecuteDeps?.()?.getCustomerInvoiceCreditService;
+        if (!getService) throw new RpcError('not_configured','Customer credit corrections are unavailable.',503);
+        return getService().applyCorrection(input,meta);
+      },
+      customerInvoiceCredit: async (input,meta) => {
+        const getService = deps.getExecuteDeps?.()?.getCustomerInvoiceCreditService;
+        if (!getService) throw new RpcError('not_configured','Customer invoice credits are unavailable.',503);
+        return getService().apply(input,meta);
+      },
+      customerAccountPaymentCorrect: async (input,meta) => {
+        const getService = deps.getExecuteDeps?.()?.getCustomerAccountPaymentCorrectionService;
+        if (!getService) throw new RpcError('not_configured','Customer account payment corrections are unavailable.',503);
+        return getService().apply(input,meta);
+      },
+      customerAccountPaymentApply: async (input,meta) => {
+        const getService = deps.getExecuteDeps?.()?.getCustomerAccountPaymentService;
+        if (!getService) throw new RpcError('not_configured','Customer account payments are unavailable.',503);
+        return getService().apply(input,meta);
+      },
+      customerPaymentCorrect: async (input,meta) => {
+        const getService = deps.getExecuteDeps?.()?.getCustomerPaymentCorrectionService;
+        if (!getService) throw new RpcError('not_configured','Customer payment corrections are unavailable.',503);
+        return getService().apply(input,meta);
+      },
       ...(deps.db && deps.getApprovalWorkflowExecuteDeps ? {
         approvalWorkflowContinue: async (input) => {
           const { composeApprovalWorkflowContinuation } = await import('../../compose-approval-workflow-service.js');
@@ -1536,6 +1614,46 @@ export const composeExecutorConfig = async (
           input,
         );
       },
+      // D-318 follow-up 11 — the owner's folders, and a save into one. The same
+      // file stack and gated read as `filePutRef` above; the folders inside a
+      // connected folder come from the paths its stored files carry.
+      fileFolders: async () => {
+        const stack = deps.fileStack;
+        if (!stack) return { folders: [] };
+        const { handleFileFolders } = await import('../../collections/file/dispatcher.js');
+        return handleFileFolders({
+          instances: stack.instances,
+          getAdapter: (slug: string) => stack.getLiveAdapter(slug),
+          filePaths: await storedFilePaths(deps),
+        } as never);
+      },
+      fileSaveToFolder: async (input) => {
+        const stack = deps.fileStack;
+        if (!stack) {
+          throw new Error('file.save_to_folder: no file stack — connect a folder first');
+        }
+        const { handleFileSaveToFolder } = await import('../../collections/file/dispatcher.js');
+        const csv = await csvFileDeps(deps);
+        return handleFileSaveToFolder(
+          {
+            instances: stack.instances,
+            getAdapter: (slug: string) => stack.getLiveAdapter(slug),
+            filePaths: await storedFilePaths(deps),
+            readFile: csv.reader.readFile,
+            fileName: (record_id: string) => {
+              for (const collection of deps.collectionRegistry.list()) {
+                if (collection.platform !== 'file') continue;
+                const record = (collection as { get?: (id: string) => { hot_fields?: Record<string, unknown> } | null })
+                  .get?.(record_id);
+                const name = record?.hot_fields?.filename;
+                if (typeof name === 'string' && name.length > 0) return name;
+              }
+              return null;
+            },
+          } as never,
+          input,
+        );
+      },
       csvStats: async (input) => {
         const { handleCsvStats } = await import('../../collections/file/csv-filter-handler.js');
         return handleCsvStats(await csvFileDeps(deps), input);
@@ -1798,10 +1916,19 @@ export const composeExecutorConfig = async (
       mailSend: async (input) => {
         const { handleCollectionMailSend } = await import('../../collections/collection-handler.js');
         let before_dispatch: (() => void) | undefined;
-        if (typeof input.reconciliation_id === 'string' && input.reconciliation_id.startsWith(SIGNOFF_REMINDER_REFERENCE_PREFIX)) {
-          const getReminders = deps.getExecuteDeps?.()?.getQuoteSignoffReminderService;
+        if (isGuardedCustomerMailReference(input.reconciliation_id)) {
+          const live = deps.getExecuteDeps?.();
+          const getReminders = isCustomerAccountPaymentReminderReference(input.reconciliation_id) ? live?.getCustomerAccountPaymentReminderService
+            : isCustomerRefundReceiptReference(input.reconciliation_id) ? live?.getCustomerRefundService
+            : isCustomerAccountPaymentReference(input.reconciliation_id) ? live?.getCustomerAccountPaymentService
+            : isCustomerAccountStatementReference(input.reconciliation_id) ? live?.getCustomerAccountStatementService
+            : isCustomerJobPaymentStatementReference(input.reconciliation_id) ? live?.getCustomerJobPaymentStatementService
+            : isCustomerPaymentReceiptReference(input.reconciliation_id) ? live?.getCustomerPaymentReceiptService
+            : input.reconciliation_id.startsWith(SIGNOFF_REMINDER_REFERENCE_PREFIX)
+            ? live?.getQuoteSignoffReminderService : input.reconciliation_id.startsWith(PAYMENT_REMINDER_REFERENCE_PREFIX)
+              ? live?.getQuotePaymentReminderService : live?.getQuoteCompletionReminderService;
           if (!getReminders) {
-            throw new RpcError('not_configured', 'Sign-off reminder validation is unavailable.', 503);
+            throw new RpcError('not_configured', 'Customer email validation is unavailable.', 503);
           }
           before_dispatch = await getReminders().guardSend(input);
         }
@@ -2118,6 +2245,7 @@ export const composeExecutorConfig = async (
       // task adapters land in PA4+); connection-Source writes surface
       // `SOURCE_NOT_WRITE_CAPABLE` until then.
       ...(deps.workEntityDispatchers ?? {}),
+      ...(deps.reminderDispatchers ?? {}),
     } satisfies KernelDispatchers,
   };
 };

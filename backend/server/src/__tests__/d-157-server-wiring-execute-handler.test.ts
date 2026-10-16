@@ -383,6 +383,10 @@ describe('handleExecute D-157 server-wiring audit and ask fields', () => {
     expect(response.errors).toEqual([]);
     expect(response.awaiting_approval).toBe(true);
     expect(checkpoints.write).toHaveBeenCalledTimes(1);
+    const browserResponse=await executeHandlerTesting.withRecipeRunFacts(response,log);
+    expect(browserResponse.run_id).toEqual(expect.any(String));
+    expect(await log.get(browserResponse.run_id!)).not.toBeNull();
+    expect(response).not.toHaveProperty('run_id');
   });
 
   it('creates one durable action receipt for the held step and returns its identity', async () => {

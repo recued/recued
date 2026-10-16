@@ -1,3 +1,4 @@
+import { collectionOAuthSourceName, type CollectionOAuthSources } from './collection-oauth-sources.js';
 /** D-322 — first-class collections borrow a saved API connection, never vendor tokens. */
 import { RpcError, type ConnectionRow } from '@recued/contracts';
 import type { ManagedOAuthService } from './managed-oauth-service.js';
@@ -22,6 +23,7 @@ export interface ManagedOAuthCollectionTransport {
   assertCurrent(): Promise<void>;
 }
 export interface ManagedOAuthConsumers {
+  authentication?: CollectionOAuthSources;
   resolve(provider: ManagedOAuthCollectionProvider, connectionName: string,
     expected?: unknown): Promise<ManagedOAuthCollectionTransport>;
   fetch(provider: ManagedOAuthCollectionProvider, binding: unknown): HttpFetcher;
@@ -32,6 +34,10 @@ export const managedOAuthFetcherFor = (consumers: ManagedOAuthConsumers | undefi
   provider: ManagedOAuthCollectionProvider, binding: unknown): HttpFetcher | undefined => {
   if (binding === undefined) return undefined;
   if (!consumers) throw new RpcError('not_configured', 'Managed OAuth is unavailable on this server.');
+  if (binding && typeof binding === 'object' && 'type' in binding) {
+    if (!consumers.authentication) throw new RpcError('not_configured', 'Saved OAuth authentication is unavailable on this server.');
+    return consumers.authentication.fetch(provider, binding);
+  }
   return consumers.fetch(provider, binding);
 };
 
@@ -44,6 +50,7 @@ export const createManagedOAuthConsumers = (deps: {
   instances: Pick<CollectionInstanceStore, 'list'>;
   decodeAuth(row: ConnectionRow): Promise<import('@recued/contracts').ConnectionAuth>;
   broker: Pick<ManagedOAuthService, 'fetch'>;
+  authentication?: CollectionOAuthSources;
 }): ManagedOAuthConsumers => {
   const read = async (provider: ManagedOAuthCollectionProvider, name: string, expected?: unknown) => {
     const row = deps.connections.get('api', name);
@@ -88,6 +95,7 @@ export const createManagedOAuthConsumers = (deps: {
       return deps.broker.fetch(live.auth, String(url), init ?? {});
     } });
   return {
+    ...(deps.authentication ? { authentication: deps.authentication } : {}),
     async resolve(provider, name, expected) {
       const { row, binding } = await read(provider, name, expected);
       let grantedScopes: readonly string[] | null = null;
@@ -109,9 +117,7 @@ export const createManagedOAuthConsumers = (deps: {
     fetch: fetchFor,
     assertUnreferenced(name) {
       const references = [...deps.instances.list('mail'), ...deps.instances.list('calendar')].filter(row => {
-        const binding = row.config?.managed_oauth;
-        return binding !== null && typeof binding === 'object'
-          && (binding as Record<string, unknown>).connection_name === name;
+        return collectionOAuthSourceName(row.config) === name;
       });
       if (references.length) throw new RpcError('conflict',
         'This API connection is used by Mail or Calendar. Remove those accounts before removing the connection.');

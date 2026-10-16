@@ -265,6 +265,47 @@ describe('D-262 — the press-to-talk state machine', () => {
     expect(onRecording.mock.calls[0]?.[0]).toMatchObject({ name: 'voice-note.webm' });
   });
 
+  it('does not attach a stopped recording after its draft was explicitly discarded', async () => {
+    let finish!: (recording: VoiceRecording) => void;
+    const recording = new Promise<VoiceRecording>(resolve => { finish = resolve; });
+    const onRecording = vi.fn();
+    const composer = createVoiceComposer({
+      factory: async () => ({ stop: () => recording, cancel: () => {} }),
+      onRecording, onChange: () => {},
+    });
+    composer.toggle(); await tick();
+    composer.toggle();
+    composer.cancel();
+    finish({ blob: new Blob(['voice']), filename: 'Discarded.webm', mime_type: 'audio/webm' });
+    await tick();
+    expect(onRecording).not.toHaveBeenCalled();
+    composer.destroy();
+  });
+
+  it('keeps each recording destination when two stopped recordings finish in reverse order', async () => {
+    let owner = 'first';
+    const finish: Array<(recording: VoiceRecording) => void> = [];
+    const onRecording = vi.fn();
+    const composer = createVoiceComposer({
+      recordingContext: () => owner,
+      factory: async () => ({
+        stop: () => new Promise<VoiceRecording>(resolve => { finish.push(resolve); }),
+        cancel: () => {},
+      }),
+      onRecording, onChange: () => {},
+    });
+    composer.toggle(); await tick(); composer.toggle();
+    owner = 'second';
+    composer.toggle(); await tick(); composer.toggle();
+    finish[1]!({ blob: new Blob(['second']), filename: 'Second.webm', mime_type: 'audio/webm' });
+    finish[0]!({ blob: new Blob(['first']), filename: 'First.webm', mime_type: 'audio/webm' });
+    await tick();
+    expect(onRecording.mock.calls.map(([file, context]) => [file.name, context])).toEqual([
+      ['Second.webm', 'second'], ['First.webm', 'first'],
+    ]);
+    composer.destroy();
+  });
+
   it('⛔ IGNORES a second press while the permission prompt is open', async () => {
     const factory = vi.fn(async () => recordingSession().session);
     const composer = createVoiceComposer({

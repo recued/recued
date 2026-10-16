@@ -1,3 +1,6 @@
+import { withCollectionAuthenticationLock } from '../../collection-authentication-locks.js';
+import { purgeBorrowedOAuthCursors } from '../oauth-cursor-cleanup.js';
+import { collectionOAuthBinding, collectionOAuthSourceName } from '../../collection-oauth-sources.js';
 /** D-117 Phase 7 — collection.calendar.* enroll rpc handlers.
  *
  *  Seven methods wire into `collection-handler.ts`:
@@ -51,6 +54,9 @@ import type { CalendarAdapterRegistry } from './adapter-registry.js';
 import { probeCalendarAdapter } from './adapter-registry.js';
 import {
   defaultHttpFetcher,
+  readOAuthAppId,
+  assertOAuthProviderConfigCurrent,
+  assertNoPermissionCleanup,
   exchangeCodeForTokens,
   fetchGraphGrantIdentity,
   keyPrefix as oauthKeyPrefix,
@@ -97,6 +103,7 @@ const OAUTH_ADAPTERS: readonly CalendarProviderKind[] = ['gcal', 'graph'];
 const ADAPTER_KINDS: readonly CalendarProviderKind[] = ['gcal', 'graph', 'caldav'];
 
 export interface CalendarEnrollDeps {
+  authenticationChange?: import('../../collection-authentication-service.js').CollectionAuthenticationLifecycle;
   managedOAuth?: import('../../managed-oauth-consumers.js').ManagedOAuthConsumers;
   instances: CollectionInstanceStore;
   adapters: CalendarAdapterRegistry;
@@ -107,7 +114,7 @@ export interface CalendarEnrollDeps {
   /** OAuth client config per provider. `gcal` uses the same shape as
    *  gmail; `graph` is shared across mail + calendar. Returning `null`
    *  for a provider surfaces `not_configured` on the rpc. */
-  oauthConfig?: (adapter: 'gcal' | 'graph') => OAuthProviderConfig | null;
+  oauthConfig?: (adapter: 'gcal' | 'graph', appId?: string) => OAuthProviderConfig | null;
   /** Injected HTTP fetcher for OAuth exchange. Tests mock; production
    *  uses the default inside `oauth.ts`. */
   fetcher?: HttpFetcher;
@@ -245,6 +252,8 @@ const toRow = (
 // ────────────────────────────────────────────────────────────────
 
 export interface EnrollOAuthInput {
+  oauth_app_id?: unknown;
+  oauth_client_id?: unknown;
   slug?: unknown;
   adapter?: unknown;
   oauth_code?: unknown;
@@ -288,7 +297,7 @@ export const handleCalendarEnrollOAuth = async (
   // `gcal` is exempt — its prefix differs from `gmail`, so there is nothing to
   // clobber.
   if (adapter === 'graph' && deps.instances.get('mail', slug)?.adapter_type === 'graph'
-    && deps.instances.get('mail', slug)?.config.managed_oauth === undefined) {
+    && collectionOAuthBinding(deps.instances.get('mail', slug)?.config ?? {}) === undefined) {
     throw new RpcError(
       'conflict',
       `collection.calendar.enrollOAuth: Microsoft mail account '${slug}' shares this `
@@ -305,7 +314,8 @@ export const handleCalendarEnrollOAuth = async (
       503,
     );
   }
-  const providerConfig = deps.oauthConfig(adapter);
+  const appId = readOAuthAppId(args.oauth_app_id);
+  const providerConfig = deps.oauthConfig(adapter, appId);
   if (!providerConfig || !providerConfig.clientId) {
     throw new RpcError(
       'not_configured',
@@ -313,6 +323,11 @@ export const handleCalendarEnrollOAuth = async (
       503,
     );
   }
+
+  if (args.oauth_client_id !== undefined && args.oauth_client_id !== providerConfig.clientId) {
+    throw new RpcError('conflict', 'The saved OAuth app changed. Refresh its settings and authorize again.');
+  }
+  const assertApp = () => assertOAuthProviderConfigCurrent(() => deps.oauthConfig!(adapter, appId), providerConfig);
 
   // Exchange the code for refresh + access tokens. Writes under
   // `account.<adapter>.<slug>.*`. `gcal` uses `gcal` prefix (distinct
@@ -326,6 +341,7 @@ export const handleCalendarEnrollOAuth = async (
       code,
       redirectUri,
       providerConfig,
+      beforePersist: assertApp,
       accountStore: deps.accountStore,
       fetcher: deps.fetcher,
       ...(deps.now ? { now: deps.now } : {}),
@@ -377,6 +393,7 @@ export const handleCalendarEnrollOAuth = async (
   // Probe caps — the factory's context delegates `getAccountValue` to
   // the same account store so the just-persisted tokens are live.
   const config: Record<string, unknown> = buildOAuthConfig(slug, args);
+  if (appId) config.oauth_app_id = appId;
   let caps: CalendarCollectionCaps;
   try {
     caps = await probeCalendarAdapter(factory, {
@@ -388,6 +405,7 @@ export const handleCalendarEnrollOAuth = async (
     throw classifyProbeError(err);
   }
 
+  assertApp();
   const stored = deps.instances.upsert({
     platform: 'calendar',
     slug,
@@ -489,7 +507,7 @@ export const handleCalendarAttachGraphGrant = async (
       400,
     );
   }
-  if (mail.config.managed_oauth !== undefined) {
+  if (collectionOAuthBinding(mail.config) !== undefined) {
     throw new RpcError('bad_request', 'Use managed OAuth enrollment to reuse this Microsoft API connection.');
   }
 
@@ -512,6 +530,7 @@ export const handleCalendarAttachGraphGrant = async (
   // (3) The probe is the scope check — a declined calendar consent fails HERE,
   // before any row exists.
   const config: Record<string, unknown> = buildOAuthConfig(slug, args);
+  if (mail.config.oauth_app_id !== undefined) config.oauth_app_id = mail.config.oauth_app_id;
   let caps: CalendarCollectionCaps;
   try {
     caps = await probeCalendarAdapter(factory, {
@@ -739,9 +758,8 @@ export const handleCalendarList = async (
       r.auth_state,
       r.slug,
       r.last_synced_at,
-    ), ...(r.config.managed_oauth && typeof r.config.managed_oauth === 'object'
-      && typeof (r.config.managed_oauth as Record<string, unknown>).connection_name === 'string'
-      ? { managed_connection_name: (r.config.managed_oauth as Record<string, unknown>).connection_name as string } : {}) })),
+    ), ...(collectionOAuthSourceName(r.config) ? { managed_connection_name: collectionOAuthSourceName(r.config),
+      source_authentication: (collectionOAuthBinding(r.config) as { type?: string }).type === 'direct_oauth' ? 'direct_oauth' as const : 'broker' as const } : {}) })),
   };
 };
 
@@ -769,7 +787,8 @@ export const handleCalendarUpdate = async (
   // a stale client can't resurrect it.
   const patch = Object.fromEntries(
     Object.entries(args.config_patch as Record<string, unknown>).filter(
-      ([k]) => k !== 'password' && k !== 'vault_key',
+      ([k]) => !['password', 'vault_key', 'managed_oauth', 'oauth_connection', 'account_slug', 'oauth_account_identity',
+        'managed_send_enabled', 'managed_mutation_enabled', 'managed_write_enabled'].includes(k),
     ),
   );
   const reprobe = Boolean(args.reprobe);
@@ -835,6 +854,10 @@ export const handleCalendarDelete = async (
   args: { slug?: unknown },
 ): Promise<{ ok: true }> => {
   const slug = requireSlug(args.slug);
+  return withCollectionAuthenticationLock(deps.instances.authenticationLocks, 'calendar:' + slug, () => deleteCalendar(deps, slug));
+};
+
+const deleteCalendar = async (deps: CalendarEnrollDeps, slug: string): Promise<{ ok: true }> => {
   const existing = deps.instances.get('calendar', slug);
   if (!existing) {
     throw new RpcError(
@@ -842,6 +865,10 @@ export const handleCalendarDelete = async (
       `collection.calendar.delete: instance '${slug}' not found`,
       404,
     );
+  }
+  if (collectionOAuthBinding(existing.config) === undefined && ['gcal', 'graph'].includes(existing.adapter_type)) {
+    await assertNoPermissionCleanup({ provider: existing.adapter_type as 'gcal' | 'graph',
+      slug: typeof existing.config.account_slug === 'string' ? existing.config.account_slug : slug, accountStore: deps.accountStore });
   }
   await deps.onDeleted?.(slug);
   // caldav keeps its password (enrollBasic) AND its etag sync-cursors
@@ -854,8 +881,8 @@ export const handleCalendarDelete = async (
   if (existing.adapter_type === 'caldav') {
     const swept = await purgeAccountStorePrefix(deps.accountStore, `caldav.${slug}.`);
     if (!swept) await deps.accountStore.delete(caldavPasswordKey(slug));
-  } else if (existing.config.managed_oauth !== undefined) {
-    await purgeAccountStorePrefix(deps.accountStore, `${existing.adapter_type}.managed-calendar:${slug}.`);
+  } else if (collectionOAuthBinding(existing.config) !== undefined) {
+    await purgeBorrowedOAuthCursors(existing, deps.accountStore);
   }
   deps.instances.delete('calendar', slug);
   return { ok: true };
@@ -943,7 +970,7 @@ export const handleCalendarReauth = async (
       501,
     );
   }
-  if (existing.config.managed_oauth !== undefined) {
+  if (collectionOAuthBinding(existing.config) !== undefined) {
     throw new RpcError('not_configured', 'Reconnect the managed API connection in Connections, then resync this calendar.');
   }
   if (existing.adapter_type === 'caldav') {

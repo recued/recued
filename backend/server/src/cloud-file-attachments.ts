@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { CONNECTION_SOURCE_ID, getFileVendorDeclaration, RpcError,
+  fileSourceOAuthProvider,
   type CloudFileSource, type CloudFileListRequest, type CloudFileListResult,
   type CloudFileSelection, type CloudFileImportRequest, type FileAttachmentSelection,
   type FileCloudCapture,
@@ -72,7 +73,9 @@ export const createCloudFileAttachments = (deps: CloudFileAttachmentDeps, getRea
     const registration = deps.sources.getSource(source_id);
     if (!registration || registration.top_tier_kind !== 'file') return [];
     const freshness = deriveFileSourceFreshness(deps.syncState?.get(source_id) ?? null, Date.now());
-    return [{ source_id, provider, label: `${declaration.display_name} · ${row.display_name || row.name}`,
+    let authSwitch = false;
+    try { const config = JSON.parse(row.config_json) as { base_url?: unknown }; authSwitch = fileSourceOAuthProvider(provider, config.base_url) !== undefined; } catch { /* No migration link for an invalid config. */ }
+    return [{ ...(authSwitch ? { authentication_connection: row.name } : {}), source_id, provider, label: `${declaration.display_name} · ${row.display_name || row.name}`,
       last_synced_at: freshness.last_success_at, stale: freshness.stale }];
   }) });
   const selection = (row: FileMetaRow, revision: string): CloudFileSelection => {

@@ -393,6 +393,33 @@ const enrollCallers = () => {
   };
 };
 
+describe('unified authentication repairs in Connections', () => {
+  it.each(['mail', 'calendar', 'file', 'others'] as const)('keeps the worklist outside the replaceable %s lane host', async initialTab => {
+    const doc = makeFakeDocument(); const root = doc.createElement('div');
+    const read = vi.fn(async (): Promise<import('@recued/contracts').AuthenticationRepairWorklist> => ({ observed_at: 1234, unavailable: [], groups: [{
+      id: 'a'.repeat(64), kind: 'account', label: 'Work account', authentication: 'direct_oauth', connection_names: ['work'], usage_available: false,
+      issues: [{ id: 'b'.repeat(64), code: 'credential_rejected', message: 'Recorded authentication failure.' }], uses: [], targets: [{ kind: 'connection', name: 'work' }],
+    }] }));
+    const route = bootstrapConnectionsRoute({ root: root as unknown as HTMLElement, document: doc as unknown as Document,
+      initialTab, ...enrollCallers(), authenticationRepairsCaller: read });
+    await route.whenLoaded();
+    await vi.waitFor(() => expect(findByAttrValue(root, 'data-authentication-repair-group', 'a'.repeat(64))).not.toBeNull());
+    const content = findByAttrValue(root, CONNECTIONS_ROUTE_CONTENT_ATTR, '')!;
+    expect(collectByAttr(content, 'data-authentication-repair-group')).toEqual([]);
+    await route.accountsPanel()?.refresh();
+    expect(findByAttrValue(root, 'data-authentication-repair-group', 'a'.repeat(64))).not.toBeNull(); expect(read).toHaveBeenCalledTimes(1); route.dispose();
+  });
+  it('opens the saved-app manager from its repair destination using reads only', async () => {
+    const doc = makeFakeDocument(); const root = doc.createElement('div');
+    const call = vi.fn<import('../settings/oauth-apps-panel.js').OAuthAppsCaller>(async request => ({ action: request.action, apps: [] }));
+    const route = bootstrapConnectionsRoute({ root: root as unknown as HTMLElement, document: doc as unknown as Document,
+      initialTab: 'others', ...enrollCallers(), oauthAppsCaller: call, initialManageOAuthApps: true });
+    const html = (el: FakeEl): string => el.innerHTML + el.children.map(html).join('');
+    await route.whenLoaded(); await vi.waitFor(() => expect(call).toHaveBeenCalled());
+    expect(html(root)).toContain('data-oauth-app-action="add"'); expect(call.mock.calls.map(([request]) => request.action)).toEqual(['list']); route.dispose();
+  });
+});
+
 const readyWebhook = (): WebhookIngressView => ({
   ingress_id: 'whi_0123456789abcdef0123456789abcdef',
   public_id: 'opaquePublicId_0123456789abcdef',

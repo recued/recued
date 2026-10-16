@@ -1,3 +1,5 @@
+import { assertConnectionOAuthAppCurrent } from './connection-saved-oauth-app.js';
+import type { OAuthAppConfigStore } from './oauth-app-config-store.js';
 /** D-148 §A.12 / D-165 enroll-host #1 — vendor OAuth `/oauth/complete`
  *  handler core (slice 2a).
  *
@@ -28,6 +30,9 @@
 
 import {
   getVendorProvider,
+  resolveVendorOAuthEndpoints,
+  withSavedOAuthAppProvider,
+  RpcError,
   buildGenericVendorProvider,
   composeRealmBaseUrl,
   OAUTH_STATE_TOKEN_REPLAY_WINDOW_MS,
@@ -85,6 +90,7 @@ export interface VendorOAuthCompleteResponse {
 }
 
 export interface VendorOAuthCompleteDeps {
+  oauthAppConfig?: OAuthAppConfigStore;
   identity: ServerIdentity;
   flowStore: VendorOAuthFlowStore;
   resultStore: VendorOAuthResultStore;
@@ -271,9 +277,17 @@ export const handleVendorOAuthComplete = async (
     return fail(req, 500, 'exchange_failed', `Unknown vendor '${flow.vendor}'.`);
   }
 
+  const savedAppProvider = flow.oauth_app_issuer ? withSavedOAuthAppProvider(provider,flow.oauth_app_issuer) : provider;
+  // Start validated the authorize/token pair. Generic callback providers have
+  // no authorize URL: recheck the actual exchange destination from the private
+  // flow, rather than rejecting their deliberately empty authorize placeholder.
+  const { token_endpoint } = resolveVendorOAuthEndpoints(savedAppProvider,{ sandbox: flow.sandbox });
+  const assertApp = () => assertConnectionOAuthAppCurrent({ store: deps.oauthAppConfig,
+    issuer: flow.oauth_app_issuer, app_id: flow.oauth_app_id,client_id: flow.client_id,token_endpoint },flow);
   try {
+    assertApp();
     const result = await exchange({
-      provider,
+      provider: savedAppProvider,
       code: req.code,
       redirect_uri: flow.redirect_uri,
       client_id: flow.client_id,
@@ -286,6 +300,7 @@ export const handleVendorOAuthComplete = async (
       ...(flow.code_verifier !== undefined ? { code_verifier: flow.code_verifier } : {}),
       ...(deps.fetcher !== undefined ? { fetcher: deps.fetcher } : {}),
     });
+    assertApp();
     // Realm-path vendors (QuickBooks): the per-company runtime base is NOT
     // in the token response — compose it from the callback `realmId` + the
     // flow's sandbox flag and carry it on the same `instance_url` channel
@@ -311,7 +326,9 @@ export const handleVendorOAuthComplete = async (
     );
     return ok(req, flow.flow_id);
   } catch (e) {
-    const msg = e instanceof VendorOAuthError ? e.message : 'Token exchange failed.';
+    const msg = e instanceof VendorOAuthError ? e.message
+      : e instanceof RpcError && flow.oauth_app_issuer ? 'The saved OAuth app changed or is unavailable. Refresh its settings and authorize again.'
+      : 'Token exchange failed.';
     return fail(req, 502, 'exchange_failed', msg);
   }
 };

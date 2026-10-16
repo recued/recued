@@ -101,6 +101,7 @@ export const connectedSourceConnectionHref = (
 
 export type ChatConnectedSourceStatusState =
   | 'pending'
+  | 'syncing'
   | 'ready'
   | 'attention'
   | 'missing';
@@ -119,6 +120,7 @@ export interface ChatConnectedSourceStatusRow {
   readonly auth_state: CollectionAuthState;
   readonly last_synced_at: number | null;
   readonly account_email?: string;
+  readonly sync_status?: import('@recued/contracts').MailSyncStatus;
 }
 
 export const projectChatConnectedSourceStatus = (
@@ -137,6 +139,12 @@ export const projectChatConnectedSourceStatus = (
       identity,
       authState: row.auth_state,
       lastSyncedAt: row.last_synced_at,
+    };
+  }
+  if (source.lane === 'mail' && row.sync_status !== undefined) {
+    return {
+      state: !row.sync_status.access_verified ? 'pending' : row.sync_status.initial_sync_complete ? 'ready' : 'syncing',
+      identity, authState: row.auth_state, lastSyncedAt: row.last_synced_at,
     };
   }
   return row.last_synced_at === null

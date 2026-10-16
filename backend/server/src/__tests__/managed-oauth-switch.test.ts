@@ -5,6 +5,7 @@ import type { ConnectionAuth, ManagedOAuthAuth, ManagedOAuthAuthorizationRequest
 import { createManagedOAuthService } from '../managed-oauth-service.js';
 import { createManagedOAuthProfileStore } from '../managed-oauth-profile-store.js';
 import { createConnectionStore } from '../storage/connection-store.js';
+import { createOAuthAppConfigStore } from '../oauth-app-config-store.js';
 import { decodeAuthFromStorage, encodeAuthForStorage, makeConnectionHandlers } from '../connection-handler.js';
 
 const databases: Database.Database[] = [];
@@ -12,10 +13,11 @@ afterEach(() => { for (const db of databases.splice(0)) db.close(); });
 const scope = 'https://www.googleapis.com/auth/spreadsheets';
 const base = 'https://sheets.googleapis.com/v4';
 const checkUrl = base + '/spreadsheets/test-sheet?fields=spreadsheetId';
-const fixture = async (managed: boolean | 'bearer' = false) => {
+const fixture = async (managed: boolean | 'bearer' = false, nativeRequirements: readonly string[] = []) => {
   const db = new Database(':memory:'); databases.push(db); const key = () => new Uint8Array(32).fill(9);
   const profiles = createManagedOAuthProfileStore(db, key); const store = createConnectionStore(db);
   let positiveStatus = 200; let anonymousStatus = 401; let gate: Promise<void> | undefined;
+  let requiredScopes = [scope];
   let networkFailure: 'proxy' | 'anonymous' | undefined;
   let remoteState: 'original' | 'recreated' | 'missing' | 'auth_error' | 'legacy' = 'original';
   let remoteId = 'replacement-account'; let remoteNumericId = 201; let completedTag = '';
@@ -44,7 +46,7 @@ const fixture = async (managed: boolean | 'bearer' = false) => {
   });
   const decode = (row: NonNullable<ReturnType<typeof store.get>>) => decodeAuthFromStorage(row.auth_ciphertext, row, key);
   const service = createManagedOAuthService({ profiles, listConnections: () => store.list(), decodeAuth: decode,
-    fetchImpl: fetch, now: () => 1_000_000, requiredScopes: () => [scope],
+    fetchImpl: fetch, now: () => 1_000_000, requiredScopes: () => requiredScopes,
     requiredScopeSources: () => [{ slug: 'sheet-pack', name: 'Sheet pack', scopes: [scope] }] });
   const saved = await service.handle({ action: 'save_profile', broker: 'nango', label: 'Fixture Nango',
     base_url: 'https://api.nango.dev', api_key: 'fixture-broker-key' });
@@ -53,15 +55,17 @@ const fixture = async (managed: boolean | 'bearer' = false) => {
     connection_id: 'original-account', target_origin: 'https://sheets.googleapis.com', requested_scopes: [scope], required_scopes: [scope] }
     : managed === 'bearer' ? { type: 'bearer', token: 'old-bearer-token' }
     : { type: 'oauth2_refresh', client_id: 'old-direct-client', client_secret: 'old-direct-secret',
-        token_endpoint: 'https://accounts.example.test/token', refresh_token: 'old-direct-refresh' };
+        token_endpoint: 'https://accounts.example.test/token', refresh_token: 'old-direct-refresh',
+        ...(nativeRequirements.length ? { required_scopes: nativeRequirements } : {}) };
   store.upsert({ kind: 'api', name: 'shared-sheets', display_name: 'Shared sheets', enrolled_at: 10, updated_at: 20,
     auth_ciphertext: await encodeAuthForStorage(original, { kind: 'api', name: 'shared-sheets' }, key),
     config_json: JSON.stringify({ base_url: base, vendor: 'google', owner_setting: { keep: true } }),
     subresource_path: '/team', last_used_at: 30, health_json: '{"status":"ok","last_probed_at":40}',
     granted_scopes_json: '["old-account-grant"]' });
   profiles.rememberAccountScopes('https://api.nango.dev', 'sheets', JSON.stringify([201, Date.parse('2026-10-01T00:00:00Z')]), [scope]);
+  const oauthAppConfig = createOAuthAppConfigStore(db, { getEncryptionKey: key });
   const handlers = makeConnectionHandlers({ store, getEncryptionKey: key, managedOAuth: service, resolveFetch: fetch,
-    now: () => 1_000_000 })!.handlers;
+    oauthAppConfig, now: () => 1_000_000 })!.handlers;
   const request: ManagedOAuthAuthorizationRequest = { profile_id: saved.profile.id, integration_id: 'sheets',
     name: 'shared-sheets', base_url: base, vendor: 'google', scopes: [], connection_id: 'replacement-account',
     switch_authentication: true, expected_updated_at: 20 };
@@ -75,7 +79,8 @@ const fixture = async (managed: boolean | 'bearer' = false) => {
   const apply = (auth: ManagedOAuthAuth, id = 'authentication-switch-0001', verification_url = checkUrl) =>
     handlers['collection.connection.managedOAuth']({ action: 'apply_authentication_switch', name: 'shared-sheets',
       attempt_id: id, expected_updated_at: 20, auth, verification_url }, undefined as never);
-  return { store, profiles, service, fetch, decode, request, handlers, authorize, apply, saved,
+  return { store, profiles, service, fetch, decode, request, handlers, authorize, apply, saved, oauthAppConfig,
+    requirements: (scopes: string[]) => { requiredScopes = scopes; },
     status: (positive: number, anonymous = 401) => { positiveStatus = positive; anonymousStatus = anonymous; },
     failNetwork: (at: 'proxy' | 'anonymous') => { networkFailure = at; },
     remote: (state: typeof remoteState) => { remoteState = state; },
@@ -84,6 +89,43 @@ const fixture = async (managed: boolean | 'bearer' = false) => {
 };
 
 describe('D-322 reviewed authentication switching', () => {
+  it('returns only the current public OAuth app context, with no credential or token and no vendor calls', async () => {
+    const f = await fixture(false, ['recorded-native-permission']); const before = f.store.list(); const count = f.fetch.mock.calls.length;
+    const response = await f.handlers['collection.connection.managedOAuth']({ action: 'reauthorization_context',
+      name: 'shared-sheets', expected_updated_at: 20 }, undefined as never);
+    expect(response).toEqual({ action: 'reauthorization_context', name: 'shared-sheets', updated_at: 20,
+      auth_type: 'oauth2_refresh', client_id: 'old-direct-client', token_endpoint: 'https://accounts.example.test/token', required_scopes: [scope, 'recorded-native-permission'] });
+    expect(JSON.stringify(response)).not.toContain('old-direct-secret'); expect(JSON.stringify(response)).not.toContain('old-direct-refresh');
+    expect(f.store.list()).toEqual(before); expect(f.fetch.mock.calls.length).toBe(count);
+    await expect(f.handlers['collection.connection.managedOAuth']({ action: 'reauthorization_context',
+      name: 'shared-sheets', expected_updated_at: 21 }, undefined as never)).rejects.toMatchObject({ code: 'conflict' });
+  });
+  it('refuses installed requirements changed during the public native-app read', async () => {
+    const f = await fixture(); const before = f.store.list(); const count = f.fetch.mock.calls.length;
+    const reading = f.handlers['collection.connection.managedOAuth']({ action: 'reauthorization_context',
+      name: 'shared-sheets', expected_updated_at: 20 }, undefined as never);
+    f.requirements(['changed-pack-permission']);
+    await expect(reading).rejects.toMatchObject({ code: 'conflict' });
+    expect(f.store.list()).toEqual(before); expect(f.fetch.mock.calls.length).toBe(count);
+  });
+  it('resolves the saved app secret on the server for a native review and returns only an encrypted candidate', async () => {
+    const f = await fixture(); f.oauthAppConfig.setIssuer('google', 'saved-client', 'saved-app-secret');
+    const original = f.fetch.getMockImplementation()!;
+    f.fetch.mockImplementation(async (url, init) => {
+      if (new URL(url.toString()).hostname === 'oauth2.googleapis.com') {
+        expect(new URLSearchParams(String(init?.body)).get('client_secret')).toBe('saved-app-secret');
+        return Response.json({ access_token: 'candidate-access', expires_in: 3600, token_type: 'Bearer', scope });
+      }
+      return original(url, init);
+    });
+    const before = f.store.list();
+    const review = await f.handlers['collection.connection.managedOAuth']({ action: 'review_direct_authentication',
+      selections: [{ name: 'shared-sheets', expected_updated_at: 20 }], oauth_app_issuer: 'google', scopes: [scope],
+      auth: { type: 'oauth2_refresh', client_id: 'saved-client', token_endpoint: 'https://oauth2.googleapis.com/token', refresh_token: 'new-private-refresh' } }, undefined as never);
+    expect(review.action).toBe('review_direct_authentication');
+    expect(JSON.stringify(review)).not.toContain('saved-app-secret'); expect(JSON.stringify(review)).not.toContain('new-private-refresh');
+    expect(JSON.stringify(review)).not.toContain('candidate-access'); expect(f.store.list()).toEqual(before);
+  });
   it.each([false, true])('pins completed new-account identity and refuses missing metadata legacy=%s', async legacy => {
     const f = await fixture(); const before = f.store.get('api', 'shared-sheets'); const { connection_id: omitted, ...request } = f.request; void omitted;
     const preview = await f.service.handle({ action: 'preview', ...request });

@@ -1,3 +1,9 @@
+import { createCollectionAuthenticationPanel } from './collection-authentication-panel.js';
+import { createCollectionOAuthAppSwitchPanel } from './collection-oauth-app-switch-panel.js';
+import { createAccountPasswordPanel, type AccountPasswordRepair } from './account-password-panel.js';
+import type { AccountSetupContinuity } from './account-setup-continuity.js';
+import { createBulkCollectionOAuthAppSwitchPanel, type BulkOAuthAppAccount } from './bulk-collection-oauth-app-switch-panel.js';
+import { createOAuthTroubleshooting, oauthHelpPopupObservation, oauthHelpPlan } from './oauth-troubleshooting.js';
 /** Connections ▸ foundational account lanes — webclient mount.
  *
  *  The state machine + rpc caller seams + dispatchers behind the pure
@@ -12,17 +18,20 @@
  *  delegated `input` / `change` listener for `data-acct-field` controls.
  *  Ordinary field edits preserve focus and update only Submit's readiness.
  *  Switching direct/managed OAuth replaces the credential fields and clears
- *  secrets and write switches; submission always revalidates the selection.
+ *  secrets and method-specific write switches; the common send choice is kept. Submission revalidates the selection.
  *
  *  Mail supports IMAP and direct/managed Google or Microsoft OAuth.
  *  Calendar supports CalDAV and direct/managed OAuth. Files enroll local fs
- *  here; S3 setup lives under Data → Files. Each lane reports missing server
+ *  here and list cloud sources with links to the existing API setup. Each lane reports missing server
  *  capabilities when its caller seam is absent. */
 
 import {
   buildMailAuthorizeUrl,
   buildCalendarAuthorizeUrl,
+  buildOpenerRelayRedirectUri,
   oauthAppIssuerForProvider,
+  savedOAuthAppsForIssuer,
+  oauthAppStatusForSelection,
   type CollectionInstanceRow,
   type MailOAuthProvider,
   type CalendarOAuthAdapter,
@@ -30,6 +39,8 @@ import {
   type OAuthAppIssuer,
   type SetOAuthAppConfigArgs,
   type ConnectionView,
+  type MailSyncStatus,
+  type CloudFileSource,
 } from '@recued/contracts';
 import {
   canSubmitAccountForm,
@@ -79,12 +90,15 @@ export interface MailAccountListRow {
   adapter_type: string;
   auth_state: CollectionInstanceRow['auth_state'];
   last_synced_at: number | null;
+  sync_status?: MailSyncStatus;
   send_capable: boolean;
   account_email: string;
   managed_connection_name?: string;
+  source_authentication?: 'direct_oauth' | 'broker';
 }
 
 export interface MailLaneCallers {
+  updateCredentials?: AccountPasswordRepair;
   list: () => Promise<{ instances: ReadonlyArray<MailAccountListRow> }>;
   enrollImap: (args: Record<string, unknown>) => Promise<{ slug: string; send_capable: boolean }>;
   /** OAuth enrollment — the popup-captured code + the byte-matched
@@ -94,6 +108,8 @@ export interface MailLaneCallers {
     account_slug: string;
     code: string;
     redirect_uri: string;
+    oauth_app_id?: string;
+    oauth_client_id?: string;
   }) => Promise<{ ok: true; account_key_prefix: string }>;
   enrollManagedOAuth?: (args: {
     provider: MailOAuthProvider;
@@ -130,6 +146,7 @@ const defaultAccountsOAuthEnv = (): AccountsOAuthEnv => ({
 });
 
 export interface CalendarLaneCallers {
+  updateCredentials?: AccountPasswordRepair;
   list: () => Promise<{ instances: ReadonlyArray<CollectionInstanceRow> }>;
   delete: (args: { slug: string }) => Promise<{ ok: true }>;
   resync?: (args: { slug: string }) => Promise<unknown>;
@@ -142,6 +159,8 @@ export interface CalendarLaneCallers {
     adapter: CalendarOAuthAdapter;
     oauth_code: string;
     oauth_redirect_uri: string;
+    oauth_app_id?: string;
+    oauth_client_id?: string;
   }) => Promise<{ slug: string }>;
   enrollManagedOAuth?: (args: {
     adapter: CalendarOAuthAdapter;
@@ -200,7 +219,13 @@ export interface MountAccountsLanePanelOptions {
   calendar?: CalendarLaneCallers;
   file?: FileLaneCallers;
   listManagedConnections?: () => Promise<{ connections: readonly ConnectionView[] }>;
-  onOpenManagedConnections?: () => void;
+  onOpenManagedConnections?: (name?: string) => void;
+  onManageSavedApps?: () => void;
+  setupContinuity?: AccountSetupContinuity;
+  onSetupHandoff?: (destination: 'apps' | 'connection') => void;
+  listCloudFiles?: () => Promise<{ sources: CloudFileSource[] }>;
+  onAuthenticationChanged?: () => void;
+  runCollectionAuthentication?: import('../settings/managed-oauth-panel.js').ManagedOAuthCaller;
   /** `server.getOAuthClientConfig` caller — required for the OAuth lanes
    *  (Mail/Calendar sign-in). Absent → the Connect button errors. */
   getOAuthClientConfig?: () => Promise<OAuthClientConfigResult>;
@@ -226,7 +251,8 @@ export interface MountAccountsLanePanelOptions {
   firstSyncPoll?: AccountsFirstSyncPollScheduler;
   /** Defaults to 2500ms. */
   firstSyncPollIntervalMs?: number;
-  /** Bounded by default to 24 checks (about one minute). */
+  /** Optional polling cap. By default checks continue while mounted, slowing
+   * after the first minute so a long import does not lose its completion. */
   firstSyncPollMaxAttempts?: number;
   /** Clock + short grace used by reload recovery before a second clean miss
    * may unlock fresh consent. Production waits five seconds from dispatch. */
@@ -242,6 +268,7 @@ export interface AccountsLanePanelMount {
   whenLoaded(): Promise<void>;
   /** Enrollment, OAuth, resync, reauth, or removal is awaiting authority. */
   hasInFlightWork(): boolean;
+  hasUnsavedChanges(): boolean;
   dispose(): void;
 }
 
@@ -256,6 +283,14 @@ type AccountsAction =
   | 'accounts-submit-form'
   | 'accounts-oauth-connect'
   | 'accounts-open-managed-connection'
+  | 'accounts-manage-saved-apps'
+  | 'accounts-update-credentials'
+  | 'accounts-clear-filters'
+  | 'accounts-manage-authentication'
+  | 'accounts-authentication-choice'
+  | 'accounts-switch-authentication'
+  | 'accounts-switch-oauth-app'
+  | 'accounts-bulk-switch-oauth-app'
   | 'accounts-copy-oauth-redirect'
   | 'accounts-oauth-dismiss'
   | 'accounts-oauth-cancel'
@@ -298,6 +333,12 @@ export const mountAccountsLanePanel = (
   const state: AccountsPanelState = initialAccountsPanelState(
     opts.initialLane ?? 'mail',
   );
+  const draftValues = new Map<string, string>();
+  let handingOffSetup = false;
+  const changedSetup = () => state.stage === 'form' && [...draftValues].some(([key, value]) =>
+    (key.startsWith('credential.') ? state.oauthCredValues[key.slice(11) as keyof typeof state.oauthCredValues] : state.values[key]) !== value);
+  const rememberEdit = (key: string, value: string) => { if (!draftValues.has(key)) draftValues.set(key, value); };
+  const confirmDiscardSetup = () => !changedSetup() || (doc.defaultView?.confirm?.('Discard this account setup? Credentials entered here cannot be restored.') ?? true);
   // Seed the app origin so the OAuth forms can surface the exact redirect URI
   // to register — the SAME origin the flow uses for the redirect_uri (the
   // injected env in tests, the browser's location in production). A direct
@@ -314,9 +355,49 @@ export const mountAccountsLanePanel = (
     state.detailSlug = opts.initialDetailSlug;
   }
   let disposed = false;
+  const passwordPanel = createAccountPasswordPanel({ host, changed: async () => { await doRefresh(false, true); opts.onAuthenticationChanged?.(); },
+    closed: slug => {
+      for (const control of host.querySelectorAll?.<HTMLElement>('[data-action="accounts-update-credentials"]') ?? []) {
+        if (control.dataset.slug === slug) control.focus();
+      }
+    } });
+  const oauthHelp = createOAuthTroubleshooting({ ...(opts.copyText ? { copy: opts.copyText } : {}) });
   // Bumped before every list await; a post-await write only lands when its
   // captured generation is still current (a lane switch / refresh overtaking
   // a slow in-flight list must not clobber the newer view).
+  const managementUpdated = (): void => {
+    const busy = authenticationPanel?.busy() === true || oauthAppSwitchPanel?.busy() === true;
+    state.authenticationManagementBusy = busy;
+    for (const control of host.querySelectorAll?.<HTMLButtonElement>('[data-action="accounts-authentication-choice"]') ?? []) control.disabled = busy;
+  };
+  const openSavedApps = (): void => {
+    if (opts.onManageSavedApps) opts.onManageSavedApps();
+    else opts.onOpenManagedConnections?.();
+  };
+  const authenticationPanel = opts.runCollectionAuthentication ? createCollectionAuthenticationPanel({
+    host, call: opts.runCollectionAuthentication, changed: () => { void doRefresh(false, true); opts.onAuthenticationChanged?.(); },
+    openConnections: name => opts.onOpenManagedConnections?.(name), updated: managementUpdated,
+  }) : undefined;
+  const oauthAppSwitchPanel = opts.runCollectionAuthentication ? createCollectionOAuthAppSwitchPanel({
+    host, call: opts.runCollectionAuthentication, changed: () => { void doRefresh(false, true); opts.onAuthenticationChanged?.(); },
+    openApps: openSavedApps, oauth: () => resolveOAuthEnv(), updated: managementUpdated,
+  }) : undefined;
+  const bulkAppSwitchPanel = opts.runCollectionAuthentication && opts.getOAuthAppConfig ? createBulkCollectionOAuthAppSwitchPanel({
+    host, call: opts.runCollectionAuthentication, apps: opts.getOAuthAppConfig,
+    accounts: async () => {
+      const [mail, calendar] = await Promise.all([opts.mail?.list(), opts.calendar?.list()]);
+      const found: BulkOAuthAppAccount[] = [];
+      for (const [platform, rows] of [['mail', mail?.instances ?? []], ['calendar', calendar?.instances ?? []]] as const) {
+        for (const row of rows) {
+          if (row.managed_connection_name || row.source_authentication === 'broker' || !['gmail', 'gcal', 'graph'].includes(row.adapter_type)) continue;
+          found.push({ platform, slug: row.slug, issuer: row.adapter_type === 'graph' ? 'microsoft' : 'google',
+            ...('account_email' in row && typeof row.account_email === 'string' && row.account_email ? { email: row.account_email } : {}) });
+        }
+      }
+      return found;
+    }, changed: () => { void doRefresh(false, true); opts.onAuthenticationChanged?.(); }, openApps: openSavedApps, oauth: () => resolveOAuthEnv(),
+  }) : undefined;
+  state.bulkOAuthAppSwitchAvailable = bulkAppSwitchPanel !== undefined;
   let loadGeneration = 0;
   let pendingLoad: Promise<void> = Promise.resolve();
   // Survives stage navigation — blocks a second enroll write while one is
@@ -347,7 +428,7 @@ export const mountAccountsLanePanel = (
           },
         });
   const firstSyncPollIntervalMs = opts.firstSyncPollIntervalMs ?? 2_500;
-  const firstSyncPollMaxAttempts = opts.firstSyncPollMaxAttempts ?? 24;
+  const firstSyncPollMaxAttempts = opts.firstSyncPollMaxAttempts ?? Infinity;
   let firstSyncPollAttempts = 0;
   let firstSyncPollCancel: (() => void) | null = null;
   let firstSyncBackgroundLoadGeneration: number | null = null;
@@ -410,6 +491,7 @@ export const mountAccountsLanePanel = (
     const field = (
       active.closest('[data-acct-field]')
       ?? active.closest('[data-oauth-cred-field]')
+      ?? active.closest('[data-acct-filter]')
     ) as (HTMLElement & {
       selectionStart?: number | null;
       selectionEnd?: number | null;
@@ -444,6 +526,7 @@ export const mountAccountsLanePanel = (
   const focusPanelElement = (selector: string): void => {
     const element = host.querySelector(selector) as HTMLElement | null;
     element?.focus?.({ preventScroll: true });
+    element?.scrollIntoView?.({ block: 'nearest' });
   };
 
   const focusProviderChoice = (providerId: string): void => {
@@ -512,7 +595,7 @@ export const mountAccountsLanePanel = (
     }
     if (snapshot.field !== null) {
       const fields = host.querySelectorAll(
-        '[data-acct-field],[data-oauth-cred-field]',
+        '[data-acct-field],[data-oauth-cred-field],[data-acct-filter]',
       );
       for (const candidate of Array.from(fields)) {
         const element = candidate as HTMLElement & {
@@ -552,7 +635,32 @@ export const mountAccountsLanePanel = (
       && active !== null
       && typeof active.closest === 'function'
       && active.closest('[data-accounts-delete-dialog]') !== null;
+    if (state.stage !== 'detail' || state.authenticationManagement?.slug !== state.detailSlug) delete state.authenticationManagement;
+    state.authenticationManagementBusy = authenticationPanel?.busy() === true || oauthAppSwitchPanel?.busy() === true;
     host.innerHTML = renderAccountsPanel({ state });
+    // Explicit tab stops keep Safari inside this modal even when the system
+    // keyboard preference skips ordinary buttons in the native Tab order.
+    if (state.deleteConfirm !== null) {
+      for (const control of host.querySelectorAll?.<HTMLButtonElement>('[data-accounts-delete-dialog] button') ?? []) control.tabIndex = 0;
+    }
+    const oauthRow = state.stage === 'detail' ? state.rows.find(row => row.slug === state.detailSlug) : undefined;
+    const oauthProvider = state.stage === 'form' ? state.providerId : oauthRow?.adapterType;
+    const oauthIssuer = oauthProvider && ['gmail', 'gcal', 'graph'].includes(oauthProvider) ? oauthAppIssuerForProvider(oauthProvider as 'gmail' | 'gcal' | 'graph') : undefined;
+    const broker = state.stage === 'form' ? state.values.auth_method === 'managed_oauth' : oauthRow?.sourceAuthentication === 'broker';
+    oauthHelp.mount(host.querySelector<HTMLElement>('[data-account-oauth-help-host]'), oauthIssuer ? {
+      key: JSON.stringify([state.lane, state.stage, oauthProvider, state.values.oauth_app_id, state.values.connection_name, oauthRow?.slug, oauthRow?.managedConnectionName]),
+      route: broker ? 'broker' : 'direct', issuer: oauthIssuer,
+      ...(state.stage === 'form' && !broker && state.appOrigin ? { callbackUrl: buildOpenerRelayRedirectUri(state.appOrigin, oauthIssuer === 'microsoft') } : {}),
+      savedApp: !oauthRow?.managedConnectionName, pending: state.saving || state.oauthFinishing || state.oauthReloadRecovery !== null,
+    } : null);
+    authenticationPanel?.context(state.lane, state.stage === 'detail' ? state.detailSlug : null);
+    authenticationPanel?.render();
+    oauthAppSwitchPanel?.context(state.lane, state.stage === 'detail' ? state.detailSlug : null);
+    oauthAppSwitchPanel?.render();
+    passwordPanel.context(state.lane, state.stage === 'detail' ? state.detailSlug : null);
+    passwordPanel.render();
+    bulkAppSwitchPanel?.context(state.lane, state.stage);
+    bulkAppSwitchPanel?.render();
     if (preserveFocus) restorePanelFocus(focus);
     if (keepDeleteDialogFocus) {
       const currentDialog = deleteDialog();
@@ -586,7 +694,12 @@ export const mountAccountsLanePanel = (
           ...(m.account_email ? { sublabel: m.account_email } : {}),
           sendCapable: m.send_capable,
           ...(m.managed_connection_name ? { managedConnectionName: m.managed_connection_name } : {}),
+          ...(m.source_authentication ? { sourceAuthentication: m.source_authentication } : {}),
+          authenticationSwitchAvailable: authenticationPanel !== undefined,
+          oauthAppSwitchAvailable: oauthAppSwitchPanel !== undefined,
+          passwordRepairAvailable: m.adapter_type === 'imap' && opts.mail?.updateCredentials !== undefined,
           lastSyncedAt: m.last_synced_at,
+          ...(m.sync_status !== undefined ? { mailSync: m.sync_status } : {}),
         };
       }
       const c = r as CollectionInstanceRow;
@@ -597,19 +710,22 @@ export const mountAccountsLanePanel = (
         reauthAvailable:
           lane === 'calendar' && !c.managed_connection_name && (c.caps as { auth?: unknown }).auth === 'oauth',
         ...(c.managed_connection_name ? { managedConnectionName: c.managed_connection_name } : {}),
+        ...(c.source_authentication ? { sourceAuthentication: c.source_authentication } : {}),
+        authenticationSwitchAvailable: authenticationPanel !== undefined,
+        oauthAppSwitchAvailable: oauthAppSwitchPanel !== undefined,
+        passwordRepairAvailable: c.adapter_type === 'caldav' && opts.calendar?.updateCredentials !== undefined,
         lastSyncedAt: c.last_synced_at,
       };
     });
 
-  /** Only the newly connected row + current load error can change the
-   *  post-connect presentation. Background polls deliberately ignore unrelated
-   *  row churn so an unchanged pending status does not repaint the panel. */
-  const firstSyncViewKey = (): string | null => {
+  /** Ignore unrelated completed rows while tracking an import, including after
+   * a return to Connections when its one-time success receipt is gone. */
+  const firstSyncViewKey = (): string => {
     const success = state.connectionSuccess;
-    if (success === null) return null;
     return JSON.stringify({
       error: state.error,
-      row: state.rows.find((candidate) => candidate.slug === success.slug) ?? null,
+      rows: state.rows.filter((row) => row.slug === success?.slug
+        || (row.mailSync !== undefined && !row.mailSync.initial_sync_complete)),
     });
   };
 
@@ -639,6 +755,15 @@ export const mountAccountsLanePanel = (
     if (snapshot === null) return;
     if (disposed || gen !== loadGeneration) return;
     state.oauthAppConfig = snapshot;
+    if (state.stage === 'form' && !state.saving && state.values.oauth_app_id === undefined
+      && !state.oauthCredValues.client_id && !state.oauthCredValues.client_secret) {
+      const provider = activeProvider();
+      if (provider && isOAuthAccountTransport(provider.transport)) {
+        const issuer = oauthAppIssuerForProvider(provider.id as 'gmail' | 'gcal' | 'graph');
+        const first = snapshot[issuer].apps?.find(app => app.has_secret);
+        if (first) { state.values.oauth_app_id = first.id; state.oauthCredValues.client_id = first.client_id; }
+      }
+    }
     render(preserveFocus);
   };
 
@@ -657,6 +782,10 @@ export const mountAccountsLanePanel = (
         } catch { return []; }
       });
       state.managedConnectionsError = null;
+      if (state.stage === 'form' && state.values.auth_method === 'managed_oauth' && !state.values.connection_name) {
+        const compatible = managedConnectionsForAccount(state.providerId ?? '', state.managedConnections);
+        if (compatible.length === 1) state.values.connection_name = compatible[0]!.name;
+      }
     } catch (error) {
       if (disposed || gen !== loadGeneration) return;
       state.managedConnections = [];
@@ -668,17 +797,23 @@ export const mountAccountsLanePanel = (
   const shouldPollFirstSync = (): boolean => {
     const success = state.connectionSuccess;
     if (
-      success === null
-      || state.stage !== 'list'
+      state.stage !== 'list'
       || state.loading
       || firstSyncPoll === null
       || firstSyncPollAttempts >= firstSyncPollMaxAttempts
     ) return false;
+    if (state.lane === 'mail' && state.rows.some((row) => row.mailSync !== undefined
+      && !row.mailSync.initial_sync_complete && row.authState !== 'expired' && row.authState !== 'unauthorized')) return true;
+    if (success === null) return false;
     // A foreground post-connect refresh may have left a stale pre-enroll row.
     // Keep checking until one authoritative list read succeeds; the renderer
     // likewise refuses to call that stale timestamp "ready" while error is set.
     if (state.error !== null) return true;
     const row = state.rows.find((candidate) => candidate.slug === success.slug);
+    if (row?.mailSync !== undefined) {
+      return row.authState !== 'expired' && row.authState !== 'unauthorized'
+        && !row.mailSync.initial_sync_complete;
+    }
     return row === undefined
       || (row.authState === 'healthy'
         && (row.lastSyncedAt === undefined || row.lastSyncedAt === null));
@@ -692,7 +827,7 @@ export const mountAccountsLanePanel = (
       if (disposed || !shouldPollFirstSync()) return;
       firstSyncPollAttempts += 1;
       void doRefresh(true);
-    }, firstSyncPollIntervalMs);
+    }, firstSyncPollAttempts < 24 ? firstSyncPollIntervalMs : Math.max(firstSyncPollIntervalMs, 15_000));
   };
 
   /** Refresh the active lane. First-sync polls are background reads: a brief
@@ -733,10 +868,20 @@ export const mountAccountsLanePanel = (
           render(preserveFocus);
           return;
         }
-        const { instances } = await callers.list();
+        const [local, cloud] = await Promise.allSettled([callers.list(), lane === 'file' && opts.listCloudFiles ? opts.listCloudFiles() : Promise.resolve(undefined)]);
+        if (local.status === 'rejected' && !(lane === 'file' && cloud.status === 'fulfilled' && cloud.value !== undefined)) throw local.reason;
+        const instances = local.status === 'fulfilled' ? local.value.instances : [];
         await configLoad;
         if (disposed || gen !== loadGeneration) return;
         state.rows = normalizeRows(lane, instances);
+        if (lane === 'file') {
+          state.localFilesError = local.status === 'rejected' ? 'Local folders could not be loaded. Refresh the file sources to try again.' : undefined;
+          state.cloudFilesError = cloud.status === 'rejected' ? 'Cloud file sources could not be loaded. Refresh the file sources to try again.' : undefined;
+          if (cloud.status === 'fulfilled' && cloud.value) state.rows = [...state.rows, ...cloud.value.sources.map(source => ({
+            slug: 'remote:' + source.source_id, adapterType: source.provider, authState: 'healthy' as const,
+            cloudSource: source, lastSyncedAt: source.last_synced_at,
+          }))];
+        }
         state.loading = false;
         state.error = null;
         if (!background || previousFirstSyncView !== firstSyncViewKey()) {
@@ -781,26 +926,20 @@ export const mountAccountsLanePanel = (
 
   // ── Add flow ──────────────────────────────────────────────────
   const openProvider = (provider: AccountProvider): void => {
+    draftValues.clear(); handingOffSetup = false;
     clearConnectionSuccess();
     state.stage = 'form';
     state.providerId = provider.id;
     state.values = seedAccountFormValues(provider);
-    if (state.managedConnections !== undefined && isOAuthAccountTransport(provider.transport)) {
-      const compatible = managedConnectionsForAccount(provider.id, state.managedConnections);
-      const issuer = oauthAppIssuerForProvider(provider.id as 'gmail' | 'gcal' | 'graph');
-      const status = state.oauthAppConfig?.[issuer];
-      if (compatible.length > 0 && !status?.has_secret) {
-        state.values.auth_method = 'managed_oauth';
-        if (compatible.length === 1) state.values.connection_name = compatible[0]!.name;
-      }
-    }
     state.formError = null;
     // Seed the inline OAuth-app credential fields: pre-fill client_id from the
     // effective (stored/env) id so a configured app shows it; the secret is
     // write-only so it always starts blank.
     if (isOAuthAccountTransport(provider.transport)) {
       const issuer = oauthAppIssuerForProvider(provider.id as 'gmail' | 'gcal' | 'graph');
-      const status = state.oauthAppConfig?.[issuer] ?? null;
+      const profiles = savedOAuthAppsForIssuer(state.oauthAppConfig, issuer).filter(app => app.has_secret);
+      if (state.oauthAppConfig?.[issuer].apps !== undefined && profiles.length) state.values.oauth_app_id = profiles[0]!.id;
+      const status = oauthAppStatusForSelection(state.oauthAppConfig, issuer, state.values.oauth_app_id);
       state.oauthCredValues = { client_id: status?.client_id ?? '', client_secret: '' };
     } else {
       state.oauthCredValues = { client_id: '', client_secret: '' };
@@ -950,79 +1089,25 @@ export const mountAccountsLanePanel = (
     microsoft: { client_id: null, has_secret: false, source: null },
   });
 
-  /** Turn a raw OAuth `error` code from the provider into the ACTION that fixes
-   *  it.
-   *
-   *  The relay forwards the provider's `error` query param verbatim, so without
-   *  this the owner is shown `unauthorized_client` and nothing else — a string
-   *  that names a condition rather than a remedy, and that they cannot act on
-   *  without already knowing what it means. Every entry here maps to a specific
-   *  setting in a specific console page.
-   *
-   *  Only codes with a KNOWN, single remedy are mapped. Anything else falls
-   *  through to the raw code: inventing a confident explanation for an error we
-   *  have not diagnosed would send people to change settings that were fine. */
-  const oauthErrorRemedy = (
-    code: string,
-    issuer: OAuthAppIssuer | null,
-  ): string | null => {
-    switch (code) {
-      case 'unauthorized_client':
-        // ⚠ Microsoft's text — "The client does not exist or is not enabled for
-        // consumers" — is genuinely TWO different faults sharing one code, and
-        // they are indistinguishable from outside the app's home tenant (both
-        // surface as AADSTS700016 against any other tenant). So this names BOTH,
-        // cheapest check first. Asserting only the account-type cause sends
-        // someone with a mistyped Client ID to change a setting that was
-        // already correct — which is exactly the wrong-diagnosis loop this
-        // mapping exists to prevent.
-        return issuer === 'microsoft'
-          ? 'Microsoft rejected the app itself, which means one of two things. '
-            + '(1) The Client ID is not a real app — check it matches the '
-            + '"Application (client) ID" on your app registration\'s Overview page. '
-            + 'It is easy to paste the Secret ID by mistake; both are GUIDs. '
-            + '(2) The app does not accept this account type — under Authentication '
-            + '→ Supported account types choose "Accounts in any organizational '
-            + 'directory and personal Microsoft accounts", which is required '
-            + 'because Recued signs in via /common. Personal (outlook.com / '
-            + 'hotmail.com) accounts fail here if the app is organization-only.'
-          : null;
-      case 'invalid_client':
-        return 'The Client ID or secret is wrong. Re-copy them from the app — for '
-          + 'Microsoft the Client ID is the Application (client) ID on the Overview '
-          + 'page, NOT the Secret ID shown beside the secret.';
-      case 'invalid_scope':
-        return issuer === 'microsoft'
-          ? 'The app registration is missing a permission Recued asked for. Add it under '
-            + 'API permissions → Microsoft Graph → Delegated permissions, then retry.'
-          : 'The app is missing a scope Recued asked for. Enable the matching API in the '
-            + 'Google Cloud console, then retry.';
-      case 'access_denied':
-        return 'You declined the consent screen. Retry and accept to continue.';
-      default:
-        return null;
-    }
-  };
-
   const oauthFailureMessage = (
     reason: 'popup_blocked' | 'denied' | 'timeout' | 'closed' | 'error',
     detail?: string,
     issuer: OAuthAppIssuer | null = null,
   ): string => {
-    const remedy = detail ? oauthErrorRemedy(detail, issuer) : null;
+    oauthHelp.observePopup(reason, detail);
+    const observed = oauthHelpPopupObservation(reason, detail);
+    const plan = oauthHelpPlan({ key: '', route: 'direct', ...(issuer ? { issuer } : {}) }, observed.issue);
     switch (reason) {
       case 'popup_blocked':
         return 'Popup blocked — allow popups for this site and try again.';
       case 'denied':
-        if (remedy) return remedy;
-        return detail ? `Sign-in was declined: ${detail}` : 'Sign-in was declined.';
+        return observed.label + ' ' + (observed.issue === 'credentials' ? plan.steps[0] : plan.explanation);
       case 'timeout':
         return 'Sign-in timed out. Please try again.';
       case 'closed':
         return 'Sign-in window closed before finishing.';
       default:
-        if (remedy) return remedy;
-        return detail ?? 'Sign-in failed.';
+        return observed.label + ' Open Troubleshoot OAuth for the next checks.';
     }
   };
 
@@ -1047,6 +1132,8 @@ export const mountAccountsLanePanel = (
   const mailOAuthSpec = (provider: AccountProvider): OAuthLaneSpec | null => {
     if (opts.mail?.enrollOAuth === undefined) return null;
     const p = provider.id as MailOAuthProvider;
+    const appId = state.values.oauth_app_id;
+    const appClientId = state.oauthCredValues.client_id.trim() || oauthAppStatusForSelection(state.oauthAppConfig, oauthAppIssuerForProvider(p), appId)?.client_id || '';
     const slug = (state.values['name'] ?? '').trim();
     const sendEnabled = state.values['send_enabled'] === 'true';
     // Microsoft ONLY — `graph` mail and calendar share one grant + one token
@@ -1071,6 +1158,7 @@ export const mountAccountsLanePanel = (
           account_slug: slug,
           code: a.code,
           redirect_uri: a.redirect_uri,
+          ...(appId ? { oauth_app_id: appId, oauth_client_id: appClientId } : {}),
         });
         if (!calendarToo) return;
         // The code is spent, so the calendar lane ADOPTS the stored grant
@@ -1100,6 +1188,8 @@ export const mountAccountsLanePanel = (
   const calendarOAuthSpec = (provider: AccountProvider): OAuthLaneSpec | null => {
     if (opts.calendar?.enrollOAuth === undefined) return null;
     const adapter = provider.id as CalendarOAuthAdapter;
+    const appId = state.values.oauth_app_id;
+    const appClientId = state.oauthCredValues.client_id.trim() || oauthAppStatusForSelection(state.oauthAppConfig, oauthAppIssuerForProvider(adapter), appId)?.client_id || '';
     const slug = (state.values['name'] ?? '').trim();
     return {
       providerId: provider.id,
@@ -1114,6 +1204,7 @@ export const mountAccountsLanePanel = (
           adapter,
           oauth_code: a.code,
           oauth_redirect_uri: a.redirect_uri,
+          ...(appId ? { oauth_app_id: appId, oauth_client_id: appClientId } : {}),
         });
       },
     };
@@ -1127,6 +1218,7 @@ export const mountAccountsLanePanel = (
     state.oauthAppConfig = {
       ...(state.oauthAppConfig ?? emptyOAuthAppConfig()),
       [saved.issuer]: {
+        ...state.oauthAppConfig?.[saved.issuer],
         client_id: saved.clientId,
         has_secret: true,
         source: 'stored' as const,
@@ -1424,7 +1516,7 @@ export const mountAccountsLanePanel = (
    * separate write-only OAuth-app structure). */
   const continuityAccountValues = (): AccountFormValues => {
     const safe: AccountFormValues = {};
-    for (const key of ['name', 'send_enabled', 'calendar_enabled'] as const) {
+    for (const key of ['name', 'send_enabled', 'calendar_enabled', 'oauth_app_id'] as const) {
       const value = state.values[key];
       if (value !== undefined) safe[key] = key === 'name' ? value.trim() : value;
     }
@@ -1484,7 +1576,7 @@ export const mountAccountsLanePanel = (
     // absent), where we fall through to the legacy path and let
     // getOAuthClientConfig decide + surface its own error.
     const appConfigLoaded = state.oauthAppConfig !== null;
-    const status = state.oauthAppConfig?.[spec.issuer] ?? null;
+    const status = oauthAppStatusForSelection(state.oauthAppConfig, spec.issuer, state.values.oauth_app_id);
     // Reusable WITHOUT entering a secret only if a usable secret is already
     // available (stored or env). `source !== null` alone isn't enough — an env
     // app with a client_id but no secret (`RECUED_*_CLIENT_ID` set, secret
@@ -1496,6 +1588,9 @@ export const mountAccountsLanePanel = (
     // disabled setup look complete and then fail only after the popup opens.
     const clientSecret = (state.oauthCredValues.client_secret ?? '').trim();
     let saveArgs: SetOAuthAppConfigArgs | null = null;
+    if (clientSecret.length > 0 && state.values.oauth_app_id && state.values.oauth_app_id !== 'default') {
+      state.formError = 'Edit this named app in Apps & APIs, then select it and connect.'; render(); return;
+    }
     if (clientSecret.length > 0) {
       if (clientId.length === 0) {
         state.formError = 'Enter the Client ID alongside the Client secret.';
@@ -1548,6 +1643,8 @@ export const mountAccountsLanePanel = (
     state.oauthProgressStage = 'preparing';
     render();
     const appConfigToSave = saveArgs;
+    const selectedAppId = state.values.oauth_app_id;
+    const selectedClientId = clientId || status?.client_id;
     const started = oauthContinuity.start({
       lane: state.lane as Extract<AccountLaneId, 'mail' | 'calendar'>,
       providerId: spec.providerId,
@@ -1568,8 +1665,16 @@ export const mountAccountsLanePanel = (
             },
           }
         : {}),
-      resolveClientId: async () =>
-        spec.clientId(await opts.getOAuthClientConfig!()),
+      resolveClientId: async () => {
+        const appToResolve = selectedAppId ?? (appConfigToSave && opts.getOAuthAppConfig ? 'default' : undefined);
+        if (!appToResolve) return spec.clientId(await opts.getOAuthClientConfig!());
+        if (!opts.getOAuthAppConfig) throw new Error('Refresh the saved OAuth apps before connecting.');
+        const latest = await opts.getOAuthAppConfig();
+        const app = savedOAuthAppsForIssuer(latest, spec.issuer).find(app => app.id === appToResolve && app.has_secret);
+        if (!app || app.client_id !== selectedClientId) throw new Error('The selected OAuth app changed or was removed. Refresh and connect again.');
+        if (!disposed) state.oauthAppConfig = latest;
+        return app.client_id;
+      },
       buildAuthorizeUrl: spec.authorizeUrl,
       enroll: spec.enroll,
       missingClientIdMessage:
@@ -1577,7 +1682,7 @@ export const mountAccountsLanePanel = (
         + 'Re-enter the Client ID and secret and try again.',
       popupFailureMessage: (reason, detail) =>
         oauthFailureMessage(reason, detail, spec.issuer),
-      errorMessage: errMessage,
+      errorMessage: error => { oauthHelp.observeFailure(error); return errMessage(error); },
     });
     if (!started.ok) {
       submitInFlight = false;
@@ -1726,19 +1831,15 @@ export const mountAccountsLanePanel = (
     void runRowAction('resync', slug, () => resync({ slug }), 'reload-stay');
   };
 
-  const reauthAccount = (slug: string): void => {
-    const callers = laneCallers(state.lane);
-    if (
-      callers === undefined
-      || state.lane !== 'calendar'
-      || (callers as CalendarLaneCallers).reauth === undefined
-    ) {
-      setRowError(slug, 'Re-authorize is not available for this account.');
-      render(true);
-      return;
-    }
-    const reauth = (callers as CalendarLaneCallers).reauth!;
-    void runRowAction('reauth', slug, () => reauth({ slug }), 'reload-stay');
+  const openAuthenticationManagement = (slug: string): void => {
+    const row = state.rows.find(r => r.slug === slug);
+    if (!row || state.stage !== 'detail' || state.saving || authenticationPanel?.busy() || oauthAppSwitchPanel?.busy() || bulkAppSwitchPanel?.busy()
+      || !['mail', 'calendar'].includes(state.lane) || !['gmail', 'gcal', 'graph'].includes(row.adapterType)) return;
+    authenticationPanel?.close(); oauthAppSwitchPanel?.close(); bulkAppSwitchPanel?.close();
+    state.authenticationManagement = { slug: row.slug, action: 'reauthorize' }; render();
+    host.querySelector<HTMLElement>('[data-manage-authentication-heading]')?.focus();
+    if (!row.managedConnectionName) void oauthAppSwitchPanel?.reauthorize(state.lane as 'mail' | 'calendar', row.slug);
+    else void authenticationPanel?.permissions(state.lane as 'mail' | 'calendar', row.slug, row.managedConnectionName);
   };
 
   /** Best-effort copy for the exact provider callback URI. The URI remains
@@ -1782,8 +1883,22 @@ export const mountAccountsLanePanel = (
   };
 
   // ── Action handlers ───────────────────────────────────────────
+  const handoffSetup = (destination: 'apps' | 'connection'): void => {
+    if (state.stage !== 'form') { openSavedApps(); return; }
+    const provider = state.providerId;
+    if ((state.lane !== 'mail' && state.lane !== 'calendar') || (provider !== 'gmail' && provider !== 'gcal' && provider !== 'graph')) return;
+    if (!opts.setupContinuity || !opts.onSetupHandoff) {
+      if (destination === 'apps') openSavedApps(); else opts.onOpenManagedConnections?.();
+      return;
+    }
+    if (state.oauthCredValues.client_secret && !(doc.defaultView?.confirm?.('Open authentication settings? Your account name and choices will be kept for the return. The unsaved client secret will be discarded.') ?? true)) return;
+    opts.setupContinuity.save({ lane: state.lane, providerId: provider, destination, values: state.values });
+    state.oauthCredValues = { client_id: '', client_secret: '' }; handingOffSetup = true;
+    opts.onSetupHandoff(destination);
+  };
   const handlers: ActionHandlers<AccountsAction> = {
     'accounts-open-add': () => {
+      if (!confirmDiscardSetup()) return;
       openAdd();
     },
     'accounts-pick-provider': (dataset) => {
@@ -1794,6 +1909,7 @@ export const mountAccountsLanePanel = (
       openProvider(provider);
     },
     'accounts-back-to-list': () => {
+      if (!confirmDiscardSetup() || passwordPanel.hasDraft() && !(doc.defaultView?.confirm?.('Discard the replacement password?') ?? true)) return;
       backToList();
     },
     'accounts-submit-form': () => {
@@ -1802,9 +1918,52 @@ export const mountAccountsLanePanel = (
     'accounts-oauth-connect': () => {
       driveOAuth();
     },
-    'accounts-open-managed-connection': () => {
-      if (!state.saving) opts.onOpenManagedConnections?.();
+    'accounts-manage-authentication': (dataset) => { if (dataset.slug) openAuthenticationManagement(dataset.slug); },
+    'accounts-authentication-choice': (dataset) => {
+      const selection = state.authenticationManagement;
+      const row = state.rows.find(r => r.slug === selection?.slug);
+      if (!selection || !row || !['reauthorize', 'app', 'method'].includes(dataset.choice ?? '') || state.saving
+        || authenticationPanel?.busy() || oauthAppSwitchPanel?.busy() || bulkAppSwitchPanel?.busy()) return;
+      if (dataset.choice === 'app' && row.managedConnectionName) return;
+      authenticationPanel?.close(); oauthAppSwitchPanel?.close();
+      selection.action = dataset.choice as 'reauthorize' | 'app' | 'method'; render();
+      if (selection.action === 'method') void authenticationPanel?.open(state.lane as 'mail' | 'calendar', row.slug, row.managedConnectionName);
+      else if (selection.action === 'app') void oauthAppSwitchPanel?.open(state.lane as 'mail' | 'calendar', row.slug);
+      else if (!row.managedConnectionName) void oauthAppSwitchPanel?.reauthorize(state.lane as 'mail' | 'calendar', row.slug);
+      else void authenticationPanel?.permissions(state.lane as 'mail' | 'calendar', row.slug, row.managedConnectionName);
     },
+    'accounts-switch-authentication': (dataset) => {
+      const row = state.rows.find(r => r.slug === dataset.slug);
+      if (!row || state.saving || authenticationPanel?.busy() || oauthAppSwitchPanel?.busy() || bulkAppSwitchPanel?.busy() || !['mail', 'calendar'].includes(state.lane)) return;
+      bulkAppSwitchPanel?.close();
+      oauthAppSwitchPanel?.close();
+      void authenticationPanel?.open(state.lane as 'mail' | 'calendar', row.slug, row.managedConnectionName);
+    },
+    'accounts-switch-oauth-app': (dataset) => {
+      const row = state.rows.find(r => r.slug === dataset.slug);
+      if (!row || row.managedConnectionName || state.saving || authenticationPanel?.busy() || oauthAppSwitchPanel?.busy() || bulkAppSwitchPanel?.busy()
+        || !['mail', 'calendar'].includes(state.lane) || !['gmail', 'gcal', 'graph'].includes(row.adapterType)) return;
+      authenticationPanel?.close();
+      bulkAppSwitchPanel?.close();
+      void oauthAppSwitchPanel?.open(state.lane as 'mail' | 'calendar', row.slug);
+    },
+    'accounts-bulk-switch-oauth-app': () => {
+      if (state.stage !== 'list' || !['mail', 'calendar'].includes(state.lane) || state.saving || authenticationPanel?.busy() || oauthAppSwitchPanel?.busy() || bulkAppSwitchPanel?.busy()) return;
+      authenticationPanel?.close(); oauthAppSwitchPanel?.close(); void bulkAppSwitchPanel?.open(state.lane);
+    },
+    'accounts-open-managed-connection': () => {
+      if (state.saving) return;
+      if (state.stage === 'form') handoffSetup('connection');
+      else opts.onOpenManagedConnections?.(state.rows.find(row => row.slug === state.detailSlug)?.managedConnectionName);
+    },
+    'accounts-manage-saved-apps': () => { if (!state.saving) handoffSetup('apps'); },
+    'accounts-update-credentials': dataset => {
+      if (state.saving || passwordPanel.busy() || passwordPanel.hasDraft() || !dataset.slug) return;
+      const row = state.rows.find(row => row.slug === dataset.slug);
+      const call = state.lane === 'mail' ? opts.mail?.updateCredentials : opts.calendar?.updateCredentials;
+      if (row?.passwordRepairAvailable && call) passwordPanel.open(state.lane, row.slug, row.sendCapable === true, call);
+    },
+    'accounts-clear-filters': () => { state.filters = undefined; render(); host.querySelector<HTMLElement>('[data-acct-filter="query"]')?.focus(); },
     'accounts-copy-oauth-redirect': (dataset, _event, element) => {
       copyOAuthRedirect(dataset.copyValue, element);
     },
@@ -1886,6 +2045,7 @@ export const mountAccountsLanePanel = (
       if (!focusAccountRow(success.slug)) {
         focusPanelElement('[data-action="accounts-open-add"]');
       }
+      scheduleFirstSyncPoll();
     },
     'accounts-open-detail': (dataset) => {
       if (dataset.slug === undefined) return;
@@ -1907,7 +2067,7 @@ export const mountAccountsLanePanel = (
     },
     'accounts-reauth': (dataset) => {
       if (dataset.slug === undefined) return;
-      reauthAccount(dataset.slug);
+      openAuthenticationManagement(dataset.slug);
     },
   };
 
@@ -1932,7 +2092,8 @@ export const mountAccountsLanePanel = (
     ) {
       const credKey = credEl.dataset.oauthCredField;
       if ((credEl.tagName === 'SELECT' ? 'change' : 'input') !== event.type) return;
-      if (state.saving) return;
+      if (state.saving || state.values.oauth_app_id && state.values.oauth_app_id !== 'default') return;
+      rememberEdit('credential.' + credKey, state.oauthCredValues[credKey as keyof typeof state.oauthCredValues] ?? '');
       state.oauthCredValues = { ...state.oauthCredValues, [credKey]: credEl.value ?? '' };
       // Clear a stale form error on the first edit after a failed connect.
       if (state.formError !== null) {
@@ -1944,6 +2105,11 @@ export const mountAccountsLanePanel = (
       return;
     }
 
+    const filter = target.closest('[data-acct-filter]') as FieldElement | null;
+    if (filter?.dataset.acctFilter && host.contains(filter)) {
+      if ((filter.tagName === 'SELECT' ? 'change' : 'input') !== event.type) return;
+      state.filters = { ...state.filters, [filter.dataset.acctFilter]: filter.value ?? '' }; render(true); return;
+    }
     const el = target.closest('[data-acct-field]') as FieldElement | null;
     if (el === null || !host.contains(el)) return;
     const key = el.dataset.acctField;
@@ -1951,11 +2117,21 @@ export const mountAccountsLanePanel = (
     const isSelect = el.tagName === 'SELECT';
     if ((isSelect ? 'change' : 'input') !== event.type) return;
     if (state.saving) return;
+    rememberEdit(key, state.values[key] ?? '');
+    if (key === 'oauth_app_id') {
+      const provider = activeProvider();
+      if (!provider || !isOAuthAccountTransport(provider.transport)) return;
+      const issuer = oauthAppIssuerForProvider(provider.id as 'gmail' | 'gcal' | 'graph');
+      const app = savedOAuthAppsForIssuer(state.oauthAppConfig, issuer).find(app => app.id === el.value && app.has_secret);
+      if (!app) return;
+      state.values = { ...state.values, oauth_app_id: app.id };
+      state.oauthCredValues = { client_id: app.client_id, client_secret: '' }; state.formError = null; render(true); return;
+    }
     state.values = { ...state.values, [key]: el.value ?? '' };
     if (key === 'auth_method') {
       // Changing modes discards the write choices and any direct-app secret draft.
       state.oauthCredValues = { client_id: '', client_secret: '' };
-      state.values = { ...state.values, send_enabled: 'false', mutation_enabled: 'false',
+      state.values = { ...state.values, mutation_enabled: 'false',
         write_enabled: 'false', calendar_enabled: 'false', connection_name: '' };
       const provider = activeProvider();
       const compatible = provider ? managedConnectionsForAccount(provider.id, state.managedConnections ?? []) : [];
@@ -1964,6 +2140,7 @@ export const mountAccountsLanePanel = (
       render(true);
       return;
     }
+    if (key === 'connection_name') { state.formError = null; render(true); return; }
     if (state.formError !== null) {
       // First edit after a failed submit clears the stale error and re-enables
       // Submit without dropping the corrected field's focus or caret.
@@ -1993,6 +2170,12 @@ export const mountAccountsLanePanel = (
   host.addEventListener('keydown', onKeydown);
 
   render();
+  const restoredSetup = opts.initialDetailSlug === undefined ? opts.setupContinuity?.take(state.lane) : undefined;
+  if (restoredSetup) {
+    const provider = findAccountProvider(findAccountLane(state.lane)!, restoredSetup.providerId);
+    if (provider) { openProvider(provider); for (const key of Object.keys(restoredSetup.values)) rememberEdit(key, state.values[key] ?? '');
+      state.values = { ...state.values, ...restoredSetup.values }; render(); focusPanelElement('[data-accounts-form-heading]'); }
+  }
   void doRefresh();
   detachOAuthContinuity = oauthContinuity.subscribe(onOAuthContinuity);
 
@@ -2000,7 +2183,8 @@ export const mountAccountsLanePanel = (
     getState: () => state,
     refresh: () => doRefresh(false, true),
     whenLoaded: () => pendingLoad,
-    hasInFlightWork: () => submitInFlight
+    hasUnsavedChanges: () => !handingOffSetup && (changedSetup() || passwordPanel.hasDraft()),
+    hasInFlightWork: () => passwordPanel.busy() || authenticationPanel?.busy() === true || oauthAppSwitchPanel?.busy() === true || bulkAppSwitchPanel?.busy() === true || submitInFlight
       || state.saving
       || oauthReloadVerificationInFlight
       || state.rowBusy.size > 0
@@ -2008,6 +2192,11 @@ export const mountAccountsLanePanel = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      authenticationPanel?.dispose();
+      passwordPanel.dispose();
+      oauthHelp.dispose();
+      oauthAppSwitchPanel?.dispose();
+      bulkAppSwitchPanel?.dispose();
       cancelFirstSyncPoll();
       releaseDeleteFocusTrap();
       detachOAuthContinuity();

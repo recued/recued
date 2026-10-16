@@ -298,7 +298,7 @@ describe('handleMailList', () => {
     expect(res.instances[0].send_capable).toBe(false);
   });
 
-  it('returns graph row with send_capable=true when Mail.Send is granted', async () => {
+  it('returns graph row with send_capable=true when Mail.Send and Mail.ReadWrite are granted', async () => {
     const h = newHarness();
     h.instances.upsert({
       platform: 'mail',
@@ -311,10 +311,27 @@ describe('handleMailList', () => {
     });
     await h.store.set(
       'graph.work-graph.granted_scopes',
-      'Mail.Read offline_access Mail.Send',
+      'Mail.Read offline_access Mail.Send Mail.ReadWrite',
     );
     const res = await handleMailList(h.deps);
     expect(res.instances[0].send_capable).toBe(true);
+  });
+
+  // ⛔ 2026-10-15: the send writes a draft first, which needs Mail.ReadWrite.
+  it('returns graph row with send_capable=false when Mail.Send is granted alone', async () => {
+    const h = newHarness();
+    h.instances.upsert({
+      platform: 'mail',
+      slug: 'work-graph',
+      adapter_type: 'graph',
+      config: { account_slug: 'work-graph', account_email: 'me@example.com' },
+      caps: { read: 'yes', write: 'no', delete: 'no', watch: 'realtime', mirror: 'required', auth: 'oauth', path_style: 'uri' },
+      auth_state: 'healthy',
+      last_synced_at: null,
+    });
+    await h.store.set('graph.work-graph.granted_scopes', 'Mail.Read offline_access Mail.Send');
+    const res = await handleMailList(h.deps);
+    expect(res.instances[0].send_capable).toBe(false);
   });
 });
 

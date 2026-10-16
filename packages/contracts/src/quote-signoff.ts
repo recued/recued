@@ -60,7 +60,9 @@ export interface QuoteSignoffFollowUp {
   };
   invoice: { availability: 'missing' | 'changed' | 'unavailable' } | {
     availability: 'current';
-    status: 'open' | 'settled' | 'carried_forward';
+    status: 'open' | 'settled' | 'credited' | 'carried_forward';
+    amount_credited?: string;
+    amount_refund_credited?: string;amount_refunded?: string;refund_due?: string;net_received?: string;net_invoice_total?: string;
     amount_paid: string;
     outstanding: string;
     due_on: string;

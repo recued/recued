@@ -7,6 +7,7 @@ import {
 } from '@recued/contracts';
 import { createEnsureFreshAuth, injectConnectionApiAuth } from '@recued/ingredients';
 import { decodeAuthFromStorage, encodeAuthForStorage, type ConnectionRpcDeps } from './connection-handler.js';
+import { persistNativeOAuthRenewal, withCurrentConnectionRenewal } from './native-oauth-renewal.js';
 
 export interface PackAccessDeps {
   connections: ConnectionRpcDeps;
@@ -67,9 +68,16 @@ export const createPackAccessHandler = (deps: PackAccessDeps) => {
   // Share a refresh gate across checks; only the normal encrypted token cache is written.
   const activeRefresh = new Map<string, { persisted?: ConnectionRow; failed: boolean }>();
   const freshAuth = createEnsureFreshAuth({
+    withAuthRenewal: (row, run) => withCurrentConnectionRenewal(rpc.store, row, run),
     fetchImpl: boundedFetch, now,
     persistAuth: async (row, auth, configPatch) => {
       const active = activeRefresh.get(row.name);
+      if (auth.type === 'oauth2_refresh' && auth.native_credential_id) {
+        await persistNativeOAuthRenewal({ store: rpc.store, encode: encodeAuthForStorage, decode: decodeAuthFromStorage,
+          key: rpc.getEncryptionKey, now }, row, auth, configPatch);
+        if (!active) throw conflict();
+        active.persisted = rpc.store.get('api', row.name) ?? undefined; return;
+      }
       const current = rpc.store.get('api', row.name);
       if (!active || !current || hash(rowIdentity(current)) !== hash(rowIdentity(row))) throw conflict();
       const encrypted = await encodeAuthForStorage(auth, { kind: 'api', name: row.name }, rpc.getEncryptionKey);

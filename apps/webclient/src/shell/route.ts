@@ -282,6 +282,8 @@ export interface ChatPlanAddress {
 export interface LogsRunAddress {
   readonly runId: string;
   readonly returnToChat?: ChatPlanAddress;
+  /** A closed Reception customer-work address, bound to this exact run. */
+  readonly returnToReception?: string;
 }
 
 interface SourceRecordAddressBase {
@@ -501,18 +503,22 @@ export const parseChatPlanAddress = (
 /** Exact Logs run route. The run stays in segment 0 for compatibility with
  * existing `#logs/<run_id>` bookmarks; an optional typed tail carries the
  * originating Chat plan through reloads and reconnects. */
-const logsRunAddressSegments = (
-  address: LogsRunAddress,
-): ReadonlyArray<string> => [
-  address.runId,
-  ...(address.returnToChat === undefined
-    ? []
-    : [
-        'return',
-        'chat',
-        ...chatPlanAddressSegments(address.returnToChat),
-      ]),
-];
+/** Only local customer-work routes can be carried through a review. */
+export const customerWorkReturnHash = (hash: string): string | undefined => {
+  const route = parseShellRoute(hash);
+  if (route.surface !== 'reception') return undefined;
+  const [section,id,tab] = route.segments;
+  const valid = section === 'accounts' && route.segments.length === 1
+    || section === 'signoffs' && route.segments.length === 2 && !!id
+    || section === 'jobs' && (route.segments.length === 1
+      || route.segments.length === 3 && !!id && ['overview','activity','billing','followups','closeout'].includes(tab ?? ''));
+  return valid ? serializeShellRoute('reception',...route.segments) : undefined;
+};
+const logsRunAddressSegments = (address: LogsRunAddress): ReadonlyArray<string> => {
+  if (address.returnToChat !== undefined) return [address.runId,'return','chat',...chatPlanAddressSegments(address.returnToChat)];
+  const reception = address.returnToReception === undefined ? undefined : customerWorkReturnHash(address.returnToReception);
+  return [address.runId,...(reception === undefined ? [] : ['return','reception',...parseShellRoute(reception).segments])];
+};
 
 export const serializeLogsRunAddress = (
   address: LogsRunAddress,
@@ -532,10 +538,11 @@ export const parseLogsRunAddress = (
     || runId === 'recipe'
   ) return null;
   if (route.segments.length === 1) return { runId };
-  if (
-    route.segments[1] !== 'return'
-    || route.segments[2] !== 'chat'
-  ) return null;
+  if (route.segments[1] === 'return' && route.segments[2] === 'reception') {
+    const returnToReception = customerWorkReturnHash(serializeShellRoute('reception',...route.segments.slice(3)));
+    return returnToReception === undefined ? null : {runId,returnToReception};
+  }
+  if (route.segments[1] !== 'return' || route.segments[2] !== 'chat') return null;
   const returnToChat = parseChatPlanAddress({
     surface: 'chat',
     segments: route.segments.slice(3),

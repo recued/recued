@@ -318,6 +318,9 @@ export const PII_FLOW_RULES: Readonly<Record<string, PiiFlowRule>> = {
   // event_when reads an event's times and all-day flag only; what it returns is
   // dates and clock times, never the event's text.
   event_when: { rule: 'destroy' },
+  // date_from_text returns the INPUT'S TEXT with its time phrase taken out, so
+  // what the text carried, it still carries.
+  date_from_text: { rule: 'string_preserve', arg: 'input' },
   // ── Logic ──
   compare: { rule: 'destroy' },
   coalesce: { rule: 'union_values', args: ['values'] },

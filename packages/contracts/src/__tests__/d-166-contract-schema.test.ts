@@ -23,6 +23,7 @@ import {
 const EXPECTED_DISPATCH_ROLES = [
   'ingredient_inventory',
   'pack_inventory',
+  'pack_reconnect_reviews',
   // D-170 gap #2 — connection → local-catalog binding inventory role.
   'connection_binding',
   'owner_operation_defaults',
@@ -258,6 +259,7 @@ describe('D-165 contract schema seed', () => {
   it('contains the D-165 composite keys + value shapes plus D-166 P2 policy_matrix', () => {
     expect(Object.keys(D165_CONTRACT_SCHEMA.composite_keys)).toEqual([
       'installed_ingredient',
+      'pack_reconnect_review',
       'installed_pack',
       // D-220 Slice B — pack-shipped intake templates, persisted at install.
       'installed_reception_template',
@@ -297,6 +299,7 @@ describe('D-165 contract schema seed', () => {
     ]);
     expect(Object.keys(D165_CONTRACT_SCHEMA.value_shapes)).toEqual([
       'installed_ingredient_info',
+      'pack_reconnect_review_info',
       'installed_pack_info',
       // D-220 Slice B — one persisted pack-shipped intake template.
       'installed_reception_template_info',
@@ -418,6 +421,7 @@ describe('D-165 contract schema seed', () => {
       ),
     ).toEqual({
       installed_ingredient: 0,
+      pack_reconnect_review: 0,
       installed_pack: 0,
       // D-220 Slice B — pack-shipped intake templates.
       installed_reception_template: 0,

@@ -1,0 +1,66 @@
+{
+  "recipe_id": "change-reminder",
+  "chat_exposed": true,
+  "version": 1,
+  "ttl": 60,
+  "metadata": {
+    "name": "Change a reminder",
+    "description": "Use “Change a reminder” in Recued. Move a reminder still to ring to a new time, or change what it says. Take its id from My reminders. Pass a new time with its offset, and tell the user the time the answer gives.",
+    "author": "recued-core",
+    "supported_platforms": [],
+    "tags": ["reminder", "notify", "personal-organizer", "pack:personal-organizer"],
+    "budget_ms": 10000
+  },
+  "variables": {
+    "reminder_id": {
+      "label": "Reminder id",
+      "type": "string",
+      "help": "The reminder to change, as My reminders lists it (rem_…)."
+    },
+    "remind_at": {
+      "label": "New time",
+      "type": "datetime",
+      "optional": true,
+      "help": "The new time, as an absolute ISO 8601 / RFC 3339 date-time WITH a timezone offset (e.g. 2026-07-04T15:00:00-07:00). Resolve the user's requested time against the current date/time in your context, in the user's timezone — do NOT assume UTC. Leave empty to keep the time."
+    },
+    "reminder_text": {
+      "label": "New text",
+      "type": "string",
+      "optional": true,
+      "help": "What the reminder says instead. Leave empty to keep it."
+    }
+  },
+  "requires": [],
+  "steps": [
+    {
+      "id": "due_at_ms",
+      "transform": "date_parse",
+      "input": "{{config.remind_at}}",
+      "require_offset": true,
+      "skip_when": "{{config.remind_at}} is_empty",
+      "fail_on": "{{step.due_at_ms}} is_null"
+    },
+    {
+      "id": "change",
+      "op": "core.reminder.update",
+      "args": {
+        "reminder_id": "{{config.reminder_id}}",
+        "text": "{{config.reminder_text}}",
+        "at": "{{step.due_at_ms}}"
+      }
+    },
+    {
+      "id": "card",
+      "transform": "to_summary",
+      "fields": [
+        { "label": "Result", "value": "{{step.change.message}}" },
+        { "label": "Reminder", "value": "{{step.change.reminder.text}}" }
+      ]
+    }
+  ],
+  "output": {
+    "render": [
+      { "type": "summary", "source": "step.card" }
+    ]
+  }
+}

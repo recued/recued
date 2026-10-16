@@ -1,0 +1,202 @@
+Delivered-To: owner@owner.example
+Authentication-Results: mx.zohomail.com;
+	dkim=pass;
+	spf=pass (zohomail.com: domain of firm.example designates 192.0.2.10 as permitted sender)  smtp.mailfrom=sender@firm.example
+Return-Path: <sender@firm.example>
+Received: from relay.firm.example (relay.firm.example [192.0.2.10]) by mx.zohomail.com
+	with SMTPS id 1790200000000000.11111111111111; Wed, 23 Sep 2026 23:35:36 -0700 (PDT)
+Authentication-Results: relay.firm.example;
+        spf=pass (sender IP is 198.51.100.25) smtp.mailfrom=sender@firm.example smtp.helo=DESKTOP-FIXTURE
+From: <sender@firm.example>
+To: "'owner'" <owner@owner.example>
+References: <19f00000aa1.4ee0000000aa01.1000000000000000001@owner.example>
+ <001a01dd5a10$aa110000$bb220000$@firm.example>
+ <19f00000bb2.4ee0000000bb02.1000000000000000002@owner.example>
+In-Reply-To: <19f00000bb2.4ee0000000bb02.1000000000000000002@owner.example>
+Subject: RE: application update
+Date: Thu, 24 Sep 2026 14:34:50 +0800
+Message-ID: <002b01dd5a10$cc330000$dd440000$@firm.example>
+MIME-Version: 1.0
+Content-Type: multipart/related;
+	boundary="----=_NextPart_000_0001_01DD5A10.00000000"
+X-Mailer: Microsoft Outlook 16.0
+Thread-Index: AQFixtureThreadIndexAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==
+Content-Language: zh-tw
+
+This is a multipart message in MIME format.
+
+------=_NextPart_000_0001_01DD5A10.00000000
+Content-Type: multipart/alternative;
+	boundary="----=_NextPart_001_0002_01DD5A10.00000000"
+
+
+------=_NextPart_001_0002_01DD5A10.00000000
+Content-Type: text/plain;
+	charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+
+Dear Kai,
+
+=20
+
+Thank you for your email below.
+
+=20
+
+We confirm that the filing is proceeding as planned, and no further action =
+is needed from you at this stage.
+
+=20
+
+We will update you as soon as the office issues its next notice.
+
+=20
+
+Best regards
+
+=20
+
+Sam Counsel
+
+Example IP Ltd.
+
+HK
+
+=20
+
+From: Kai Owner <owner@owner.example>=20
+Sent: Thursday, September 24, 2026 10:52 AM
+To: Sam Counsel <sender@firm.example>
+Subject: Re: RE: application update
+
+=20
+
+Hi Sam,
+
+Could you check whether the name we discussed is a concern?
+
+Thanks,
+
+Kai
+
+=20
+
+From: Sam Counsel <sender@firm.example>
+To: Kai Owner <owner@owner.example>
+Date: Wed, 23 Sep 2026 17:20:11 +0800
+Subject: RE: application update
+
+=20
+
+Dear Kai,
+
+Please find the filing receipt attached to our earlier email.
+
+Best regards
+
+Sam Counsel
+
+
+
+------=_NextPart_001_0002_01DD5A10.00000000
+Content-Type: text/html;
+	charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+
+<html xmlns:v=3D"urn:schemas-microsoft-com:vml" xmlns:o=3D"urn:schemas-micr=
+osoft-com:office:office" xmlns:w=3D"urn:schemas-microsoft-com:office:word" =
+xmlns=3D"http://www.w3.org/TR/REC-html40"><head><meta http-equiv=3DContent-=
+Type content=3D"text/html; charset=3Dutf-8"><meta name=3DGenerator content=
+=3D"Microsoft Word 15 (filtered medium)"><style><!--
+/* Style Definitions */
+p.MsoNormal, li.MsoNormal, div.MsoNormal
+	{margin:0cm;font-size:12.0pt;font-family:"Times New Roman",serif;}
+a:link, span.MsoHyperlink
+	{color:blue;text-decoration:underline;}
+.MsoChpDefault
+	{font-size:10.0pt;}
+div.WordSection1
+	{page:WordSection1;}
+--></style></head><body lang=3DZH-TW link=3Dblue vlink=3Dpurple style=3D'wo=
+rd-wrap:break-word'><div class=3DWordSection1><p class=3DMsoNormal><span la=
+ng=3DEN-US style=3D'font-size:11.0pt;font-family:"Calibri",sans-serif'>Dear=
+ Kai,<o:p></o:p></span></p><p class=3DMsoNormal><span lang=3DEN-US style=3D=
+'font-family:"Calibri",sans-serif'><o:p>&nbsp;</o:p></span></p><p class=3DM=
+soNormal><span lang=3DEN-US style=3D'font-size:11.0pt;font-family:"Calibri"=
+,sans-serif'>Thank you for your email below.<o:p></o:p></span></p><p class=
+=3DMsoNormal><span lang=3DEN-US style=3D'font-family:"Calibri",sans-serif'>=
+<o:p>&nbsp;</o:p></span></p><p class=3DMsoNormal><span lang=3DEN-US style=
+=3D'font-size:11.0pt;font-family:"Calibri",sans-serif'>We confirm that the =
+filing is proceeding as planned, and no further action is needed from you a=
+t this stage.<o:p></o:p></span></p><p class=3DMsoNormal><span lang=3DEN-US =
+style=3D'font-family:"Calibri",sans-serif'><o:p>&nbsp;</o:p></span></p><p c=
+lass=3DMsoNormal><span lang=3DEN-US style=3D'font-size:11.0pt;font-family:"=
+Calibri",sans-serif'>We will update you as soon as the office issues its ne=
+xt notice.<o:p></o:p></span></p><p class=3DMsoNormal><span lang=3DEN-US sty=
+le=3D'font-family:"Calibri",sans-serif'><o:p>&nbsp;</o:p></span></p><p clas=
+s=3DMsoNormal><span lang=3DEN-US style=3D'font-size:11.0pt;font-family:"Cal=
+ibri",sans-serif'>Best regards<o:p></o:p></span></p><p class=3DMsoNormal><s=
+pan lang=3DEN-US style=3D'font-family:"Calibri",sans-serif'><o:p>&nbsp;</o:=
+p></span></p><p class=3DMsoNormal><span lang=3DEN-US style=3D'font-size:11.=
+0pt;font-family:"Calibri",sans-serif'>Sam Counsel<o:p></o:p></span></p><p c=
+lass=3DMsoNormal><span lang=3DEN-US style=3D'font-size:11.0pt;font-family:"=
+Calibri",sans-serif'>Example IP Ltd.<o:p></o:p></span></p><p class=3DMsoNor=
+mal><span lang=3DEN-US style=3D'font-size:11.0pt;font-family:"Calibri",sans=
+-serif'>HK<o:p></o:p></span></p><p class=3DMsoNormal><span lang=3DEN-US sty=
+le=3D'font-family:"Calibri",sans-serif'><o:p>&nbsp;</o:p></span></p><div><d=
+iv style=3D'border:none;border-top:solid #E1E1E1 1.0pt;padding:3.0pt 0cm 0c=
+m 0cm'><p class=3DMsoNormal><b><span lang=3DEN-US style=3D'font-size:11.0pt=
+;font-family:"Calibri",sans-serif'>From:</span></b><span lang=3DEN-US style=
+=3D'font-size:11.0pt;font-family:"Calibri",sans-serif'> Kai Owner &lt;owner=
+@owner.example&gt; <br><b>Sent:</b> Thursday, September 24, 2026 10:52 AM<b=
+r><b>To:</b> Sam Counsel &lt;sender@firm.example&gt;<br><b>Subject:</b> Re:=
+ RE: application update<o:p></o:p></span></p></div></div><p class=3DMsoNorm=
+al><span lang=3DEN-US style=3D'font-family:"Calibri",sans-serif'><o:p>&nbsp=
+;</o:p></span></p><p class=3DMsoNormal><span lang=3DEN-US style=3D'font-siz=
+e:10.0pt;font-family:"Calibri",sans-serif'>Hi Sam,<o:p></o:p></span></p><p =
+class=3DMsoNormal><span lang=3DEN-US style=3D'font-size:10.0pt;font-family:=
+"Calibri",sans-serif'>Could you check whether the name we discussed is a co=
+ncern?<o:p></o:p></span></p><p class=3DMsoNormal><span lang=3DEN-US style=
+=3D'font-size:10.0pt;font-family:"Calibri",sans-serif'>Thanks,<o:p></o:p></=
+span></p><p class=3DMsoNormal><span lang=3DEN-US style=3D'font-size:10.0pt;=
+font-family:"Calibri",sans-serif'>Kai<o:p></o:p></span></p><div style=3D'bo=
+rder:none;border-top:solid #CCCCCC 1.0pt;padding:0cm 0cm 0cm 0cm'><p class=
+=3DMsoNormal style=3D'mso-line-height-alt:0pt'><span style=3D'font-size:10.=
+0pt'><o:p>&nbsp;</o:p></span></p></div><div id=3D"x_10000000001"><p class=
+=3DMsoNormal><span style=3D'font-size:10.0pt'>From: Sam Counsel &lt;sender@=
+firm.example&gt;<br>To: Kai Owner &lt;owner@owner.example&gt;<br>Date: Wed,=
+ 23 Sep 2026 17:20:11 +0800<br>Subject: RE: application update<o:p></o:p></=
+span></p></div><blockquote id=3D"x_1000000000blockquote_zmail"><p class=3DM=
+soNormal><span lang=3DEN-US style=3D'font-size:10.0pt;font-family:"Calibri"=
+,sans-serif'>Dear Kai,<o:p></o:p></span></p><p class=3DMsoNormal><span lang=
+=3DEN-US style=3D'font-size:10.0pt;font-family:"Calibri",sans-serif'>Please=
+ find the filing receipt attached to our earlier email.<o:p></o:p></span></=
+p><p class=3DMsoNormal><span lang=3DEN-US style=3D'font-size:10.0pt;font-fa=
+mily:"Calibri",sans-serif'>Best regards<o:p></o:p></span></p><p class=3DMso=
+Normal><span lang=3DEN-US style=3D'font-size:10.0pt;font-family:"Calibri",s=
+ans-serif'>Sam Counsel<o:p></o:p></span></p><p class=3DMsoNormal><span lang=
+=3DEN-US style=3D'font-size:10.0pt'><img width=3D191 height=3D45 style=3D'w=
+idth:1.9895in;height:.4687in' id=3D"=E5=9C=96=E7=89=87_x0020_4" src=3D"cid:=
+image001.jpg@01DD5A10.3C4F2E70"></span><o:p></o:p></p><div><div style=3D'bo=
+rder:none;border-top:solid #E1E1E1 1.0pt;padding:3.0pt 0cm 0cm 0cm'><p clas=
+s=3DMsoNormal><b><span lang=3DEN-US style=3D'font-size:11.0pt;font-family:"=
+Calibri",sans-serif'>From:</span></b><span lang=3DEN-US style=3D'font-size:=
+11.0pt;font-family:"Calibri",sans-serif'> Kai Owner &lt;owner@owner.example=
+&gt; <br><b>Sent:</b> Tuesday, September 22, 2026 9:05 AM<br><b>To:</b> Sam=
+ Counsel &lt;sender@firm.example&gt;<br><b>Subject:</b> application update<=
+o:p></o:p></span></p></div></div><div><blockquote><p class=3DMsoNormal><spa=
+n lang=3DEN-US style=3D'font-size:10.0pt;font-family:"Calibri",sans-serif'>=
+Hi Sam, when do you expect the first notice?<o:p></o:p></span></p></blockqu=
+ote></div></blockquote></div></body></html>
+
+------=_NextPart_001_0002_01DD5A10.00000000--
+
+------=_NextPart_000_0001_01DD5A10.00000000
+Content-Type: image/jpeg;
+	name="image001.jpg"
+Content-Transfer-Encoding: base64
+Content-ID: <image001.jpg@01DD5A10.3C4F2E70>
+
+/9j/4GZpeHR1cmUgZmlybSBsb2dvIGJ5dGVz/9k=
+
+------=_NextPart_000_0001_01DD5A10.00000000--

@@ -1,25 +1,36 @@
 /** D-322 — broker setup and Connect popup. Secrets stay in this mounted editor. */
-import type { ManagedOAuthAuth, ManagedOAuthIntegration, ManagedOAuthProfileView,
+import type { Conn, ServerRpcRegistry, ManagedOAuthAuth, ManagedOAuthIntegration, ManagedOAuthProfileView,
   ManagedOAuthProvider, ManagedOAuthRemoteConnection, ManagedOAuthRequest, ManagedOAuthResponse, ManagedOAuthPermissionPreview,
   ManagedOAuthAccountUsage, ManagedOAuthAuthorizationRequest, ManagedOAuthImpactPreview } from '@recued/contracts';
 import { renderManagedOAuthAccountUsage } from './managed-oauth-account-view.js';
 import { renderManagedOAuthImpact } from './managed-oauth-impact-view.js';
+import { createOAuthTroubleshooting } from '../connections/oauth-troubleshooting.js';
 import { CONNECTION_HEALTH_FRESH_MS, isManagedOAuthAccountUsage, isManagedOAuthImpactPreview } from '@recued/contracts';
 
 export type ManagedOAuthCaller = (args: ManagedOAuthRequest) => Promise<ManagedOAuthResponse>;
+// File checks and shared Mail/Calendar reviews can repeat several bounded
+// vendor reads. Keep a finite wait for those checks; page reads keep their default.
+const METADATA_ACTIONS = new Set<ManagedOAuthRequest['action']>(['file_authentication_prepare', 'preview', 'start', 'account_impact',
+  'review_direct_authentication', 'apply_authentication_switch', 'migration_prepare',
+  'collection_authentication_app_context', 'collection_authentication_app_review', 'collection_authentication_app_apply',
+  'collection_authentication_review', 'collection_authentication_apply']);
+export const createManagedOAuthCaller = (call: Conn<ServerRpcRegistry>): ManagedOAuthCaller =>
+  args => call('collection.connection.managedOAuth', args, METADATA_ACTIONS.has(args.action) ? { timeout: 10 * 60_000 } : undefined);
 export interface ManagedOAuthPanelContext {
   enabled: boolean; mode: 'create' | 'edit' | 'switch'; name: string; vendor?: string;
   base_url: string; scopes: string[]; profile_id: string; integration_id: string;
   connection_id?: string; imported?: boolean;
   expected_updated_at?: number;
   saving?: boolean;
+  reauthorize_current?: boolean;
+  forceReauthorization?: boolean;
 }
 export interface ManagedOAuthPanelDeps {
   call?: ManagedOAuthCaller;
   /** Same editor, available from Apps & APIs without starting enrollment. */
   manageProfiles?: boolean;
   context(): ManagedOAuthPanelContext;
-  select(profile: string, integration: string): void;
+  select(profile: string, integration: string, options?: { automatic: true }): void;
   requiredScopes?(scopes: readonly string[]): void;
   authorized(auth: ManagedOAuthAuth, grantedScopes?: readonly string[]): void;
   invalidate(): void;
@@ -37,6 +48,7 @@ let panelSequence = 0;
 
 export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
   const panelId = `managed-oauth-${++panelSequence}`;
+  const oauthHelp = createOAuthTroubleshooting();
   const now = deps.now ?? Date.now;
   let host: HTMLElement | null = null;
   let profiles: readonly ManagedOAuthProfileView[] = [];
@@ -93,7 +105,7 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
     const ctx = deps.context();
     return JSON.stringify([ctx.enabled, ctx.mode, ctx.name, ctx.vendor, ctx.base_url, ctx.scopes,
       ctx.profile_id, ctx.integration_id, ctx.mode === 'edit' ? ctx.connection_id : undefined, forcePreview,
-      ctx.mode === 'switch' ? [ctx.expected_updated_at, existingMode, remoteId] : undefined]);
+      ctx.mode === 'switch' ? [ctx.expected_updated_at, existingMode, remoteId, ctx.reauthorize_current, ctx.connection_id] : undefined]);
   };
   const authorizationRequest = (): ManagedOAuthAuthorizationRequest => {
     const ctx = deps.context();
@@ -101,7 +113,9 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
       ...(ctx.vendor === undefined ? {} : { vendor: ctx.vendor }),
       ...(ctx.mode === 'edit' ? { name: ctx.name, connection_id: ctx.connection_id } : {}),
       ...(ctx.mode === 'switch' ? { name: ctx.name, switch_authentication: true as const,
-        expected_updated_at: ctx.expected_updated_at, ...(existingMode ? { connection_id: remoteId } : {}) } : {}),
+        expected_updated_at: ctx.expected_updated_at,
+        ...(ctx.reauthorize_current ? { reauthorize_current: true as const, connection_id: ctx.connection_id }
+          : existingMode ? { connection_id: remoteId } : {}) } : {}),
     };
   };
   const clearApp = (): void => { integrationSetup = false; clientId = ''; clientSecret = ''; appScopes = ''; };
@@ -183,7 +197,7 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
     const ctx = deps.context(); const profile = profiles.find(p => p.id === ctx.profile_id);
     const option = (value: string, title: string, current: string) => `<option value="${escape(value)}"${value === current ? ' selected' : ''}>${escape(title)}</option>`;
     const locked = busy || profilesLoading || ctx.saving ? ' disabled' : '';
-    const identityLocked = ctx.mode === 'edit' ? ' disabled' : locked;
+    const identityLocked = ctx.mode === 'edit' || ctx.reauthorize_current ? ' disabled' : locked;
     const button = (action: string, title: string, variant = 'secondary', disabled = busy || profilesLoading): string =>
       `<button type="button" class="rx-btn rx-btn-${variant} rx-btn-sm" data-managed-action="${action}"${disabled || ctx.saving ? ' disabled' : ''}>${escape(title)}</button>`;
     const inputField = (field: string, title: string, value: string, type = 'text', hint = '', readonly = false, placeholder = ''): string => {
@@ -225,7 +239,7 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
       ${ctx.profile_id && !setup ? `<div class="managed-oauth-section"><h4>Vendor integration</h4><p class="managed-oauth-note">${deps.manageProfiles ? 'Choose the Nango integration whose accounts you want to manage.' : 'A matching integration is selected automatically when available. Choose one if this broker has several.'}</p>
         <label class="managed-oauth-field"><span>Integration</span><select data-managed-field="integration"${identityLocked}>${option('', 'Select a configured integration', ctx.integration_id)}${ctx.integration_id && !integrations.some(i => i.id === ctx.integration_id) ? option(ctx.integration_id, `Saved integration: ${ctx.integration_id}`, ctx.integration_id) : ''}${integrations.map(i => option(i.id, `${i.label} · ${i.id}`, ctx.integration_id)).join('')}</select></label>
         <div class="managed-oauth-actions">${button('refresh', 'Refresh integrations')}${!integrationSetup && (deps.manageProfiles || ctx.mode === 'create') ? button('add-integration', 'Create vendor integration') : ''}</div>
-        ${integrations.length === 0 && !integrationSetup ? '<p class="managed-oauth-note">No matching integrations found. Create one here or in Nango, then refresh. Use a shared OAuth app when your Nango server offers one.</p>' : ''}
+        ${integrations.length === 0 && !integrationSetup && !ctx.reauthorize_current ? '<p class="managed-oauth-note">No matching integrations found. Create one here or in Nango, then refresh. Use a shared OAuth app when your Nango server offers one.</p>' : ''}
         ${integrationSetup ? `<fieldset class="managed-oauth-editor"><legend>Create integration in Nango</legend>
           <label class="managed-oauth-field"><span>Vendor</span><select data-managed-field="provider"${locked}>${option('', 'Select an OAuth provider', providerId)}${providers.map(p => option(p.id, `${p.label} (${p.id})`, providerId)).join('')}</select></label>
           <div class="managed-oauth-grid">${inputField('integration-label', 'Name', integrationLabel)}${inputField('integration-id', 'Integration ID', integrationId, 'text', 'A unique ID in this Nango environment.')}</div>
@@ -235,16 +249,16 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
         </fieldset>` : ''}
       </div>` : ''}
       ${accountSection ? `<div class="managed-oauth-section"><h4>${deps.manageProfiles ? 'Nango accounts' : 'Account authorization'}</h4>
-        ${!deps.manageProfiles && ctx.mode !== 'edit' ? `<label class="managed-oauth-field"><span>Account setup</span><select data-managed-field="account-mode"${locked}>${option('existing', 'Use an existing Nango account', existingMode ? 'existing' : 'new')}${option('new', 'Authorize a new account', existingMode ? 'existing' : 'new')}</select></label>` : ''}
-        ${!deps.manageProfiles && ctx.mode !== 'edit' && !existingMode ? '<p class="managed-oauth-note">A new sign-in creates another Nango connection. Reuse an existing account to share authorization across your connections and packs.</p>' : ''}
-        ${existingMode ? `<label class="managed-oauth-field"><span>Nango account</span><select data-managed-field="account"${locked}>${option('', 'Select an existing account', remoteId)}${remotes.map(r => option(r.id, `${r.label} (${r.id})${r.auth_error ? ' — reauthorization needed' : ''}`, remoteId)).join('')}</select></label>
+        ${!deps.manageProfiles && ctx.mode !== 'edit' && !ctx.reauthorize_current ? `<label class="managed-oauth-field"><span>Account setup</span><select data-managed-field="account-mode"${locked}>${option('existing', 'Use an existing Nango account', existingMode ? 'existing' : 'new')}${option('new', 'Authorize a new account', existingMode ? 'existing' : 'new')}</select></label>` : ''}
+        ${!deps.manageProfiles && ctx.mode !== 'edit' && !ctx.reauthorize_current && !existingMode ? '<p class="managed-oauth-note">A new sign-in creates another Nango connection. Reuse an existing account to share authorization across your connections and packs.</p>' : ''}
+        ${existingMode && !ctx.reauthorize_current ? `<label class="managed-oauth-field"><span>Nango account</span><select data-managed-field="account"${locked}>${option('', 'Select an existing account', remoteId)}${remotes.map(r => option(r.id, `${r.label} (${r.id})${r.auth_error ? ' — reauthorization needed' : ''}`, remoteId)).join('')}</select></label>
           <div class="managed-oauth-actions">${button('refresh-accounts', 'Refresh accounts')}${remotePage > 0 ? button('previous-accounts', 'Previous accounts') : ''}${remoteMore ? button('next-accounts', 'Next accounts') : ''}</div>
           ${!deps.manageProfiles && ctx.mode === 'create' ? `<p class="managed-oauth-note">Reuse this account’s current authorization. Granted permissions remain unverified. To change permissions, manage consent in Nango with its existing scope profile, or authorize a new account here.</p>${button('attach', 'Use selected account', 'primary', busy || !remoteId || !!remotes.find(r => r.id === remoteId)?.auth_error)}` : ''}` : ''}
         ${deps.manageProfiles && remoteId ? renderManagedOAuthAccountUsage({ usage, loading: usageLoading, error: usageError,
           canOpen: deps.openConnection !== undefined, canCheck: deps.checkConnection !== undefined,
           checking: checkingConnection, disabled: busy || profilesLoading, now: now() }) : ''}
         ${deps.manageProfiles && remoteId ? details('account-delete', 'Delete this account from Nango', `<div class="managed-oauth-danger"><p>Deletion affects every tool using this account. Remove its Recued connections first. Vendor consent may remain until revoked at the vendor.</p>${usage?.connections.length ? '<p>This account has saved Recued connections. Open them above to review their use before removal.</p>' : ''}${inputField('delete-confirmation', 'Type account ID to confirm deletion', deleteConfirmation, 'text', `Account ID: <code>${escape(remoteId)}</code>`)}${button('delete-account', 'Delete account from Nango', 'danger', deletionDisabled())}</div>`) : ''}
-        ${ctx.mode === 'edit' && !ctx.connection_id ? '<p class="managed-oauth-note">Use Switch authentication in this connection’s editor to choose a broker account while keeping its name. Reauthorization keeps the saved broker and account.</p>' : ''}
+        ${ctx.mode === 'edit' && !ctx.connection_id ? '<p class="managed-oauth-note">Use Manage authentication, then Change authentication method, to choose a broker account while keeping its name. Reauthorization keeps the saved broker and account.</p>' : ''}
         ${ctx.mode === 'edit' && ctx.imported ? '<p class="managed-oauth-note">This account was reused from Nango. Recued checks for saved scope history before changing consent. If that history is unknown, manage consent in Nango with its existing scope profile.</p>' : ''}
         ${!deps.manageProfiles && ctx.mode === 'edit' && ctx.connection_id ? '<p class="managed-oauth-note">Recued reuses completed scope requests when they cover current needs. Granted permissions remain unknown. New consent preserves scopes needed by other connections. Choose Review sign-in again to check a repair request.</p>' : ''}
         ${renderManagedOAuthImpact(completedImpact ?? reviewed?.account_impact, impactLoading, impactError)}
@@ -265,14 +279,24 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
       </div>` : ''}
       ${busy || profilesLoading || message ? `<p class="managed-oauth-feedback" role="status" tabindex="-1">${escape(profilesLoading ? 'Loading broker profiles…' : busy && !pending ? working || 'Contacting Nango…' : message)}</p>` : ''}${error ? `<p class="managed-oauth-feedback managed-oauth-feedback-error" role="alert" tabindex="-1">${escape(error)}</p>` : ''}
       ${ctx.profile_id && !setup ? '<p class="managed-oauth-note managed-oauth-footer">Removing a Recued connection keeps its Nango account. Use Manage OAuth brokers to delete unused Nango accounts.</p>' : ''}
+      <div data-managed-oauth-help-host></div>
     </section>`;
+    const helpProvider = integrationSetup ? providerId : integrations.find(integration => integration.id === ctx.integration_id)?.provider ?? '';
+    const helpIssuer = /^(google|gmail|gcal)/i.test(helpProvider) ? 'google' as const
+      : /^(microsoft|outlook|ms-graph)/i.test(helpProvider) ? 'microsoft' as const : undefined;
+    oauthHelp.mount(host.querySelector?.<HTMLElement>('[data-managed-oauth-help-host]') ?? null, ctx.enabled ? {
+      key: JSON.stringify([ctx.mode, ctx.profile_id, ctx.integration_id, ctx.name, ctx.connection_id, ctx.expected_updated_at,
+        ctx.reauthorize_current, ctx.base_url, ctx.scopes, existingMode, remoteId, editingProfile, setup,
+        integrationSetup, integrationSetup ? providerId : undefined, integrationSetup ? app : undefined]), route: 'broker',
+      ...(helpIssuer ? { issuer: helpIssuer } : {}), pending: busy || profilesLoading || ctx.saving === true,
+    } : null);
     restoreFocus();
     syncPreview();
   };
   const syncPreview = (): void => {
     const ctx = deps.context();
     if (!ctx.enabled || deps.manageProfiles || setup || integrationSetup || !ctx.profile_id || !ctx.integration_id
-      || !ctx.base_url || (ctx.mode === 'edit' ? !ctx.connection_id : ctx.mode === 'switch' ? existingMode && !remoteId : existingMode)) {
+      || !ctx.base_url || (ctx.mode === 'edit' ? !ctx.connection_id : ctx.mode === 'switch' ? !ctx.reauthorize_current && existingMode && !remoteId : existingMode)) {
       if (previewKey) clearPreview();
       return;
     }
@@ -308,6 +332,7 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
     });
   };
   const fail = (value: unknown): void => {
+    oauthHelp.observeFailure(value);
     error = value instanceof Error ? value.message : 'Managed OAuth failed. Try again.';
     busy = false; profilesLoading = false; render(); deps.changed();
   };
@@ -338,7 +363,7 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
     integrations = result.integrations; busy = false;
     if (ctx.mode !== 'edit') deps.requiredScopes?.(result.required_scopes ?? []);
     const selected = ctx.mode === 'edit' || integrations.some((i) => i.id === ctx.integration_id) ? ctx.integration_id : result.selected_id ?? '';
-    deps.select(ctx.profile_id, selected); render(); deps.changed(); discoverAccounts();
+    deps.select(ctx.profile_id, selected, { automatic: true }); render(); deps.changed(); discoverAccounts();
   };
   const loadAccounts = async (page = 0, preferReuse = false): Promise<void> => {
     const ctx = deps.context(); const gen = generation;
@@ -371,7 +396,7 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
   };
   const discoverAccounts = (): void => {
     const ctx = deps.context();
-    if (!ctx.enabled || ctx.mode === 'edit' || !ctx.profile_id || !ctx.integration_id) return;
+    if (!ctx.enabled || ctx.mode === 'edit' || ctx.reauthorize_current || !ctx.profile_id || !ctx.integration_id) return;
     const key = JSON.stringify([ctx.profile_id, ctx.integration_id]);
     if (key === accountDiscoveryKey) return;
     accountDiscoveryKey = key; existingMode = true; error = ''; message = '';
@@ -410,7 +435,7 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
     profiles = result.profiles; profilesLoading = false; profilesRead = true;
     const ctx = deps.context();
     if (gen !== generation || !ctx.enabled) { render(); deps.changed(); return; }
-    if (!ctx.profile_id && profiles.length === 1) deps.select(profiles[0]!.id, '');
+    if (!ctx.profile_id && profiles.length === 1) deps.select(profiles[0]!.id, '', { automatic: true });
     await discover(); render(); deps.changed();
   };
   const readCompletedImpact = async (): Promise<boolean> => {
@@ -482,10 +507,10 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
   };
   const authorize = async (): Promise<void> => {
     const ctx = deps.context();
-    if (ctx.mode === 'switch' && !existingMode && completedAccountId) return;
+    if (ctx.mode === 'switch' && !ctx.reauthorize_current && !existingMode && completedAccountId) return;
     const force = forcePreview;
-    if (force && ctx.mode !== 'edit' && !(ctx.mode === 'switch' && existingMode && remoteId)) return;
-    if (ctx.mode !== 'edit' && accountDiscoveryKey !== JSON.stringify([ctx.profile_id, ctx.integration_id])) { discoverAccounts(); return; }
+    if (force && ctx.mode !== 'edit' && !ctx.reauthorize_current && !(ctx.mode === 'switch' && existingMode && remoteId)) return;
+    if (ctx.mode !== 'edit' && !ctx.reauthorize_current && accountDiscoveryKey !== JSON.stringify([ctx.profile_id, ctx.integration_id])) { discoverAccounts(); return; }
     if ((verifiedFlow !== undefined && !force) || (ctx.mode === 'create' && existingMode)) return;
     const reviewed = previewKey === permissionKey() && !previewLoading ? preview : undefined;
     if (!reviewed || reviewed.decision === 'blocked') { render(); return; }
@@ -699,6 +724,7 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
     const field = target.dataset.managedField;
     if ((target.tagName === 'SELECT' ? 'change' : 'input') !== event.type) return;
     if (busy || profilesLoading || deps.context().saving) return;
+    if (deps.context().reauthorize_current && ['profile', 'integration', 'account', 'account-mode'].includes(field ?? '')) return;
     rememberFocus();
     if (field === 'label') label = target.value;
     if (field === 'server') server = target.value;
@@ -749,15 +775,18 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
     // New enrollment writes result metadata into the form. Only an edited saved
     // account ID is an authorization input; imported is server-issued metadata.
     let ctx = deps.context(); const key = JSON.stringify([ctx.enabled, ctx.mode, ctx.name, ctx.vendor, ctx.base_url, ctx.scopes,
-      ctx.profile_id, ctx.integration_id, ctx.mode === 'edit' ? ctx.connection_id : undefined, ctx.expected_updated_at]);
+      ctx.profile_id, ctx.integration_id, ctx.mode === 'edit' || ctx.reauthorize_current ? ctx.connection_id : undefined,
+      ctx.expected_updated_at, ctx.reauthorize_current, ctx.forceReauthorization]);
     if (completedAccountKey && completedAccountKey !== accountContextKey()) { completedAccountId = ''; completedAccountKey = ''; }
     if (contextKey !== '' && key !== contextKey) { generation += 1; stop(); clearPreview(); forcePreview = false; clearAccounts(); clearApp(); accountDiscoveryKey = ''; if (ctx.mode !== 'switch') existingMode = false; busy = false; deps.invalidate(); message = ''; }
+    if (key !== contextKey && ctx.forceReauthorization) forcePreview = true;
     contextKey = key;
     if (ctx.mode === 'switch' && !switchMode) existingMode = true;
     switchMode = ctx.mode === 'switch';
+    if (ctx.reauthorize_current) { existingMode = true; remoteId = ctx.connection_id ?? ''; }
     if (!ctx.enabled) { clearPreview(); forcePreview = false; apiKey = ''; showKey = false; setup = false; deletingProfile = false; fieldErrors = {}; error = ''; message = ''; focus = undefined; clearApp(); clearAccounts(); existingMode = false; accountDiscoveryKey = ''; }
     if (ctx.enabled && !wasEnabled && ctx.mode !== 'edit' && !ctx.profile_id && profiles.length === 1) {
-      deps.select(profiles[0]!.id, ''); ctx = deps.context();
+      deps.select(profiles[0]!.id, '', { automatic: true }); ctx = deps.context();
     }
     wasEnabled = ctx.enabled;
     const nextDiscovery = JSON.stringify([ctx.profile_id, ctx.base_url, ctx.vendor]);
@@ -774,8 +803,8 @@ export const createManagedOAuthPanel = (deps: ManagedOAuthPanelDeps) => {
       host?.addEventListener('focusin', focusIn); host?.addEventListener('focusout', focusOut);
       if (host !== null && (!loaded || (!enabledBefore && deps.context().enabled))) { loaded = true; run(load()); }
     },
-    sync, busy: () => busy || profilesLoading, impactFingerprint: () => completedImpact?.fingerprint,
+    sync, busy: () => busy || profilesLoading, impactFingerprint: () => completedImpact?.fingerprint, impactPreview: () => completedImpact,
     hasDraft: () => (setup && profileDraft() !== profileBaseline) || integrationSetup,
-    dispose() { disposed = true; generation += 1; stop(); clearPreview(); apiKey = ''; clearApp(); clearAccounts(); detach(); host = null; },
+    dispose() { disposed = true; generation += 1; stop(); clearPreview(); apiKey = ''; clearApp(); clearAccounts(); oauthHelp.dispose(); detach(); host = null; },
   };
 };

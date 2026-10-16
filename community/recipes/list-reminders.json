@@ -1,0 +1,46 @@
+{
+  "recipe_id": "list-reminders",
+  "chat_exposed": true,
+  "version": 1,
+  "ttl": 60,
+  "metadata": {
+    "name": "My reminders",
+    "description": "Use “My reminders” in Recued. See the reminders still to ring, soonest first, each with its time on your clock. Each one has an id, which Change a reminder and Cancel a reminder take.",
+    "author": "recued-core",
+    "supported_platforms": [],
+    "tags": ["reminder", "notify", "personal-organizer", "pack:personal-organizer"],
+    "budget_ms": 10000
+  },
+  "variables": {},
+  "requires": [],
+  "steps": [
+    {
+      "id": "list",
+      "op": "core.reminder.list",
+      "args": {}
+    },
+    {
+      "id": "card",
+      "transform": "to_summary",
+      "fields": [
+        { "label": "Waiting", "value": "{{step.list.count}}" }
+      ]
+    },
+    {
+      "id": "table",
+      "transform": "to_table",
+      "array": "{{step.list.reminders}}",
+      "columns": [
+        { "field": "when", "label": "When" },
+        { "field": "text", "label": "Reminder" },
+        { "field": "reminder_id", "label": "Id" }
+      ]
+    }
+  ],
+  "output": {
+    "render": [
+      { "type": "summary", "source": "step.card" },
+      { "type": "table", "source": "step.table" }
+    ]
+  }
+}

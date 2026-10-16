@@ -457,6 +457,9 @@ export interface ServerConfig {
   /** D-269 step 3 — `notification.quiet_hours.*`. Same forward-or-dead-rpc
    *  trap: BOTH this declaration AND the forward below are required. */
   quietHoursDeps?: import('./quiet-hours-handler.js').QuietHoursRpcDeps;
+  /** D-324 — `reminder.*`, the Data → Reminders list. Same forward-or-dead-rpc
+   *  trap: BOTH this declaration AND the forward below are required. */
+  reminderDeps?: { dispatchers: import('./reminders/reminder-service.js').ReminderDispatchers };
   /** Supervision feature — owner-only `supervision.*` rpc deps (cli-daemon
    *  keep-alive). `composeListeners` builds these from
    *  `collection.supervisionStack`. Same forward-or-dead-rpc trap as
@@ -1579,6 +1582,7 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
     serverTimeZoneDeps: config.serverTimeZoneDeps,
     notificationKindPolicyDeps: config.notificationKindPolicyDeps,
     quietHoursDeps: config.quietHoursDeps,
+    reminderDeps: config.reminderDeps,
     // Supervision feature — forward the `supervision.*` deps composeListeners
     // builds from `collection.supervisionStack`. Forward-or-dead-rpc trap.
     supervisionDeps: config.supervisionDeps,

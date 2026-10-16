@@ -127,6 +127,10 @@ describe('scope-set helpers', () => {
     expect(gmailScopes(true)).toContain('https://www.googleapis.com/auth/gmail.send');
     expect(graphMailScopes(false)).not.toContain('Mail.Send');
     expect(graphMailScopes(true)).toContain('Mail.Send');
+    // ⛔ Outlook sends a draft and then `/send`: the draft needs Mail.ReadWrite,
+    // so send asks for both (2026-10-15), and read-only asks for neither.
+    expect(graphMailScopes(true)).toContain('Mail.ReadWrite');
+    expect(graphMailScopes(false)).not.toContain('Mail.ReadWrite');
     expect(gcalScopes()).toEqual(['https://www.googleapis.com/auth/calendar']);
     expect(graphCalendarScopes()).toContain('Calendars.ReadWrite');
     // Fresh array each call (no shared mutable state).

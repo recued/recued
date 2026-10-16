@@ -19,7 +19,7 @@ import {
   repairSharedMailAttachmentLinks,
 } from '../collections/mail/mail-attachment-link-repair.js';
 import { createCollectionRegistry } from '../collections/registry.js';
-import { createCollectionTable } from '../collections/table.js';
+import { collectionTableName, createCollectionTable, setCollectionReaderExclusion } from '../collections/table.js';
 import { createAnnotationStore } from '../storage/annotation-store.js';
 import { createBlobStore } from '../storage/blob-store.js';
 import { createDataRepairLedger } from '../storage/data-repair-ledger.js';
@@ -118,6 +118,20 @@ describe('the shared attachment link repair', () => {
     expect(await s.linked(TWICE_ENROLLED)).toEqual([`attachment:${gmail}`]);
     expect(await s.linked(SHARED)).toEqual([]);
     expect(s.files.get(legacy)).not.toBeNull();
+  });
+
+  it('D-318 — counts the email chat door’s chat mailbox, which the owner’s mail readers leave out', async () => {
+    const s = server({
+      work: { adapter: 'imap', ids: [SHARED] },
+      'recued-chat': { adapter: 'imap', ids: [SHARED] },
+    });
+    setCollectionReaderExclusion(s.db, {
+      tables: (platform, table) => platform === 'mail' && table === collectionTableName('mail', 'recued-chat'),
+      rows: { mail: "json_extract(hot_fields, '$.mail_chat') IS NULL" },
+    });
+    const legacy = await s.attached(SHARED, `${SHARED}:part-0`);
+    expect(repairSharedMailAttachmentLinks(s.db, NOW)).toEqual({ applied: true, unlinked: 1 });
+    expect(await s.linked(SHARED)).not.toContain(`attachment:${legacy}`);
   });
 
   it('records a server with nothing to repair as repaired', () => {

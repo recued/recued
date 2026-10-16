@@ -102,15 +102,41 @@ describe('D-249 — kernel op scope classification', () => {
     //    resolves a task or commitment, or starts a saved recipe that may touch
     //    any collection. No one collection represents that, so it stays denied
     //    at collection-fenced doors; its owner grant and individual review apply.
+    //  - `customer-payment-correct` changes both an Invoice Book payment and
+    //    invoice plus private correction evidence. One collection fence must
+    //    not authorize that compound money change.
+    //  - account payments and their corrections allocate payment entries across
+    //    invoices and save private review evidence. They stay denied behind a
+    //    collection fence for the same compound-write reason.
     expect(stuck).toEqual([
       'core.mail.notify-booking-visitor => data.notify',
       'core.memory.link.create => data.link',
       'core.memory.link.delete => data.link',
       'core.memory.link.list => data.link',
       'core.work-entity.approval-workflow.continue => data.approval',
+      'core.work-entity.customer-account-payment.apply => data.customer',
+      'core.work-entity.customer-account-payment.correct => data.customer',
+      'core.work-entity.customer-invoice.credit => data.customer',
+      'core.work-entity.customer-invoice.credit.correct => data.customer',
+      'core.work-entity.customer-payment.correct => data.customer',
+      'core.work-entity.customer-refund.apply => data.customer',
+      'core.work-entity.customer-refund.correct => data.customer',
       'core.work-entity.quote-completion.review => data.quote',
       'core.work-entity.quote-signoff.release => data.quote',
     ]);
+  });
+
+  it.each([
+    'core.work-entity.customer-payment.correct',
+    'core.work-entity.customer-account-payment.apply',
+    'core.work-entity.customer-account-payment.correct',
+  ])('keeps %s denied behind a collection fence even with a supplied kind', (op) => {
+    for (const kind of ['payment', 'invoice']) {
+      const payment = rows({ kind }).find((row) => row.op === op);
+      expect(payment, op).toBeDefined();
+      expect(payment!.scope, kind).toBe('data.customer');
+      expect(evaluateScopeRestrictions(MAXIMAL_FENCE, payment!.scope!).verdict, kind).toBe('deny');
+    }
   });
 
   it('keeps completion and its frozen agreement denied behind a collection fence',() => {

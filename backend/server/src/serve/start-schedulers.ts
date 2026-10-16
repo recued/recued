@@ -72,6 +72,9 @@ export type ServeHousekeepingCollectionContext = Pick<
   // D-172 — `uploadService` gates the `upload-session-sweep` reaper registration.
   // M4b.1 — `archiveUploadService` gates the `archive-upload-sweep` registration.
   'collectionRegistry' | 'uploadService' | 'archiveUploadService'
+  // D-318 step 1 — the chat mailbox, which no housekeeping producer reads.
+  | 'mailChatDoor'
+  | 'mailChatConversationMail'
 >;
 
 export interface StartServeHousekeepingSchedulerOptions {
@@ -168,6 +171,16 @@ export const startServeHousekeepingScheduler = async (
       : {}),
     recipeStore: storage.recipeStore,
     collectionRegistry: collection.collectionRegistry,
+    ...(collection.mailChatDoor
+      ? { isChatMailbox: (slug: string) => collection.mailChatDoor!.isChatMailbox(slug) }
+      : {}),
+    // D-318 step 5 — and its answers and requests in the owner's other mailboxes.
+    ...(collection.mailChatConversationMail
+      ? {
+          isChatConversationRecord: (record: { hot_fields: Record<string, unknown> }) =>
+            collection.mailChatConversationMail!.isConversationMail(record.hot_fields),
+        }
+      : {}),
     cacheBlobs: app.cacheBlobs as ComposeHousekeepingSchedulerDeps['cacheBlobs'],
     eventBus: storage.eventBus,
     warehouseBus: app.warehouseBus,

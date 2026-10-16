@@ -222,6 +222,21 @@ afterEach(async () => {
 });
 
 describe('MailCollection sync-outcome reporting', () => {
+  it.each(['auth', 'transient', undefined] as const)('does not complete a scan that reports %s failure without throwing', async (failure) => {
+    const h = withHarness();
+    let report!: (outcome: import('../provider.js').MailSyncOutcome) => void;
+    h.provider.provider.onSyncOutcome = (listener) => { report = listener; return () => {}; };
+    h.provider.provider.initialScan = async () => {
+      report({ phase: 'initial_scan', ok: false, ...(failure ? { failure } : {}), at: START_TIME });
+    };
+    const startSync = vi.spyOn(h.provider.provider, 'startSync');
+    await h.collection.sync.start();
+    expect(h.instances.get('mail', SLUG)).toMatchObject({
+      auth_state: failure === 'auth' ? 'expired' : 'degraded', backfill_complete: false, last_synced_at: null,
+    });
+    if (failure === 'auth') expect(startSync).not.toHaveBeenCalled();
+  });
+
   it('rejects a live delivery when durable body storage fails', async () => {
     const h = withHarness({ failBlobPut: true });
     await h.collection.sync.start();

@@ -14,6 +14,8 @@ import {
   buildOpenerRelayRedirectUri,
   type OAuthAppConfigSnapshot,
   type SetOAuthAppConfigArgs,
+  type MailSyncStatus,
+  type CollectionAuthState,
 } from '@recued/contracts';
 import {
   mountAccountsLanePanel,
@@ -226,6 +228,8 @@ describe('managed OAuth account enrollment', () => {
     });
     await mount.whenLoaded();
     h.clickAction({ action: 'accounts-open-add' }); h.clickAction({ action: 'accounts-pick-provider', provider: test.provider });
+    expect(mount.getState().values.auth_method).not.toBe('managed_oauth');
+    h.selectField('auth_method', 'managed_oauth');
     expect(mount.getState().values).toMatchObject({ auth_method: 'managed_oauth', connection_name: 'saved' });
     expect(h.host.innerHTML).toContain('Managed API connection');
     expect(h.host.innerHTML).not.toContain('data-oauth-cred-field');
@@ -239,7 +243,7 @@ describe('managed OAuth account enrollment', () => {
     expect(mount.getState().connectionSuccess?.slug).toBe('work'); mount.dispose();
   });
 
-  it('requires a deliberate choice when several accounts match and clears write choices on mode changes', async () => {
+  it('requires a deliberate account choice and retains the common send choice when changing methods', async () => {
     const h = makeHost(), enrollManagedOAuth = vi.fn(async () => ({ slug: 'work' }));
     const open = vi.fn();
     const mount = mountAccountsLanePanel({ host: h.host as unknown as HTMLElement, document: {} as Document,
@@ -254,7 +258,7 @@ describe('managed OAuth account enrollment', () => {
     h.selectField('auth_method', 'managed_oauth'); h.selectField('connection_name', 'first');
     h.selectField('send_enabled', 'true'); h.selectField('mutation_enabled', 'true');
     h.selectField('auth_method', 'direct'); h.selectField('auth_method', 'managed_oauth');
-    expect(mount.getState().values).toMatchObject({ connection_name: '', send_enabled: 'false', mutation_enabled: 'false' });
+    expect(mount.getState().values).toMatchObject({ connection_name: '', send_enabled: 'true', mutation_enabled: 'false' });
     expect(h.host.innerHTML).not.toContain('value="drive"');
     h.clickAction({ action: 'accounts-open-managed-connection' }); expect(open).toHaveBeenCalledOnce(); mount.dispose();
   });
@@ -274,6 +278,7 @@ describe('managed OAuth account enrollment', () => {
     });
     await mount.whenLoaded(); h.clickAction({ action: 'accounts-open-add' });
     h.clickAction({ action: 'accounts-pick-provider', provider: 'gmail' }); h.field('name', 'work');
+    h.selectField('auth_method', 'managed_oauth');
     h.clickAction({ action: 'accounts-oauth-connect' }); await tick();
     expect(mount.getState().stage).toBe('list');
     expect(mount.getState().rows).toContainEqual(expect.objectContaining({ slug: 'work' }));
@@ -289,6 +294,7 @@ describe('managed OAuth account enrollment', () => {
     });
     await mount.whenLoaded(); h.clickAction({ action: 'accounts-open-add' });
     h.clickAction({ action: 'accounts-pick-provider', provider: 'gmail' }); h.field('name', 'work');
+    h.selectField('auth_method', 'managed_oauth');
     h.clickAction({ action: 'accounts-oauth-connect' }); h.clickAction({ action: 'accounts-oauth-connect' });
     expect(enrollManagedOAuth).toHaveBeenCalledOnce(); expect(mount.hasInFlightWork()).toBe(true);
     mount.dispose(); const count = h.renderCount(); pending.resolve({ slug: 'work' }); await tick();
@@ -331,6 +337,8 @@ const setup = (over: {
   blockPopup?: boolean;
   origin?: string;
   syncTimestamp?: () => number | null;
+  syncStatus?: () => MailSyncStatus;
+  authState?: () => CollectionAuthState;
   firstSyncPoll?: AccountsFirstSyncPollScheduler;
   onGoToChat?: (source: { lane: 'mail' | 'calendar' | 'file'; providerId: string; slug: string }) => void;
   onOpenLane?: (lane: 'mail' | 'calendar' | 'file') => void;
@@ -358,8 +366,9 @@ const setup = (over: {
       : [{
           slug: connected.account_slug,
           adapter_type: connected.provider,
-          auth_state: 'healthy' as const,
+          auth_state: over.authState?.() ?? 'healthy' as const,
           last_synced_at: over.syncTimestamp?.() ?? null,
+          ...(over.syncStatus !== undefined ? { sync_status: over.syncStatus() } : {}),
           send_capable: false,
           account_email: 'me@example.com',
         }],
@@ -511,6 +520,27 @@ const openOAuthForm = (
 };
 
 describe('Mail lane OAuth (mountAccountsLanePanel)', () => {
+  it.each(['gmail', 'graph', 'gcal'] as const)('uses a selected named app for %s without consulting or replacing the default app', async provider => {
+    const { host, clickAction, field, selectField } = makeHost(); const fake = makeFakeOAuthEnv();
+    const issuer = provider === 'graph' ? 'microsoft' : 'google'; const id = 'app-' + 'b'.repeat(32);
+    const profiles = [{ id: 'app-' + 'a'.repeat(32), issuer, label: 'Work', client_id: 'work-client', has_secret: true, revision: 1 },
+      { id, issuer, label: 'Personal', client_id: 'personal-client', has_secret: true, revision: 1 }];
+    const config: OAuthAppConfigSnapshot = { google: { client_id: null, has_secret: false, source: null }, microsoft: { client_id: null, has_secret: false, source: null },
+      [issuer]: { client_id: null, has_secret: false, source: null, apps: profiles } };
+    const getOAuthClientConfig = vi.fn(async () => CONFIGURED);
+    const enrollMail = vi.fn<NonNullable<MailLaneCallers['enrollOAuth']>>(async () => ({ ok: true, account_key_prefix: 'fixture' }));
+    const enrollCalendar = vi.fn<NonNullable<CalendarLaneCallers['enrollOAuth']>>(async () => ({ slug: 'work' }));
+    const mount = mountAccountsLanePanel({ host: host as unknown as HTMLElement, document: {} as Document,
+      initialLane: provider === 'gcal' ? 'calendar' : 'mail', getOAuthClientConfig, getOAuthAppConfig: async () => config, oauthEnv: fake.oauthEnv,
+      mail: makeMail(enrollMail), calendar: { list: async () => ({ instances: [] }), delete: async () => ({ ok: true }), enrollOAuth: enrollCalendar, enrollBasic: async () => ({ slug: 'unused' }) } });
+    try {
+      await mount.whenLoaded(); clickAction({ action: 'accounts-open-add' }); clickAction({ action: 'accounts-pick-provider', provider }); field('name', 'work');
+      selectField('oauth_app_id', id); clickAction({ action: 'accounts-oauth-connect' }); await tick();
+      expect(fake.popupHref()).toContain('client_id=personal-client'); expect(getOAuthClientConfig).not.toHaveBeenCalled();
+      fake.dispatchCode('NAMED-CODE'); await tick();
+      expect(provider === 'gcal' ? enrollCalendar : enrollMail).toHaveBeenCalledWith(expect.objectContaining({ oauth_app_id: id, oauth_client_id: 'personal-client' }));
+    } finally { mount.dispose(); }
+  });
   it('Gmail happy path: popup code → enrollOAuth with byte-matched redirect_uri; returns to list', async () => {
     const { mount, clickAction, field, fake, enrollOAuth } = setup();
     await mount.whenLoaded();
@@ -623,6 +653,83 @@ describe('Mail lane OAuth (mountAccountsLanePanel)', () => {
     expect(host.innerHTML).toContain('data-sync-state="ready"');
     expect(host.innerHTML).toContain('Ready for Chat');
     expect(scheduled).toHaveLength(0);
+  });
+
+  it('keeps checking a long import through saved sign-in, verified access, sync failure, and completion', async () => {
+    let status: MailSyncStatus = { access_verified: false, initial_sync_complete: false };
+    let authState: CollectionAuthState = 'healthy';
+    const scheduled: Array<{ handler: () => void; delay: number }> = [];
+    const cancel = vi.fn();
+    const h = setup({
+      syncStatus: () => status, authState: () => authState,
+      syncTimestamp: () => status.access_verified ? 1_700_000_000_000 : null,
+      firstSyncPoll: { schedule(handler, delay) { scheduled.push({ handler, delay }); return cancel; } },
+    });
+    await h.mount.whenLoaded();
+    openOAuthForm(h.clickAction, h.field, 'gmail');
+    h.clickAction({ action: 'accounts-oauth-connect' }); await tick();
+    h.fake.dispatchCode('AUTH-CODE'); await tick();
+    expect(h.host.innerHTML).toContain('Gmail sign-in saved');
+    expect(h.host.innerHTML).toContain('Checking mailbox access');
+    expect(h.host.innerHTML).not.toContain('Gmail connected');
+
+    status = { access_verified: true, initial_sync_complete: false };
+    scheduled.shift()!.handler(); await tick();
+    expect(h.host.innerHTML).toContain('data-sync-state="syncing"');
+    expect(h.host.innerHTML).toContain('Gmail connected');
+    expect(h.host.innerHTML).not.toContain('Initial sync complete');
+    const renders = h.renderCount();
+    for (let i = 0; i < 28; i += 1) { scheduled.shift()!.handler(); await tick(); }
+    expect(scheduled).toHaveLength(1);
+    expect(scheduled[0]!.delay).toBe(15_000);
+    expect(h.renderCount()).toBe(renders);
+
+    authState = 'degraded';
+    scheduled.shift()!.handler(); await tick();
+    expect(h.host.innerHTML).toContain('Sync interrupted');
+    expect(h.host.innerHTML).toContain('without repeating sign-in');
+    expect(scheduled).toHaveLength(1);
+    authState = 'healthy'; status = { access_verified: true, initial_sync_complete: true };
+    scheduled.shift()!.handler(); await tick();
+    expect(h.host.innerHTML).toContain('Initial sync complete');
+    expect(scheduled).toHaveLength(0);
+    expect(h.enrollOAuth).toHaveBeenCalledOnce();
+    h.mount.dispose();
+  });
+
+  it('continues import status checks after returning to Connections without an enrollment receipt', async () => {
+    const h = makeHost(); const scheduled: Array<() => void> = [];
+    let complete = false;
+    const mail = makeMail(undefined);
+    mail.list = async () => ({ instances: [{ slug: 'work', adapter_type: 'gmail', auth_state: 'healthy',
+      account_email: 'me@example.com', send_capable: false, last_synced_at: null,
+      sync_status: { access_verified: true, initial_sync_complete: complete } }] });
+    const mount = mountAccountsLanePanel({ host: h.host as unknown as HTMLElement, document: {} as Document,
+      mail, firstSyncPoll: { schedule(handler) { scheduled.push(handler); return () => {}; } } });
+    await mount.whenLoaded();
+    expect(mount.getState().connectionSuccess).toBeNull();
+    expect(h.host.innerHTML).toContain('Connected — syncing');
+    expect(scheduled).toHaveLength(1);
+    complete = true; scheduled.shift()!(); await tick();
+    expect(h.host.innerHTML).toContain('Initial sync complete');
+    expect(scheduled).toHaveLength(0);
+    mount.dispose();
+  });
+
+  it('stops first-sync polling when the vendor requires sign-in repair', async () => {
+    let authState: CollectionAuthState = 'healthy';
+    const scheduled: Array<() => void> = [];
+    const h = setup({
+      syncStatus: () => ({ access_verified: false, initial_sync_complete: false }), authState: () => authState,
+      firstSyncPoll: { schedule(handler) { scheduled.push(handler); return () => {}; } },
+    });
+    await h.mount.whenLoaded(); openOAuthForm(h.clickAction, h.field, 'gmail');
+    h.clickAction({ action: 'accounts-oauth-connect' }); await tick(); h.fake.dispatchCode('AUTH-CODE'); await tick();
+    authState = 'expired'; scheduled.shift()!(); await tick();
+    expect(h.host.innerHTML).toContain('Sign-in needs attention');
+    expect(h.host.innerHTML).toContain('vendor refused mailbox access');
+    expect(scheduled).toHaveLength(0);
+    h.mount.dispose();
   });
 
   it('Microsoft happy path: enrollOAuth provider=graph + Microsoft authorize endpoint', async () => {
@@ -986,7 +1093,7 @@ describe('Mail lane OAuth (mountAccountsLanePanel)', () => {
       slug: 'work',
       providerId: 'gmail',
     });
-    expect(host.innerHTML).toContain('Account connected');
+    expect(host.innerHTML).toContain('Sign-in saved');
     expect(host.innerHTML).not.toContain('Start signing in again');
     expect(continuity.snapshot()).toEqual({ status: 'idle' });
     mount.dispose();
@@ -1821,9 +1928,14 @@ const setupByo = (
   const getOAuthAppConfig = vi.fn(async () => current);
   const setOAuthAppConfig = vi.fn(async (args: SetOAuthAppConfigArgs) => {
     if (over.setRejects) throw new Error('store write failed');
+    const profiles = current[args.issuer].apps;
+    const previousDefault = profiles?.find(app => app.id === 'default');
     current = {
       ...current,
-      [args.issuer]: { client_id: args.client_id, has_secret: true, source: 'stored' },
+      [args.issuer]: { client_id: args.client_id, has_secret: true, source: 'stored',
+        ...(profiles ? { apps: [{ id: 'default', issuer: args.issuer, label: previousDefault?.label ?? 'Default app',
+          client_id: args.client_id, has_secret: true, revision: (previousDefault?.revision ?? 0) + 1 },
+        ...profiles.filter(app => app.id !== 'default')] } : {}) },
     };
     return { ok: true as const };
   });
@@ -2101,6 +2213,24 @@ describe('BYO OAuth-app credentials, inline on the connect flow', () => {
     expect(mount.getState().oauthCredValues.client_id).toBe('NEW-CID');
   });
 
+  it('keeps the profile picker current after saving a default app and declining consent', async () => {
+    const original = { id: 'default', issuer: 'google' as const, label: 'Personal app', client_id: 'STORED-CID', has_secret: true, revision: 2 };
+    const other = { ...original, id: 'app-' + 'a'.repeat(32), label: 'Work app', client_id: 'WORK-CID' };
+    const f = setupByo({ appConfig: { ...APP_CONFIG_GOOGLE_STORED, google: { ...APP_CONFIG_GOOGLE_STORED.google, apps: [original, other] } } });
+    await f.mount.whenLoaded(); openOAuthForm(f.clickAction, f.field, 'gmail');
+    f.credField('client_id', 'REPLACEMENT-CID'); f.credField('client_secret', 'fixture-replacement-secret');
+    f.clickAction({ action: 'accounts-oauth-connect' }); await tick();
+    f.fake.dispatchError('access_denied'); await tick();
+    expect(f.mount.getState().oauthAppConfig?.google.apps).toContainEqual(expect.objectContaining({ id: 'default', client_id: 'REPLACEMENT-CID' }));
+    expect(f.mount.getState().oauthAppConfig?.google.apps).toContainEqual(other);
+    f.clickAction({ action: 'accounts-oauth-connect' }); await tick();
+    expect(new URL(f.fake.popupHref()).searchParams.get('client_id')).toBe('REPLACEMENT-CID');
+    expect(f.setOAuthAppConfig).toHaveBeenCalledTimes(1);
+    f.fake.dispatchCode('RETRY-CODE'); await tick();
+    expect(f.enrollOAuth).toHaveBeenCalledWith(expect.objectContaining({ oauth_app_id: 'default', oauth_client_id: 'REPLACEMENT-CID' }));
+    f.mount.dispose();
+  });
+
   it('configured issuer: the form keeps Connect and collapses app credentials', async () => {
     const { mount, host, clickAction, field } = setupByo({ appConfig: APP_CONFIG_GOOGLE_STORED });
     await mount.whenLoaded();
@@ -2111,4 +2241,20 @@ describe('BYO OAuth-app credentials, inline on the connect flow', () => {
     expect(html).toContain('Google sign-in is ready');
     expect(html).toContain('<details class="accounts-oauth-manage">');
   });
+});
+
+
+it('opens current-app reauthorization from a healthy connected mailbox and routes a broker to its exact saved connection', async () => {
+  const h = makeHost(); const open = vi.fn(); const call = vi.fn<import('../settings/managed-oauth-panel.js').ManagedOAuthCaller>(async () => { throw Error('Fixture stops before consent'); });
+  let managed = false;
+  const mount = mountAccountsLanePanel({ host: h.host as unknown as HTMLElement, document: {} as Document, initialDetailSlug: 'work',
+    mail: { list: async () => ({ instances: [{ slug: 'work', adapter_type: 'gmail', auth_state: 'healthy', account_email: 'owner@example.test', send_capable: false,
+      last_synced_at: 100, sync_status: { access_verified: true, initial_sync_complete: true }, ...(managed ? { managed_connection_name: 'exact-work-account', source_authentication: 'broker' as const } : {}) }] }),
+      enrollImap: async () => ({ slug: 'unused', send_capable: false }), enrollOAuth: async () => ({ ok: true, account_key_prefix: 'unused' }), delete: async () => ({ ok: true }) },
+    runCollectionAuthentication: call, onOpenManagedConnections: open });
+  await mount.whenLoaded(); h.clickAction({ action: 'accounts-manage-authentication', slug: 'work' }); await tick();
+  expect(call).toHaveBeenCalledWith({ action: 'collection_authentication_app_context', platform: 'mail', slug: 'work', intent: 'reauthorize', scopes: [] });
+  expect(mount.getState().authenticationManagement).toEqual({ slug: 'work', action: 'reauthorize' });
+  managed = true; await mount.refresh(); h.clickAction({ action: 'accounts-open-managed-connection' });
+  expect(open).toHaveBeenCalledWith('exact-work-account'); mount.dispose();
 });

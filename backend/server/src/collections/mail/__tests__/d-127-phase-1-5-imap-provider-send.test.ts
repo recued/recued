@@ -276,7 +276,19 @@ describe('D-127 P1.5 — findSentFolder discovery', () => {
   it('exports the canonical fallback candidate list', () => {
     expect([...IMAP_SENT_FOLDER_FALLBACK_CANDIDATES]).toEqual([
       'Sent', 'Sent Items', 'Sent Messages', 'INBOX.Sent',
+      // D-318 audit — the usual localized names, after the English ones: a
+      // server that flags no folder `\Sent` names it in the mailbox's language.
+      'Gesendet', 'Gesendete Elemente', 'INBOX.Gesendet', 'Envoyés', 'Éléments envoyés', 'Enviados',
+      'Elementos enviados', 'Posta inviata', 'Verzonden items', 'Skickat', 'Sendt',
     ]);
+  });
+
+  it('D-318 audit — a send APPENDs to a localized Sent folder, and an English one still wins', async () => {
+    const c = new FakeImapClient();
+    c.listEntries = [{ path: 'INBOX' }, { path: 'Gesendet' }];
+    expect(await findSentFolder(c)).toBe('Gesendet');
+    c.listEntries = [{ path: 'INBOX' }, { path: 'Gesendet' }, { path: 'Sent' }];
+    expect(await findSentFolder(c)).toBe('Sent');
   });
 });
 

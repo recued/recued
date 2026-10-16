@@ -495,6 +495,47 @@ describe('GraphProvider — initialScan', () => {
     await expect(part.fetchBytes()).resolves.toEqual(bytes);
     expect(h.calls.some((u) => u.includes('/messages/gid-attach/attachments/att-1'))).toBe(true);
   });
+
+  it('D-318 step 4 — an inline image carries its disposition and the Content-ID the HTML names', async () => {
+    h = newHarness({
+      routes: [
+        { match: (u) => u.includes('/messages?'),
+          response: { status: 200, body: { value: [
+            mkGraphMsg({ id: 'gid-inline', subject: 'with a logo', hasAttachments: true }),
+          ] } } },
+        { match: (u) => u.includes('/messages/gid-inline/attachments'),
+          response: { status: 200, body: { value: [{
+            id: 'att-logo',
+            '@odata.type': '#microsoft.graph.fileAttachment',
+            name: 'image001.png',
+            contentType: 'image/png',
+            size: 4,
+            isInline: true,
+            contentId: '<image001.png@01DA0000>',
+            contentBytes: Buffer.from('logo').toString('base64'),
+          }, {
+            // Listed without its bytes: fetched on its own, later.
+            id: 'att-photo',
+            '@odata.type': '#microsoft.graph.fileAttachment',
+            name: 'photo.jpg',
+            contentType: 'image/jpeg',
+            size: 5,
+            isInline: true,
+            contentId: 'photo@01DA0000',
+          }] } } },
+        { match: (u) => u.includes('/messages/delta'),
+          response: { status: 200, body: { value: [], '@odata.deltaLink': graphDeltaLink('inline') } } },
+      ],
+    });
+    await h.provider.connect();
+    let message;
+    await h.provider.initialScan({
+      backfill_days: 7,
+      onMessage: async (m) => { message = m; return true; },
+    });
+    expect(message!.attachments![0]).toMatchObject({ disposition: 'inline', content_id: 'image001.png@01DA0000' });
+    expect(message!.attachments![1]).toMatchObject({ disposition: 'inline', content_id: 'photo@01DA0000' });
+  });
 });
 
 // ────────────────────────────────────────────────────────────────
@@ -523,6 +564,8 @@ describe('GraphProvider — incremental sync', () => {
     await h.provider.startSync(async (e) => { events.push(e); });
     const kinds = events.map((e) => `${e.kind}:${e.source_id}`);
     expect(kinds).toEqual(expect.arrayContaining(['updated:new-1', 'deleted:old-1']));
+    // D-318 step 6 — seen as they arrived: no recovery mark.
+    expect(events.filter((e) => e.recovered !== undefined)).toEqual([]);
     expect(h.store.data.get(DELTA_KEY)).toBe(nextDelta);
   });
 
@@ -563,8 +606,9 @@ describe('GraphProvider — incremental sync', () => {
     const events: ProviderSyncEvent[] = [];
     const stopFirst = await h.provider.startSync(async (event) => { events.push(event); });
     await stopFirst();
+    // D-318 step 6 — found by the recovery walk, not as it arrived.
     expect(events).toEqual([
-      expect.objectContaining({ kind: 'updated', source_id: 'recovered-id' }),
+      expect.objectContaining({ kind: 'updated', source_id: 'recovered-id', recovered: true }),
     ]);
     expect(h.store.data.get(DELTA_KEY)).toBe(replacement);
     expect(outcomes.at(-1)).toMatchObject({ ok: false });

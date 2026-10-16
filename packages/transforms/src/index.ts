@@ -36,6 +36,7 @@ export {
 } from './ics.js';
 import { round, clamp, to_number, math, decimal_math, weighted_score } from './numeric.js';
 import { date_diff, date_format, date_add, date_parse, is_past, is_future, date_period, to_recent_date, event_when } from './date.js';
+import { date_from_text } from './time-phrase.js';
 import { compare, coalesce, switch_, all, any, count, default_, defaults_, not_, ternary, pluralize } from './logic.js';
 import { hash_replace, hash_restore, redact } from './privacy.js';
 // A step's legacy `pii_fields`, hashed at dispatch over the RESOLVED input.
@@ -174,7 +175,7 @@ export const TRANSFORMS: ReadonlyMap<string, TransformFn> = new Map([
   // Date
   ['date_diff', date_diff], ['date_format', date_format], ['date_add', date_add],
   ['date_parse', date_parse], ['is_past', is_past], ['is_future', is_future], ['date_period', date_period],
-  ['to_recent_date', to_recent_date], ['event_when', event_when],
+  ['to_recent_date', to_recent_date], ['event_when', event_when], ['date_from_text', date_from_text],
   // Logic
   ['compare', compare], ['coalesce', coalesce], ['switch', switch_], ['all', all], ['any', any], ['count', count],
   ['default', default_], ['defaults', defaults_], ['not', not_], ['ternary', ternary], ['pluralize', pluralize],

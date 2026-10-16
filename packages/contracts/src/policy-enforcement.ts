@@ -383,6 +383,9 @@ const COLLECTION_ARG_SLUGS: ReadonlySet<string> = new Set([
  *   - the `seller-*` / `customer-access-*` families — offers, orders, tiers and
  *     customer access rows. A seller's ledger is its own store; the owner does
  *     not read it through `data.<collection>` and no grant row names it.
+ *   - the `reminder-*` family (D-324) — the owner's reminders, for the same
+ *     reason: their own store, no `data.reminder` collection, no grant row. The
+ *     op grant is the whole gate.
  *
  *  ⛔ NOT HERE, DELIBERATELY: the LINK family (`link-create` / `-delete` /
  *  `-list`). A link spans TWO records in TWO collections, and this
@@ -431,6 +434,13 @@ const NO_GOVERNED_COLLECTION_SLUGS: ReadonlySet<string> = new Set([
   'customer-access-extend',
   'customer-access-issue',
   'customer-access-swap-tier',
+  // D-324 — the owner's reminders are their own store (`reminders`), read through
+  // no `data.<collection>` and named by no grant row, as a seller's ledger is.
+  // A door reaches them only by the op grant.
+  'reminder-create',
+  'reminder-list',
+  'reminder-update',
+  'reminder-cancel',
 ]);
 
 export const deriveDispatchScope = (

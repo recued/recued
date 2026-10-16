@@ -61,7 +61,7 @@ test('a publish in flight cannot run twice or repaint a disposed route', async (
 test('distinguishes a waiting owner review from a closed one and cancels the exact request', async ({ page }) => {
   await page.goto(BASE);
   await page.evaluate(() => window.__quoteSignoff.setReview('waiting'));
-  await expect(page.getByRole('link', { name: 'Review release in Reception Inbox' })).toHaveAttribute('href', '#reception/inbox');
+  await expect(page.getByRole('link', { name: 'Review release in Reception Inbox' })).toHaveAttribute('href', '#reception/inbox/a1fecd4e-42ce-42a2-b7e7-731ce51a01b2');
   await page.evaluate(() => window.__quoteSignoff.setReview('closed'));
   await expect(page.locator('[data-signoff-history]')).toContainText('Owner review closed without releasing work');
   await expect(page.getByRole('link', { name: 'Review release in Reception Inbox' })).toHaveCount(0);

@@ -220,6 +220,7 @@ describe('makePackInstallHandlers', () => {
     // Install seam 5c — the by-slug entries join the same forwarded slice;
     // Add-a-pack (a3efa387) added the `packs.resolveBySlug` manifest-preview method.
     expect(slice?.methods).toEqual([
+      'packs.reconnect_later',
       'packs.install',
       // D-247 D15 — the install PREVIEW rides the same slice, because it must
       // resolve recipe bodies through the install's own resolver.
@@ -228,6 +229,7 @@ describe('makePackInstallHandlers', () => {
       'packs.resolveBySlug',
       'recipe.installBySlug',
     ]);
+    expect(typeof slice?.handlers['packs.reconnect_later']).toBe('function');
     expect(typeof slice?.handlers['packs.install']).toBe('function');
     expect(typeof slice?.handlers['packs.installBySlug']).toBe('function');
     expect(typeof slice?.handlers['packs.resolveBySlug']).toBe('function');

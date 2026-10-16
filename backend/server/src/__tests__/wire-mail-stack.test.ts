@@ -30,7 +30,7 @@ import type { ServerAccountStore } from '../account-store.js';
 import type { GateRegistry } from '../storage-gates.js';
 import type { ContactStore } from '../storage/contact-store.js';
 import type { CanonicalMessage } from '../collections/mail/provider.js';
-import type { MailUpsertContext } from '../collections/mail/mail-collection.js';
+import type { MailStoredContext, MailUpsertContext } from '../collections/mail/mail-collection.js';
 import { createMailFactStore, type MailFactStore } from '../storage/mail-fact-store.js';
 import { createMailFactWriter } from '../mail-facts/fact-writer.js';
 import type {
@@ -338,6 +338,18 @@ describe('composeMailBoot', () => {
     expect(emailAnswerHook).toHaveBeenCalledWith(msg, ctx);
   });
 
+  it('D-318 step 2 — hands each first landing to the chat door, with no fact store too', () => {
+    const chatRequestHook = vi.fn();
+    composeMailBoot(buildDeps({ chatRequestHook }));
+    const [, storage] = lastComposeCall();
+    const msg = message();
+    const ctx: MailStoredContext = { slug: 'recued-chat', record_id: 'mail:1', backfill_complete: true, backfill_days: 30 };
+    storage.onMessageStored?.(msg, ctx);
+
+    expect(chatRequestHook).toHaveBeenCalledTimes(1);
+    expect(chatRequestHook).toHaveBeenCalledWith(msg, ctx);
+  });
+
   it('does not observe contacts when derivation returns no observations', () => {
     const contactStore = makeContactStore();
     vi.mocked(deriveContactsFromMail).mockReturnValueOnce([]);
@@ -494,6 +506,7 @@ describe('composeMailBoot — mail facts (D-315)', () => {
   it('wires no fact hooks without a fact store', () => {
     composeMailBoot(buildDeps());
     const [, storage] = lastComposeCall();
+    expect(Object.hasOwn(storage, 'onMessageStored')).toBe(false);
     expect(Object.hasOwn(storage, 'onRecordsRemoved')).toBe(false);
     expect(Object.hasOwn(storage, 'onRecordRekeyed')).toBe(false);
   });
@@ -531,15 +544,104 @@ describe('composeMailBoot — mail facts (D-315)', () => {
     expect(vi.mocked(bus.emit)).not.toHaveBeenCalled();
   });
 
+  it('D-318 step 1 — reads nothing of the chat mailbox: no facts, no contacts; another mailbox as before', () => {
+    const mailFactStore = factStore();
+    const bus = warehouseBus();
+    const contactStore = makeContactStore();
+    vi.mocked(deriveContactsFromMail).mockReturnValue([
+      { email: 'pkginfo@ups.com', source: 'email_from', event_at: 1_700_000_000_000 },
+    ] as ReturnType<typeof deriveContactsFromMail>);
+    const isChatMailbox = (slug: string): boolean => slug === 'recued-chat';
+    composeMailBoot(buildDeps({
+      mailFactWriter: writerOver(mailFactStore, bus), warehouseBus: bus, contactStore, isChatMailbox,
+    }));
+    const [, storage] = lastComposeCall();
+    const markNews = vi.spyOn(mailFactStore, 'markEmailNews');
+
+    const chatCtx = upsertCtx({ slug: 'recued-chat', record_id: 'mail:chat-1' });
+    storage.onMessageStored?.(upsMessage(), chatCtx);
+    storage.onMessageUpserted?.(upsMessage(), chatCtx);
+    expect(markNews).not.toHaveBeenCalled();
+    expect(mailFactStore.listFacts()).toHaveLength(0);
+    expect(contactStore.observeBatch).not.toHaveBeenCalled();
+    expect(vi.mocked(bus.emit)).not.toHaveBeenCalled();
+
+    const workCtx = upsertCtx({ slug: 'work', record_id: 'mail:work-1' });
+    storage.onMessageStored?.(upsMessage(), workCtx);
+    storage.onMessageUpserted?.(upsMessage(), workCtx);
+    expect(markNews).toHaveBeenCalledTimes(1);
+    expect(mailFactStore.listFacts()).toHaveLength(1);
+    expect(contactStore.observeBatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('D-318 step 5 — reads nothing of the conversation in another mailbox either: no facts, no contacts', () => {
+    const mailFactStore = factStore();
+    const bus = warehouseBus();
+    const contactStore = makeContactStore();
+    vi.mocked(deriveContactsFromMail).mockReturnValue([
+      { email: 'recued@chat.example', source: 'email_from', event_at: 1_700_000_000_000 },
+    ] as ReturnType<typeof deriveContactsFromMail>);
+    // An answer, as it lands in the owner's inbox.
+    const isChatConversationMail = (msg: CanonicalMessage): boolean => msg.from === 'recued@chat.example';
+    composeMailBoot(buildDeps({
+      mailFactWriter: writerOver(mailFactStore, bus), warehouseBus: bus, contactStore, isChatConversationMail,
+    }));
+    const [, storage] = lastComposeCall();
+    // The audit — and every mailbox marks it as it is stored, for the readers of stored mail.
+    expect(storage.isChatConversation).toBe(isChatConversationMail);
+    const markNews = vi.spyOn(mailFactStore, 'markEmailNews');
+
+    const ctx = upsertCtx({ slug: 'work', record_id: 'mail:answer-1' });
+    storage.onMessageStored?.(upsMessage({ from: 'recued@chat.example' }), ctx);
+    storage.onMessageUpserted?.(upsMessage({ from: 'recued@chat.example' }), ctx);
+    expect(markNews).not.toHaveBeenCalled();
+    expect(mailFactStore.listFacts()).toHaveLength(0);
+    expect(contactStore.observeBatch).not.toHaveBeenCalled();
+
+    // The same mailbox's own mail, as before.
+    const other = upsertCtx({ slug: 'work', record_id: 'mail:work-1' });
+    storage.onMessageStored?.(upsMessage(), other);
+    storage.onMessageUpserted?.(upsMessage(), other);
+    expect(markNews).toHaveBeenCalledTimes(1);
+    expect(mailFactStore.listFacts()).toHaveLength(1);
+    expect(contactStore.observeBatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('D-318 step 2 — the chat door still hears of a first landing when marking it news throws', () => {
+    const mailFactStore = factStore();
+    const bus = warehouseBus();
+    const chatRequestHook = vi.fn();
+    composeMailBoot(buildDeps({ mailFactWriter: writerOver(mailFactStore, bus), warehouseBus: bus, chatRequestHook }));
+    const [, storage] = lastComposeCall();
+    vi.spyOn(mailFactStore, 'markEmailNews').mockImplementation(() => { throw new Error('news write failed'); });
+
+    const ctx: MailStoredContext = { slug: 'work', record_id: 'mail:1', backfill_complete: true, backfill_days: 30 };
+    expect(() => storage.onMessageStored?.(upsMessage(), ctx)).toThrow('news write failed');
+    expect(chatRequestHook).toHaveBeenCalledTimes(1);
+  });
+
   it('skips mail Recued itself sent, and drafts', () => {
     const mailFactStore = factStore();
-    composeMailBoot(buildDeps({ mailFactWriter: writerOver(mailFactStore, warehouseBus()) }));
+    // Recued's own: a reconciliation id its send claims hold.
+    const isOwnSend = (id: string) => id === 'rcd_0123456789abcdef';
+    composeMailBoot(buildDeps({ mailFactWriter: writerOver(mailFactStore, warehouseBus()), isOwnSend }));
     const [, storage] = lastComposeCall();
 
     storage.onMessageUpserted?.(upsMessage({ reconciliation_id: 'rcd_0123456789abcdef' }), upsertCtx());
     storage.onMessageUpserted?.(upsMessage({ direction: 'draft' }), upsertCtx({ record_id: 'mail:2' }));
 
     expect(mailFactStore.listFacts()).toEqual([]);
+  });
+
+  it('D-318 audit — reads an email that only writes a reconciliation id: Recued never sent it', () => {
+    const mailFactStore = factStore();
+    composeMailBoot(buildDeps({
+      mailFactWriter: writerOver(mailFactStore, warehouseBus()),
+      isOwnSend: (id: string) => id === 'rcd_0123456789abcdef',
+    }));
+    const [, storage] = lastComposeCall();
+    storage.onMessageUpserted?.(upsMessage({ reconciliation_id: 'rcd_forged000000000000' }), upsertCtx());
+    expect(mailFactStore.listFacts()).toHaveLength(1);
   });
 
   it('takes a message’s facts along when it is removed or moved', () => {

@@ -151,6 +151,20 @@ describe('composeEventTriggers', () => {
     expect(request).not.toHaveProperty('config');
   });
 
+  it('D-318 step 5 — the conversation’s mail in another mailbox starts no recipe; that mailbox’s own does', async () => {
+    seedTrigger(store, { pattern: 'data.mail.**' });
+    const bundle = compose({ isChatConversationRecord: (_slug, record_id) => record_id === 'answer-1' })!;
+
+    handlers[0]!.handler(makeEvent({ platform: 'mail', slug: 'me', record_id: 'answer-1' }));
+    handlers[0]!.handler(makeEvent({ platform: 'mail', slug: 'me', record_id: 'own-1' }));
+    await bundle.dispatcher.drained();
+
+    expect(handleExecute).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(handleExecute).mock.calls[0]![1]).toMatchObject({
+      context: { event: { payload: { record_id: 'own-1' } } },
+    });
+  });
+
   it('stores safe copy for an internal permission invariant and logs the diagnostic', async () => {
     const internal =
       "D-153 P2.C gateRecipeAgainstPolicy: a source carrying a contract_id (actor 'system') requires a ContractSnapshot — the producer must resolve it before dispatch.";

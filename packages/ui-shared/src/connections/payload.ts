@@ -41,6 +41,8 @@ export interface ConnectionPayload {
   publisher_id?: string;
   config: Record<string, unknown>;
   auth: ConnectionAuth;
+  oauth_app_issuer?: import('@recued/contracts').OAuthAppIssuer;
+  oauth_app_id?: string;
   /** D-165 P3.path-picker — optional sub-resource scope. Top-level (not
    *  config/auth). Omitted when the form field is blank → enroll
    *  canonicalizes the absent value to `/`. */

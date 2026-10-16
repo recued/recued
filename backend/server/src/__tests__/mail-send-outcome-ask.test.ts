@@ -24,6 +24,7 @@ import {
 import { composeNotificationBlock } from '../composition/bin/wire-notification-block.js';
 import type { EventBus } from '../events/bus.js';
 import {
+  closeMailSendOutcomeAsk,
   MAIL_SEND_ATTEMPT_MAX_MS,
   MAIL_SEND_OUTCOME_ASK_KIND,
   raiseMailSendOutcomeAsk,
@@ -103,6 +104,29 @@ const retry = (claims: MailSendClaimStore) => claims.claim({
 });
 
 describe('"Did this email go out?"', () => {
+  it('D-318 audit — is closed when its sender gives the send up: "send it next time" would promise nothing', async () => {
+    const { block, claims } = setup();
+    unknownAttempt(claims);
+    await raiseMailSendOutcomeAsk({ notifier: block, claims, reconciliation_id: RID, now: NOW + 2_000 });
+    // Another send's question stays.
+    const other = 'meeting-secretary.other';
+    const { claim } = claims.claim({
+      reconciliation_id: other, sender_slug: 'bench-mail', recipient: 'ann@northwind.example', subject: 'Agenda',
+      proof_kind: 'envelope', now: NOW,
+    });
+    claims.markUnknown({ reconciliation_id: other, expected_revision: claim.revision, now: NOW + 1_000 });
+    await raiseMailSendOutcomeAsk({ notifier: block, claims, reconciliation_id: other, now: NOW + 2_000 });
+    expect(await block.listOpenAsks()).toHaveLength(2);
+
+    await closeMailSendOutcomeAsk({ notifier: block, reconciliation_id: RID });
+    const open = await block.listOpenAsks();
+    expect(open.map((ask) => ask.handler_payload.reconciliation_id)).toEqual([other]);
+    // A notifier that cannot close a question is left alone.
+    await expect(closeMailSendOutcomeAsk({ notifier: { ask: vi.fn(), listUnresolvedAsks: vi.fn() }, reconciliation_id: other }))
+      .resolves.toBeUndefined();
+    await expect(closeMailSendOutcomeAsk({ notifier: undefined, reconciliation_id: other })).resolves.toBeUndefined();
+  });
+
   it('is asked in Attention with the message and its two answers', async () => {
     const { block, claims } = setup();
     unknownAttempt(claims);

@@ -310,6 +310,40 @@ describe('chat activity transparency settings', () => {
     );
   });
 
+  it('projects context-limit stop notes while respecting orchestration visibility', () => {
+    const event = {
+      kind: 'recued.multi_turn.loop_terminated',
+      total_rounds: 3,
+      termination_reason: 'context_trim_livelock',
+    } satisfies TransparencyEvent;
+    const orchestrationOn: TransparencyStreamSettings = {
+      ...DEFAULT_TRANSPARENCY_STREAM_SETTINGS,
+      visible_classes: {
+        ...DEFAULT_TRANSPARENCY_STREAM_SETTINGS.visible_classes,
+        orchestration: true,
+      },
+    };
+    const turn: InFlightTurn = {
+      turn_id: 'turn_1',
+      assistant_content: '',
+      transparency: [{ kind: 'transparency', payload: event }],
+      tool_calls: [],
+    };
+
+    expect(projectTransparencyNote(event, orchestrationOn)).toBe(
+      'stopped after 3 rounds — results were repeatedly removed to fit the context window',
+    );
+    expect(projectInFlightActivity(turn, orchestrationOn)).toEqual([
+      {
+        kind: 'note',
+        text: 'stopped after 3 rounds — results were repeatedly removed to fit the context window',
+      },
+    ]);
+    expect(projectInFlightActivity(turn)).toEqual([]);
+    expect(projectInFlightActivity(turn, { ...orchestrationOn, enabled: false }))
+      .toEqual([]);
+  });
+
   it('filters summary-only visible events when the max tier is none', () => {
     const event = {
       kind: 'ai_call',

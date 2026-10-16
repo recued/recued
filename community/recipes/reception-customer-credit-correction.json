@@ -1,0 +1,48 @@
+{
+  "recipe_id": "reception-customer-credit-correction",
+  "version": 1,
+  "chat_exposed": false,
+  "ttl": 0,
+  "metadata": {
+    "name": "Correct an invoice credit",
+    "description": "Use “Correct an invoice credit” in Recued. Reverse a wrong credit after owner review. You can add a linked replacement. Keep both entries, the reason and the exact bill balance.",
+    "author": "recued-core",
+    "supported_platforms": [],
+    "recipe_bundle": "recued-core/reception-approval",
+    "tags": [
+      "pack:reception",
+      "payments"
+    ],
+    "budget_ms": 30000
+  },
+  "variables": {
+    "expected_plan_hash": {
+      "label": "Reviewed credit digest",
+      "type": "string"
+    },
+    "summary": {
+      "label": "Credit and balance change",
+      "type": "string"
+    },
+    "correction_id": {
+      "label": "Saved credit correction",
+      "type": "string"
+    }
+  },
+  "steps": [
+    {
+      "id": "correction",
+      "op": "core.work-entity.customer-invoice.credit.correct",
+      "args": {
+        "correction_id": "{{config.correction_id}}",
+        "expected_plan_hash": "{{config.expected_plan_hash}}",
+        "summary": "{{config.summary}}"
+      }
+    }
+  ],
+  "output": {
+    "render": []
+  },
+  "prefetch_steps": [],
+  "requires": []
+}

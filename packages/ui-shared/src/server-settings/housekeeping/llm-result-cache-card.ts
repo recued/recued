@@ -140,14 +140,15 @@ const renderClearControls = (state: HousekeepingCacheCardState): string => {
           variant: 'danger',
           size: 'sm',
           action: 'housekeeping-cache-clear-confirm',
-          disabled: state.clearing,
+          ariaDisabled: state.clearing,
+          ariaBusy: state.clearing,
         })}
         ${button({
           label: 'Cancel',
           variant: 'secondary',
           size: 'sm',
           action: 'housekeeping-cache-clear-cancel',
-          disabled: state.clearing,
+          ariaDisabled: state.clearing,
         })}
       </div>
     `;
@@ -170,7 +171,7 @@ export const renderHousekeepingLlmResultCacheCard = (
   if (state.loading && state.stats === null) {
     return `
       <section class="housekeeping-cache-card"
-               aria-label="LLM result cache">
+               aria-label="LLM result cache" tabindex="-1">
         <h3>LLM result cache</h3>
         <p class="housekeeping-cache-card-loading">Loading cache stats…</p>
       </section>
@@ -183,7 +184,7 @@ export const renderHousekeepingLlmResultCacheCard = (
   if (state.loadError !== null && state.stats === null) {
     return `
       <section class="housekeeping-cache-card"
-               aria-label="LLM result cache">
+               aria-label="LLM result cache" tabindex="-1">
         <h3>LLM result cache</h3>
         ${inlineError(state.loadError)}
       </section>
@@ -197,7 +198,7 @@ export const renderHousekeepingLlmResultCacheCard = (
     // placeholder so the panel layout reserves the space.
     return `
       <section class="housekeeping-cache-card"
-               aria-label="LLM result cache">
+               aria-label="LLM result cache" tabindex="-1">
         <h3>LLM result cache</h3>
         <p class="housekeeping-cache-card-loading">Loading cache stats…</p>
       </section>
@@ -211,10 +212,12 @@ export const renderHousekeepingLlmResultCacheCard = (
   // Empty cache — surface the rollup line + skip the table + Clear
   // button (DD#5). Last-GC stays visible so the user can confirm the
   // task is running even before the first hit lands.
-  if (stats.total_entries === 0) {
+  // A GC read can find zero rows while the user's clear is still pending.
+  // Keep its confirmation controls until the operation has settled.
+  if (stats.total_entries === 0 && !state.confirmingClear) {
     return `
       <section class="housekeeping-cache-card"
-               aria-label="LLM result cache">
+               aria-label="LLM result cache" tabindex="-1">
         <h3>LLM result cache</h3>
         <p class="housekeeping-cache-card-summary">
           Identical AI inputs across records skip the model call and reuse
@@ -225,6 +228,7 @@ export const renderHousekeepingLlmResultCacheCard = (
           Last GC sweep: ${e(lastGc)}.
         </p>
         ${refreshError}
+        ${clearError}
       </section>
     `;
   }
@@ -233,7 +237,7 @@ export const renderHousekeepingLlmResultCacheCard = (
 
   return `
     <section class="housekeeping-cache-card"
-             aria-label="LLM result cache">
+             aria-label="LLM result cache" tabindex="-1">
       <h3>LLM result cache</h3>
       <p class="housekeeping-cache-card-summary">
         Identical AI inputs across records skip the model call and reuse

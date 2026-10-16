@@ -18,8 +18,9 @@
  *  false of sustained load, where both measurements come from the same slow
  *  regime. The margin does the work; the retry only catches the easy case. */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
+  REDOS_PER_PROBE_MS,
   closedRequestSchemaBacktrackingIssues,
   probePatternForBacktracking,
 } from '../closed-request-schema.js';
@@ -70,34 +71,38 @@ describe('probePatternForBacktracking', () => {
     expect(flagged, `false positives: ${flagged.join(', ')}`).toEqual([]);
   });
 
-  it('⛔ measures at the property’s own bound, not only at the rung below it', () => {
-    // The long rungs are 64, 256 … 65,536. A property bounded between two of them
-    // was measured only up to the rung below its bound, where a quadratic pattern
-    // is up to 16x cheaper, so this one was admitted at `maxLength: 16_383`
-    // (2026-09-24 audit). The bar is set between what the pattern costs at the
-    // last rung and at the bound ON THIS MACHINE, so the verdict turns on where
-    // it was measured, not on how fast the machine is.
-    const pattern = '^\\s*(?:a|b)*a(?:a|b)*\\s*c$';
-    const re = new RegExp(pattern);
-    const cost = (length: number): number => {
-      const input = `${'a'.repeat(length)}!`;
-      let best = Infinity;
-      for (let i = 0; i < 2; i += 1) {
-        const started = performance.now();
-        re.test(input);
-        best = Math.min(best, performance.now() - started);
+  it.each([4_096, 16_383])('confirms a slow rung at %i with a property bound of 16,383', (length) => {
+    // A bound between geometric rungs must be measured unless an earlier rung
+    // is already slow. Simulate that cost when the chosen input is actually
+    // tested, so changing machine load cannot move the finding to another rung.
+    // The known-positive tests above continue to measure real backtracking.
+    const pattern = '^a+$';
+    const slowInput = `${'a'.repeat(length)}!`;
+    const boundInput = `${'a'.repeat(16_383)}!`;
+    const measuredMs = REDOS_PER_PROBE_MS + 1;
+    let elapsed = 0;
+    let slowCalls = 0;
+    let sawBound = false;
+    const realTest = RegExp.prototype.test;
+    const test = vi.spyOn(RegExp.prototype, 'test').mockImplementation(function (this: RegExp, input: string) {
+      if (this.source === pattern) {
+        if (input === boundInput) sawBound = true;
+        if (input === slowInput) {
+          slowCalls += 1;
+          elapsed += measuredMs;
+        }
       }
-      return best;
-    };
-    const atLastRung = cost(4_096);
-    const atBound = cost(16_383);
-    expect(atBound / atLastRung, 'the test needs a pattern that grows with length').toBeGreaterThan(6);
-    const finding = probePatternForBacktracking(pattern, {
-      max_length: 16_383,
-      per_probe_ms: Math.sqrt(atLastRung * atBound),
+      return realTest.call(this, input);
     });
-    expect(finding, 'admitted: nothing measured it at its own bound').not.toBeNull();
-    expect(finding!.input_length).toBeGreaterThanOrEqual(16_383);
+    let finding: ReturnType<typeof probePatternForBacktracking>;
+    try {
+      finding = probePatternForBacktracking(pattern, { max_length: 16_383, now: () => elapsed });
+    } finally {
+      test.mockRestore();
+    }
+    expect(finding).toMatchObject({ pattern, input_length: slowInput.length, ms: measuredMs });
+    expect(slowCalls).toBe(2);
+    expect(sawBound).toBe(length === 16_383);
   });
 
   it('an uncompilable pattern is not this check’s problem', () => {

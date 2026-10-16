@@ -66,7 +66,7 @@ export const resolveQualityGateDecision = (
 ): ThreeConjunctResult => {
   const { pre_lift_approval, lift_reason } = inputs.authorization_provenance;
   const mandatoryBusinessReview = lift_reason === 'review_commitment'
-    || lift_reason === 'review_quote_signoff' || lift_reason === 'review_approval_workflow';
+    || lift_reason === 'review_quote_signoff' || lift_reason === 'review_approval_workflow' || lift_reason === 'review_customer_payment';
   const authorization: AuthorizationVerdict =
     pre_lift_approval === 'never' && !mandatoryBusinessReview
       ? 'admit'

@@ -206,7 +206,7 @@ describe('the bundled packs that ship a recipe', () => {
   // Checked against the manifests themselves, not against the function's own
   // answer: a checkout ships ~1,000 packs and a release only its foundation.
   it('names each roster pack whose manifest lists the recipe, by its name, and no other', () => {
-    const recipe_id = 'reminder-due-notifier';
+    const recipe_id = 'today';
     const manifests = loadBundledPackManifests();
     const packs = bundledPacksShippingRecipe(recipe_id);
     expect(packs.map((pack) => pack.ref)).toContain('recued-core.personal-organizer-foundation');

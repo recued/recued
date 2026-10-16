@@ -35,7 +35,7 @@ import {
   type GraphCalEvent,
   type GraphCalProviderConfig,
 } from '../graph-provider.js';
-import type { CalendarSyncEvent } from '../provider.js';
+import type { CalendarSyncEvent, CalendarSyncOutcome } from '../provider.js';
 
 // ────────────────────────────────────────────────────────────────
 // Helpers
@@ -990,6 +990,81 @@ describe('GraphCalProvider — startSync', () => {
     await stop();
 
     expect(store.data.get(tokenKey)).toBe(expiredLink);
+  });
+
+  it('a clean poll reports a sync, though it delivered nothing', async () => {
+    // Live, 2026-10-15: an empty calendar delivered no event, so nothing ever
+    // said it had synced, and Connections showed "First sync pending" for good.
+    const store = seedStore();
+    const link = 'https://graph.microsoft.com/v1.0/me/calendars/cal-1/calendarView/delta?$deltatoken=quiet';
+    store.data.set(`graph.work.cal_delta_link.${hashId('cal-1')}`, link);
+    const { fetcher } = makeRouter([
+      calendarsListRoute([{ id: 'cal-1' }]),
+      { match: (u) => u === link, response: { status: 200, body: { value: [], '@odata.deltaLink': link } } },
+    ]);
+    const provider = createGraphCalProvider({
+      slug: 'work', config: mkConfig(), accountStore: store, providerConfig, fetcher,
+      scheduler: () => () => undefined, now: () => 1_792_000_000_000,
+    });
+    cleanup.push(() => provider.close());
+    const synced: CalendarSyncOutcome[] = [];
+    provider.onSyncOutcome!((outcome) => { synced.push(outcome); });
+    const stop = await provider.startSync(async () => {});
+    expect(synced).toEqual([{ ok: true, at: 1_792_000_000_000 }]);
+    expect(provider.health().last_successful_sync_at).toBe(1_792_000_000_000);
+    await stop();
+  });
+
+  it('a poll whose change the collection rejects reports a transient failure, not a sync', async () => {
+    const store = seedStore();
+    const link = 'https://graph.microsoft.com/v1.0/me/calendars/cal-1/calendarView/delta?$deltatoken=prior';
+    store.data.set(`graph.work.cal_delta_link.${hashId('cal-1')}`, link);
+    const { fetcher } = makeRouter([
+      calendarsListRoute([{ id: 'cal-1' }]),
+      {
+        match: (u) => u === link,
+        response: {
+          status: 200,
+          body: {
+            value: [{
+              id: 'e1', iCalUId: 'e1', subject: 'One',
+              start: { dateTime: '2026-04-23T10:00:00', timeZone: 'UTC' },
+              end: { dateTime: '2026-04-23T11:00:00', timeZone: 'UTC' },
+            } as GraphCalEvent],
+            '@odata.deltaLink': link,
+          },
+        },
+      },
+    ]);
+    const provider = createGraphCalProvider({
+      slug: 'work', config: mkConfig(), accountStore: store, providerConfig, fetcher,
+      scheduler: () => () => undefined,
+    });
+    cleanup.push(() => provider.close());
+    const synced: CalendarSyncOutcome[] = [];
+    provider.onSyncOutcome!((outcome) => { synced.push(outcome); });
+    const stop = await provider.startSync(async () => { throw new Error('collection write failed'); });
+    expect(synced).toEqual([{ ok: false, failure: 'transient', at: expect.any(Number) }]);
+    await stop();
+  });
+
+  it('a poll refused for its credential reports an auth failure', async () => {
+    const store = seedStore();
+    const link = 'https://graph.microsoft.com/v1.0/me/calendars/cal-1/calendarView/delta?$deltatoken=refused';
+    store.data.set(`graph.work.cal_delta_link.${hashId('cal-1')}`, link);
+    const { fetcher } = makeRouter([
+      calendarsListRoute([{ id: 'cal-1' }]),
+      { match: (u) => u === link, response: { status: 403, body: { error: { code: 'ErrorAccessDenied' } } } },
+    ]);
+    const provider = createGraphCalProvider({
+      slug: 'work', config: mkConfig(), accountStore: store, providerConfig, fetcher,
+      scheduler: () => () => undefined,
+    });
+    cleanup.push(() => provider.close());
+    const synced: CalendarSyncOutcome[] = [];
+    provider.onSyncOutcome!((outcome) => { synced.push(outcome); });
+    await expect(provider.startSync(async () => {})).rejects.toMatchObject({ code: 'auth_expired' });
+    expect(synced).toEqual([{ ok: false, failure: 'auth', at: expect.any(Number) }]);
   });
 
   it('holds and replays the deltaLink after a collection callback rejects', async () => {

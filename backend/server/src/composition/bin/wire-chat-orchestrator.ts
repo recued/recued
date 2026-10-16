@@ -368,6 +368,10 @@ export interface ChatOrchestratorBundle {
    *  settles, long after the turn that asked for it ended. Published into the
    *  execution refs bag at boot; see `publishRunSettledSink`. */
   readonly runSettledSink: (settled: PreflightRunSettled) => void;
+  /** D-318 step 5 — be told of each settled run too, after chat's own sink has
+   *  it: the email door writes the follow-up of a run its turn left waiting for
+   *  an approval. Returns the way to stop. */
+  readonly onRunSettled: (listener: (settled: PreflightRunSettled) => void) => () => void;
 
   chatStore: ChatStore;
   connectionMcpStore: ChatConnectionMcpStore;
@@ -2306,10 +2310,22 @@ export const composeChatOrchestrator = (
     },
   };
 
+  // Source-scoped late outcomes for previously held owner-chat calls; and the
+  // email door's, through its listener (D-318 step 5).
+  const chatRunSettledSink = createChatRunSettledSink(chatStore, selfSignature, broadcast);
+  const runSettledListeners = new Set<(settled: PreflightRunSettled) => void>();
   return {
     chatStore,
-    // Source-scoped late outcomes for previously held owner-chat calls.
-    runSettledSink: createChatRunSettledSink(chatStore, selfSignature, broadcast),
+    runSettledSink: (settled) => {
+      for (const listener of runSettledListeners) {
+        try { listener(settled); } catch (error) { console.error('[chat] run-settled listener failed', error); }
+      }
+      return chatRunSettledSink(settled);
+    },
+    onRunSettled: (listener) => {
+      runSettledListeners.add(listener);
+      return () => { runSettledListeners.delete(listener); };
+    },
     connectionMcpStore,
     inboundTokenStore,
     internalRegistry,

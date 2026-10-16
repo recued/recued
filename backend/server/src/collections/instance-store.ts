@@ -27,6 +27,7 @@
  */
 
 import type Database from 'better-sqlite3';
+import { collectionAuthenticationLocks } from '../collection-authentication-locks.js';
 import { initializePreapprovalLifecycle, synchronizePreapprovalIdentity } from '../storage/preapproval-lifecycle.js';
 import type {
   CollectionAuthState,
@@ -107,6 +108,9 @@ export interface CollectionInstanceRecord<Caps = CollectionCaps> {
 }
 
 export interface CollectionInstanceStore {
+  /** D-322 §44 — shared lifecycle lease across store handles for this DB.
+   * Optional for narrow non-SQLite test doubles. */
+  authenticationLocks?: Set<string>;
   /** Insert-or-replace by `(platform, slug)`. `created_at` preserved
    *  on replace — only `updated_at` moves forward on updates.
    *  `backfill_complete` is NOT a caller input — it's preserved across
@@ -282,6 +286,7 @@ export const createInstanceStore = (
     synchronizePreapprovalIdentity(db, 'collection_instance', `${platform}:${slug}`,
       row ? collectionInstancePreapprovalMaterial(row) : null);
   return {
+    authenticationLocks: collectionAuthenticationLocks(db),
     upsert(record) {
       return db.transaction(() => {
         const ts = now();

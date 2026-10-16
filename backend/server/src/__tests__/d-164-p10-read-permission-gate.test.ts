@@ -215,8 +215,20 @@ describe('D-164 P10 createShortCircuitReadAuthorization unit pins', () => {
     ['chat'],
     ['messenger-slack'],
     ['messenger-telegram'],
+    // D-318 — the email chat door, a door rather than a transport, reads as one.
+    ['messenger-email'],
   ] as const)('admits the seeded baseline %s surface', (surface) => {
     expect(createShortCircuitReadAuthorization()(surface)).toBe(true);
+  });
+
+  it('D-318 — admits an email turn carrying its own source, and refuses another door’s source there', () => {
+    const authorize = createShortCircuitReadAuthorization();
+    expect(authorize('messenger-email', {
+      channel: 'messenger', actor: 'user_self', vendor: 'email', from: 'me@owner.example',
+    })).toBe(true);
+    expect(authorize('messenger-email', {
+      channel: 'messenger', actor: 'user_self', vendor: 'slack', from: 'U1',
+    })).toBe(false);
   });
 
   it('fails closed on an unknown surface string', () => {
@@ -247,6 +259,7 @@ describe('D-164 P10 createShortCircuitReadAuthorization unit pins', () => {
     expect(authorize('chat')).toBe(false);
     expect(authorize('messenger-slack')).toBe(false);
     expect(authorize('messenger-telegram')).toBe(false);
+    expect(authorize('messenger-email')).toBe(false);
   });
 
   it('always attaches the deps-level authorizer instead of relying on chat-only fallback', () => {

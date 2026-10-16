@@ -1,5 +1,9 @@
+import { isFileSourceAuthenticationPreview } from './file-source-authentication.js';
 /** D-322 — broker setup and authorization. No broker key enters a connection view. */
 import type { BulkPackManifest } from './bulk-pack.js';
+import type { ConnectionAuth } from './connection.js';
+import type { CollectionAuthenticationRequest, CollectionAuthenticationResponse } from './collection-authentication.js';
+export * from './collection-authentication.js';
 import type { ManagedOAuthMigrationRequest, ManagedOAuthMigrationResponse } from './managed-oauth-migration.js';
 export * from './managed-oauth-migration.js';
 export const MANAGED_OAUTH_BROKERS = [
@@ -22,6 +26,34 @@ export interface ManagedOAuthAuth {
   /** One-time server receipt. Consumed before storing; never persisted. */
   authorization_receipt?: string;
 }
+
+export type DirectOAuthAuth = Extract<ConnectionAuth, { type: 'oauth2_refresh' }>;
+/** Owner-bound server review. Credentials remain on the server after review. */
+export interface DirectOAuthAuthorization {
+  type: 'direct_oauth';
+  authorization_receipt: string;
+  /** Reviewed local needs; not evidence of vendor-granted permissions. */
+  requested_scopes: readonly string[];
+}
+export type AuthenticationSwitchAuthorization = ManagedOAuthAuth | DirectOAuthAuthorization;
+export interface DirectOAuthAuthenticationReview {
+  auth: DirectOAuthAuthorization;
+  expires_at: number;
+  required_scopes: readonly string[];
+  impact: ManagedOAuthImpactPreview;
+  warnings: readonly string[];
+}
+export const isDirectOAuthAuthenticationReview = (value: unknown): value is DirectOAuthAuthenticationReview => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>; const auth = v.auth as Record<string, unknown> | undefined;
+  const scopes = (raw: unknown): boolean => Array.isArray(raw) && raw.length <= 256
+    && raw.every(s => typeof s === 'string' && s.length > 0 && s.length <= 2048 && !/[\r\n\0]/.test(s));
+  return !!auth && auth.type === 'direct_oauth' && typeof auth.authorization_receipt === 'string'
+    && /^[A-Za-z0-9_-]{43}$/.test(auth.authorization_receipt) && scopes(auth.requested_scopes)
+    && Number.isSafeInteger(v.expires_at) && Number(v.expires_at) >= 0 && scopes(v.required_scopes)
+    && Array.isArray(v.warnings) && v.warnings.every(w => typeof w === 'string') && isManagedOAuthImpactPreview(v.impact)
+    && v.impact.target.authentication === 'direct_oauth';
+};
 
 export interface ManagedOAuthProfileView {
   id: string;
@@ -130,6 +162,7 @@ export interface ManagedOAuthImpactPreview {
     usage_available: boolean;
   }[];
   warnings: readonly string[];
+  file_source?: import('./file-source-authentication.js').FileSourceAuthenticationPreview;
 }
 export const isManagedOAuthImpactPreview = (value: unknown): value is ManagedOAuthImpactPreview => {
   const record = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -150,6 +183,7 @@ export const isManagedOAuthImpactPreview = (value: unknown): value is ManagedOAu
     && typeof value.phase === 'string' && ['before_authorization', 'before_save'].includes(value.phase)
     && typeof value.mode === 'string' && ['create', 'reauthorize', 'switch'].includes(value.mode)
     && typeof value.consent === 'string' && ['reuse', 'request'].includes(value.consent) && account(value.target)
+    && (value.file_source === undefined || isFileSourceAuthenticationPreview(value.file_source))
     && (value.current === undefined || account(value.current)) && Array.isArray(value.warnings) && value.warnings.every(text)
     && Array.isArray(value.connections) && value.connections.length <= 2048
     && value.connections.every(c => record(c) && text(c.name) && text(c.display_name) && typeof c.usage_available === 'boolean'
@@ -193,12 +227,17 @@ export interface ManagedOAuthAuthorizationRequest {
   scopes: readonly string[]; name?: string; connection_id?: string; force_reauthorization?: boolean;
   /** D-322 §23 — review a replacement while the existing named connection stays saved. */
   switch_authentication?: true;
+  /** Verified permission repair keeps the current broker, integration and account. */
+  reauthorize_current?: true;
   expected_updated_at?: number;
   /** Opt in to fixed native identity reads using existing access. */
   include_account_impact?: true;
 }
 
 export type ManagedOAuthRequest =
+  | { action: 'authentication_worklist' }
+  | import('./collection-oauth-app-switch.js').CollectionOAuthAppSwitchRequest
+  | CollectionAuthenticationRequest
   | ManagedOAuthMigrationRequest
   | { action: 'profiles' }
   | { action: 'save_profile'; id?: string; label: string; broker: ManagedOAuthBroker; base_url: string; connect_ui_origin?: string; api_key?: string }
@@ -215,15 +254,31 @@ export type ManagedOAuthRequest =
   | { action: 'account_impact'; flow_id: string; claim_secret: string }
   | { action: 'status'; flow_id: string; claim_secret: string }
   | { action: 'cancel'; flow_id: string; claim_secret: string }
+  | { action: 'file_authentication_files'; name: string; expected_updated_at: number; query?: string; after?: string }
+  | { action: 'file_authentication_prepare'; name: string; expected_updated_at: number; verification_file_id?: string }
+  | { action: 'reauthorization_context'; name: string; expected_updated_at: number }
+  | { action: 'review_direct_authentication'; selections: readonly { name: string; expected_updated_at: number }[];
+      auth?: DirectOAuthAuth; source_name?: string; scopes?: readonly string[]; oauth_app_id?: string; oauth_app_issuer?: import('./foundational-oauth.js').OAuthAppIssuer }
+  | { action: 'retire_direct_authentication'; auth: DirectOAuthAuthorization }
   // D-322 — separately verified consent does not reopen the metadata update RPC.
   | { action: 'save_reauthorization'; name: string; expected_updated_at: number; impact_fingerprint?: string; patch: {
       display_name?: string; config?: Record<string, unknown>; auth: ManagedOAuthAuth;
     } }
   | { action: 'apply_authentication_switch'; attempt_id: string; name: string; expected_updated_at: number;
-      auth: ManagedOAuthAuth; verification_url: string; impact_fingerprint?: string };
+      auth: AuthenticationSwitchAuthorization; verification_url: string; impact_fingerprint?: string };
 
 export type ManagedOAuthResponse =
+  | { action: 'authentication_worklist'; worklist: import('./authentication-repair-worklist.js').AuthenticationRepairWorklist }
+  | { action: 'file_authentication_files'; choices: import('./file-download-verification.js').FileDownloadChoices }
+  | { action: 'file_authentication_prepare'; name: string; updated_at: number; file_source: import('./file-source-authentication.js').FileSourceAuthenticationPreview | null }
+  | import('./collection-oauth-app-switch.js').CollectionOAuthAppSwitchResponse
+  | { action: 'reauthorization_context'; name: string; updated_at: number; auth_type: 'oauth2_refresh' | 'managed_oauth';
+      client_id?: string; token_endpoint?: string; required_scopes?: readonly string[];
+      saved_oauth_app?: { issuer: import('./foundational-oauth.js').OAuthAppIssuer; id: string } }
+  | CollectionAuthenticationResponse
   | ManagedOAuthMigrationResponse
+  | ({ action: 'review_direct_authentication' } & DirectOAuthAuthenticationReview)
+  | { action: 'retire_direct_authentication' }
   | { action: 'account_impact'; impact: ManagedOAuthImpactPreview }
   | { action: 'preview'; preview: ManagedOAuthPermissionPreview }
   | { action: 'profiles'; profiles: readonly ManagedOAuthProfileView[] }
@@ -261,6 +316,7 @@ export const managedOAuthVerificationUrl = (baseUrl: string, input: string): str
     const path = decodeURIComponent(base.pathname).replace(/\/+$/, '');
     const resourcePath = decodeURIComponent(url.pathname);
     if (url.origin !== base.origin || url.username || url.password || url.hash
+      || [...url.searchParams.keys()].some(key => /^(?:access_token|refresh_token|client_secret|api_key|token|authorization)$/i.test(key))
       || /[\r\n\0\\]/.test(resourcePath)
       || (resourcePath !== path && !resourcePath.startsWith(path + '/'))) return undefined;
     return url.toString();
@@ -272,8 +328,11 @@ export const managedOAuthDefaultVerificationUrl = (baseUrl: string): string => {
   try {
     const base = new URL(baseUrl); const prefix = base.toString().replace(/\/+$/, '');
     if (base.hostname === 'graph.microsoft.com') return `${prefix}/me?$select=id`;
-    if (base.hostname === 'gmail.googleapis.com') return `${prefix}/users/me/profile`;
+    if (base.origin === 'https://api.dropboxapi.com') return `${prefix}/2/users/get_current_account`;
+    if (base.origin === 'https://api.box.com' && base.pathname.replace(/\/$/, '') === '/2.0') return `${prefix}/users/me`;
+    if (base.hostname === 'gmail.googleapis.com') return `${prefix}${base.pathname === '/' ? '/gmail/v1' : ''}/users/me/profile`;
     if (base.hostname === 'www.googleapis.com' && base.pathname.startsWith('/drive')) return `${prefix}/about?fields=user`;
+    if (base.origin === 'https://www.googleapis.com' && base.pathname.replace(/\/$/, '') === '/calendar/v3') return `${prefix}/users/me/calendarList?maxResults=1`;
     return '';
   } catch { return ''; }
 };
@@ -290,6 +349,7 @@ export const managedOAuthProvidersForTarget = (baseUrl: string, vendor?: string)
   if (host === 'graph.microsoft.com') return ['microsoft', 'microsoft-graph', 'microsoft-tenant-specific', 'microsoft-excel', 'outlook', 'outlook-calendar', 'one-drive', 'one-drive-personal', 'sharepoint-online'];
   if (host === 'api.github.com') return ['github', 'github-app', 'github-app-oauth'];
   if (host === 'api.hubapi.com') return ['hubspot'];
+  if (host === 'api.box.com' && url.pathname.replace(/\/$/, '') === '/2.0') return ['box'];
   if (host === 'api.notion.com') return ['notion'];
   if (host === 'slack.com' || host === 'api.slack.com') return ['slack'];
   if (host === 'api.dropboxapi.com' || host === 'content.dropboxapi.com') return ['dropbox'];

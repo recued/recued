@@ -1,10 +1,12 @@
 /** D-322 §26 — vendor-group selection, shared consent, reviewed checks and per-row results. */
 import {
   isManagedOAuthMigrationView, isManagedOAuthMigrationCandidate, managedOAuthScopeUnion, MANAGED_OAUTH_MIGRATION_LIMIT,
-  type ManagedOAuthAuth, type ManagedOAuthMigrationCandidate, type ManagedOAuthMigrationView,
+  isDirectOAuthAuthenticationReview,
+  type AuthenticationSwitchAuthorization, type DirectOAuthAuthenticationReview, type ManagedOAuthMigrationCandidate, type ManagedOAuthMigrationView,
 } from '@recued/contracts';
 import { createManagedOAuthPanel, type ManagedOAuthCaller, type ManagedOAuthPanelContext } from './managed-oauth-panel.js';
 import { renderManagedOAuthImpact } from './managed-oauth-impact-view.js';
+import { renderAuthenticationReconnect } from '@recued/ui-shared';
 
 const escape = (value: string): string => value.replace(/[&<>"']/g, c =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
@@ -19,12 +21,21 @@ export const createManagedOAuthMigrationPanel = (deps: {
   const doc = deps.host.ownerDocument;
   let candidates: ManagedOAuthMigrationCandidate[] = []; let selected = new Set<string>();
   let group = ''; let phase: 'select' | 'authorize' | 'review' = 'select'; let error = ''; let busy = false;
-  let disposed = false; let generation = 0; let statusSequence = 0; let auth: ManagedOAuthAuth | undefined;
+  let disposed = false; let generation = 0; let statusSequence = 0; let auth: AuthenticationSwitchAuthorization | undefined;
+  let target: 'direct_oauth' | 'managed_oauth' = 'direct_oauth'; let source = ''; let directReview: DirectOAuthAuthenticationReview | undefined;
   let view: ManagedOAuthMigrationView | undefined; let recent: ManagedOAuthMigrationView[] = [];
   let poll: ReturnType<typeof setTimeout> | undefined;
   const urls = new Map<string, string>();
   const context: ManagedOAuthPanelContext = { enabled: false, mode: 'switch', name: '', base_url: '', scopes: [], profile_id: '', integration_id: '' };
   const chosen = (): ManagedOAuthMigrationCandidate[] => candidates.filter(c => selected.has(c.name));
+  const directSources = (): ManagedOAuthMigrationCandidate[] => candidates.filter(c => c.authentication === 'direct_oauth'
+    && groupKey(c) === group && !selected.has(c.name));
+  const retireDirect = (): void => {
+    if (!directReview) return; const old = directReview; directReview = undefined;
+    void deps.call({ action: 'retire_direct_authentication', auth: old.auth }).catch(() => {});
+  };
+  const impactFingerprint = (): string | undefined => target === 'direct_oauth' ? directReview?.impact.fingerprint : broker.impactFingerprint();
+  const nativeScopeNeeds = (): string[] => managedOAuthScopeUnion(context.scopes, directSources().find(c => c.name === source)?.required_scopes ?? []);
   const brokerHost = doc.createElement('div'); brokerHost.setAttribute('data-bulk-broker', '');
   const broker = createManagedOAuthPanel({ call: deps.call, context: () => context,
     select: (profile, integration) => { context.profile_id = profile; context.integration_id = integration; },
@@ -34,7 +45,8 @@ export const createManagedOAuthMigrationPanel = (deps: {
     ...(deps.open ? { open: deps.open } : {}) });
   const buttons = (): string => {
     if (phase === 'select') return '<button type="button" data-bulk-action="authorize">Review selected connections</button>';
-    if (phase === 'authorize') return '<button type="button" data-bulk-action="prepare">Check all selected connections</button>';
+    if (phase === 'authorize') return (target === 'direct_oauth' ? '<button type="button" data-bulk-action="review-direct">Review direct OAuth account and permissions</button>' : '')
+      + '<button type="button" data-bulk-action="prepare">Check all selected connections</button>';
     return '<button type="button" data-bulk-action="apply">Apply verified connections</button><button type="button" data-bulk-action="refresh">Refresh results</button>'
       + (view && ['ready', 'applying', 'preparing'].includes(view.state) ? '<button type="button" data-bulk-action="stop">Stop migration</button>' : '')
       + (view && !['applying', 'preparing'].includes(view.state) ? '<button type="button" data-bulk-action="again">Select remaining connections</button>' : '');
@@ -44,7 +56,8 @@ export const createManagedOAuthMigrationPanel = (deps: {
       const action = button.dataset.bulkAction;
       button.disabled = busy || broker.busy();
       if (action === 'authorize') button.disabled ||= selected.size === 0 || selected.size > MANAGED_OAUTH_MIGRATION_LIMIT;
-      if (action === 'prepare') button.disabled ||= !auth || !broker.impactFingerprint() || chosen().some(c => !urls.get(c.name)?.trim());
+      if (action === 'review-direct') button.disabled ||= !directSources().some(c => c.name === source);
+      if (action === 'prepare') button.disabled ||= !auth || !impactFingerprint() || chosen().some(c => !urls.get(c.name)?.trim());
       if (action === 'apply') button.disabled ||= view?.state !== 'ready' || !view.fingerprint || !view.rows.some(r => r.state === 'verified');
       if (action === 'stop' || action === 'refresh') button.disabled = busy;
     }
@@ -61,12 +74,14 @@ export const createManagedOAuthMigrationPanel = (deps: {
       + (row.reason === 'changed' ? ' Account, permissions, or local use changed. Review again.' : '')
       + '</p><p>Read check: <code>' + escape(row.connection.verification_url) + '</code></p>'
       + (row.state === 'migrated' ? '<details><summary>Reviewed account and impact before this switch</summary>'
-        + renderManagedOAuthImpact(row.impact) + '</details>' : renderManagedOAuthImpact(row.impact)) + '</li>').join('') ?? '';
+        + renderManagedOAuthImpact(row.impact) + '</details>'
+        + (row.impact ? renderAuthenticationReconnect(row.impact.connections
+          .filter(c => c.name === row.connection.name).flatMap(c => c.uses)) : '') : renderManagedOAuthImpact(row.impact)) + '</li>').join('') ?? '';
     deps.host.innerHTML = '<section class="connections-bulk-migration" aria-label="Bulk authentication migration"><style>'
       + '.connections-bulk-migration{max-width:960px;min-width:0;overflow-wrap:anywhere}.connections-bulk-migration label{display:block;margin:8px 0}'
       + '.connections-bulk-migration input[type=url]{width:100%;box-sizing:border-box}.connections-bulk-migration code{white-space:normal}'
       + '.connections-bulk-migration button{margin:4px}.bulk-account-choice{padding:8px;border:1px solid var(--border,#ddd);border-radius:8px}'
-      + '</style><h2>Bulk authentication migration</h2><p>Move several saved connections to one Nango account. Names, packs, and recipes stay linked.</p>'
+      + '</style><h2>Bulk authentication migration</h2><p>Move saved connections to Recued direct OAuth or a broker account. Names, packs, and recipes stay linked.</p>'
       + '<p>Work through one vendor API service at a time. Failed checks keep the saved authentication. Successful switches remain applied.</p>'
       + (error ? '<p role="alert">' + escape(error) + '</p>' : '')
       + (busy ? '<p role="status">Reading the migration…</p>' : '')
@@ -84,7 +99,17 @@ export const createManagedOAuthMigrationPanel = (deps: {
         + chosen().map(c => '<label>' + escape(c.display_name) + ' <code>' + escape(c.name) + '</code>'
           + '<p>' + escape(c.current?.identity.email ?? 'Vendor email unknown') + '</p>'
           + 'Protected read-only access check URL<input type="url" data-bulk-url="' + escape(c.name) + '" value="' + escape(urls.get(c.name) ?? '') + '"></label>').join('')
-        + '<p>A private Google Sheets link can be used as its read check. Recued asks for the combined needs of these connections.</p><div data-bulk-broker-slot></div>' : '')
+        + '<p>A private Google Sheets link can be used as its read check. Review the combined needs of these connections.</p>'
+        + '<label>New authentication<select data-bulk-target><option value="direct_oauth"' + (target === 'direct_oauth' ? ' selected' : '') + '>Recued direct OAuth — your OAuth app</option>'
+        + '<option value="managed_oauth"' + (target === 'managed_oauth' ? ' selected' : '') + '>Managed OAuth — broker account</option></select></label>'
+        + (target === 'direct_oauth' ? '<label>Direct OAuth connection<select data-bulk-source><option value="">Select a direct OAuth connection</option>'
+          + directSources().map(c => '<option value="' + escape(c.name) + '"' + (source === c.name ? ' selected' : '') + '>'
+            + escape(c.display_name + ' · ' + c.name) + '</option>').join('') + '</select></label>'
+          + '<p>Use a separate direct OAuth connection for this vendor API service. Recued renews its credentials and checks every selected resource. '
+          + 'If none is available, add and authorize a direct OAuth connection first.</p>'
+          + '<p>Combined scope needs: <code>' + escape(nativeScopeNeeds().join(' ') || 'Unknown') + '</code>. Missing permissions need authorization in the direct connection first.</p>'
+          + renderManagedOAuthImpact(directReview?.impact)
+          + (directReview?.warnings.map(w => '<p>' + escape(w) + '</p>').join('') ?? '') : '<div data-bulk-broker-slot></div>') : '')
       + (phase === 'review' && view ? '<p>Migration: ' + escape(view.state) + '. '
         + view.rows.filter(r => r.state === 'migrated').length + ' switched, ' + view.rows.filter(r => r.state === 'verified').length + ' ready.</p>'
         + '<ul>' + rows + '</ul>' + view.warnings.map(w => '<p>' + escape(w) + '</p>').join('') : '')
@@ -156,21 +181,36 @@ export const createManagedOAuthMigrationPanel = (deps: {
         || response.candidates.some(c => !isManagedOAuthMigrationCandidate(c))) throw new Error('Selected connections changed');
       const names = new Set(response.candidates.map(c => c.name));
       candidates = [...candidates.filter(c => !names.has(c.name)), ...response.candidates].sort((a, b) => a.name.localeCompare(b.name));
-      const first = chosen()[0]!; phase = 'authorize'; context.enabled = true; context.name = first.name;
+      const first = chosen()[0]!; phase = 'authorize'; context.enabled = target === 'managed_oauth'; context.name = first.name;
       context.expected_updated_at = first.updated_at; context.base_url = first.base_url; context.vendor = first.vendor;
       context.scopes = managedOAuthScopeUnion(...chosen().map(c => c.required_scopes)); auth = undefined;
+      directReview = undefined; source = directSources()[0]?.name ?? '';
       for (const row of chosen()) urls.set(row.name, row.verification_url);
       busy = false; render(); return;
     }
+    if (action === 'review-direct' && target === 'direct_oauth') {
+      if (!directSources().some(c => c.name === source)) return;
+      busy = true; auth = undefined; retireDirect(); renderButtons();
+      const response = await deps.call({ action: 'review_direct_authentication', source_name: source, scopes: nativeScopeNeeds(),
+        selections: chosen().map(c => ({ name: c.name, expected_updated_at: c.updated_at })) });
+      if (disposed || gen !== generation) {
+        if (response.action === 'review_direct_authentication' && isDirectOAuthAuthenticationReview(response)) {
+          void deps.call({ action: 'retire_direct_authentication', auth: response.auth }).catch(() => {});
+        }
+        return;
+      }
+      if (response.action !== 'review_direct_authentication' || !isDirectOAuthAuthenticationReview(response)) throw new Error('Direct OAuth review unavailable');
+      directReview = response; auth = response.auth; busy = false; render(); return;
+    }
     if (action === 'prepare') {
-      if (!auth || !broker.impactFingerprint() || chosen().some(c => !urls.get(c.name)?.trim())) return;
+      if (!auth || !impactFingerprint() || chosen().some(c => !urls.get(c.name)?.trim())) return;
       const id = (deps.id ?? (() => crypto.randomUUID()))();
       // Keep the ID before sending; a lost reply can be reconciled without the credential.
       view = { id, created_at: Date.now(), expires_at: Date.now() + 30 * 60_000, state: 'preparing',
         rows: chosen().map(connection => ({ connection, state: 'pending' })), requested_scopes: [...auth.requested_scopes], warnings: [] };
-      busy = true; context.saving = true; broker.mount(brokerHost); renderButtons();
+      busy = true; context.saving = true; broker.mount(context.enabled ? brokerHost : null); renderButtons();
       try {
-        const response = await deps.call({ action: 'migration_prepare', id, auth, impact_fingerprint: broker.impactFingerprint()!,
+        const response = await deps.call({ action: 'migration_prepare', id, auth, impact_fingerprint: impactFingerprint()!,
           selections: chosen().map(c => ({ name: c.name, expected_updated_at: c.updated_at, verification_url: urls.get(c.name)! })) });
         if (disposed || gen !== generation) return;
         if (response.action !== 'migration_prepare' || response.migration.id !== id) throw new Error('Invalid migration');
@@ -229,6 +269,14 @@ export const createManagedOAuthMigrationPanel = (deps: {
   const input = (event: Event): void => {
     const field = event.target as HTMLInputElement | HTMLSelectElement | null;
     if (!field || !deps.host.contains(field) || busy || view?.state === 'applying') return;
+    if (event.type === 'change' && (field.hasAttribute('data-bulk-target') || field.hasAttribute('data-bulk-source'))) {
+      if (broker.busy()) return;
+      if (field.hasAttribute('data-bulk-target')) {
+        if (!['direct_oauth', 'managed_oauth'].includes(field.value)) return;
+        target = field.value as typeof target; context.enabled = target === 'managed_oauth';
+      } else source = field.value;
+      auth = undefined; retireDirect(); broker.sync(); render(); return;
+    }
     if (field.hasAttribute('data-bulk-group') && event.type === 'change') { group = field.value; selected.clear(); render(); }
     if (field.dataset.bulkSelect && event.type === 'change') {
       if ((field as HTMLInputElement).checked) selected.add(field.dataset.bulkSelect); else selected.delete(field.dataset.bulkSelect);
@@ -239,6 +287,6 @@ export const createManagedOAuthMigrationPanel = (deps: {
   deps.host.addEventListener('click', click); deps.host.addEventListener('change', input); deps.host.addEventListener('input', input);
   return { load, busy: () => busy || broker.busy() || ['preparing', 'applying'].includes(view?.state ?? ''),
     hasDraft: () => phase === 'authorize' || phase === 'select' && selected.size > 0 || broker.hasDraft(),
-    dispose: () => { disposed = true; generation++; if (poll) clearTimeout(poll); broker.dispose();
+    dispose: () => { disposed = true; generation++; retireDirect(); if (poll) clearTimeout(poll); broker.dispose();
       deps.host.removeEventListener('click', click); deps.host.removeEventListener('change', input); deps.host.removeEventListener('input', input); } };
 };

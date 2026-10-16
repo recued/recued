@@ -41,10 +41,12 @@ import {
   type OAuthClientConfigResult,
 } from './accounts-lane-panel.js';
 import type { FoundationalOAuthContinuity } from './foundational-oauth-continuity.js';
+import { accountSetupEnrollment, type AccountSetupContinuity } from './account-setup-continuity.js';
 import {
   connectionsAccountAddress,
-  connectionsAddressSelection,
   connectionsEnrollAddress,
+  connectionsOAuthAppsAddress,
+  connectionsAddressSelection,
   connectionsLaneAddress,
   isConnectionsTabId,
   isFoundationalConnectionsLane,
@@ -124,7 +126,10 @@ import type {
 } from '@recued/contracts';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import { createManagedOAuthPanel, type ManagedOAuthPanelContext } from '../settings/managed-oauth-panel.js';
+import { createReconnectWorklistPanel, RECONNECT_WORKLIST_STYLES } from '../settings/reconnect-worklist-panel.js';
 import { createManagedOAuthMigrationPanel } from '../settings/managed-oauth-migration-panel.js';
+import { createOAuthAppsPanel, OAUTH_APPS_STYLES, type OAuthAppsCaller } from '../settings/oauth-apps-panel.js';
+import { OAUTH_TROUBLESHOOTING_STYLES } from './oauth-troubleshooting.js';
 
 export const CONNECTIONS_ROUTE_GRANTS_SECTION_ATTR =
   'data-recued-connections-route-grants';
@@ -358,6 +363,15 @@ const CONNECTIONS_ROUTE_CHROME_STYLES = `
 }
 [${CONNECTIONS_ROUTE_CONTENT_ATTR}],
 [${CONNECTIONS_ROUTE_ENROLL_HOST_ATTR}] { min-width: 0; }
+.connections-authentication-settings{border-top:1px solid var(--border);padding-top:16px;margin-top:24px;min-width:0}
+.connections-authentication-settings>summary{font-size:14px;font-weight:600;cursor:pointer;padding:8px 0}
+.connections-authentication-settings .oauth-apps h2,.connections-authentication-settings .oauth-apps h3{font-size:16px;margin:0 0 8px}
+.connections-setup-return{border:1px solid var(--border);padding:12px;border-radius:8px;margin-bottom:16px;font-size:13px}
+.connections-setup-return p{margin:0 0 8px}
+.reconnect-worklist-disclosure{font-size:13px;border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin:0 0 16px}
+.reconnect-worklist-disclosure>summary{cursor:pointer;font-weight:600}
+.reconnect-worklist-disclosure .reconnect-worklist{border:0;padding:12px 0 0;margin:0;font-size:13px}
+.reconnect-worklist-disclosure h2,.reconnect-worklist-disclosure h3{font-size:16px}
 [${CONNECTIONS_ROUTE_UNAVAILABLE_ATTR}] {
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -400,6 +414,9 @@ const CONNECTIONS_ROUTE_CHROME_STYLES = `
 `;
 
 export const CONNECTIONS_ROUTE_STYLES = [
+  OAUTH_APPS_STYLES,
+  OAUTH_TROUBLESHOOTING_STYLES,
+  RECONNECT_WORKLIST_STYLES,
   PRIMITIVE_STYLES,
   CONNECTIONS_PAGE_STYLES,
   ACCOUNTS_PANEL_STYLES,
@@ -409,6 +426,12 @@ export const CONNECTIONS_ROUTE_STYLES = [
 ].join('\n');
 
 export interface BootstrapConnectionsRouteOptions {
+  authenticationRepairsCaller?: import('@recued/contracts').AuthenticationRepairCaller;
+  initialManageOAuthApps?: boolean;
+  oauthAppsCaller?: OAuthAppsCaller;
+  reconnectWorklistCaller?: import('../settings/reconnect-worklist-panel.js').PackReconnectCaller;
+  onWorklistReconnect?(group: import('@recued/contracts').PackReconnectGroup): void;
+  initialWorklistReturn?: import('../settings/reconnect-worklist-continuity.js').ReconnectWorklistReturn;
   root: HTMLElement;
   document?: Document;
   /** Preferred complete route selection. Legacy positional fields below stay
@@ -416,6 +439,11 @@ export interface BootstrapConnectionsRouteOptions {
   initialAddress?: ConnectionsAddress;
   /** D-322 §24 — open a fresh saved editor; consent remains owner-triggered. */
   initialConnectionAccessReview?: { name: string };
+  initialFileAuthenticationSwitch?: { name: string };
+  initialPermissionRepair?: import('../settings/reconnect-worklist-continuity.js').ConnectionPermissionRepair;
+  permissionRepairUnavailable?: boolean;
+  permissionRepairPreviewCaller?: import('../settings/packs-panel.js').PacksInstallPreviewCaller;
+  onPermissionRepairReturn?(verified: boolean, collections?: import('../settings/pack-permission-repair.js').PackPermissionRepair['reconnect_collections']): void;
   /** Keeps the shell's same-route comparison baseline aligned after a
    * successful in-page account list/detail History write. */
   onHashSync?: (hash: string) => void;
@@ -423,6 +451,8 @@ export interface BootstrapConnectionsRouteOptions {
    *  bootstrap supplies its hash-source-aware navigator; direct mounts fall
    *  back to the document's location. */
   navigate?: (hash: string) => void;
+  accountSetupContinuity?: AccountSetupContinuity;
+  listCloudFiles?: () => Promise<{ sources: import('@recued/contracts').CloudFileSource[] }>;
   /** Deep-link segment 0 — the active lane tab (`#connections/<tab>`).
    *  Defaults to `mail`. */
   initialTab?: string;
@@ -719,6 +749,11 @@ export const bootstrapConnectionsRoute = (
   }
   routeRoot.appendChild(tabBar);
 
+  // Lane panels replace their own host. Keep the shared worklist above it so
+  // an account refresh cannot remove the repair entry point.
+  const worklistHost = (opts.reconnectWorklistCaller || opts.authenticationRepairsCaller)
+    && !opts.initialPermissionRepair && !opts.permissionRepairUnavailable ? doc.createElement('div') : null;
+  if (worklistHost) routeRoot.appendChild(worklistHost);
   const content = doc.createElement('div');
   content.setAttribute(CONNECTIONS_ROUTE_CONTENT_ATTR, '');
   routeRoot.appendChild(content);
@@ -726,9 +761,31 @@ export const bootstrapConnectionsRoute = (
   let accountsPanel: AccountsLanePanelMount | null = null;
   let connectionsEnroll: ConnectionsEnrollPanelMount | null = null;
   let brokerPanel: ReturnType<typeof createManagedOAuthPanel> | null = null;
+  let oauthAppsPanel: ReturnType<typeof createOAuthAppsPanel> | null = null;
+  let oauthAppsHost: HTMLElement | null = null;
+  let reconnectWorklist: ReturnType<typeof createReconnectWorklistPanel> | null = null;
   let migrationPanel: ReturnType<typeof createManagedOAuthMigrationPanel> | null = null;
   let connectionsGrant: ConnectionsGrantPanelMount | null = null;
   let webhooksPanel: WebhooksPanelMount | null = null;
+  const authenticationSettings = doc.createElement('details');
+  authenticationSettings.className = 'connections-authentication-settings';
+  authenticationSettings.open = opts.initialManageOAuthApps === true;
+  const settingsSummary = doc.createElement('summary'); settingsSummary.textContent = 'Authentication settings';
+  authenticationSettings.appendChild(settingsSummary);
+
+  if (worklistHost) {
+    reconnectWorklist = createReconnectWorklistPanel({ document: doc,
+      ...(opts.reconnectWorklistCaller ? { call: opts.reconnectWorklistCaller } : {}),
+      ...(opts.authenticationRepairsCaller ? { repairs: opts.authenticationRepairsCaller } : {}),
+      ...(opts.onWorklistReconnect ? { onReconnect: opts.onWorklistReconnect } : {}),
+      ...(opts.initialWorklistReturn ? { returned: opts.initialWorklistReturn } : {}),
+    });
+    reconnectWorklist.mount(worklistHost);
+  }
+  const worklistUnsubs = opts.subscribe && reconnectWorklist ? [
+    opts.subscribe('pack_installed', () => { void reconnectWorklist?.refresh(); }),
+    opts.subscribe('pack_uninstalled', () => { void reconnectWorklist?.refresh(); }),
+  ] : [];
 
   const navigate = (hash: string): void => {
     if (opts.navigate !== undefined) {
@@ -762,7 +819,16 @@ export const bootstrapConnectionsRoute = (
       ...(opts.file !== undefined ? { file: opts.file } : {}),
       ...(opts.connectionsEnrollListCaller !== undefined
         ? { listManagedConnections: opts.connectionsEnrollListCaller } : {}),
-      onOpenManagedConnections: () => navigate('#connections/others'),
+      onOpenManagedConnections: (name) => navigate(name ? '#connections/others/review-access/api/' + encodeURIComponent(name) : '#connections/others'),
+      ...(opts.connectionsManagedOAuthCaller ? { runCollectionAuthentication: opts.connectionsManagedOAuthCaller } : {}),
+      ...(opts.listCloudFiles ? { listCloudFiles: opts.listCloudFiles } : {}),
+      ...(opts.accountSetupContinuity ? { setupContinuity: opts.accountSetupContinuity,
+        onSetupHandoff: (destination: 'apps' | 'connection') => {
+          const draft = opts.accountSetupContinuity?.read();
+          navigate(destination === 'apps' ? connectionsOAuthAppsAddress().hash : connectionsEnrollAddress(draft ? accountSetupEnrollment(draft).vendor : undefined).hash);
+        } } : {}),
+      onManageSavedApps: () => navigate(connectionsOAuthAppsAddress().hash),
+      onAuthenticationChanged: () => { void reconnectWorklist?.refresh(); },
       ...(opts.getOAuthClientConfig !== undefined
         ? { getOAuthClientConfig: opts.getOAuthClientConfig }
         : {}),
@@ -832,6 +898,21 @@ export const bootstrapConnectionsRoute = (
       );
     }
   } else {
+    const setup = opts.accountSetupContinuity?.read();
+    if (setup) {
+      const resume = doc.createElement('aside'); resume.className = 'connections-setup-return';
+      const copy = doc.createElement('p'); copy.textContent = `Your ${setup.lane === 'mail' ? 'mailbox' : 'calendar'} setup is waiting. Its name and choices are kept in this tab; credentials are not.`;
+      const back = doc.createElement('button'); back.type = 'button'; back.className = 'rx-btn rx-btn-outline rx-btn-sm';
+      back.textContent = 'Return to ' + (setup.lane === 'mail' ? 'mailbox' : 'calendar') + ' setup';
+      back.setAttribute('data-account-setup-return', ''); back.addEventListener('click', () => navigate(connectionsLaneAddress(setup.lane).hash));
+      resume.appendChild(copy); resume.appendChild(back); content.appendChild(resume);
+    }
+    if (opts.oauthAppsCaller && !opts.initialPermissionRepair && !opts.permissionRepairUnavailable) {
+      oauthAppsHost = doc.createElement('div'); authenticationSettings.appendChild(oauthAppsHost);
+      oauthAppsPanel = createOAuthAppsPanel({ host: oauthAppsHost, call: opts.oauthAppsCaller,
+        changed: () => { void connectionsEnroll?.refresh(); } });
+      if (opts.initialManageOAuthApps) oauthAppsPanel.open();
+    }
     if (opts.connectionsManagedOAuthCaller !== undefined) {
       const section = doc.createElement('section');
       section.className = 'connections-broker-manager';
@@ -892,7 +973,7 @@ export const bootstrapConnectionsRoute = (
         if (context.enabled) editor.querySelector<HTMLElement>('[data-managed-field="profile"], [data-managed-action="add"]')?.focus?.();
       });
       section.appendChild(intro);
-      section.appendChild(button); section.appendChild(editor); content.appendChild(section);
+      section.appendChild(button); section.appendChild(editor); authenticationSettings.appendChild(section);
       const migrate = doc.createElement('button'); migrate.type = 'button'; migrate.className = 'rx-btn rx-btn-outline rx-btn-sm';
       migrate.textContent = 'Bulk authentication migration'; migrate.setAttribute('data-recued-bulk-authentication', '');
       const migrationHost = doc.createElement('div'); migrationHost.hidden = true;
@@ -1023,6 +1104,8 @@ export const bootstrapConnectionsRoute = (
             }
           : {}),
         runMailList: opts.connectionsMailListCaller,
+        ...(opts.getOAuthAppConfig ? { runGetOAuthAppConfig: opts.getOAuthAppConfig } : {}),
+        ...(oauthAppsPanel ? { onManageOAuthApps: () => { authenticationSettings.open = true; oauthAppsPanel?.open(); oauthAppsHost?.scrollIntoView?.({ block: 'start', behavior: 'smooth' }); } } : {}),
         ...(opts.connectionsSuggestSetupCaller !== undefined
           ? { runSuggestSetup: opts.connectionsSuggestSetupCaller }
           : {}),
@@ -1046,9 +1129,16 @@ export const bootstrapConnectionsRoute = (
         ...(initialEnrollVendor !== undefined
           ? { initialVendor: initialEnrollVendor }
           : {}),
+        ...(setup?.destination === 'connection' ? { initialAccountSetup: accountSetupEnrollment(setup) } : {}),
         ...(opts.initialAddress?.kind === 'enroll' && opts.initialAddress.pack !== undefined
           ? { initialPack: opts.initialAddress.pack } : {}),
         ...(opts.initialConnectionAccessReview ? { initialConnectionAccessReview: opts.initialConnectionAccessReview } : {}),
+        ...(opts.initialFileAuthenticationSwitch ? { initialFileAuthenticationSwitch: opts.initialFileAuthenticationSwitch } : {}),
+        ...(opts.initialPermissionRepair ? { initialPermissionRepair: opts.initialPermissionRepair } : {}),
+        ...(opts.permissionRepairUnavailable ? { permissionRepairUnavailable: true } : {}),
+        ...(opts.permissionRepairPreviewCaller ? { runPermissionRepairPreview: opts.permissionRepairPreviewCaller } : {}),
+        ...(opts.reconnectWorklistCaller ? { runPermissionRepairWorklist: opts.reconnectWorklistCaller } : {}),
+        ...(opts.onPermissionRepairReturn ? { onPermissionRepairReturn: opts.onPermissionRepairReturn } : {}),
         ...(opts.initialCredentialRotationServerUpdateRetry !== undefined
           ? {
               initialCredentialRotationServerUpdateRetry:
@@ -1177,6 +1267,7 @@ export const bootstrapConnectionsRoute = (
           opts.connectionsRevokeGroupCaller as ConnectionsRevokeGroupCaller,
       });
     }
+    if (oauthAppsPanel || brokerPanel) content.appendChild(authenticationSettings);
   }
 
   opts.root.appendChild(routeRoot);
@@ -1195,12 +1286,15 @@ export const bootstrapConnectionsRoute = (
   // clipped outside the viewport, leaving the visible Mail tab looking like
   // the current context. Reveal without moving focus or forcing page scroll.
   activeTabLink?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+  if (opts.initialManageOAuthApps) oauthAppsPanel?.open();
 
   let disposed = false;
   const hasInFlightWork = (): boolean =>
     (accountsPanel?.hasInFlightWork() ?? false)
     || (brokerPanel?.busy() ?? false)
+    || (oauthAppsPanel?.busy() ?? false)
     || (migrationPanel?.busy() ?? false)
+    || (reconnectWorklist?.busy() ?? false)
     || (connectionsEnroll?.hasInFlightWork() ?? false)
     || (connectionsGrant?.hasInFlightWork() ?? false)
     || (webhooksPanel?.hasInFlightWork() ?? false);
@@ -1251,11 +1345,11 @@ export const bootstrapConnectionsRoute = (
         }
       : {}),
     hasUnsavedChanges: () =>
-      (brokerPanel?.hasDraft() ?? false) || (migrationPanel?.hasDraft() ?? false) || (connectionsEnroll?.hasUnsavedChanges() ?? false),
+      (accountsPanel?.hasUnsavedChanges() ?? false) || (oauthAppsPanel?.hasDraft() ?? false) || (brokerPanel?.hasDraft() ?? false) || (migrationPanel?.hasDraft() ?? false) || (connectionsEnroll?.hasUnsavedChanges() ?? false),
     unsavedChangesPrompt: () =>
-      brokerPanel?.hasDraft() === true
+      oauthAppsPanel?.hasDraft() === true ? 'Discard this OAuth app draft? The secret is held only in this editor.' : brokerPanel?.hasDraft() === true
         ? 'Discard this OAuth broker setup? Credential fields are not saved in your browser and cannot be restored after leaving.'
-        : connectionsEnroll?.unsavedChangesPrompt() ?? null,
+        : accountsPanel?.hasUnsavedChanges() ? 'Discard this account setup or replacement password? Credentials entered here cannot be restored.' : connectionsEnroll?.unsavedChangesPrompt() ?? null,
     hasInFlightWork,
     inFlightWorkPrompt: () =>
       hasInFlightWork()
@@ -1267,6 +1361,9 @@ export const bootstrapConnectionsRoute = (
       if (accountsPanel !== null) accountsPanel.dispose();
       if (connectionsEnroll !== null) connectionsEnroll.dispose();
       brokerPanel?.dispose();
+      oauthAppsPanel?.dispose();
+      reconnectWorklist?.dispose();
+      for (const unsubscribe of worklistUnsubs) unsubscribe();
       migrationPanel?.dispose();
       if (webhooksPanel !== null) webhooksPanel.dispose();
       try {

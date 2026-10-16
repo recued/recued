@@ -52,6 +52,7 @@ export interface ApprovalLinkRenderInput {
   readonly display_name: string;
   /** The closed-list action_kind — drives the per-kind form body. */
   readonly completion?: boolean;
+  readonly quote?: boolean;
   readonly action_kind: ApprovalLinkActionKind;
   /** Visitor-facing prompt (htmlEscape'd at emit time). */
   readonly prompt: string;
@@ -145,7 +146,7 @@ const renderConfirmAttendanceBody = (): string =>
 </label>
 </fieldset>`;
 
-const renderApproveWordingBody = (completion = false): string =>
+const renderApproveWordingBody = (completion = false,quote = false): string =>
   completion ? `<div class="rcp-field">
 <label for="rcp-comment">Corrections (required when requesting changes)</label>
 <textarea id="rcp-comment" name="comment" rows="4" maxlength="${APPROVAL_LINK_VISITOR_COMMENT_MAX}" required></textarea>
@@ -156,15 +157,15 @@ const renderApproveWordingBody = (completion = false): string =>
 <legend class="rcp-legend">Your decision</legend>
 <label class="rcp-option">
 <input type="radio" name="decision" value="approve" required>
-<span class="rcp-option-label">Approve</span>
+<span class="rcp-option-label">${quote ? 'Accept this quote' : 'Approve'}</span>
 </label>
 <label class="rcp-option">
 <input type="radio" name="decision" value="reject" required>
-<span class="rcp-option-label">Suggest changes</span>
+<span class="rcp-option-label">${quote ? 'Decline this quote' : 'Suggest changes'}</span>
 </label>
 </fieldset>
 <div class="rcp-field">
-<label for="rcp-comment">Comments (optional)</label>
+<label for="rcp-comment">${quote ? 'Reason or proposed changes (optional)' : 'Comments (optional)'}</label>
 <textarea id="rcp-comment" name="comment" rows="4" maxlength="${APPROVAL_LINK_VISITOR_COMMENT_MAX}"></textarea>
 </div>`;
 
@@ -184,7 +185,7 @@ const renderUploadDocBody = (): string =>
 const renderActionBody = (
   action_kind: ApprovalLinkActionKind,
   options: ReadonlyArray<ApprovalLinkOption> | undefined,
-  completion = false,
+  completion = false,quote = false,
 ): string => {
   switch (action_kind) {
     case 'pick_time':
@@ -192,7 +193,7 @@ const renderActionBody = (
     case 'confirm_attendance':
       return renderConfirmAttendanceBody();
     case 'approve_wording':
-      return renderApproveWordingBody(completion);
+      return renderApproveWordingBody(completion,quote);
     case 'answer_question':
       return renderAnswerQuestionBody();
     case 'upload_doc':
@@ -210,7 +211,7 @@ const renderVisitorIdentityFields = (
   const requiredAttr = (req: 'required' | 'optional'): string =>
     req === 'required' ? ' required' : '';
   const mark = (req: 'required' | 'optional'): string =>
-    req === 'required' ? ' <span class="rcp-required">*</span>' : '';
+    req === 'required' ? ' <span class="rcp-required">*</span>' : ' (optional)';
   const emailValue = constraints.require_email_match
     ? ` value="${htmlEscape(constraints.require_email_match)}" readonly`
     : '';
@@ -272,7 +273,7 @@ ${renderFooter()}
 };
 
 export const renderApprovalLinkHtml = (input: ApprovalLinkRenderInput): string => {
-  const body = renderActionBody(input.action_kind, input.options, input.completion);
+  const body = renderActionBody(input.action_kind, input.options, input.completion,input.quote);
   const identityFields = renderVisitorIdentityFields(input.visitor_field_constraints);
   return `${renderHead(`Response requested — ${input.display_name}`)}
 <body>
@@ -307,6 +308,7 @@ ${renderFooter(input.trust_footer ?? null)}
 export const renderApprovalLinkSuccessHtml = (input: {
   display_name: string;
   success_message: string;
+  response_summary?: {reference: string;decision: string};
   /** D-149 § A.20.3 — pre-built Visitor Receipt from
    *  `resolveVisitorReceipt` (`null` ⇒ per-endpoint receipts disabled,
    *  no receipt block). */
@@ -319,6 +321,7 @@ export const renderApprovalLinkSuccessHtml = (input: {
 <div class="rcp-header">
 <div>
 <h1 class="rcp-name">Response received</h1>
+${input.response_summary ? `<p class="rcp-context">${htmlEscape(input.response_summary.reference)}<br><strong>${htmlEscape(input.response_summary.decision)}</strong></p>` : ''}
 <p class="rcp-tagline">${htmlEscape(input.success_message)}</p>
 </div>
 </div>

@@ -1,0 +1,48 @@
+{
+  "recipe_id": "reception-customer-invoice-credit",
+  "version": 1,
+  "chat_exposed": false,
+  "ttl": 0,
+  "metadata": {
+    "name": "Issue an invoice credit",
+    "description": "Use “Issue an invoice credit” in Recued. Reduce an invoice’s unpaid balance after owner review. Keep the original bill and payments, save the reason, and print a customer copy.",
+    "author": "recued-core",
+    "supported_platforms": [],
+    "recipe_bundle": "recued-core/reception-approval",
+    "tags": [
+      "pack:reception",
+      "payments"
+    ],
+    "budget_ms": 30000
+  },
+  "variables": {
+    "credit_id": {
+      "label": "Saved credit",
+      "type": "string"
+    },
+    "expected_plan_hash": {
+      "label": "Reviewed credit digest",
+      "type": "string"
+    },
+    "summary": {
+      "label": "Credit and balance change",
+      "type": "string"
+    }
+  },
+  "steps": [
+    {
+      "id": "credit",
+      "op": "core.work-entity.customer-invoice.credit",
+      "args": {
+        "credit_id": "{{config.credit_id}}",
+        "expected_plan_hash": "{{config.expected_plan_hash}}",
+        "summary": "{{config.summary}}"
+      }
+    }
+  ],
+  "output": {
+    "render": []
+  },
+  "prefetch_steps": [],
+  "requires": []
+}

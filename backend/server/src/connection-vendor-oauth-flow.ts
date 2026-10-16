@@ -106,6 +106,8 @@ const claimSecretsMatch = (stored: string, submitted: string): boolean => {
  *  code-exchange (`completeVendorOAuth`) needs — no access/refresh
  *  token ever lives here. */
 export interface VendorOAuthFlowRecord {
+  oauth_app_id?: string;
+  oauth_app_issuer?: import('@recued/contracts').OAuthAppIssuer;
   flow_id: string;
   vendor: string;
   client_id: string;

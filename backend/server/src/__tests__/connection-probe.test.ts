@@ -524,7 +524,7 @@ describe('handleConnectionProbe real health probes', () => {
     expect(apiFetch).not.toHaveBeenCalled();
   });
 
-  it('falls back from api HEAD to GET and treats other HTTP statuses as reachable', async () => {
+  it('falls back from api HEAD to GET without claiming usable access for an HTTP error', async () => {
     const name = await enroll('api');
     const fetcher = vi.fn<HttpFetcher>(async (_url, init) => (
       init?.method === 'HEAD' ? jsonResponse(405) : jsonResponse(500)
@@ -533,7 +533,7 @@ describe('handleConnectionProbe real health probes', () => {
     const health = await probe('api', name, fetcher);
 
     expect(fetcher).toHaveBeenCalledTimes(2);
-    expect(health.status).toBe('ok');
+    expect(health.status).toBe('unknown');
     expect(health.last_error).toBe('http_status_500');
   });
 

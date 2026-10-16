@@ -138,8 +138,8 @@ const trustStateForRow = (
 /** R25 — the inline Run-policy segmented control. Three radios styled
  *  as a segmented toggle; each writes `trust_state` through the same
  *  `housekeeping-trust-state-pick` action the drawer used, so the D-132
- *  substrate + host handler are untouched. Disabled while a write for
- *  the topic is in flight. */
+ *  substrate is unchanged. Pending writes keep the radios focusable;
+ *  the host blocks activation while aria-disabled is set. */
 const renderRunPolicyControl = (
   topic: string,
   selected: EnrichmentTrustState,
@@ -149,6 +149,7 @@ const renderRunPolicyControl = (
     class="housekeeping-producer-runpolicy"
     data-topic="${e(topic)}"
     aria-label="Run policy for ${e(topic)}"
+    ${writing ? 'aria-busy="true"' : ''}
   >
     ${ALL_ENRICHMENT_TRUST_STATES.map((value) => `
       <label class="housekeeping-producer-runpolicy-seg" data-active="${selected === value ? 'true' : 'false'}">
@@ -160,7 +161,7 @@ const renderRunPolicyControl = (
           data-topic="${e(topic)}"
           data-trust-state="${e(value)}"
           ${selected === value ? 'checked' : ''}
-          ${writing ? 'disabled' : ''}
+          ${writing ? 'aria-disabled="true"' : ''}
         />
         <span>${e(TRUST_LABELS_SHORT[value])}</span>
       </label>

@@ -177,7 +177,7 @@ export interface CalendarAdapterBundle {
   /** OAuth config resolver for the enroll rpc path. Each adapter
    *  that needs OAuth (gcal/graph) reads this; return null to
    *  surface `not_configured` on the rpc. */
-  oauthConfig?: (adapter: 'gcal' | 'graph') => import('../mail/oauth.js').OAuthProviderConfig | null;
+  oauthConfig?: (adapter: 'gcal' | 'graph', appId?: string) => import('../mail/oauth.js').OAuthProviderConfig | null;
   /** OAuth / account store shared with mail. When absent the enroll
    *  rpc surfaces `not_configured`. */
   accountStore?: OAuthAccountStore;
@@ -211,6 +211,8 @@ export const composeCalendarStack = (
   }
 
   const live = new Map<string, CalendarCollection>();
+  const starts = new Map<string, Promise<void>>();
+  const authenticationPaused = new Set<string>();
   let closed = false;
   let disposePromise: Promise<void> | null = null;
 
@@ -240,7 +242,7 @@ export const composeCalendarStack = (
     };
   };
 
-  const startLive = async (row: CollectionInstanceRecord): Promise<void> => {
+  const runStartLive = async (row: CollectionInstanceRecord, firstSync: 'wait' | 'background'): Promise<void> => {
     if (closed) return;
     if (live.has(row.slug)) return;
     const factory = adapters.get(row.adapter_type);
@@ -327,16 +329,25 @@ export const composeCalendarStack = (
       return;
     }
 
-    try {
-      await collection.sync.start();
-    } catch (err) {
+    const syncing = collection.sync.start().catch((err: unknown) => {
       log('warn', `calendar-stack: sync.start failed for '${row.slug}'`, {
         err: err instanceof Error ? err.message : String(err),
       });
       // The collection still lives in the map — its dispatcher reads
       // continue to work against the warehouse, and a future resync
       // can restart the sync loop.
-    }
+    });
+    // D-322 §44 — authentication RPCs return after registration. The collection
+    // owns the scan promise and drains it on stop/close before any later change.
+    if (firstSync === 'wait') await syncing;
+  };
+
+  const startLive = (row: CollectionInstanceRecord, firstSync: 'wait' | 'background' = 'wait'): Promise<void> => {
+    if (closed || authenticationPaused.has(row.slug)) return Promise.resolve();
+    const existing = starts.get(row.slug); if (existing) return existing;
+    let task: Promise<void>;
+    task = runStartLive(row, firstSync).finally(() => { if (starts.get(row.slug) === task) starts.delete(row.slug); });
+    starts.set(row.slug, task); return task;
   };
 
   const stopLive = async (slug: string, failOnError = false): Promise<void> => {
@@ -415,6 +426,13 @@ export const composeCalendarStack = (
       if (full) await startLive(full);
     },
     onDeleted: (slug) => stopLive(slug),
+    authenticationChange: {
+      running: (slug) => live.has(slug),
+      async stop(slug) { authenticationPaused.add(slug); await starts.get(slug); await stopLive(slug, true); },
+      async restart(slug) { authenticationPaused.delete(slug); const row = instances.get('calendar', slug);
+        if (!row || closed) throw new Error('Calendar collection is unavailable.');
+        await startLive(row, 'background'); if (!live.has(slug)) throw new Error('Calendar collection did not restart.'); },
+    },
   };
 
   const startAll = async (): Promise<void> => {
@@ -431,10 +449,10 @@ export const composeCalendarStack = (
   const disposeAll = (): Promise<void> => {
     if (disposePromise) return disposePromise;
     closed = true;
-    disposePromise = syncController.dispose().then(async () => {
+    disposePromise = Promise.allSettled([syncController.dispose(), ...starts.values()]).then(async (preStopResults) => {
       const stops = [...live.keys()].map((slug) => stopLive(slug, true));
       const results = await Promise.allSettled(stops);
-      const failures = results
+      const failures = [...preStopResults, ...results]
         .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
         .map((result) => result.reason);
       if (failures.length > 0) {

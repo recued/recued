@@ -128,6 +128,14 @@ const conditionalTopLevelKeys = [
 ] as const;
 
 const alwaysKernelKeys = [
+  // The service is resolved per call; an absent service raises not_configured.
+  'customerAccountPaymentApply',
+  'customerAccountPaymentCorrect',
+  'customerPaymentCorrect',
+  'customerCreditCorrect',
+  'customerRefundApply',
+  'customerRefundCorrect',
+  'customerInvoiceCredit',
   'preapprovalRequest',
   'mailDraft',
   // D-264 — wired unconditionally for the same reason `mailDraft` is: the
@@ -154,6 +162,10 @@ const alwaysKernelKeys = [
   'icsRead',
   'filePersist',
   'filePutRef',
+  // D-318 follow-up 11 — the owner's folders, and a save into one: wired with
+  // filePutRef, whose file stack and gated read they share.
+  'fileFolders',
+  'fileSaveToFolder',
   // D-274 — the READ sibling of filePersist, always wired for the same
   // reason: it reads a temp ref the caller's own run already produced, so
   // there is no capability to gate the wiring on.

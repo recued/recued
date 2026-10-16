@@ -1,3 +1,4 @@
+import { collectionOAuthBinding } from './collection-oauth-sources.js';
 /** D-322 §22 — local broker-account usage, with the existing connection-health expiry. */
 import { effectiveConnectionHealth, type ConnectionRow,
   type ManagedOAuthConnectionUse, type ManagedOAuthConnectionUsage, type SourceRegistration } from '@recued/contracts';
@@ -16,7 +17,7 @@ export const managedOAuthConnectionUses = (name: string, input: {
   }));
   for (const row of input.instances) {
     if (row.platform !== 'mail' && row.platform !== 'calendar') continue;
-    const binding = row.config.managed_oauth;
+    const binding = collectionOAuthBinding(row.config);
     if (binding === null || typeof binding !== 'object' || Array.isArray(binding)
       || (binding as Record<string, unknown>).connection_name !== name) continue;
     uses.push({ kind: row.platform, id: row.slug, label: row.slug });

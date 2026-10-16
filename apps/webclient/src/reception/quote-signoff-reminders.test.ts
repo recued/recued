@@ -14,6 +14,7 @@ class Node {
   appendChild(node: Node) { node.parent = this; this.children.push(node); return node; }
   replaceChildren() { this.children.forEach(node => { node.parent = null; }); this.children = []; }
   setAttribute(key: string, value: string) { this.attrs.set(key, value); }
+  getAttribute(key: string) { return this.attrs.get(key) ?? null; }
   addEventListener(name: string, callback: (event: { preventDefault(): void }) => void) { this.listeners.set(name, [...(this.listeners.get(name) ?? []), callback]); }
   fire(name: string) { this.listeners.get(name)?.forEach(callback => callback({ preventDefault() {} })); }
   click() { if (!this.disabled) this.fire('click'); }

@@ -84,6 +84,8 @@ export const OP_ENTITIES = [
   'mail', 'calendar', 'contact', 'file', 'shared', 'memory', 'audit',
   'enrichment', 'work', 'form_response', 'webhook', 'peer', 'seller',
   'notification', 'recall',
+  // D-324 — the owner's reminders, their own store.
+  'reminder',
   // capabilities with no stored entity behind them
   'ai', 'browser', 'schedule', 'watch',
   // ⚠ NO KERNEL OP CARRIES THESE TWO — they exist for the Tier-1 chat primitives
@@ -159,6 +161,7 @@ export const OP_ENTITY_LABEL: Readonly<Record<OpEntity, string>> = {
   peer: 'Peers',
   seller: 'Selling',
   notification: 'Notifications',
+  reminder: 'Reminders',
   crm: 'CRM records',
   recipe: 'Recipes',
   ai: 'AI models',
@@ -433,6 +436,29 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   // D-261: an inert owner-directed request, with the same no-double-ask risk
   // classification as notification.send. No approve/set-approved entry exists.
   op('core.preapproval.request', 'preapproval', 'preapproval-request', 'read', 'notification'),
+  /** D-324 — the owner's reminders: "tell me at T", rung once by the server's
+   *  minute service, then kept 30 days as history.
+   *
+   *  ⛔⛔ `create` IS `read`, AS `core.notification.send` IS, AND FOR ITS REASON
+   *  (D-324 P6). Its only effect is a notification to the owner, later; a
+   *  recipe running on its own can already send one now without asking, and
+   *  asking first would be the notification about a notification that reason
+   *  rules out. `REMINDER_PENDING_MAX` bounds a runaway recipe instead.
+   *
+   *  ⚠ `update` AND `cancel` ARE `write`: they change what the owner asked for.
+   *  In the owner's own chat (and the D-318 mailbox, whose turn runs as the
+   *  owner) a write admits without asking, so they cost nothing there; a recipe
+   *  running on its own, or a door, asks before it moves or withdraws one.
+   *
+   *  ⚠ `create` IS A NOTIFICATION, THE REST ARE NOT. Setting one rings the
+   *  owner later, so it groups under Notifications and a recipe calling it
+   *  declares `notification_send` (`notification-send-is-declared.ratchet`).
+   *  Listing, moving or withdrawing one rings nobody, so they group under
+   *  Reminders and ask for no notification permission. */
+  op('core.reminder.create', 'reminder', 'reminder-create', 'read', 'notification'),
+  op('core.reminder.list', 'reminder', 'reminder-list', 'read', 'reminder'),
+  op('core.reminder.update', 'reminder', 'reminder-update', 'write', 'reminder'),
+  op('core.reminder.cancel', 'reminder', 'reminder-cancel', 'write', 'reminder'),
   op('core.mail.draft.create', 'mail', 'mail-draft-create', 'write', 'mail'),
   op('core.mail.draft.read', 'mail', 'mail-draft-read', 'read', 'mail'),
   op('core.mail.draft.update', 'mail', 'mail-draft-update', 'write', 'mail'),
@@ -482,11 +508,34 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   op('core.work-entity.note.delete', 'work-entity', 'note-delete', 'destructive', 'work'),
   op('core.work-entity.task.create', 'work-entity', 'task-create', 'write', 'work'),
   op('core.work-entity.approval-workflow.continue', 'work-entity', 'approval-workflow-continue', 'write', 'recipe'),
+  op('core.work-entity.customer-invoice.credit', 'work-entity', 'customer-invoice-credit', 'destructive', 'work'),
+  op('core.work-entity.customer-refund.apply', 'work-entity', 'customer-refund-apply', 'destructive', 'work'),
+  op('core.work-entity.customer-refund.correct', 'work-entity', 'customer-refund-correct', 'destructive', 'work'),
+  op('core.work-entity.customer-invoice.credit.correct', 'work-entity', 'customer-invoice-credit-correct', 'destructive', 'work'),
+  op('core.work-entity.customer-account-payment.correct', 'work-entity', 'customer-account-payment-correct', 'destructive', 'work'),
+  op('core.work-entity.customer-account-payment.apply', 'work-entity', 'customer-account-payment-apply', 'destructive', 'work'),
+  op('core.work-entity.customer-payment.correct', 'work-entity', 'customer-payment-correct', 'destructive', 'work'),
   op('core.work-entity.quote-completion.review', 'work-entity', 'quote-completion-review', 'write', 'work'),
   op('core.work-entity.quote-signoff.release', 'work-entity', 'quote-signoff-release', 'write', 'work'),
   op('core.work-entity.task.update', 'work-entity', 'task-update', 'write', 'work'),
   op('core.work-entity.task.delete', 'work-entity', 'task-delete', 'destructive', 'work'),
   op('core.work-entity.task.mark-done', 'work-entity', 'task-mark-done', 'write', 'work'),
+  /** D-315 slice 7 — a Recued reminder (D-193) was delivered: it stops being
+   *  due. Moves ONE task from `reminder_pending` to `reminder_fired`, and only a
+   *  reminder Recued keeps itself (no vendor's task), and nothing else of it.
+   *
+   *  ⛔⛔ `read`, AS `core.notification.send` IS, AND FOR ITS REASON. The
+   *  delivery notifier runs unattended, so it takes the `read` ceiling, and a
+   *  `write` there holds for the owner. The owner was then asked, after the
+   *  reminder had reached them, whether it may stop — a notification about a
+   *  notification — and until they answered, the reminder stayed due and the
+   *  next minute's check sent it AGAIN and asked again (driven on the composed
+   *  server, 2026-10-15: one reminder, two sends, two asks in two checks). A
+   *  prompt that costs what it protects trains the owner to approve unread.
+   *  Tier by the damage: the worst this op can do is end a reminder's repeats
+   *  early. ⇒ If it ever touches another field, another state or another
+   *  task, it stops being `read`. */
+  op('core.work-entity.task.mark-reminder-fired', 'work-entity', 'task-mark-reminder-fired', 'read', 'work'),
   op('core.work-entity.commitment.create', 'work-entity', 'commitment-create', 'write', 'work'),
   // D-192 F1 — the review-then-approve PROPOSAL surface: same mint effect as
   // commitment.create, but `commitment-propose` is in
@@ -739,6 +788,17 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
    *  (`file-write { body_b64 }`, so a large file round-trips through step state).
    *  A stable NAME or memory-safe BYTES — this is what makes it both. */
   op('core.storage.file.put-ref', 'storage', 'file-put-ref', 'write', 'file'),
+  /** D-318 follow-up 11 — the owner's connected folders, as chat reads them to
+   *  find "my Receipts folder": each one, whether a file can be saved into it
+   *  now, and the folders inside it that hold files. */
+  op('core.storage.file.folders', 'storage', 'file-folders', 'read', 'file'),
+  /** D-318 follow-up 11 — a stored file (an emailed attachment, by its record
+   *  id) saved into the folder the owner names: a connected folder, a folder
+   *  inside one, or a path from one. ⛔ Its own op rather than a flag on
+   *  `put-ref`, which writes in place: a server without it refuses the step,
+   *  where one that ignored a "don't overwrite" flag would replace the owner's
+   *  file. A taken name gets a number. */
+  op('core.storage.file.save-to-folder', 'storage', 'file-save-to-folder', 'write', 'file'),
   // D-200 Slice 3 — strict deterministic Markdown substitution from one
   // durable template file ref to one run-scoped temp file ref.
   op(

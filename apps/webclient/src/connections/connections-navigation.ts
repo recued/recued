@@ -7,6 +7,7 @@ import {
 } from '../shell/hierarchical-navigation.js';
 import { CONNECTION_NAME_REGEX } from '@recued/contracts';
 import type { ShellRoute } from '../shell/route.js';
+import { PACK_PERMISSION_REPAIR_ID } from '../settings/pack-permission-repair.js';
 
 export const CONNECTIONS_TAB_IDS = [
   'mail',
@@ -98,10 +99,37 @@ export const connectionsReviewAccessAddress = (name: string): HierarchicalAddres
   hierarchicalLevel('connections-review:' + name, name),
 );
 
+export const connectionsOAuthAppsAddress = (): HierarchicalAddress => hierarchicalAddress(
+  'connections', hierarchicalLevel('connections-lane:others', 'others'), hierarchicalLevel('connections-flow:oauth-apps', 'oauth-apps'),
+);
+export const parseConnectionsOAuthApps = (segments: readonly string[]): boolean =>
+  segments.length === 2 && segments[0] === 'others' && segments[1] === 'oauth-apps';
+
 export const parseConnectionsReviewAccess = (segments: readonly string[]): { name: string } | null =>
   segments.length === 4 && segments[0] === 'others' && segments[1] === 'review-access'
   && segments[2] === 'api' && CONNECTION_NAME_REGEX.test(segments[3] ?? '')
     ? { name: segments[3]! } : null;
+
+export const connectionsFileAuthenticationAddress = (name: string): HierarchicalAddress => hierarchicalAddress(
+  'connections', hierarchicalLevel('connections-lane:others', 'others'),
+  hierarchicalLevel('connections-flow:switch-file-authentication', 'switch-file-authentication'),
+  hierarchicalLevel('connections-kind:api', 'api'), hierarchicalLevel('connections-file-auth:' + name, name),
+);
+export const parseConnectionsFileAuthentication = (segments: readonly string[]): { name: string } | null =>
+  segments.length === 4 && segments[0] === 'others' && segments[1] === 'switch-file-authentication'
+    && segments[2] === 'api' && CONNECTION_NAME_REGEX.test(segments[3] ?? '') ? { name: segments[3]! } : null;
+
+export const connectionsPermissionRepairAddress = (name: string, id: string): HierarchicalAddress => hierarchicalAddress(
+  'connections', hierarchicalLevel('connections-lane:others', 'others'),
+  hierarchicalLevel('connections-flow:repair-pack-permissions', 'repair-pack-permissions'),
+  hierarchicalLevel('connections-kind:api', 'api'),
+  hierarchicalLevel('connections-repair:' + name, name),
+  hierarchicalLevel('connections-repair-context:' + id, id),
+);
+export const parseConnectionsPermissionRepair = (segments: readonly string[]): { name: string; id: string } | null =>
+  segments.length === 5 && segments[0] === 'others' && segments[1] === 'repair-pack-permissions'
+    && segments[2] === 'api' && CONNECTION_NAME_REGEX.test(segments[3] ?? '') && PACK_PERMISSION_REPAIR_ID.test(segments[4] ?? '')
+    ? { name: segments[3]!, id: segments[4]! } : null;
 
 /** Parse only durable workspace places. One-shot recovery/credential tails are
  * deliberately left to their authority-specific parsers and resolve to the

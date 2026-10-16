@@ -74,6 +74,8 @@ export const WEBHOOKS_PANEL_REBIND_ATTR = 'data-recued-webhooks-connection-rebin
 export const WEBHOOKS_PANEL_STYLES = `
 [${WEBHOOKS_PANEL_ATTR}] { display: grid; gap: 14px; }
 [${WEBHOOKS_PANEL_ATTR}] .wh-head { display:flex; gap:12px; align-items:center; justify-content:space-between; }
+[${WEBHOOKS_PANEL_ATTR}] .wh-head>button {flex:none;white-space:nowrap}
+@media(max-width:600px){[${WEBHOOKS_PANEL_ATTR}] .wh-head{align-items:flex-start;flex-direction:column}}
 [${WEBHOOKS_PANEL_ATTR}] .wh-head h2 { margin:0; font-size:18px; }
 [${WEBHOOKS_PANEL_ATTR}] .wh-copy { margin:3px 0 0; color:var(--muted); font-size:13px; line-height:1.45; }
 [${WEBHOOKS_PANEL_ATTR}] .wh-actions { display:flex; flex-wrap:wrap; gap:8px; }
@@ -241,6 +243,9 @@ const button = (
   value.type = 'button';
   value.textContent = label;
   value.setAttribute(WEBHOOKS_PANEL_ACTION_ATTR, action);
+  // Safari does not focus buttons on pointer activation. Establish the action
+  // owner before a read or write repaints the card.
+  value.addEventListener('click', () => { if (!value.disabled) value.focus?.({ preventScroll: true }); });
   if (primary) value.className = 'wh-primary';
   return value;
 };
@@ -351,6 +356,8 @@ export const mountWebhooksPanel = (
   let showCreate = false;
   let credentialIngressId: string | null = null;
   let ingresses: WebhookIngressView[] = [];
+  const expandedConfigurations = new Set<string>();
+  let filterQuery = ''; let filterStatus = '';
   let profileCapabilities: WebhookProfileRuntimeCapabilityView[] = [];
   let error: string | null = null;
   let oneTime: {
@@ -1522,9 +1529,21 @@ export const mountWebhooksPanel = (
     head.appendChild(title);
     const pill = doc.createElement('span');
     pill.className = 'wh-pill';
-    pill.textContent = `${ingress.registration_state} · ${ingress.intake_state}`;
+    pill.textContent = `${ingress.registration_state.replaceAll('_', ' ')} · ${ingress.intake_state.replaceAll('_', ' ')}`;
     head.appendChild(pill);
     card.appendChild(head);
+
+    const status = doc.createElement('p'); status.className = 'wh-copy';
+    status.textContent = `${ingress.environment} · ${ingress.health.status.replaceAll('_', ' ')} · Last delivery: ${ingress.health.last_delivery_at === null ? 'none' : new Date(ingress.health.last_delivery_at).toLocaleString()}`;
+    card.appendChild(status);
+    const configuration = doc.createElement('details');
+    configuration.open = expandedConfigurations.has(ingress.ingress_id) || ingress.registration_state === 'manual_pending';
+    configuration.addEventListener('toggle', () => {
+      if (!configuration.isConnected) return;
+      if (configuration.open) expandedConfigurations.add(ingress.ingress_id); else expandedConfigurations.delete(ingress.ingress_id);
+    });
+    const configurationSummary = doc.createElement('summary'); configurationSummary.textContent = 'Configuration and delivery rules';
+    configuration.appendChild(configurationSummary);
 
     const detail = doc.createElement('dl');
     const row = (label: string, value: string): HTMLElement => {
@@ -1573,12 +1592,12 @@ export const mountWebhooksPanel = (
       .map((version) => `v${version.version} (${version.last_verified_at === null
         ? 'not checked yet'
         : 'verified'})`).join(', ') || 'None');
-    card.appendChild(detail);
+    configuration.appendChild(detail);
 
     const endpoint = doc.createElement('code');
     endpoint.setAttribute(WEBHOOKS_PANEL_ENDPOINT_ATTR, '');
     endpoint.textContent = ingress.endpoint_url ?? 'No public https address yet';
-    card.appendChild(endpoint);
+    configuration.appendChild(endpoint); card.appendChild(configuration);
 
     if (oneTime?.ingress_id === ingress.ingress_id) {
       const callout = doc.createElement('div');
@@ -2083,6 +2102,9 @@ export const mountWebhooksPanel = (
 
   const render = (): void => {
     if (disposed) return;
+    const active = doc.activeElement as HTMLInputElement | null;
+    const focusedFilter = active?.dataset?.webhookFilter;
+    const caret = active?.selectionStart;
     clear(root);
     const head = doc.createElement('div');
     head.className = 'wh-head';
@@ -2110,6 +2132,17 @@ export const mountWebhooksPanel = (
     });
     head.appendChild(newButton);
     root.appendChild(head);
+    if (ingresses.length) {
+      const filters = doc.createElement('div'); filters.className = 'wh-filters';
+      const searchLabel = doc.createElement('label'); searchLabel.textContent = 'Search webhooks';
+      const search = doc.createElement('input'); search.type = 'search'; search.value = filterQuery; search.setAttribute('data-webhook-filter', 'query');
+      search.addEventListener('input', () => { filterQuery = search.value; render(); }); searchLabel.appendChild(search); filters.appendChild(searchLabel);
+      const statusLabel = doc.createElement('label'); statusLabel.textContent = 'Status'; const status = doc.createElement('select'); status.setAttribute('data-webhook-filter', 'status');
+      for (const [value, label] of [['', 'All statuses'], ['enabled', 'Enabled'], ['attention', 'Needs attention'], ['disabled', 'Disabled']]) {
+        const option = doc.createElement('option'); option.value = value!; option.textContent = label!; option.selected = value === filterStatus; status.appendChild(option);
+      }
+      status.addEventListener('change', () => { filterStatus = status.value; render(); }); statusLabel.appendChild(status); filters.appendChild(statusLabel); root.appendChild(filters);
+    }
     if (error) {
       const errorNode = doc.createElement('div');
       errorNode.setAttribute(WEBHOOKS_PANEL_ERROR_ATTR, '');
@@ -2123,8 +2156,15 @@ export const mountWebhooksPanel = (
       empty.textContent = busy ? 'Loading webhooks…' : 'No webhooks coming in yet.';
       root.appendChild(empty);
     }
-    for (const ingress of ingresses) root.appendChild(ingressCard(ingress));
+    const visible = ingresses.filter(ingress => (!filterQuery || [ingress.display_name, ingress.profile_id, ingress.environment].join(' ').toLowerCase().includes(filterQuery.toLowerCase()))
+      && (!filterStatus || (filterStatus === 'attention' ? ingress.health.status !== 'healthy' || ingress.readiness.blockers.length > 0 : ingress.intake_state === filterStatus)));
+    for (const ingress of visible) root.appendChild(ingressCard(ingress));
+    if (ingresses.length && !visible.length) { const empty = doc.createElement('p'); empty.textContent = 'No webhooks match these filters.'; empty.setAttribute('role', 'status'); root.appendChild(empty); }
     restoreActionFocus();
+    if (focusedFilter) {
+      const field = root.querySelector<HTMLInputElement>(`[data-webhook-filter="${focusedFilter}"]`); field?.focus({ preventScroll: true });
+      if (focusedFilter === 'query' && typeof caret === 'number') field?.setSelectionRange(caret, caret);
+    }
   };
 
   const refresh = (): Promise<void> => {

@@ -54,6 +54,17 @@ import { readConfinedTempFile } from '../../execution/run-scratch.js';
 import { isTempFileRef } from '@recued/contracts';
 import { effectiveCaps, hasCap } from './caps.js';
 import {
+  FILE_FOLDERS_SCAN_MAX,
+  FILE_SAVE_NAME_TRIES,
+  folderRefusal,
+  folderWords,
+  numberedName,
+  resolveFolder,
+  safeFileName,
+  subfoldersOf,
+  type FileFolderView,
+} from './folder-save.js';
+import {
   isFileAdapterError,
   type FileAdapterError,
   type FileAdapterErrorCode,
@@ -303,6 +314,110 @@ export const handleFilePutRef = async (
     adapter.writeRecord(input.path, body, input.mime ?? source.mime_type),
   );
   return { ok: true, bytes_written: body.length, slug: input.slug, path: input.path };
+};
+
+/** D-318 follow-up 11 — what the folder ops read beyond the instances. */
+export interface FileFolderDeps extends FileDispatcherDeps {
+  /** Paths, from its root, of files a connected folder holds inside its
+   *  folders — at most `max`. */
+  filePaths: (slug: string, max: number) => readonly string[];
+}
+
+/** D-318 follow-up 11 — `file-folders`: the owner's connected folders, each with
+ *  whether a file can be saved into it now and the folders inside it that hold
+ *  files (`folder-save.ts`). */
+export const handleFileFolders = (deps: FileFolderDeps): { folders: FileFolderView[] } => ({
+  folders: deps.instances.list('file').map((row) => {
+    const caps = effectiveCaps(row.caps as FileCollectionCaps, row.auth_state);
+    const adapter = deps.getAdapter(row.slug);
+    const root = row.adapter_type === 'fs' && typeof row.config.path === 'string' ? row.config.path : null;
+    const rootName = root?.split(/[\\/]+/).filter((part) => part.length > 0).pop() ?? null;
+    const subfolders = subfoldersOf(deps.filePaths(row.slug, FILE_FOLDERS_SCAN_MAX));
+    return {
+      folder: row.slug,
+      adapter: row.adapter_type,
+      root_name: rootName,
+      writable: hasCap(caps, 'write') && adapter !== undefined && isMutationCapable(adapter),
+      subfolders,
+      inside: subfolders.join(', '),
+    };
+  }),
+});
+
+export interface FileSaveToFolderResult {
+  ok: true;
+  /** The connected folder it went into. */
+  folder: string;
+  /** Its path from that folder's root. */
+  path: string;
+  /** The name it was saved under. */
+  name: string;
+  /** The name asked for was taken, so it got a number. */
+  renamed: boolean;
+  bytes_written: number;
+  /** What happened, in words the model can pass on. */
+  message: string;
+}
+
+/** D-318 follow-up 11 — `file-save-to-folder`: one stored file (an emailed
+ *  attachment, by its record id) saved into the folder the owner named, under
+ *  its own name or the one given, never over another file (`folder-save.ts`).
+ *  The gates are `file-put-ref`'s: the destination must take a write, checked
+ *  before the source is read, and the source is read by the gated reader. */
+export const handleFileSaveToFolder = async (
+  deps: FileFolderDeps & {
+    readFile: (input: { record_id: string }) => Promise<{ bytes_b64: string; mime_type?: string }>;
+    /** The stored file's own name, or `null`. */
+    fileName: (record_id: string) => string | null;
+    maxBytes?: number;
+  },
+  input: { file_id: string; folder: string; name?: string },
+): Promise<FileSaveToFolderResult> => {
+  for (const key of ['file_id', 'folder'] as const) {
+    if (typeof input[key] !== 'string' || input[key].trim().length === 0) {
+      throw new RpcError('bad_request', `file.save_to_folder: ${key} is required`, 400);
+    }
+  }
+  const { folders } = handleFileFolders(deps);
+  const found = resolveFolder(folders, input.folder);
+  if (found.kind !== 'found') {
+    throw new RpcError(found.kind === 'none' ? 'not_found' : 'bad_request',
+      `FOLDER_NOT_FOUND: ${folderRefusal(input.folder, found, folders)}`, found.kind === 'none' ? 404 : 400);
+  }
+  const target = folders.find((folder) => folder.folder === found.folder);
+  if (target === undefined || !target.writable) {
+    throw new RpcError('forbidden',
+      `FOLDER_NOT_WRITABLE: Recued cannot save into "${found.folder}": it is read-only, signed out, or not running.`, 403);
+  }
+  const given = typeof input.name === 'string' && input.name.trim().length > 0 ? input.name : null;
+  const wanted = given !== null ? safeFileName(given) : (safeFileName(deps.fileName(input.file_id) ?? '') ?? 'file');
+  if (wanted === null) {
+    throw new RpcError('bad_request',
+      `FILE_NAME_INVALID: "${given}" is not a file name. Give the name alone; the folder is its own argument.`, 400);
+  }
+  // ⛔ As `file-put-ref`: the capability before the read.
+  const adapter = requireLiveMutation(deps, found.folder, 'write');
+  const source = await deps.readFile({ record_id: input.file_id });
+  const body = Buffer.from(source.bytes_b64, 'base64');
+  const ceiling = deps.maxBytes ?? FILE_PUT_REF_MAX_BYTES;
+  if (body.length > ceiling) {
+    throw new RpcError('payload_too_large',
+      `FILE_TOO_LARGE: the file is ${body.length} bytes, past the ${ceiling}-byte ceiling`, 413);
+  }
+  const where = folderWords(found.folder, found.dir);
+  for (let n = 1; n <= FILE_SAVE_NAME_TRIES; n++) {
+    const name = numberedName(wanted, n);
+    const path = found.dir.length > 0 ? `${found.dir}/${name}` : name;
+    const stat = await callAdapter(found.folder, path, 'stat', () => adapter.statRecord(path));
+    if (stat.exists) continue;
+    await callAdapter(found.folder, path, 'write', () => adapter.writeRecord(path, body, source.mime_type));
+    return {
+      ok: true, folder: found.folder, path, name, renamed: n > 1, bytes_written: body.length,
+      message: n > 1 ? `Saved as ${name} in ${where}: ${wanted} was already there.` : `Saved ${name} in ${where}.`,
+    };
+  }
+  throw new RpcError('conflict',
+    `FILE_NAME_TAKEN: ${wanted} and ${FILE_SAVE_NAME_TRIES - 1} numbered names are taken in ${where}. Give another name.`, 409);
 };
 
 export const handleFileDelete = async (

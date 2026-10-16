@@ -422,6 +422,11 @@ const liftCommitmentProposal = (
 ): CatalogOperationResolution => {
   // A quote release needs this provenance even when the ceiling already asks:
   // session grants and standing closures must never replace its own review.
+  if (['customer-account-payment-correct','customer-account-payment-apply','customer-refund-correct','customer-refund-apply','customer-payment-correct','customer-invoice-credit','customer-invoice-credit-correct'].includes(stripCorePrefix(slug)) && res.verdict !== 'deny') {
+    return { ...res,verdict: 'ask',approval: 'ask',authorization_provenance: {
+      ...res.authorization_provenance,lift_reason: 'review_customer_payment',
+    } };
+  }
   if (stripCorePrefix(slug) === 'approval-workflow-continue' && res.verdict !== 'deny') {
     return { ...res, verdict: 'ask', approval: 'ask', authorization_provenance: {
       ...res.authorization_provenance, lift_reason: 'review_approval_workflow',
@@ -502,6 +507,18 @@ const mapResolutionToAdmission = (
           : isOutboundSendSlug(slug)
             ? `outbound send '${slug}' delivers a message outside your trust boundary `
               + `— preflight approval required`
+            : stripCorePrefix(slug) === 'customer-refund-correct'
+              ? 'Review the refund reversal, replacement and exact refund balance change before applying it.'
+            : stripCorePrefix(slug) === 'customer-invoice-credit-correct'
+              ? 'Review the credit reversal, replacement and exact invoice balance change before applying it.'
+            : stripCorePrefix(slug) === 'customer-invoice-credit'
+              ? 'Review the invoice credit and exact unpaid balance change before issuing it.'
+            : stripCorePrefix(slug) === 'customer-account-payment-correct'
+              ? 'Review every corrected payment allocation and invoice balance before applying the group together.'
+            : stripCorePrefix(slug) === 'customer-account-payment-apply'
+              ? 'Review the received payment and every invoice allocation before recording them together.'
+            : stripCorePrefix(slug) === 'customer-payment-correct'
+              ? 'Review the recorded payment correction and exact invoice balance change before applying it.'
             : stripCorePrefix(slug) === 'approval-workflow-continue'
               ? 'The customer accepted. Review the linked work or saved recipe before continuing.'
             : stripCorePrefix(slug) === 'quote-completion-review'

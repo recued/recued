@@ -20,7 +20,6 @@ import {
   CHAT_ROUTE_INPUT_ATTR,
   CHAT_ROUTE_MESSAGE_ATTR,
   CHAT_ROUTE_SEND_ATTR,
-  CHAT_ROUTE_HISTORY_DRAFT_GUARD_ATTR,
   CHAT_ROUTE_SESSION_ROW_ATTR,
   CHAT_ROUTE_SESSION_STATUS_ATTR,
   CHAT_ROUTE_TURN_FAILURE_ATTR,
@@ -728,9 +727,7 @@ describe('D-259 ack-before-run — dispatch-only send lock', () => {
     h.route.dispose();
   });
 
-  /** The draft guard runs ONCE, at click time. Words typed after that — while
-   *  the chat is still loading — never existed when it asked, and hydration
-   *  used to wipe them without a prompt. */
+  /** Input typed during a load belongs to the conversation still visible. */
   it('keeps a draft typed while the next chat was still loading', async () => {
     const openChat2 = deferred<unknown>();
     const h = mountChatRoute(
@@ -750,37 +747,27 @@ describe('D-259 ack-before-run — dispatch-only send lock', () => {
     openChat2.resolve({ ...chatSession('chat_2'), messages: [] });
     await tick(8);
     expect(h.route.getThread().session?.id).toBe('chat_2');
+    expect(collectByAttr(h.root, CHAT_ROUTE_INPUT_ATTR)[0]!.value).toBe('');
+    await h.route.openSession('chat_1');
     expect(collectByAttr(h.root, CHAT_ROUTE_INPUT_ATTR)[0]!.value)
       .toBe('a thought I had while it opened');
-    // Still protected, so the NEXT switch asks about it properly.
+    // The parked draft is still protected when leaving Chat entirely.
     expect(h.route.hasUnsavedChanges()).toBe(true);
 
     h.route.dispose();
   });
 
-  /** A draft that was there BEFORE the click is what the switch agreed to
-   *  discard, and it still goes — otherwise every switch would drag the last
-   *  chat's half-sentence into the next one. */
-  it('still clears the draft the switch was asked about', async () => {
+  it('keeps the old draft in its own conversation instead of carrying it into the next', async () => {
     const h = mountChatRoute(async () => ({ turn_id: 't1' }));
-    await tick();
-    await h.route.openSession('chat_1');
+    await tick(); await h.route.openSession('chat_1');
     typeDraft(h.root, 'typed before I clicked away');
-
-    // The guard asks; discarding is the answer it acts on.
     collectByAttr(h.root, CHAT_ROUTE_SESSION_ROW_ATTR)
-      .find((row) => row.getAttribute(CHAT_ROUTE_SESSION_ROW_ATTR) === 'chat_2')!
-      .click();
-    await tick();
-    const discard = collectByAttr(h.root, CHAT_ROUTE_HISTORY_DRAFT_GUARD_ATTR)[0]!
-      .children.flatMap((child) => child.children)
-      .find((button) => button.textContent === 'Throw it away and open')!;
-    discard.click();
+      .find(row => row.getAttribute(CHAT_ROUTE_SESSION_ROW_ATTR) === 'chat_2')!.click();
     await tick(8);
-
     expect(h.route.getThread().session?.id).toBe('chat_2');
     expect(collectByAttr(h.root, CHAT_ROUTE_INPUT_ATTR)[0]!.value).toBe('');
-
+    await h.route.openSession('chat_1');
+    expect(collectByAttr(h.root, CHAT_ROUTE_INPUT_ATTR)[0]!.value).toBe('typed before I clicked away');
     h.route.dispose();
   });
 

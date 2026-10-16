@@ -11,7 +11,7 @@ const config: ApprovalLinkConfig = { display_name: 'Repair desk', action_kind: '
   on_action: { on_approve_action: 'mark_resolved', target_kind: 'task', target_id: 'T1' } };
 
 describe('reusable approval authority', () => {
-  it.each(['review_commitment', 'review_quote_signoff', 'review_approval_workflow'] as const)(
+  it.each(['review_commitment', 'review_quote_signoff', 'review_approval_workflow', 'review_customer_payment'] as const)(
     'audit: quality delegation keeps %s as authorization review', lift_reason => {
       for (const qualityDelegationMatches of [false, true]) {
         expect(resolveQualityGateDecision({ authorization_provenance: { pre_lift_approval: 'never', lift_reason },

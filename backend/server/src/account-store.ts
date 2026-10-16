@@ -32,7 +32,16 @@ import { createSQLiteCollection } from './sqlite-collection.js';
 
 const TABLE = 'account_store';
 
+export interface AccountStoreWrite {
+  key: string; value: string | null;
+  /** Omitted = unconditional. Null requires the key to be absent. */
+  expected?: string | null;
+}
+
 export interface ServerAccountStore {
+  /** SQLite-only: compare/write a batch and caller metadata in one transaction.
+   * Byte accounting is reported only after commit. */
+  transactionalWrite?(entries: readonly AccountStoreWrite[], commit?: () => void): void;
   /** Write a plaintext value. Overwrites any prior value at the key. */
   set(key: string, value: string): Promise<void>;
   /** Read a plaintext value. Null when absent. */
@@ -85,6 +94,26 @@ export const createServerAccountStore = (
     v == null ? 0 : JSON.stringify(v).length;
 
   return {
+    ...(db && !options.collection ? {
+      transactionalWrite(entries: readonly AccountStoreWrite[], commit?: () => void): void {
+        let delta = 0;
+        db.transaction(() => {
+          for (const entry of entries) {
+            const row = db.prepare<[string], { data: string }>('SELECT data FROM account_store WHERE key = ?').get(entry.key);
+            const previous = row ? JSON.parse(row.data) as string : null;
+            if (entry.expected !== undefined && previous !== entry.expected) throw new Error('oauth_grant_changed');
+          }
+          for (const entry of entries) {
+            const row = db.prepare<[string], { data: string }>('SELECT data FROM account_store WHERE key = ?').get(entry.key);
+            delta += measureBytes(entry.value) - (row?.data.length ?? 0);
+            if (entry.value === null) db.prepare('DELETE FROM account_store WHERE key = ?').run(entry.key);
+            else db.prepare('INSERT OR REPLACE INTO account_store (key, data) VALUES (?, ?)').run(entry.key, JSON.stringify(entry.value));
+          }
+          commit?.();
+        })();
+        reportDelta(delta);
+      },
+    } : {}),
     async set(key, value) {
       let prevBytes = 0;
       if (onBytesChanged) {

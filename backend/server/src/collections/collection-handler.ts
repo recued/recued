@@ -11,6 +11,7 @@
  *  lists these).
  */
 
+import { repairCollectionPasswords } from './password-repair.js';
 import {
   collectionSourceFreshnessOf,
   isMailReconciliationId,
@@ -74,6 +75,15 @@ import {
   handleMailDelete,
   type MailEnrollDeps,
 } from './mail/enroll.js';
+import {
+  handleMailChatDoorCheck,
+  handleMailChatDoorGet,
+  handleMailChatDoorRecent,
+  handleMailChatDoorSet,
+  type MailChatDoorHandlerDeps,
+} from './mail/chat-door-handler.js';
+import type { MailChatDoorStore } from '../storage/mail-chat-door-store.js';
+import type { AuditLogStore } from '@recued/storage';
 
 export interface CollectionHandlerDeps {
   registry: CollectionRegistry;
@@ -111,6 +121,16 @@ export interface CollectionHandlerDeps {
    *  `collection.mail.enrollImap` / `collection.mail.list` /
    *  `collection.mail.delete` return `not_configured` when absent. */
   mailEnroll?: MailEnrollDeps;
+  /** D-318 step 1 — the email chat door's settings: which mailbox is the chat
+   *  mailbox. Absent ⇒ `collection.mail.chat_door.*` answers `not_configured`
+   *  and no mailbox is flagged in `collection.mail.list`. */
+  mailChatDoor?: MailChatDoorStore;
+  /** Audit sink for the owner's door setting (`mail_chat_door_set`). */
+  auditLog?: AuditLogStore;
+  /** D-318 step 7 — the proof's requests and the answers, for
+   *  `collection.mail.chat_door.recent`. Absent ⇒ it lists none. */
+  mailChatRequests?: MailChatDoorHandlerDeps['requests'];
+  mailChatAnswers?: MailChatDoorHandlerDeps['answers'];
   /** D-119 Phase 13 — cascade-on-parent-delete hook. When wired,
    *  `collection.deleteRecord` removes every annotation pointing at
    *  the deleted record AND every link with the record as either
@@ -749,6 +769,8 @@ export const handleCollectionEnrollOAuth = async (
     account_slug?: unknown;
     code?: unknown;
     redirect_uri?: unknown;
+    oauth_app_id?: unknown;
+    oauth_client_id?: unknown;
   },
 ): Promise<{ ok: true; account_key_prefix: string }> => {
   if (deps.mailEnroll) {
@@ -758,6 +780,8 @@ export const handleCollectionEnrollOAuth = async (
       account_slug: args.account_slug,
       code: args.code,
       redirect_uri: args.redirect_uri,
+      oauth_app_id: args.oauth_app_id,
+      oauth_client_id: args.oauth_client_id,
     });
     return {
       ok: true,
@@ -779,6 +803,12 @@ export const handleCollectionEnrollOAuth = async (
   const code = requireString(args.code, 'code');
   const redirectUri = requireString(args.redirect_uri, 'redirect_uri');
   const providerConfig = deps.enrollOAuth.config(provider);
+  if (args.oauth_app_id !== undefined && args.oauth_app_id !== 'default') {
+    throw new RpcError('not_configured', 'Named OAuth apps require the current Mail enrollment service. Update the server.');
+  }
+  if (args.oauth_client_id !== undefined && args.oauth_client_id !== providerConfig?.clientId) {
+    throw new RpcError('conflict', 'The selected OAuth app changed. Refresh and authorize again.');
+  }
   if (!providerConfig || !providerConfig.clientId) {
     throw new RpcError(
       'not_configured',
@@ -917,8 +947,15 @@ export type CollectionMethods =
   // method). `handleCollectionMailSend` stays exported as the gateway's
   // internal executor (kernel `mailSend` dispatcher calls it post-gate).
   | 'collection.mail.enrollImap'
+  | 'collection.mail.updateCredentials'
   | 'collection.mail.list'
   | 'collection.mail.delete'
+  // D-318 step 1 — the email chat door's chat mailbox.
+  | 'collection.mail.chat_door.get'
+  | 'collection.mail.chat_door.set'
+  // D-318 step 7 — the checks before switching it on, and the test round trip.
+  | 'collection.mail.chat_door.check'
+  | 'collection.mail.chat_door.recent'
   | 'collection.resync'
   | 'collection.deleteRecord'
   | 'collection.file.enroll'
@@ -930,6 +967,7 @@ export type CollectionMethods =
   | 'collection.calendar.enrollManagedOAuth'
   | 'collection.calendar.attachGraphGrant'
   | 'collection.calendar.enrollBasic'
+  | 'collection.calendar.updateCredentials'
   | 'collection.calendar.list'
   | 'collection.calendar.update'
   | 'collection.calendar.delete'
@@ -975,6 +1013,25 @@ const requireMailEnroll = (
   return deps.mailEnroll;
 };
 
+const requireMailChatDoor = (deps: CollectionHandlerDeps): MailChatDoorHandlerDeps => {
+  if (!deps.mailChatDoor) {
+    throw new RpcError(
+      'not_configured',
+      'collection.mail.chat_door.* requires the mail composition root — compose bin.ts with a database',
+      503,
+    );
+  }
+  return {
+    store: deps.mailChatDoor,
+    ...(deps.mailEnroll ? { mail: deps.mailEnroll } : {}),
+    ...(deps.auditLog ? { auditLog: deps.auditLog } : {}),
+    mailboxes: () => deps.registry.list()
+      .filter((entry): entry is import('./mail/mail-collection.js').MailCollection => entry.platform === 'mail'),
+    ...(deps.mailChatRequests ? { requests: deps.mailChatRequests } : {}),
+    ...(deps.mailChatAnswers ? { answers: deps.mailChatAnswers } : {}),
+  };
+};
+
 export const makeCollectionHandlers = (
   deps: CollectionHandlerDeps | undefined,
 ): HandlerSlice<ServerRpcRegistry, CollectionMethods, WsClient> | undefined => {
@@ -993,8 +1050,13 @@ export const makeCollectionHandlers = (
       // D-177 N.12 — `collection.mail.send` deliberately omitted (gateway
       // internal executor only; see the type union + handlers below).
       'collection.mail.enrollImap',
+      'collection.mail.updateCredentials',
       'collection.mail.list',
       'collection.mail.delete',
+      'collection.mail.chat_door.get',
+      'collection.mail.chat_door.set',
+      'collection.mail.chat_door.check',
+      'collection.mail.chat_door.recent',
       'collection.resync',
       'collection.deleteRecord',
       'collection.file.enroll',
@@ -1006,6 +1068,7 @@ export const makeCollectionHandlers = (
       'collection.calendar.enrollManagedOAuth',
       'collection.calendar.attachGraphGrant',
       'collection.calendar.enrollBasic',
+      'collection.calendar.updateCredentials',
       'collection.calendar.list',
       'collection.calendar.update',
       'collection.calendar.delete',
@@ -1039,8 +1102,19 @@ export const makeCollectionHandlers = (
       // Wiring it here would re-open a client/MCP-reachable trust-bypass.
       'collection.mail.enrollImap': async (args) =>
         handleMailEnrollImap(requireMailEnroll(deps), args as Parameters<typeof handleMailEnrollImap>[1]),
-      'collection.mail.list': async () =>
-        handleMailList(requireMailEnroll(deps)),
+      'collection.mail.updateCredentials': async (args) => repairCollectionPasswords('mail', requireMailEnroll(deps), args),
+      'collection.mail.list': async () => {
+        const listed = await handleMailList(requireMailEnroll(deps));
+        // D-318 step 1 — flag the chat mailbox, whose mail is the conversation.
+        const chat = deps.mailChatDoor?.get().chat_mailbox ?? null;
+        return chat === null
+          ? listed
+          : { instances: listed.instances.map((row) => (row.slug === chat ? { ...row, chat_mailbox: true as const } : row)) };
+      },
+      'collection.mail.chat_door.get': async () => handleMailChatDoorGet(requireMailChatDoor(deps)),
+      'collection.mail.chat_door.set': async (args) => handleMailChatDoorSet(requireMailChatDoor(deps), args),
+      'collection.mail.chat_door.check': async (args) => handleMailChatDoorCheck(requireMailChatDoor(deps), args),
+      'collection.mail.chat_door.recent': async () => handleMailChatDoorRecent(requireMailChatDoor(deps)),
       'collection.mail.delete': async (args) =>
         handleMailDelete(requireMailEnroll(deps), args as Parameters<typeof handleMailDelete>[1]),
       'collection.resync': async (args) =>
@@ -1068,6 +1142,7 @@ export const makeCollectionHandlers = (
         ),
       'collection.calendar.enrollBasic': async (args) =>
         handleCalendarEnrollBasic(requireCalendarEnroll(deps), args as Parameters<typeof handleCalendarEnrollBasic>[1]),
+      'collection.calendar.updateCredentials': async (args) => repairCollectionPasswords('calendar', requireCalendarEnroll(deps), args),
       'collection.calendar.list': async () =>
         handleCalendarEnrollList(requireCalendarEnroll(deps)),
       'collection.calendar.update': async (args) =>

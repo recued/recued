@@ -1,3 +1,7 @@
+import { buildPackOpResolution } from '../pack-inventory.js';
+import { lowerOpStepRecipe } from '@recued/recipes';
+import { RpcError } from '@recued/contracts';
+import { createCollectionOAuthSources } from '../collection-oauth-sources.js';
 import type { PreflightRunSettled } from '../preflight-resumer.js';
 import { dirname, join, resolve } from 'node:path';
 
@@ -62,10 +66,11 @@ import { createManagedOAuthProfileStore } from '../managed-oauth-profile-store.j
 import { createManagedOAuthService, type ManagedOAuthService } from '../managed-oauth-service.js';
 import { managedOAuthRequiredScopes, managedOAuthPackScopeRequirements } from '@recued/contracts';
 import { listInstalledPackManifests } from '../pack-list-handler.js';
-import { decodeAuthFromStorage } from '../connection-handler.js';
+import { decodeAuthFromStorage, encodeAuthForStorage } from '../connection-handler.js';
 import { createManagedOAuthConsumers, type ManagedOAuthConsumers } from '../managed-oauth-consumers.js';
 import { createInstanceStore } from '../collections/instance-store.js';
 import { managedOAuthConnectionUses } from '../managed-oauth-account-usage.js';
+import { readOAuthPermissionRequirements, readNativeOAuthPermissionRequirements } from '../oauth-permission-requirements.js';
 import { managedOAuthRecipeUses } from '../managed-oauth-recipe-usage.js';
 import { recipeConnectionSlots } from '../recipe-connection-choices.js';
 import { connectionPackUsageDeps } from '../pack-connection-borrowing.js';
@@ -324,6 +329,9 @@ export interface ComposeAppContextOptions {
 }
 
 export interface AppContext extends LlmSubstrate {
+  oauthAppNativePermissionNeeds?: (row: import('../collections/instance-store.js').CollectionInstanceRecord) => import('@recued/contracts').OAuthPermissionNeeds;
+  oauthAppPermissionNeeds?: (name: string) => import('@recued/contracts').OAuthPermissionNeeds;
+  oauthAppConnectionUses?: (name: string) => { uses: readonly import('@recued/contracts').ManagedOAuthConnectionUse[]; complete: boolean };
   /** D-322 — optional third-party OAuth; Recued Cloud is not a broker. */
   managedOAuth?: ManagedOAuthService;
   managedOAuthConsumers?: ManagedOAuthConsumers;
@@ -332,6 +340,9 @@ export interface AppContext extends LlmSubstrate {
    *  publishes it into the execution refs bag, being the one place that holds
    *  both this and the full bag. Absent on a db-less boot. */
   readonly chatRunSettledSink?: (settled: PreflightRunSettled) => void;
+  /** D-318 step 5 — be told of each run that settles after its turn, as the
+   *  sink above is (the email door's follow-ups). Absent on a db-less boot. */
+  readonly onChatRunSettled?: (listener: (settled: PreflightRunSettled) => void) => () => void;
   serverState: ServerStateStore | undefined;
   keys: KeyManager | undefined;
   /** Live vault-unlocked predicate. `true` when there is no vault
@@ -695,6 +706,9 @@ export const composeAppContext = (
   let connectionStoreRef: ConnectionStoreSqlite | undefined;
   let managedOAuth: ManagedOAuthService | undefined;
   let managedOAuthConsumers: ManagedOAuthConsumers | undefined;
+  let oauthAppConnectionUses: AppContext['oauthAppConnectionUses'];
+  let oauthAppPermissionNeeds: AppContext['oauthAppPermissionNeeds'];
+  let oauthAppNativePermissionNeeds: AppContext['oauthAppNativePermissionNeeds'];
   let contractGrantStoreRef: ContractGrantStore | undefined;
   let connectionCatalogBindingStoreRef: ConnectionCatalogBindingStore | undefined;
   let contractStoreRef: ContractStore | undefined;
@@ -1076,15 +1090,7 @@ export const composeAppContext = (
     // D-322 — one instance owns receipt claims and dispatch credentials.
     const managedConnections = connectionStoreRef;
     const managedKeys = keys;
-    if (managedKeys !== undefined) managedOAuth = createManagedOAuthService({
-      profiles: createManagedOAuthProfileStore(db, managedKeys.keyProvider('server-data')),
-      listConnections: () => managedConnections.list(),
-      clearGrantedScopes: (names) => managedConnections.clearGrantedScopes(names),
-      decodeAuth: (row) => decodeAuthFromStorage(row.auth_ciphertext, row, managedKeys.keyProvider('connection')),
-      requiredScopes: (vendor, baseUrl) => managedOAuthRequiredScopes(listInstalledPackManifests(contractStoreRef), vendor, baseUrl),
-      requiredScopeSources: (vendor, baseUrl) => managedOAuthPackScopeRequirements(listInstalledPackManifests(contractStoreRef), vendor, baseUrl),
-      // D-322 §22 — reuse the same pack lists/grants as the Connections page.
-      connectionUses: name => {
+    oauthAppConnectionUses = name => {
         const base = managedOAuthConnectionUses(name, {
         packSlugs: connectionPackUsageDeps({ contractStore: contractStoreRef, grantStore: contractGrantStoreRef })
           .boundPackSlugsForConnection?.(name) ?? [],
@@ -1106,10 +1112,52 @@ export const composeAppContext = (
         const recipes = recipeStore.listStored().flatMap(row => { const recipe = recipeStore.get(row.recipe_id); return recipe ? [recipe] : []; });
         return { uses: [...base.uses, ...managedOAuthRecipeUses(name, { recipes, readSlots,
           dishes: execute.dishStore.list(), schedules: schedule.store.list() })], complete: base.complete };
+      };
+    oauthAppNativePermissionNeeds = row => {
+      const execute = chatLateBound.getExecuteDeps(); const schedule = chatLateBound.getScheduleDeps();
+      const stored = recipeStore.listStored(); const packNames = new Map(listInstalledPackManifests(contractStoreRef).map(p => [p.slug, p.name]));
+      const recipes = stored.flatMap(saved => {
+        const recipe = recipeStore.get(saved.recipe_id); if (!recipe) return [];
+        return [{ recipe, ...(saved.pack_slug ? { pack: { kind: 'pack' as const, id: saved.pack_slug, label: packNames.get(saved.pack_slug) ?? saved.pack_slug } } : {}) }];
+      });
+      return readNativeOAuthPermissionRequirements(row, { recipes, dishes: execute?.dishStore?.list() ?? [], schedules: schedule?.store.list() ?? [],
+        complete: !!execute?.dishStore && !!schedule && recipes.length === stored.length });
+    };
+    oauthAppPermissionNeeds = name => {
+      const use = oauthAppConnectionUses!(name); const execute = chatLateBound.getExecuteDeps();
+      if (!contractStoreRef || !execute || !connectionCatalogBindingStoreRef) return { requirements: [], complete: false, warnings: ['Installed dependency metadata is unavailable.'] };
+      const manifest = (slug: string) => execute.executorConfig.manifests.get(slug) ?? execute.localManifestStore?.listManifests().find(m => m.slug === slug) ?? null;
+      return readOAuthPermissionRequirements(name, { ...use, bindings: connectionCatalogBindingStoreRef.list(), manifest,
+        recipe: id => {
+          const recipe = recipeStore.get(id); if (!recipe) return null;
+          return lowerOpStepRecipe(recipe, buildPackOpResolution(() => contractStoreRef!.scan('installed_pack', []), manifest));
+        } });
+    };
+    if (managedKeys !== undefined) managedOAuth = createManagedOAuthService({
+      profiles: createManagedOAuthProfileStore(db, managedKeys.keyProvider('server-data')),
+      listConnections: () => managedConnections.list(),
+      clearGrantedScopes: (names) => managedConnections.clearGrantedScopes(names),
+      decodeAuth: (row) => decodeAuthFromStorage(row.auth_ciphertext, row, managedKeys.keyProvider('connection')),
+      requiredScopes: (vendor, baseUrl) => managedOAuthRequiredScopes(listInstalledPackManifests(contractStoreRef), vendor, baseUrl),
+      requiredScopeSources: (vendor, baseUrl) => managedOAuthPackScopeRequirements(listInstalledPackManifests(contractStoreRef), vendor, baseUrl),
+      // D-322 §22 — reuse the same pack lists/grants as the Connections page.
+      connectionUses: oauthAppConnectionUses,
+      fileSources: {
+        ...(fileMetaStoreRef ? { verificationFiles: fileMetaStoreRef } : {}),
+        admitRemoteFetch,
+        resolveConnection: name => {
+          if (!fileSourceConnResolverRef) throw new RpcError('not_configured', 'File-source access is unavailable.');
+          return fileSourceConnResolverRef(name);
+        },
+        authSourceId: name => managedConnections.getAuthSourceId?.('api', name),
+        registration: id => { const source = workEntityStore?.getSource(id);
+          return source?.top_tier_kind === 'file' && source.source_kind === 'connection' ? JSON.stringify([source.id, source.registered_at]) : undefined; },
       },
     });
     if (managedOAuth && managedKeys) managedOAuthConsumers = createManagedOAuthConsumers({
       connections: managedConnections, instances: createInstanceStore({ db }), broker: managedOAuth,
+      authentication: createCollectionOAuthSources({ store: managedConnections, broker: managedOAuth,
+        decode: decodeAuthFromStorage, encode: encodeAuthForStorage, key: managedKeys.keyProvider('connection') }),
       decodeAuth: row => decodeAuthFromStorage(row.auth_ciphertext, row, managedKeys.keyProvider('connection')),
     });
     // D-165/D-166 — load the spec-owned contract schema into `contract.schema.*`
@@ -1751,6 +1799,7 @@ export const composeAppContext = (
      *  cannot be handed over at construction because the preflight resumer is
      *  composed in the execution context, after this one. */
     chatRunSettledSink: chatBundle?.runSettledSink,
+    onChatRunSettled: chatBundle?.onRunSettled,
     warehouseBus,
     stopWarehouseEventBridges,
     housekeepingConfigRef,
@@ -1783,6 +1832,9 @@ export const composeAppContext = (
     connectionStoreRef,
     ...(managedOAuth ? { managedOAuth } : {}),
     ...(managedOAuthConsumers ? { managedOAuthConsumers } : {}),
+    ...(oauthAppConnectionUses ? { oauthAppConnectionUses } : {}),
+    ...(oauthAppPermissionNeeds ? { oauthAppPermissionNeeds } : {}),
+    ...(oauthAppNativePermissionNeeds ? { oauthAppNativePermissionNeeds } : {}),
     contractGrantStoreRef,
     connectionCatalogBindingStoreRef,
     contractStoreRef,

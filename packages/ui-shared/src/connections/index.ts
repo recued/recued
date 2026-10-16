@@ -55,6 +55,8 @@ export {
 export {
   connectionFormRunsOAuthDance,
   connectionOAuthCredentialReadiness,
+  selectedSavedOAuthAppIssuer,
+  compatibleSavedOAuthAppIssuer,
   connectionOAuthHttpsEndpointIssue,
   invalidatesConnectionOAuthResult,
   isConnectionOAuthLockedField,

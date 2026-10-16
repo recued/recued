@@ -1,3 +1,4 @@
+import { receptionInboxTargetAddress } from './navigation.js';
 import { QUOTE_COMPLETION_SCOPE_MAX, type QuoteCompletionPrepareResult, type QuoteCompletionSummary,
   type QuoteSignoffSummary } from '@recued/contracts';
 import type { QuoteSignoffConn } from './quote-signoff-panel.js';
@@ -9,7 +10,7 @@ const labels: Record<QuoteCompletionSummary['state'],string> = {
 };
 export const mountQuoteCompletionPanel = (opts: {
   document: Document; host: HTMLElement; conn: QuoteSignoffConn; onChanged: () => void;
-  editorOnly?: boolean;
+  editorOnly?: boolean;reminders?: boolean;
 }) => {
   const { document: doc,conn } = opts;
   const root = doc.createElement('section'); root.hidden = true; root.setAttribute('data-signoff-completions',''); opts.host.appendChild(root);
@@ -40,13 +41,15 @@ export const mountQuoteCompletionPanel = (opts: {
   let disposed = false; let busy = false; let loading = false; let started = false; let generation = 0;
   let cursor: string | undefined; let nextCursor: string | undefined; let previous: Array<string | undefined> = [];
   const controls = () => {
+    root.querySelectorAll<HTMLInputElement>('[data-completion-link-setting]').forEach(node => { node.disabled = busy; });
     [delivery,expiry,preview,close,filter,refresh].forEach(node => { node.disabled = busy; });
     root.querySelectorAll<HTMLButtonElement>('[data-completion-action]').forEach(node => { node.disabled = busy; });
     newer.disabled = busy || loading || previous.length === 0; older.disabled = busy || loading || !nextCursor;
   };
   const errorText = (error: unknown) => error instanceof Error ? error.message : 'The completion request could not be loaded. Try again.';
   const invalidate = () => { prepared = null; previewHost.replaceChildren(); };
-  editor.addEventListener('input',invalidate); editor.addEventListener('change',invalidate);
+  const invalidateTerms = (event: Event) => { if (event.target === delivery || event.target === expiry) invalidate(); };
+  editor.addEventListener('input',invalidateTerms);editor.addEventListener('change',invalidateTerms);
   type Page = { cursor?: string; previous: Array<string | undefined> };
   let pendingPage: Page | undefined;
   const load = async (page: Page = pendingPage ?? { cursor,previous: [...previous] }) => {
@@ -68,7 +71,7 @@ export const mountQuoteCompletionPanel = (opts: {
         const details = doc.createElement('details'); card.appendChild(details); add('summary','Completion offered to the customer',details); add('pre',entry.customer_preview,details);
         if (entry.availability !== 'current') add('p',`This request is ${entry.availability}. Prepare a new request before applying work changes.`,card);
         if (entry.owner_action) add('p',`Owner ${entry.owner_action.action === 'close' ? 'closed' : 'reopened'} the work on ${new Date(entry.owner_action.recorded_at).toISOString()}.`,card);
-        if (entry.review === 'waiting') { const link = add('a','Review completion in Reception Inbox',card); link.setAttribute('href','#reception/inbox'); }
+        if (entry.review === 'waiting') { const link = add('a','Review completion in Reception Inbox',card); link.setAttribute('href',receptionInboxTargetAddress(entry.completion_id)); }
         else if (entry.review === 'closed') add('p','Owner review ended without applying this completion. Review the run, or prepare a new request.',card);
         else if (entry.review === 'not_queued') add('p','The response is waiting to be queued for owner review.',card);
         else if (entry.review === 'running') add('p','The approved completion review is running.',card);
@@ -108,11 +111,14 @@ export const mountQuoteCompletionPanel = (opts: {
       const result = await conn('reception.signoff.completion.prepare',{ signoff_id: selected.signoff_id,delivery_summary: delivery.value,expiry_days: Number(expiry.value) });
       if (disposed) return; prepared = result; add('h3','What the customer will see',previewHost); add('pre',result.customer_preview,previewHost);
       add('p','Customer acceptance will queue closing the task for your review. A corrections request will queue reopening it.',previewHost);
+      const keepLink = doc.createElement('input');keepLink.type = 'checkbox';keepLink.setAttribute('data-completion-link-setting','');
+      if (opts.reminders) add('label','Save this link for follow-up emails',previewHost).appendChild(keepLink);
       const publish = button('Publish completion link',previewHost); publish.setAttribute('data-completion-action','');
       publish.addEventListener('click',async () => {
         if (busy || disposed || !prepared) return; const snapshot = prepared; busy = true; controls();
         try {
-          const result = await conn('reception.signoff.completion.publish',{ completion_id: snapshot.completion.completion_id,preview_hash: snapshot.preview_hash });
+          const result = await conn('reception.signoff.completion.publish',{ completion_id: snapshot.completion.completion_id,preview_hash: snapshot.preview_hash,
+            ...(opts.reminders && keepLink.checked ? { remember_link_for_reminders: true } : {}) });
           if (disposed) return; invalidate(); delivery.value = ''; editor.hidden = true; selected = null;
           const shareLabel = add('label','Customer completion link',shareHost); const share = doc.createElement('input'); share.type = 'url'; share.readOnly = true; share.value = result.share_url; shareLabel.appendChild(share); share.addEventListener('focus',() => share.select());
           message.textContent = 'Share this link with your customer. It accepts one completion response.'; await load(); opts.onChanged();

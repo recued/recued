@@ -10,6 +10,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  renderHousekeepingCustomWindowFields,
   computeHousekeepingCostPreview,
   initialHousekeepingPanelState,
   initialHousekeepingRunNowDialogState,
@@ -247,6 +248,17 @@ describe('D-123 P5 — renderHousekeepingPresetPicker', () => {
     });
     expect(html).toMatch(/value="aggressive"[^>]*checked/);
     expect(html).not.toMatch(/value="balanced"[^>]*checked/);
+  });
+});
+
+describe('D-123 P5 — renderHousekeepingCustomWindowFields', () => {
+  it('preserves unfinished number text independently of the parsed draft', () => {
+    const html = renderHousekeepingCustomWindowFields({
+      config: baseState().config!, draft: { cycle_budget_ms: 65000 }, saving: false,
+      inputDraft: { cycle_budget_ms: '065000', cycle_interval_minutes: '' },
+    });
+    expect(html).toMatch(/id="housekeeping-custom-budget"[^>]*value="065000"/);
+    expect(html).toMatch(/id="housekeeping-custom-interval"[^>]*value=""/);
   });
 });
 

@@ -85,4 +85,14 @@ describe('connected-source Chat handoff', () => {
       slug: 'office',
     })).toContain('office calendar');
   });
+
+  it.each([
+    { verified: false, complete: false, expected: 'pending' },
+    { verified: true, complete: false, expected: 'syncing' },
+    { verified: true, complete: true, expected: 'ready' },
+  ])('distinguishes mail access and import completion as $expected', ({ verified, complete, expected }) => {
+    expect(projectChatConnectedSourceStatus(source, [{ slug: source.slug, adapter_type: 'gmail', auth_state: 'healthy',
+      last_synced_at: 1_700_000_000_000, sync_status: { access_verified: verified, initial_sync_complete: complete },
+    }])).toMatchObject({ state: expected });
+  });
 });

@@ -106,6 +106,7 @@ export const createQuoteSignoffPayment = (opts: QuoteSignoffPaymentOptions & {
 
   return {
     open,
+    hasUnsavedChanges: () => !disposed && modal !== null,
     hasInFlightWork: () => !disposed && (opening || modal?.hasInFlightWork() === true),
     dispose: () => { disposed = true; modal?.destroy(); modal = null; },
   };

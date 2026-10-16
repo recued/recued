@@ -3,12 +3,14 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   RpcError, CONNECTION_CREDENTIAL_ROTATION_ATTEMPT_ID_REGEX, MANAGED_OAUTH_MIGRATION_LIMIT,
   managedOAuthVerificationUrl,
-  type ConnectionRow, type ManagedOAuthAuth, type ManagedOAuthMigrationRequest,
+  type ConnectionRow, type AuthenticationSwitchAuthorization, type ManagedOAuthMigrationRequest,
   type ManagedOAuthMigrationResponse, type ManagedOAuthMigrationView, type ManagedOAuthMigrationRow,
   type ManagedOAuthImpactPreview,
 } from '@recued/contracts';
 import type { ManagedOAuthService, ManagedOAuthMigrationAuthority } from './managed-oauth-service.js';
 import { verifyManagedOAuthAccess } from './managed-oauth-verification.js';
+import { verifyDirectOAuthAccess } from './managed-oauth-verification.js';
+import type { DirectOAuthMigrationAuthority, createDirectOAuthSwitch } from './direct-oauth-switch.js';
 
 const hash = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const rowHash = (row: ConnectionRow): string => hash([row.pk, row.updated_at, row.config_json, row.auth_ciphertext,
@@ -16,14 +18,15 @@ const rowHash = (row: ConnectionRow): string => hash([row.pk, row.updated_at, ro
 // Earlier selected rows can join this account through their own approved swaps.
 // Every other shared user and this row's account/use must still match its review.
 const impactHash = (impact: ManagedOAuthImpactPreview | undefined, name: string, selected: readonly string[]): string =>
-  hash([impact?.current, impact?.target, impact?.connections.filter(c => c.name === name || !selected.includes(c.name))]);
+  hash([impact?.current, impact?.target, impact?.file_source, impact?.connections.filter(c => c.name === name || !selected.includes(c.name))]);
 interface Plan {
   view: ManagedOAuthMigrationView; signature: string; expected: Map<string, string>; names: string[];
-  authority?: ManagedOAuthMigrationAuthority; stopped: boolean; request: string;
+  authority?: ManagedOAuthMigrationAuthority | DirectOAuthMigrationAuthority; stopped: boolean; request: string; direct: boolean;
 }
 export const createManagedOAuthMigration = (deps: {
   broker: ManagedOAuthService; rows(): ConnectionRow[]; fetchImpl: typeof fetch; now(): number;
-  apply(input: { auth: ManagedOAuthAuth; name: string; revision: number; url: string; attempt_id: string;
+  direct?: ReturnType<typeof createDirectOAuthSwitch>;
+  apply(input: { auth: AuthenticationSwitchAuthorization; name: string; revision: number; url: string; attempt_id: string;
     impact_fingerprint: string; beforeSwap(): void }): Promise<void>;
   changed?(): void;
 }) => {
@@ -44,7 +47,14 @@ export const createManagedOAuthMigration = (deps: {
   };
   const assertCurrent = (plan: Plan): void => {
     if (plan.stopped || plan.view.expires_at <= deps.now()) throw new RpcError('conflict', 'The migration was stopped or expired.');
-    if (broker.migrationSignature!(plan.names) !== plan.signature) throw new RpcError('conflict', 'Permission needs or local use changed after review.');
+    if ((plan.direct ? broker.directMigrationSignature!(plan.names) : broker.migrationSignature!(plan.names)) !== plan.signature) throw new RpcError('conflict', 'Permission needs or local use changed after review.');
+    if (plan.direct && plan.authority && 'renewals' in plan.authority) {
+      for (const change of plan.authority.renewals()) {
+        if (plan.expected.get(change.previous.name) === rowHash(change.previous)) {
+          plan.expected.set(change.previous.name, rowHash(change.current));
+        }
+      }
+    }
     const rows = deps.rows();
     for (const [name, expected] of plan.expected) {
       const row = rows.find(r => r.kind === 'api' && r.name === name);
@@ -62,11 +72,20 @@ export const createManagedOAuthMigration = (deps: {
   const publicView = (plan: Plan): ManagedOAuthMigrationView => structuredClone(plan.view);
   const check = async (plan: Plan): Promise<void> => {
     for (const row of plan.view.rows) {
-      let issued: Awaited<ReturnType<ManagedOAuthMigrationAuthority['issue']>> | undefined;
+      let issued: Awaited<ReturnType<ManagedOAuthMigrationAuthority['issue'] | DirectOAuthMigrationAuthority['issue']>> | undefined;
       try {
         assertCurrent(plan); issued = await plan.authority!.issue(row.connection.name);
         row.impact = issued.impact; plan.view.target ??= issued.impact.target;
-        await verifyManagedOAuthAccess({ broker, fetchImpl: deps.fetchImpl, now: deps.now }, issued.auth, row.connection.verification_url);
+        if (issued.auth.type === 'direct_oauth') {
+          const direct = await deps.direct!.resolve(issued.auth, row.connection.name, row.connection.updated_at, issued.impact.fingerprint);
+          await direct.verify();
+          const fileHealth = await broker.verifyFileSourceSwitch?.(row.connection.name, direct.auth);
+          if (!fileHealth) await verifyDirectOAuthAccess({ fetchImpl: deps.fetchImpl, now: deps.now }, direct.auth, row.connection.verification_url);
+          await direct.verify();
+        } else {
+          const fileHealth = await broker.verifyFileSourceSwitch?.(row.connection.name, issued.auth);
+          if (!fileHealth) await verifyManagedOAuthAccess({ broker, fetchImpl: deps.fetchImpl, now: deps.now }, issued.auth, row.connection.verification_url);
+        }
         assertCurrent(plan); row.state = 'verified';
       } catch (error) { failed(row, error, plan.stopped); }
       finally { issued?.retire(); }
@@ -96,19 +115,23 @@ export const createManagedOAuthMigration = (deps: {
       if (old.request !== request) throw new RpcError('conflict', 'This migration ID already belongs to another review.');
       return { action: 'migration_prepare', migration: publicView(old) };
     }
-    if (!args.auth || args.auth.type !== 'managed_oauth' || typeof args.impact_fingerprint !== 'string'
+    if (!args.auth || !['managed_oauth', 'direct_oauth'].includes(args.auth.type) || typeof args.impact_fingerprint !== 'string'
       || !Array.isArray(args.auth.requested_scopes) || args.auth.requested_scopes.some(s => typeof s !== 'string')
-      || !/^[a-f0-9]{64}$/.test(args.impact_fingerprint)) throw new RpcError('bad_request', 'Review a verified managed authorization before preparing.');
+      || !/^[a-f0-9]{64}$/.test(args.impact_fingerprint)) throw new RpcError('bad_request', 'Review a verified OAuth authorization before preparing.');
+    const direct = args.auth.type === 'direct_oauth';
+    if (direct && (!deps.direct || !broker.directMigrationSignature)) throw new RpcError('not_configured', 'Upgrade the server to migrate to direct OAuth.');
     const candidates = await broker.migrationCandidates!();
     const rows = args.selections.map(selection => {
+      try {
+        if ([...new URL(selection.verification_url).searchParams.keys()].some(key => /^(?:access_token|refresh_token|client_secret|api_key|token|authorization)$/i.test(key))) {
+          throw new RpcError('bad_request', 'Use a protected resource URL without credentials in its query.');
+        }
+      } catch (error) { if (error instanceof RpcError) throw error; }
       const candidate = candidates.find(c => c.name === selection.name);
       const url = candidate && typeof selection.verification_url === 'string'
         ? managedOAuthVerificationUrl(candidate.base_url, selection.verification_url) : undefined;
       if (!candidate || selection.expected_updated_at !== candidate.updated_at || !url) {
         throw new RpcError('conflict', 'Refresh selected connections and enter a protected read-only URL for each one.');
-      }
-      if ([...new URL(url).searchParams.keys()].some(key => /^(?:access_token|refresh_token|client_secret|api_key|token|authorization)$/i.test(key))) {
-        throw new RpcError('bad_request', 'Use a protected resource URL without credentials in its query.');
       }
       return { connection: { ...candidate, verification_url: url }, state: 'pending' as const };
     });
@@ -120,10 +143,11 @@ export const createManagedOAuthMigration = (deps: {
       requested_scopes: [...args.auth.requested_scopes], rows,
       warnings: ['Each connection switches only after its protected read check passes.',
         'Failed connections keep their saved authentication. Successful switches remain applied.',
-        'Sign-in can affect other tools sharing the Nango account before local switches.',
+        ...(direct ? ['The existing direct OAuth app is reused. Nango authorizations are kept.']
+          : ['Sign-in can affect other tools sharing the Nango account before local switches.']),
         'Read checks do not prove write access or all permissions. Mail and Calendar bindings need review after an account switch.'] },
-      names, expected: new Map(saved.map(r => [r.name, rowHash(r)])), signature: broker.migrationSignature!(names),
-      stopped: false, request };
+      names, expected: new Map(saved.map(r => [r.name, rowHash(r)])), signature: direct ? broker.directMigrationSignature!(names) : broker.migrationSignature!(names),
+      stopped: false, request, direct };
     // Reserve the ID before transferring the receipt, including while a native check is pending.
     if (plans.has(args.id)) return prepare(args);
     prune();
@@ -135,8 +159,11 @@ export const createManagedOAuthMigration = (deps: {
     }
     plans.set(args.id, plan);
     try {
-      await broker.verifyImpact!(args.auth, args.impact_fingerprint);
-      plan.authority = await broker.claimMigration!(args.auth, names);
+      if (args.auth.type === 'direct_oauth') plan.authority = await deps.direct!.claim(args.auth, names, args.impact_fingerprint);
+      else {
+        await broker.verifyImpact!(args.auth, args.impact_fingerprint);
+        plan.authority = await broker.claimMigration!(args.auth, names);
+      }
       plan.view.expires_at = plan.authority.expires_at;
       assertCurrent(plan);
       plan.names = [...plan.authority.names]; plan.signature = plan.authority.signature;
@@ -154,7 +181,7 @@ export const createManagedOAuthMigration = (deps: {
     try {
       for (const row of plan.view.rows) {
         if (row.state !== 'verified') continue;
-        let issued: Awaited<ReturnType<ManagedOAuthMigrationAuthority['issue']>> | undefined;
+        let issued: Awaited<ReturnType<ManagedOAuthMigrationAuthority['issue'] | DirectOAuthMigrationAuthority['issue']>> | undefined;
         try {
           assertCurrent(plan); row.state = 'applying'; row.attempt_id = randomUUID();
           issued = await plan.authority!.issue(row.connection.name);

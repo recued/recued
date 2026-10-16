@@ -2,11 +2,20 @@
   "manifest_version": 2,
   "slug": "reception-approval",
   "publisher": "recued-core",
-  "name": "Reception \u2014 Approval",
-  "description": "Use Reception \u2014 Approval in Recued. Review customer replies before creating promises, releasing quotes, completing local work or running saved recipes. Actions that change data use Recued's approval controls.",
-  "version": 5,
+  "name": "Reception — Approval",
+  "description": "Use Reception — Approval in Recued. Review customer replies before creating promises, releasing quotes, completing local work or running saved recipes. Correct recorded payments, invoice credits and bill balances after owner review. Record customer payments across invoices after reviewing their allocations.",
+  "version": 12,
   "pre_install": true,
-  "recipes": [],
+  "recipes": [
+    {
+      "slug": "reception-customer-invoice-credit",
+      "version": 1
+    },
+    {
+      "slug": "reception-customer-credit-correction",
+      "version": 1
+    }
+  ],
   "requires": [
     "install_bulk_pack"
   ],
@@ -20,6 +29,11 @@
   "contents": [
     {
       "type": "recipe",
+      "slug": "reception-customer-account-payment-correction",
+      "version": 1
+    },
+    {
+      "type": "recipe",
       "slug": "reception-quote-signoff-release",
       "version": 2
     },
@@ -31,6 +45,16 @@
     {
       "type": "recipe",
       "slug": "reception-approval-workflow",
+      "version": 1
+    },
+    {
+      "type": "recipe",
+      "slug": "reception-customer-payment-correction",
+      "version": 1
+    },
+    {
+      "type": "recipe",
+      "slug": "reception-customer-account-payment",
       "version": 1
     },
     {
@@ -83,7 +107,7 @@
                 "affects_target": true
               }
             ],
-            "description": "Materialize a consumed approval into an inbound commitment in the local warehouse (the review-then-approve projection). Approval-required: the Gateway gate holds it pending so the user reviews + edits before it runs. The `https://reception.local` base url (surfaces_seed) is a LOCAL-DISPATCH sentinel, not a reachable endpoint \u2014 on approve-resume the ingredient executor routes this op to the in-process `reception-materialize` kernel ingredient (runReceptionProjection), so the materialize never makes an HTTP call (D-173 I-2 / P1-dispatch).",
+            "description": "Materialize a consumed approval into an inbound commitment in the local warehouse (the review-then-approve projection). Approval-required: the Gateway gate holds it pending so the user reviews + edits before it runs. The `https://reception.local` base url (surfaces_seed) is a LOCAL-DISPATCH sentinel, not a reachable endpoint — on approve-resume the ingredient executor routes this op to the in-process `reception-materialize` kernel ingredient (runReceptionProjection), so the materialize never makes an HTTP call (D-173 I-2 / P1-dispatch).",
             "bind": {
               "kind": "rest",
               "method": "POST",
@@ -152,6 +176,18 @@
           }
         ]
       }
+    },
+    {
+      "type": "recipe",
+      "slug": "reception-customer-refund",
+      "version": 1,
+      "visible": true
+    },
+    {
+      "type": "recipe",
+      "slug": "reception-customer-refund-correction",
+      "version": 1,
+      "visible": true
     }
   ]
 }

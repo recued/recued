@@ -70,7 +70,7 @@ export const signoffReceiptHtml = (receipt: QuoteSignoffReceipt): string => {
 ${sections}${completions}</body></html>`;
 };
 
-const downloadHtml = (doc: Document, host: HTMLElement, filename: string, html: string): void => {
+export const downloadReceiptHtml = (doc: Document, host: HTMLElement, filename: string, html: string): void => {
   const view = doc.defaultView;
   if (!view || typeof view.URL?.createObjectURL !== 'function') throw new Error('Downloads are unavailable in this browser.');
   const url = view.URL.createObjectURL(new view.Blob([html], { type: 'text/html;charset=utf-8' }));
@@ -151,7 +151,7 @@ export const mountQuoteSignoffReceipt = (opts: {
   refresh.addEventListener('click', () => { if (!disposed && !refresh.disabled) void open(selected); });
   download.addEventListener('click', () => {
     if (!receipt || disposed) return;
-    try { downloadHtml(doc, root, `signoff-${receipt.selected_signoff_id}.html`, signoffReceiptHtml(receipt)); }
+    try { downloadReceiptHtml(doc, root, `signoff-${receipt.selected_signoff_id}.html`, signoffReceiptHtml(receipt)); }
     catch (error) { message.textContent = error instanceof Error ? error.message : 'Could not download the receipt.'; }
   });
   print.addEventListener('click', () => {

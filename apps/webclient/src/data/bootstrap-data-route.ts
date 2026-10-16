@@ -1,3 +1,6 @@
+import { recordsRecordAddress,type RecordsRecordAddress } from './records-navigation.js';
+import { CONNECTION_NAME_REGEX } from '@recued/contracts';
+import { connectionsFileAuthenticationAddress } from '../connections/connections-navigation.js';
 import { openFilePreview, type FilePreviewCallers } from '../files/file-preview.js';
 import { openFileChatPicker, type FileChatCallers } from '../chat/existing-file-picker.js';
 import { cloudFileInstance, cloudFileRecord, cloudFileSourceId, cloudFileSourceSlug, SAVED_FILES_SLUG, savedFilesInstance } from './cloud-file-explorer.js';
@@ -219,6 +222,14 @@ import {
   MAIL_FACTS_STYLES,
   type MailFactCallers,
 } from './mail-facts-surface.js';
+import {
+  createRemindersSurface,
+  REMINDERS_ACTION_PREFIX,
+  REMINDERS_FIELD_ATTR,
+  REMINDERS_STYLES,
+  type ReminderCallers,
+} from './reminders-surface.js';
+import { REMINDER_LIST_LINK } from '@recued/contracts';
 import type { MailFactEmailStatus } from '@recued/contracts';
 import { mailWorkFollowHref } from '../mail/mail-work-route.js';
 import { fileRefOptionsFromMirrorResults } from '../recipes/file-ref-picker.js';
@@ -502,6 +513,9 @@ export type DataReceivedTabId = 'form_response';
  *  a member of `DATA_RECEIVED_TABS` would be sent to the form-response
  *  renderer (`isReceivedTab`). It renders through `mail-facts-surface.ts`. */
 export type DataMailFactTabId = 'mail_fact';
+/** D-324 — Data → Owned → Reminders. Its own tab type, like `mail_fact`: it
+ *  renders through `reminders-surface.ts`, not the work-entity tables. */
+export type DataReminderTabId = 'reminder';
 export type MirrorDataKind = 'mail' | 'calendar' | 'crm' | 'files';
 /** `webhook` (inbound HTTP deliveries) browses via the collection explorer like
  *  mail/calendar/files, but clusters under "Received" (inbound data) beside
@@ -519,6 +533,7 @@ export type DataTabId =
   | DataOwnItTabId
   | DataReceivedTabId
   | DataMailFactTabId
+  | DataReminderTabId
   | MirrorDataKind
   | 'records'
   | 'search'
@@ -566,6 +581,7 @@ const DATA_SEARCH_TABS: readonly DataTabId[] = ['search'];
 // surface, and `dataAddress` then throws on its own address.
 const DATA_TABS: readonly DataTabId[] = [
   ...DATA_OWN_IT_TABS,
+  'reminder',
   ...DATA_RECEIVED_TABS,
   'mail_fact',
   ...DATA_MIRROR_TABS,
@@ -586,6 +602,10 @@ const DATA_TABS: readonly DataTabId[] = [
  *  ever created, so it was always empty. D-201 deliveries are shown on the
  *  owner's Connections → Webhooks panel. */
 const DATA_RECEIVED_CLUSTER: readonly DataTabId[] = [...DATA_RECEIVED_TABS, 'mail_fact'];
+
+/** D-324 — the "Owned" cluster's DISPLAY tabs: contacts, the work entities, and
+ *  the owner's reminders (their own surface, as Mail facts is in Received). */
+const DATA_OWNED_CLUSTER: readonly DataTabId[] = [...DATA_OWN_IT_TABS, 'reminder'];
 
 export type WorkEntitySourceListCaller = () => Promise<{
   sources: ReadonlyArray<SourceRegistration>;
@@ -923,6 +943,9 @@ export interface BootstrapDataRouteOptions {
   /** D-315 §6 — Data → Received → Mail facts: every rpc the tab calls. An
    *  absent caller hides what needs it. */
   mailFactCallers?: MailFactCallers;
+  /** D-324 — Data → Owned → Reminders: the list, a new time, a cancel. An
+   *  absent caller hides what needs it. */
+  reminderCallers?: ReminderCallers;
   /** Owner-only installed recipe discovery + manual execution for explicitly
    *  continuing one already accepted response. Both must be present for the
    *  detail affordance to render. */
@@ -1021,6 +1044,7 @@ export interface BootstrapDataRouteOptions {
    * locator a multi-account Data tab cannot safely choose an instance. */
   initialCollectionSlug?: string;
   initialEntityId?: string;
+  initialRecordsTarget?: RecordsRecordAddress;
   /** The address's third segment (`#data/<tab>/<entity>/<detail>`), for a tab
    *  with a third level: Mail facts is `#data/mail_fact/<view>/<detail>`. */
   initialDetailId?: string;
@@ -2336,6 +2360,8 @@ const tabLabel = (tab: DataTabId): string => {
       return 'Form responses';
     case 'mail_fact':
       return 'Mail facts';
+    case 'reminder':
+      return 'Reminders';
     case 'mail':
       return 'Mail';
     case 'calendar':
@@ -2853,7 +2879,7 @@ const renderTabGroup = (
 };
 
 const DATA_TAB_GROUPS: readonly { label: string; tabs: readonly DataTabId[] }[] = [
-  { label: 'Owned', tabs: DATA_OWN_IT_TABS },
+  { label: 'Owned', tabs: DATA_OWNED_CLUSTER },
   { label: 'Received', tabs: DATA_RECEIVED_CLUSTER },
   { label: 'Connected', tabs: DATA_MIRROR_TABS },
   { label: 'Provenance', tabs: DATA_PROVENANCE_TABS },
@@ -5061,6 +5087,8 @@ export const bootstrapDataRoute = (
       RECORDS_EXPLORER_STYLES,
       // D-315 §6 — Data → Received → Mail facts.
       MAIL_FACTS_STYLES,
+      // D-324 — Data → Owned → Reminders.
+      REMINDERS_STYLES,
     ].join('\n');
     doc.head.appendChild(style);
   }
@@ -5159,6 +5187,12 @@ export const bootstrapDataRoute = (
     actionAttr: DATA_ROUTE_ACTION_ATTR,
     render: () => render(),
     onAddressChange: () => syncDataHash(),
+  });
+  // D-324 — Data → Owned → Reminders keeps its own state, as Mail facts does.
+  const remindersSurface = createRemindersSurface({
+    callers: opts.reminderCallers ?? {},
+    actionAttr: DATA_ROUTE_ACTION_ATTR,
+    render: () => render(),
   });
   if (activeTab === 'mail_fact' && opts.initialEntityId !== undefined) {
     mailFacts.openAddress([opts.initialEntityId, ...(opts.initialDetailId !== undefined ? [opts.initialDetailId] : [])]);
@@ -5606,9 +5640,10 @@ export const bootstrapDataRoute = (
   // `explorerRecords`: its callers are `records.*` owner RPCs, never a
   // `collection.*`/`data.*` resolver that a recipe could accidentally share.
   let recordsSeq = 0;
+  let pendingRecordsTarget = opts.initialRecordsTarget;
   let savedRecordsSelection = opts.savedView?.definition.tab === 'records'
     ? { owner: opts.savedView.definition.owner, entity: opts.savedView.definition.entity }
-    : null;
+    : opts.initialRecordsTarget ? {owner:opts.initialRecordsTarget.owner,entity:opts.initialRecordsTarget.entity} : null;
   let recordsState: RecordsExplorerState = {
     ...initialRecordsBrowseState(opts.savedView?.definition.tab === 'records' ? {
       ...(opts.savedView.definition.filters ? { filters: opts.savedView.definition.filters } : {}),
@@ -6119,6 +6154,8 @@ export const bootstrapDataRoute = (
       ? 'This source has not finished syncing yet.'
       : `Last synced ${e(new Date(cloudSource.last_synced_at).toLocaleString())}.${cloudSource.stale ? ' This file list may be out of date.' : ''}`}</p>
       <p>These files stay in the connected source. Import saves a separate copy in Files.</p>
+      ${cloudSource.authentication_connection && CONNECTION_NAME_REGEX.test(cloudSource.authentication_connection)
+        ? `<p><a class="data-button" href="${e(connectionsFileAuthenticationAddress(cloudSource.authentication_connection).hash)}">Manage authentication</a></p>` : ''}
       ${!detail ? `<label>Search file names and paths <input class="data-input" type="search" maxlength="200"
         aria-label="Search cloud files" ${DATA_ROUTE_ACTION_ATTR}="file-cloud-query" value="${e(cloudFileQueryInput)}" /></label>
         <button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="file-cloud-search">Search files</button>` : ''}` : '';
@@ -6272,6 +6309,10 @@ export const bootstrapDataRoute = (
     // D-315 — Mail facts keys each focusable control; restored after the repaint.
     const focusedMailFactsKey = renderedActiveTab === 'mail_fact'
       ? mailFacts.captureFocus(activeElement)
+      : null;
+    // D-324 — so does the Reminders tab.
+    const focusedRemindersKey = renderedActiveTab === 'reminder'
+      ? remindersSurface.captureFocus(activeElement)
       : null;
     const focusedContactScanOwnerKind: 'action' | 'result' | null = contactScan === null
       ? null
@@ -6885,6 +6926,8 @@ export const bootstrapDataRoute = (
             }, (opts.now ?? Date.now)())
         : activeTab === 'mail_fact'
           ? mailFacts.render()
+        : activeTab === 'reminder'
+          ? remindersSurface.render()
         : activeTab === 'records'
           ? renderRecordsExplorer(recordsState)
         : isExplorerTab(activeTab) || isSingleCollectionTab(activeTab)
@@ -7646,6 +7689,9 @@ export const bootstrapDataRoute = (
     }
     if (activeLens === 'data' && activeTab === 'mail_fact') {
       mailFacts.restoreFocus(routeRoot, focusedMailFactsKey);
+    }
+    if (activeLens === 'data' && activeTab === 'reminder') {
+      remindersSurface.restoreFocus(routeRoot, focusedRemindersKey);
     }
     // Attach live pickers to any `data.contact` ref shells the work-entity
     // dialog just painted (no-op otherwise).
@@ -8834,7 +8880,7 @@ export const bootstrapDataRoute = (
       const counts = new Map(kindResponse.kinds.map((kind) => [kind.kind, kind]));
       const kinds = Object.keys(namespace.schema.entities).sort().map((kind) =>
         counts.get(kind) ?? { kind, rows: 0, payload_bytes: 0 });
-      if (opts.savedView !== undefined && preferredKind !== undefined && !kinds.some((kind) => kind.kind === preferredKind)) {
+      if ((opts.savedView !== undefined || pendingRecordsTarget !== undefined) && preferredKind !== undefined && !kinds.some((kind) => kind.kind === preferredKind)) {
         recordsState = { ...recordsState, kinds, loading: false, error: 'The kind you picked is gone. Choose another one to carry on.' };
         return;
       }
@@ -8904,7 +8950,7 @@ export const bootstrapDataRoute = (
         ? response.namespaces[0] ?? null
         : response.namespaces.find((namespace) =>
             namespace.owner.publisher === previous.publisher && namespace.owner.pack_slug === previous.pack_slug)
-          ?? (opts.savedView === undefined ? response.namespaces[0] ?? null : null);
+          ?? (opts.savedView === undefined && opts.initialRecordsTarget === undefined ? response.namespaces[0] ?? null : null);
       recordsState = {
         ...recordsState,
         namespaces: response.namespaces,
@@ -8919,12 +8965,18 @@ export const bootstrapDataRoute = (
           ...(previous === undefined ? {} : { error: 'The Pack you picked is gone. Choose another one to carry on.' }) };
         return;
       }
+      const namespaceSeq=recordsSeq+1;
       await loadRecordsNamespace(
         selected,
         previous !== undefined && recordsOwnerKey(previous) === recordsOwnerKey(selected.owner)
           ? recordsState.selectedKind ?? savedRecordsSelection?.entity ?? undefined : undefined,
         returnFocusId,
       );
+      if(disposed || recordsSeq!==namespaceSeq)return;
+      if (pendingRecordsTarget && recordsState.selectedKind !== pendingRecordsTarget.entity) { recordsState={...recordsState,selectedKind:null,records:[],loading:false,error:'The requested Records kind is unavailable.'}; }
+      if (pendingRecordsTarget && recordsState.selectedKind === pendingRecordsTarget.entity) {
+        const target=pendingRecordsTarget;pendingRecordsTarget=undefined;await openRecordsRecord(target.id);if(!disposed && recordsState.detail?.id===target.id)focusRecordsDetailHeading();
+      }
     } catch (error) {
       if (disposed || seq !== recordsSeq) return;
       recordsState = {
@@ -9565,6 +9617,9 @@ export const bootstrapDataRoute = (
     } else if (activeTab === 'mail_fact') {
       // The tab holds its own loading and error state.
       await mailFacts.refresh(silent);
+    } else if (activeTab === 'reminder') {
+      // D-324 — so does the Reminders tab.
+      await remindersSurface.refresh(silent);
     } else if (isExplorerTab(activeTab) || isSingleCollectionTab(activeTab)) {
       // D-198 Slice 5 — the explorer owns its own async guard (`explorerSeq`) +
       // error state; the outer generation guard below still gates the paint.
@@ -9856,6 +9911,7 @@ export const bootstrapDataRoute = (
     if (isMirrorTab(activeTab) && timelineEntityId.length > 0) {
       return timelineEntityId;
     }
+    if (activeTab === 'records' && recordsState.detail) return recordsState.detail.id;
     if (activeTab === 'booking' && bookingDetailId !== null) {
       return bookingDetailId;
     }
@@ -9944,6 +10000,8 @@ export const bootstrapDataRoute = (
     const hash =
       activeLens === 'memory'
         ? serializeShellRoute('data', 'memory')
+        : activeTab === 'records' && recordsState.selectedNamespace && recordsState.selectedKind && recordsState.detail
+          ? recordsRecordAddress({owner:recordsState.selectedNamespace.owner,entity:recordsState.selectedKind,id:recordsState.detail.id})
         : activeTab === 'mail_fact'
           ? serializeShellRoute('data', activeTab, ...mailFacts.addressSegments())
         : exactSourceRecordTab !== null
@@ -13628,6 +13686,10 @@ export const bootstrapDataRoute = (
       if (activeLens === 'data' && activeTab === 'mail_fact') mailFacts.handleAction(action, target);
       return;
     }
+    if (action.startsWith(REMINDERS_ACTION_PREFIX)) {
+      if (activeLens === 'data' && activeTab === 'reminder') remindersSurface.handleAction(action, target);
+      return;
+    }
     // D-315 §6 — from an email in Data → Mail to Data → Received → Mail facts.
     if (action === 'mail-fact-make-template' || action === 'mail-fact-show-email') {
       const slug = explorerSelectedSlug;
@@ -14482,6 +14544,10 @@ export const bootstrapDataRoute = (
     if (activeTab === 'mail_fact' && typeof target.getAttribute === 'function'
       && target.getAttribute(MAIL_FACTS_FIELD_ATTR) !== null
       && mailFacts.handleInput(target as HTMLElement)) return;
+    // D-324 — the Reminders tab's new-time field keeps what is typed without a repaint.
+    if (activeTab === 'reminder' && typeof target.getAttribute === 'function'
+      && target.getAttribute(REMINDERS_FIELD_ATTR) !== null
+      && remindersSurface.handleInput(target as HTMLElement)) return;
     if (typeof target.getAttribute === 'function' && target.getAttribute('data-action') === 'records-filter-value'
       && changeRecordsViewDraft(target as HTMLInputElement)) return;
     if (workEntityState.dialog !== null && !workEntityState.dialog.submitting && !workEntityDiscardGuardOpen
@@ -14673,6 +14739,8 @@ export const bootstrapDataRoute = (
     if (activeTab === 'mail_fact'
       && (target.getAttribute(MAIL_FACTS_FILTER_ATTR) !== null || target.getAttribute(MAIL_FACTS_FIELD_ATTR) !== null)
       && mailFacts.handleChange(target)) return;
+    if (activeTab === 'reminder' && target.getAttribute(REMINDERS_FIELD_ATTR) !== null
+      && remindersSurface.handleChange(target)) return;
     if (changeRecordsViewDraft(target)) return;
     if (workEntityState.dialog !== null && !workEntityState.dialog.submitting && !workEntityDiscardGuardOpen
       && target.closest?.('.work-entity-dialog-form') != null) {
@@ -15018,6 +15086,8 @@ export const bootstrapDataRoute = (
     // Refresh results explicitly starts a fresh read; idle first pages stay live.
     // D-315 — the same for Mail facts: a later page, or a load under way.
     if (activeLens === 'data' && activeTab === 'mail_fact' && mailFacts.isBusy()) return;
+    // D-324 — nor a time being changed or a cancel waiting for its answer.
+    if (activeLens === 'data' && activeTab === 'reminder' && remindersSurface.isBusy()) return;
     if (activeLens === 'data' && activeTab === 'records'
       && (recordsState.loading || recordsState.page > 1 || recordsViewHasDraft(recordsState)
         || recordsState.detail !== null || recordsState.purgePending || recordsState.outboxOpen
@@ -15046,6 +15116,13 @@ export const bootstrapDataRoute = (
     liveUnsubscribers.push(
       opts.subscribe('warehouse', scheduleLiveRefresh),
       opts.subscribe('memory', scheduleLiveRefresh),
+      // D-324 — a reminder rang: the list moves it to the ones rung. A reminder
+      // writes no warehouse event, so this notification is the only signal.
+      opts.subscribe('notification.notify', (event) => {
+        if (activeLens === 'data' && activeTab === 'reminder' && event.link_url === REMINDER_LIST_LINK) {
+          scheduleLiveRefresh();
+        }
+      }),
       // D-315 §6 — facts written or removed (a scan, a backfill and an unpaired
       // fact write no thing event, so `warehouse` alone misses them), or a
       // template changed. Only the Mail facts tab re-reads for it.
@@ -15142,7 +15219,9 @@ export const bootstrapDataRoute = (
     || formResponseRunModal?.getState().mutating === true
     || formResponseRunModal?.getState().trigger_mutating === true
     // D-315 — a template, a kind of email or a switch saving.
-    || mailFacts.hasInFlightWork();
+    || mailFacts.hasInFlightWork()
+    // D-324 — a reminder being moved or cancelled.
+    || remindersSurface.hasInFlightWork();
 
   return {
     currentView,
@@ -15168,10 +15247,12 @@ export const bootstrapDataRoute = (
     timeline: () => timeline,
     getLoadErrors: () => errors,
     hasInFlightWork: hasDataInFlightWork,
-    hasUnsavedChanges: () => mailFacts.hasUnsavedChanges(),
+    hasUnsavedChanges: () => mailFacts.hasUnsavedChanges() || remindersSurface.hasUnsavedChanges(),
     unsavedChangesPrompt: () => (mailFacts.hasUnsavedChanges()
       ? 'Leave Data? Your changes to a mail-fact template or kind of email are not saved.'
-      : null),
+      : remindersSurface.hasUnsavedChanges()
+        ? 'Leave Data? The new time you typed for a reminder is not saved.'
+        : null),
     inFlightWorkPrompt: () => hasRecordsInFlightWork()
       ? 'Something is still happening in Records. Leave Data anyway?'
       : hasDataInFlightWork()
@@ -15233,6 +15314,7 @@ export const bootstrapDataRoute = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      remindersSurface.dispose();
       fileChatAbort?.abort(); filePreviewAbort?.abort();
       contactSearchRefresh.cancel();
       bookingSearchRefresh.cancel();

@@ -15,8 +15,14 @@ import {
   type ReceptionSection,
 } from './sections.js';
 
+export const CUSTOMER_JOB_TABS = ['overview','activity','billing','followups','closeout'] as const;
+export type CustomerJobTab = (typeof CUSTOMER_JOB_TABS)[number];
+
 export type ReceptionAddress =
   | { readonly kind: 'section'; readonly section: ReceptionSection }
+  | { readonly kind: 'customer-job';readonly jobId: string;readonly tab: CustomerJobTab }
+  | { readonly kind: 'signoff';readonly signoffId: string }
+  | { readonly kind: 'inbox-target';readonly targetId: string }
   | { readonly kind: 'endpoint-detail'; readonly endpointId: string }
   | {
       readonly kind: 'endpoint-authoring';
@@ -35,6 +41,14 @@ export const receptionSectionAddress = (
   'reception',
   receptionSectionLevel(section),
 );
+
+export const receptionCustomerJobAddress = (jobId: string,tab: CustomerJobTab = 'overview'): HierarchicalAddress =>
+  hierarchicalAddress('reception',receptionSectionLevel('jobs'),
+    hierarchicalLevel(`customer-job:${jobId}`,jobId),hierarchicalLevel(`customer-job-tab:${tab}`,tab));
+export const receptionSignoffAddress = (signoffId: string): string =>
+  hierarchicalAddress('reception',receptionSectionLevel('signoffs'),hierarchicalLevel(`signoff:${signoffId}`,signoffId)).hash;
+export const receptionInboxTargetAddress = (targetId: string): string =>
+  hierarchicalAddress('reception',receptionSectionLevel('inbox'),hierarchicalLevel(`target:${targetId}`,targetId)).hash;
 
 export const receptionEndpointDetailAddress = (
   endpointId: string,
@@ -73,6 +87,10 @@ export const receptionEndpointPairAddress = (
 export const receptionHierarchicalAddress = (
   address: ReceptionAddress,
 ): HierarchicalAddress => {
+  if (address.kind === 'customer-job') return receptionCustomerJobAddress(address.jobId,address.tab);
+  if (address.kind === 'signoff' || address.kind === 'inbox-target') return hierarchicalAddress('reception',
+    receptionSectionLevel(address.kind === 'signoff' ? 'signoffs' : 'inbox'),
+    hierarchicalLevel('selected',address.kind === 'signoff' ? address.signoffId : address.targetId));
   if (address.kind === 'endpoint-detail') {
     return receptionEndpointDetailAddress(address.endpointId);
   }
@@ -94,6 +112,11 @@ export const parseReceptionAddress = (
 ): ReceptionAddress | null => {
   if (route.surface !== 'reception') return null;
   const section = resolveReceptionSection(route.segments[0]);
+  const selected = route.segments[1];
+  if (section === 'jobs' && selected) return { kind: 'customer-job',jobId: selected,
+    tab: CUSTOMER_JOB_TABS.includes(route.segments[2] as CustomerJobTab) ? route.segments[2] as CustomerJobTab : 'overview' };
+  if (section === 'signoffs' && selected) return { kind: 'signoff',signoffId: selected };
+  if (section === 'inbox' && selected) return { kind: 'inbox-target',targetId: selected };
   if (section !== 'endpoints') return { kind: 'section', section };
   const subview = route.segments[1];
   const value = route.segments[2];
@@ -127,6 +150,9 @@ export const receptionAddressSelection = (
   readonly subview: string | null;
   readonly value: string | null;
 } => {
+  if (address.kind === 'customer-job') return { section: 'jobs',subview: address.jobId,value: address.tab };
+  if (address.kind === 'signoff') return { section: 'signoffs',subview: address.signoffId,value: null };
+  if (address.kind === 'inbox-target') return { section: 'inbox',subview: address.targetId,value: null };
   if (address.kind === 'section') {
     return { section: address.section, subview: null, value: null };
   }

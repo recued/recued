@@ -57,8 +57,8 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
     "slug": "personal-organizer-foundation",
     "publisher": "recued-core",
     "name": "Personal Organizer Foundation",
-    "description": "Use Personal Organizer Foundation in Recued for tasks, commitments, projects, and notes. It includes 9 ready-to-run workflows.",
-    "version": 8,
+    "description": "Use Personal Organizer Foundation in Recued for tasks, commitments, projects, notes, reminders, and saving files into folders. It includes 13 ready-to-run workflows.",
+    "version": 9,
     "bundled": true,
     "recipes": [],
     "contents": [
@@ -107,12 +107,36 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
       {
         "type": "recipe",
         "slug": "remind-me-of",
+        "version": 2,
+        "visible": true
+      },
+      {
+        "type": "recipe",
+        "slug": "list-reminders",
         "version": 1,
         "visible": true
       },
       {
         "type": "recipe",
-        "slug": "reminder-due-notifier",
+        "slug": "change-reminder",
+        "version": 1,
+        "visible": true
+      },
+      {
+        "type": "recipe",
+        "slug": "cancel-reminder",
+        "version": 1,
+        "visible": true
+      },
+      {
+        "type": "recipe",
+        "slug": "list-folders",
+        "version": 1,
+        "visible": true
+      },
+      {
+        "type": "recipe",
+        "slug": "save-file-to-folder",
         "version": 1,
         "visible": true
       }
@@ -129,6 +153,7 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
       "commitments",
       "projects",
       "notes",
+      "reminders",
       "calendar",
       "mail"
     ],
@@ -140,10 +165,19 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
     "slug": "reception-approval",
     "publisher": "recued-core",
     "name": "Reception — Approval",
-    "description": "Use Reception — Approval in Recued. Review customer replies before creating promises, releasing quotes, completing local work or running saved recipes. Actions that change data use Recued's approval controls.",
-    "version": 5,
+    "description": "Use Reception — Approval in Recued. Review customer replies before creating promises, releasing quotes, completing local work or running saved recipes. Correct recorded payments, invoice credits and bill balances after owner review. Record customer payments across invoices after reviewing their allocations.",
+    "version": 12,
     "pre_install": true,
-    "recipes": [],
+    "recipes": [
+      {
+        "slug": "reception-customer-invoice-credit",
+        "version": 1
+      },
+      {
+        "slug": "reception-customer-credit-correction",
+        "version": 1
+      }
+    ],
     "requires": [
       "install_bulk_pack"
     ],
@@ -157,6 +191,11 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
     "contents": [
       {
         "type": "recipe",
+        "slug": "reception-customer-account-payment-correction",
+        "version": 1
+      },
+      {
+        "type": "recipe",
         "slug": "reception-quote-signoff-release",
         "version": 2
       },
@@ -168,6 +207,16 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
       {
         "type": "recipe",
         "slug": "reception-approval-workflow",
+        "version": 1
+      },
+      {
+        "type": "recipe",
+        "slug": "reception-customer-payment-correction",
+        "version": 1
+      },
+      {
+        "type": "recipe",
+        "slug": "reception-customer-account-payment",
         "version": 1
       },
       {
@@ -289,6 +338,18 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
             }
           ]
         }
+      },
+      {
+        "type": "recipe",
+        "slug": "reception-customer-refund",
+        "version": 1,
+        "visible": true
+      },
+      {
+        "type": "recipe",
+        "slug": "reception-customer-refund-correction",
+        "version": 1,
+        "visible": true
       }
     ]
   },
@@ -724,6 +785,144 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
 // prettier-ignore
 export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinition>> =
   {
+  "cancel-reminder": {
+    "recipe_id": "cancel-reminder",
+    "chat_exposed": true,
+    "version": 1,
+    "ttl": 60,
+    "metadata": {
+      "name": "Cancel a reminder",
+      "description": "Use “Cancel a reminder” in Recued. Withdraw a reminder still to ring, so it never rings. Take its id from My reminders. A reminder that has already rung stays as it was.",
+      "author": "recued-core",
+      "supported_platforms": [],
+      "tags": [
+        "reminder",
+        "notify",
+        "personal-organizer",
+        "pack:personal-organizer"
+      ],
+      "budget_ms": 10000
+    },
+    "variables": {
+      "reminder_id": {
+        "label": "Reminder id",
+        "type": "string",
+        "help": "The reminder to cancel, as My reminders lists it (rem_…)."
+      }
+    },
+    "requires": [],
+    "steps": [
+      {
+        "id": "cancel",
+        "op": "core.reminder.cancel",
+        "args": {
+          "reminder_id": "{{config.reminder_id}}"
+        }
+      },
+      {
+        "id": "card",
+        "transform": "to_summary",
+        "fields": [
+          {
+            "label": "Result",
+            "value": "{{step.cancel.message}}"
+          },
+          {
+            "label": "Reminder",
+            "value": "{{step.cancel.reminder.text}}"
+          }
+        ]
+      }
+    ],
+    "output": {
+      "render": [
+        {
+          "type": "summary",
+          "source": "step.card"
+        }
+      ]
+    }
+  },
+  "change-reminder": {
+    "recipe_id": "change-reminder",
+    "chat_exposed": true,
+    "version": 1,
+    "ttl": 60,
+    "metadata": {
+      "name": "Change a reminder",
+      "description": "Use “Change a reminder” in Recued. Move a reminder still to ring to a new time, or change what it says. Take its id from My reminders. Pass a new time with its offset, and tell the user the time the answer gives.",
+      "author": "recued-core",
+      "supported_platforms": [],
+      "tags": [
+        "reminder",
+        "notify",
+        "personal-organizer",
+        "pack:personal-organizer"
+      ],
+      "budget_ms": 10000
+    },
+    "variables": {
+      "reminder_id": {
+        "label": "Reminder id",
+        "type": "string",
+        "help": "The reminder to change, as My reminders lists it (rem_…)."
+      },
+      "remind_at": {
+        "label": "New time",
+        "type": "datetime",
+        "optional": true,
+        "help": "The new time, as an absolute ISO 8601 / RFC 3339 date-time WITH a timezone offset (e.g. 2026-07-04T15:00:00-07:00). Resolve the user's requested time against the current date/time in your context, in the user's timezone — do NOT assume UTC. Leave empty to keep the time."
+      },
+      "reminder_text": {
+        "label": "New text",
+        "type": "string",
+        "optional": true,
+        "help": "What the reminder says instead. Leave empty to keep it."
+      }
+    },
+    "requires": [],
+    "steps": [
+      {
+        "id": "due_at_ms",
+        "transform": "date_parse",
+        "input": "{{config.remind_at}}",
+        "require_offset": true,
+        "skip_when": "{{config.remind_at}} is_empty",
+        "fail_on": "{{step.due_at_ms}} is_null"
+      },
+      {
+        "id": "change",
+        "op": "core.reminder.update",
+        "args": {
+          "reminder_id": "{{config.reminder_id}}",
+          "text": "{{config.reminder_text}}",
+          "at": "{{step.due_at_ms}}"
+        }
+      },
+      {
+        "id": "card",
+        "transform": "to_summary",
+        "fields": [
+          {
+            "label": "Result",
+            "value": "{{step.change.message}}"
+          },
+          {
+            "label": "Reminder",
+            "value": "{{step.change.reminder.text}}"
+          }
+        ]
+      }
+    ],
+    "output": {
+      "render": [
+        {
+          "type": "summary",
+          "source": "step.card"
+        }
+      ]
+    }
+  },
   "extract-commitments-from-mail": {
     "recipe_id": "extract-commitments-from-mail",
     "chat_exposed": true,
@@ -1458,6 +1657,130 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
       ]
     }
   },
+  "list-folders": {
+    "recipe_id": "list-folders",
+    "chat_exposed": true,
+    "version": 1,
+    "ttl": 60,
+    "metadata": {
+      "name": "My folders",
+      "description": "Use “My folders” in Recued. See the folders a file can be saved into: each connected folder, whether Recued can save into it now, and the folders inside it that hold files. Save a file to a folder takes these names.",
+      "author": "recued-core",
+      "supported_platforms": [],
+      "tags": [
+        "file",
+        "folder",
+        "personal-organizer",
+        "pack:personal-organizer"
+      ],
+      "budget_ms": 10000
+    },
+    "variables": {},
+    "requires": [],
+    "steps": [
+      {
+        "id": "list",
+        "op": "core.storage.file.folders",
+        "args": {}
+      },
+      {
+        "id": "table",
+        "transform": "to_table",
+        "array": "{{step.list.folders}}",
+        "columns": [
+          {
+            "field": "folder",
+            "label": "Folder"
+          },
+          {
+            "field": "writable",
+            "label": "Can save into"
+          },
+          {
+            "field": "inside",
+            "label": "Folders inside"
+          }
+        ]
+      }
+    ],
+    "output": {
+      "render": [
+        {
+          "type": "table",
+          "source": "step.table"
+        }
+      ]
+    }
+  },
+  "list-reminders": {
+    "recipe_id": "list-reminders",
+    "chat_exposed": true,
+    "version": 1,
+    "ttl": 60,
+    "metadata": {
+      "name": "My reminders",
+      "description": "Use “My reminders” in Recued. See the reminders still to ring, soonest first, each with its time on your clock. Each one has an id, which Change a reminder and Cancel a reminder take.",
+      "author": "recued-core",
+      "supported_platforms": [],
+      "tags": [
+        "reminder",
+        "notify",
+        "personal-organizer",
+        "pack:personal-organizer"
+      ],
+      "budget_ms": 10000
+    },
+    "variables": {},
+    "requires": [],
+    "steps": [
+      {
+        "id": "list",
+        "op": "core.reminder.list",
+        "args": {}
+      },
+      {
+        "id": "card",
+        "transform": "to_summary",
+        "fields": [
+          {
+            "label": "Waiting",
+            "value": "{{step.list.count}}"
+          }
+        ]
+      },
+      {
+        "id": "table",
+        "transform": "to_table",
+        "array": "{{step.list.reminders}}",
+        "columns": [
+          {
+            "field": "when",
+            "label": "When"
+          },
+          {
+            "field": "text",
+            "label": "Reminder"
+          },
+          {
+            "field": "reminder_id",
+            "label": "Id"
+          }
+        ]
+      }
+    ],
+    "output": {
+      "render": [
+        {
+          "type": "summary",
+          "source": "step.card"
+        },
+        {
+          "type": "table",
+          "source": "step.table"
+        }
+      ]
+    }
+  },
   "open-commitments": {
     "recipe_id": "open-commitments",
     "chat_exposed": true,
@@ -1824,6 +2147,342 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
       "render": []
     }
   },
+  "reception-customer-account-payment": {
+    "recipe_id": "reception-customer-account-payment",
+    "version": 1,
+    "chat_exposed": false,
+    "ttl": 0,
+    "metadata": {
+      "name": "Record a customer account payment",
+      "description": "Use “Record a customer account payment” in Recued. Review one received payment and its invoice allocations. Record every payment entry and invoice balance together after owner approval.",
+      "author": "recued-core",
+      "supported_platforms": [],
+      "recipe_bundle": "recued-core/reception-approval",
+      "tags": [
+        "pack:reception",
+        "payments"
+      ],
+      "budget_ms": 30000
+    },
+    "variables": {
+      "account_payment_id": {
+        "label": "Saved account payment",
+        "type": "string"
+      },
+      "expected_plan_hash": {
+        "label": "Reviewed payment digest",
+        "type": "string"
+      },
+      "summary": {
+        "label": "Payment and invoice allocations",
+        "type": "string"
+      }
+    },
+    "steps": [
+      {
+        "id": "record",
+        "op": "core.work-entity.customer-account-payment.apply",
+        "args": {
+          "account_payment_id": "{{config.account_payment_id}}",
+          "expected_plan_hash": "{{config.expected_plan_hash}}",
+          "summary": "{{config.summary}}"
+        }
+      }
+    ],
+    "output": {
+      "render": []
+    },
+    "prefetch_steps": [],
+    "requires": []
+  },
+  "reception-customer-account-payment-correction": {
+    "recipe_id": "reception-customer-account-payment-correction",
+    "version": 1,
+    "chat_exposed": false,
+    "ttl": 0,
+    "metadata": {
+      "name": "Correct a customer account payment",
+      "description": "Use “Correct a customer account payment” in Recued. Review a correction or void for one recorded payment and all its invoice entries. Keep the reason and history. Apply every balance change together after owner approval.",
+      "author": "recued-core",
+      "supported_platforms": [],
+      "recipe_bundle": "recued-core/reception-approval",
+      "tags": [
+        "pack:reception",
+        "payments"
+      ],
+      "budget_ms": 30000
+    },
+    "variables": {
+      "correction_id": {
+        "label": "Saved account payment correction",
+        "type": "string"
+      },
+      "expected_plan_hash": {
+        "label": "Reviewed correction digest",
+        "type": "string"
+      },
+      "summary": {
+        "label": "Payment correction and invoice changes",
+        "type": "string"
+      }
+    },
+    "steps": [
+      {
+        "id": "record",
+        "op": "core.work-entity.customer-account-payment.correct",
+        "args": {
+          "correction_id": "{{config.correction_id}}",
+          "expected_plan_hash": "{{config.expected_plan_hash}}",
+          "summary": "{{config.summary}}"
+        }
+      }
+    ],
+    "output": {
+      "render": []
+    },
+    "prefetch_steps": [],
+    "requires": []
+  },
+  "reception-customer-credit-correction": {
+    "recipe_id": "reception-customer-credit-correction",
+    "version": 1,
+    "chat_exposed": false,
+    "ttl": 0,
+    "metadata": {
+      "name": "Correct an invoice credit",
+      "description": "Use “Correct an invoice credit” in Recued. Reverse a wrong credit after owner review. You can add a linked replacement. Keep both entries, the reason and the exact bill balance.",
+      "author": "recued-core",
+      "supported_platforms": [],
+      "recipe_bundle": "recued-core/reception-approval",
+      "tags": [
+        "pack:reception",
+        "payments"
+      ],
+      "budget_ms": 30000
+    },
+    "variables": {
+      "expected_plan_hash": {
+        "label": "Reviewed credit digest",
+        "type": "string"
+      },
+      "summary": {
+        "label": "Credit and balance change",
+        "type": "string"
+      },
+      "correction_id": {
+        "label": "Saved credit correction",
+        "type": "string"
+      }
+    },
+    "steps": [
+      {
+        "id": "correction",
+        "op": "core.work-entity.customer-invoice.credit.correct",
+        "args": {
+          "correction_id": "{{config.correction_id}}",
+          "expected_plan_hash": "{{config.expected_plan_hash}}",
+          "summary": "{{config.summary}}"
+        }
+      }
+    ],
+    "output": {
+      "render": []
+    },
+    "prefetch_steps": [],
+    "requires": []
+  },
+  "reception-customer-invoice-credit": {
+    "recipe_id": "reception-customer-invoice-credit",
+    "version": 1,
+    "chat_exposed": false,
+    "ttl": 0,
+    "metadata": {
+      "name": "Issue an invoice credit",
+      "description": "Use “Issue an invoice credit” in Recued. Reduce an invoice’s unpaid balance after owner review. Keep the original bill and payments, save the reason, and print a customer copy.",
+      "author": "recued-core",
+      "supported_platforms": [],
+      "recipe_bundle": "recued-core/reception-approval",
+      "tags": [
+        "pack:reception",
+        "payments"
+      ],
+      "budget_ms": 30000
+    },
+    "variables": {
+      "credit_id": {
+        "label": "Saved credit",
+        "type": "string"
+      },
+      "expected_plan_hash": {
+        "label": "Reviewed credit digest",
+        "type": "string"
+      },
+      "summary": {
+        "label": "Credit and balance change",
+        "type": "string"
+      }
+    },
+    "steps": [
+      {
+        "id": "credit",
+        "op": "core.work-entity.customer-invoice.credit",
+        "args": {
+          "credit_id": "{{config.credit_id}}",
+          "expected_plan_hash": "{{config.expected_plan_hash}}",
+          "summary": "{{config.summary}}"
+        }
+      }
+    ],
+    "output": {
+      "render": []
+    },
+    "prefetch_steps": [],
+    "requires": []
+  },
+  "reception-customer-payment-correction": {
+    "recipe_id": "reception-customer-payment-correction",
+    "version": 1,
+    "chat_exposed": false,
+    "ttl": 0,
+    "metadata": {
+      "name": "Correct a recorded payment",
+      "description": "Use “Correct a recorded payment” in Recued. Review a saved payment correction and its invoice balance change. Apply both changes together and keep their original values and your reason in correction history.",
+      "author": "recued-core",
+      "supported_platforms": [],
+      "recipe_bundle": "recued-core/reception-approval",
+      "tags": [
+        "pack:reception",
+        "payments"
+      ],
+      "budget_ms": 30000
+    },
+    "variables": {
+      "correction_id": {
+        "label": "Saved correction",
+        "type": "string"
+      },
+      "expected_plan_hash": {
+        "label": "Reviewed correction digest",
+        "type": "string"
+      },
+      "summary": {
+        "label": "Payment and balance change",
+        "type": "string"
+      }
+    },
+    "steps": [
+      {
+        "id": "correct",
+        "op": "core.work-entity.customer-payment.correct",
+        "args": {
+          "correction_id": "{{config.correction_id}}",
+          "expected_plan_hash": "{{config.expected_plan_hash}}",
+          "summary": "{{config.summary}}"
+        }
+      }
+    ],
+    "output": {
+      "render": []
+    },
+    "prefetch_steps": [],
+    "requires": []
+  },
+  "reception-customer-refund": {
+    "recipe_id": "reception-customer-refund",
+    "version": 1,
+    "chat_exposed": false,
+    "ttl": 0,
+    "metadata": {
+      "name": "Review a customer refund",
+      "description": "Use “Review a customer refund” in Recued. Issue a credit against paid money, or record a refund made outside Recued. Review the exact amount, linked payment and bill balance first.",
+      "author": "recued-core",
+      "supported_platforms": [],
+      "recipe_bundle": "recued-core/reception-approval",
+      "tags": [
+        "pack:reception",
+        "payments"
+      ],
+      "budget_ms": 30000
+    },
+    "variables": {
+      "expected_plan_hash": {
+        "label": "Reviewed refund digest",
+        "type": "string"
+      },
+      "summary": {
+        "label": "Credit, refund and balance change",
+        "type": "string"
+      },
+      "action_id": {
+        "label": "Saved refund review",
+        "type": "string"
+      }
+    },
+    "steps": [
+      {
+        "id": "refund",
+        "op": "core.work-entity.customer-refund.apply",
+        "args": {
+          "action_id": "{{config.action_id}}",
+          "expected_plan_hash": "{{config.expected_plan_hash}}",
+          "summary": "{{config.summary}}"
+        }
+      }
+    ],
+    "output": {
+      "render": []
+    },
+    "prefetch_steps": [],
+    "requires": []
+  },
+  "reception-customer-refund-correction": {
+    "recipe_id": "reception-customer-refund-correction",
+    "version": 1,
+    "chat_exposed": false,
+    "ttl": 0,
+    "metadata": {
+      "name": "Correct a recorded customer refund",
+      "description": "Use “Correct a recorded customer refund” in Recued. Reverse a mistaken saved refund entry or replace wrong details. Review the exact refund and balance change first. Money stays outside Recued.",
+      "author": "recued-core",
+      "supported_platforms": [],
+      "recipe_bundle": "recued-core/reception-approval",
+      "tags": [
+        "pack:reception",
+        "payments"
+      ],
+      "budget_ms": 30000
+    },
+    "variables": {
+      "expected_plan_hash": {
+        "label": "Reviewed refund digest",
+        "type": "string"
+      },
+      "summary": {
+        "label": "Refund correction and balance change",
+        "type": "string"
+      },
+      "correction_id": {
+        "label": "Saved refund correction",
+        "type": "string"
+      }
+    },
+    "steps": [
+      {
+        "id": "correct",
+        "op": "core.work-entity.customer-refund.correct",
+        "args": {
+          "correction_id": "{{config.correction_id}}",
+          "expected_plan_hash": "{{config.expected_plan_hash}}",
+          "summary": "{{config.summary}}"
+        }
+      }
+    ],
+    "output": {
+      "render": []
+    },
+    "prefetch_steps": [],
+    "requires": []
+  },
   "reception-quote-completion-review": {
     "recipe_id": "reception-quote-completion-review",
     "version": 1,
@@ -1905,16 +2564,15 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
   "remind-me-of": {
     "recipe_id": "remind-me-of",
     "chat_exposed": true,
-    "version": 1,
+    "version": 2,
     "ttl": 60,
     "metadata": {
       "name": "Remind me",
-      "description": "Use “Remind me” in Recued. Capture a one-shot personal reminder as a Recued task. Resolve the requested time against the current date/time in your context, in the user's timezone, and pass remindat as an absolute ISO 8601 timestamp with an explicit offset.",
+      "description": "Use “Remind me” in Recued. Set a one-time reminder: Recued tells you at that time, once, on every channel you set up. Work out the time from the current date and time in your context, on the user's clock. Pass it with its offset, and tell the user the time the answer gives.",
       "author": "recued-core",
       "supported_platforms": [],
       "tags": [
         "reminder",
-        "task",
         "notify",
         "personal-organizer",
         "pack:personal-organizer"
@@ -1925,28 +2583,18 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
       "reminder_text": {
         "label": "Reminder text",
         "type": "string",
-        "help": "Bare reminder text to show when the reminder fires."
+        "help": "What the reminder says when it rings, in the user's words."
       },
       "remind_at": {
         "label": "Remind at",
         "type": "datetime",
-        "help": "When the reminder should fire, as an absolute ISO 8601 / RFC 3339 date-time WITH a timezone offset (e.g. 2026-07-04T15:00:00-07:00 or 2026-07-04T22:00:00Z). Resolve the user's requested time against the current date/time in your context, in the user's timezone — do NOT assume UTC; if the timezone is unknown, ask before guessing. An offset-less value is rejected."
-      },
-      "container_names": {
-        "label": "Destination container",
-        "type": "object",
-        "optional": true,
-        "default": {},
-        "help": "Optional. File the reminder in a named vendor container, keyed by its dependency ref: { 'project': 'Roadmap' } (Asana) or { 'team': 'Core' } (Linear). Leave empty to use the Source's default destination."
+        "help": "When the reminder should ring, as an absolute ISO 8601 / RFC 3339 date-time WITH a timezone offset (e.g. 2026-07-04T15:00:00-07:00 or 2026-07-04T22:00:00Z). Resolve the user's requested time against the current date/time in your context, in the user's timezone — do NOT assume UTC; if the timezone is unknown, ask before guessing. An offset-less value is rejected, and so is a time that has passed."
       }
     },
-    "requires": [],
+    "requires": [
+      "notification_send"
+    ],
     "steps": [
-      {
-        "id": "text",
-        "transform": "trim",
-        "input": "{{config.reminder_text}}"
-      },
       {
         "id": "due_at_ms",
         "transform": "date_parse",
@@ -1955,17 +2603,11 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
         "fail_on": "{{step.due_at_ms}} is_null"
       },
       {
-        "id": "create",
-        "op": "core.work-entity.task.create",
+        "id": "set",
+        "op": "core.reminder.create",
         "args": {
-          "title": "Reminder: {{step.text}}",
-          "body": "{{step.text}}",
-          "due_at": "{{step.due_at_ms}}",
-          "state": "reminder_pending",
-          "source_extension_blob": {
-            "kind": "recued_reminder"
-          },
-          "container_names": "{{config.container_names}}"
+          "text": "{{config.reminder_text}}",
+          "at": "{{step.due_at_ms}}"
         }
       },
       {
@@ -1974,127 +2616,11 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
         "fields": [
           {
             "label": "Reminder",
-            "value": "{{step.text}}"
+            "value": "{{step.set.reminder.text}}"
           },
           {
-            "label": "Due at",
-            "value": "{{config.remind_at}}"
-          },
-          {
-            "label": "Task ID",
-            "value": "{{step.create.task._id}}"
-          }
-        ]
-      }
-    ],
-    "output": {
-      "render": [
-        {
-          "type": "summary",
-          "source": "step.card"
-        }
-      ]
-    }
-  },
-  "reminder-due-notifier": {
-    "recipe_id": "reminder-due-notifier",
-    "chat_exposed": false,
-    "version": 1,
-    "ttl": 60,
-    "metadata": {
-      "name": "Reminder due notifier",
-      "description": "Use “Reminder due notifier” in Recued. It supports this workflow in the background and is not intended to be run directly.",
-      "author": "recued-core",
-      "supported_platforms": [],
-      "tags": [
-        "reminder",
-        "task",
-        "notify",
-        "reactive",
-        "hidden",
-        "pack:personal-organizer"
-      ],
-      "budget_ms": 10000
-    },
-    "variables": {},
-    "requires": [
-      "notification_send"
-    ],
-    "auto_run": {
-      "interval_ms": 60000,
-      "dynamic": false
-    },
-    "trigger_steps": [
-      {
-        "id": "due",
-        "op": "core.watch.time-relative",
-        "args": {
-          "collection": "data.task",
-          "anchor_field": "due_at",
-          "offsets": [
-            "0s"
-          ],
-          "filter": "recued_reminder"
-        }
-      }
-    ],
-    "steps": [
-      {
-        "id": "text",
-        "transform": "default",
-        "value": "{{trigger.due.trigger_record.body}}",
-        "fallback": "{{trigger.due.trigger_record.title}}"
-      },
-      {
-        "id": "skip_notification",
-        "transform": "any",
-        "conditions": [
-          "{{trigger.due.trigger_record.state}} not_equal reminder_pending",
-          "{{trigger.due.trigger_record.done}} equal true"
-        ]
-      },
-      {
-        "id": "send",
-        "skip_when": "{{step.skip_notification}} equal true",
-        "op": "core.notification.send",
-        "args": {
-          "title": "Reminder",
-          "text": "{{step.text}}",
-          "link_url": null
-        }
-      },
-      {
-        "id": "delivery_not_confirmed",
-        "transform": "any",
-        "conditions": [
-          "{{step.skip_notification}} equal true",
-          "{{step.send.delivered_to}} is_empty"
-        ]
-      },
-      {
-        "id": "mark_fired",
-        "skip_when": "{{step.delivery_not_confirmed}} equal true",
-        "op": "core.work-entity.task.update",
-        "args": {
-          "id": "{{trigger.due.trigger_record_id}}",
-          "state": "reminder_fired"
-        }
-      },
-      {
-        "id": "card",
-        "transform": "to_summary",
-        "fields": [
-          {
-            "label": "Reminder",
-            "value": "{{step.text}}"
-          },
-          {
-            "label": "Task ID",
-            "value": "{{trigger.due.trigger_record_id}}"
-          },
-          {
-            "label": "Delivered to",
-            "value": "{{step.send.delivered_to}}"
+            "label": "When",
+            "value": "{{step.set.confirmation}}"
           }
         ]
       }
@@ -2608,6 +3134,83 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
         {
           "type": "summary",
           "source": "step.save_to_mailbox"
+        }
+      ]
+    }
+  },
+  "save-file-to-folder": {
+    "recipe_id": "save-file-to-folder",
+    "chat_exposed": true,
+    "version": 1,
+    "ttl": 60,
+    "metadata": {
+      "name": "Save a file to a folder",
+      "description": "Use “Save a file to a folder” in Recued. Save a file the user sent, such as an attachment on their email, into one of their folders. Pass its id (file:…) and the folder as the user named it: Receipts, or a path like documents/Receipts. It never replaces a file: a taken name gets a number. Tell the user where it went.",
+      "author": "recued-core",
+      "supported_platforms": [],
+      "tags": [
+        "file",
+        "folder",
+        "save",
+        "attachment",
+        "personal-organizer",
+        "pack:personal-organizer"
+      ],
+      "budget_ms": 20000
+    },
+    "variables": {
+      "file_id": {
+        "label": "File",
+        "type": "string",
+        "help": "The file's id, as the files attached to the message list it (file:…)."
+      },
+      "folder": {
+        "label": "Folder",
+        "type": "string",
+        "help": "The folder, the way the user named it: a connected folder (documents), a folder inside one (Receipts), or a path from a connected folder (documents/Receipts/2026). My folders lists them."
+      },
+      "file_name": {
+        "label": "Save as",
+        "type": "string",
+        "optional": true,
+        "help": "A file name to save it under instead of its own, without a folder in it. Leave empty to keep its own name."
+      }
+    },
+    "requires": [],
+    "steps": [
+      {
+        "id": "save",
+        "op": "core.storage.file.save-to-folder",
+        "args": {
+          "file_id": "{{config.file_id}}",
+          "folder": "{{config.folder}}",
+          "name": "{{config.file_name}}"
+        }
+      },
+      {
+        "id": "card",
+        "transform": "to_summary",
+        "fields": [
+          {
+            "label": "Result",
+            "value": "{{step.save.message}}"
+          },
+          {
+            "label": "Folder",
+            "value": "{{step.save.folder}}"
+          },
+          {
+            "label": "Saved as",
+            "value": "{{step.save.path}}"
+          }
+        ]
+      }
+    ],
+    "output": {
+      "render": [
+        {
+          "type": "summary",
+          "source": "step.card"
         }
       ]
     }

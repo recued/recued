@@ -190,6 +190,9 @@ export const TRANSPARENCY_TEMPLATES_EN: Readonly<{
     if (e.termination_reason === 'output_unreadable') {
       return `stopped after ${e.total_rounds} round${e.total_rounds === 1 ? '' : 's'} — the last reply could not be read`;
     }
+    if (e.termination_reason === 'context_trim_livelock') {
+      return `stopped after ${e.total_rounds} round${e.total_rounds === 1 ? '' : 's'} — results were repeatedly removed to fit the context window`;
+    }
     return `stopped after ${e.total_rounds} round${e.total_rounds === 1 ? '' : 's'}`;
   },
 

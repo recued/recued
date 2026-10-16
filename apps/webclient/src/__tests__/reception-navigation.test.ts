@@ -7,6 +7,9 @@ import {
   receptionEndpointDetailAddress,
   receptionEndpointPairAddress,
   receptionSectionAddress,
+  receptionCustomerJobAddress,
+  receptionInboxTargetAddress,
+  receptionSignoffAddress,
 } from '../reception/navigation.js';
 import { parseShellRoute } from '../shell/route.js';
 
@@ -38,5 +41,15 @@ describe('Reception hierarchical navigation contract', () => {
       subview: null,
       value: null,
     });
+  });
+});
+
+
+describe('Customer-work exact navigation',()=>{
+  it('round trips job sections and selected reviews without losing encoded identity',()=>{
+    const hash=receptionCustomerJobAddress('job/a #1','billing').hash;
+    expect(parseReceptionAddress(parseShellRoute(hash))).toEqual({kind:'customer-job',jobId:'job/a #1',tab:'billing'});
+    expect(parseReceptionAddress(parseShellRoute(receptionInboxTargetAddress('offer/a')))).toEqual({kind:'inbox-target',targetId:'offer/a'});
+    expect(parseReceptionAddress(parseShellRoute(receptionSignoffAddress('offer/a')))).toEqual({kind:'signoff',signoffId:'offer/a'});
   });
 });

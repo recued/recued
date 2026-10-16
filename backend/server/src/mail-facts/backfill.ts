@@ -42,7 +42,6 @@ import type {
   MailFactBackfillState,
   MailTemplate,
 } from '@recued/contracts';
-import { isMailReconciliationId } from '@recued/contracts';
 
 import type { MailCollection } from '../collections/mail/mail-collection.js';
 import type { MailFactStore } from '../storage/mail-fact-store.js';
@@ -50,6 +49,7 @@ import { mailFactEmailDate, type MailFactWriter } from './fact-writer.js';
 import { contentFingerprint, mailFactEmailAt } from './mail-ingest.js';
 import { conditionsMayHold } from './rules-pass.js';
 import { readStoredEmail, storedAttachmentsOf, storedCopyEmail, storedLabels, type StoredEmailDeps } from './stored-email.js';
+import { sentByRecued } from './own-mail.js';
 
 const DAY_MS = 86_400_000;
 const PAGE = 500;
@@ -63,6 +63,10 @@ export interface MailFactBackfillDeps extends StoredEmailDeps {
   readonly store: Pick<MailFactStore, 'getTemplate' | 'factsForEmail' | 'getEmailLedger' | 'factRecordsForEmail' | 'emailsWithTemplateFacts' | 'emailMovedTo'>;
   readonly writer: Pick<MailFactWriter, 'write'>;
   readonly mailboxes: () => readonly MailCollection[];
+  /** D-318 audit — an email the ingest never reads for facts beyond Recued's
+   *  own and drafts: the conversation with the email chat door, in the owner's
+   *  mailboxes. Absent ⇒ none. */
+  readonly skip?: (record: CollectionRecord) => boolean;
   readonly retentionDays?: (slug: string) => number | null;
   readonly now: () => number;
   readonly mintId?: () => string;
@@ -95,10 +99,10 @@ export interface MailFactBackfill {
 
 type MutableJob = { -readonly [K in keyof MailFactBackfillJob]: MailFactBackfillJob[K] };
 
-const skippedByIngest = (record: CollectionRecord): boolean =>
-  record.hot_fields.direction === 'draft' || isMailReconciliationId(record.hot_fields.reconciliation_id);
-
 export const createMailFactBackfill = (deps: MailFactBackfillDeps): MailFactBackfill => {
+  /** What the ingest left out: drafts, and what Recued sent itself. */
+  const skippedByIngest = (record: CollectionRecord): boolean =>
+    record.hot_fields.direction === 'draft' || sentByRecued(record.hot_fields.reconciliation_id, deps.isOwnSend);
   let job: MutableJob | null = null;
   let running: Promise<void> | null = null;
   let cancelled = false;
@@ -151,7 +155,7 @@ export const createMailFactBackfill = (deps: MailFactBackfillDeps): MailFactBack
           limit: PAGE,
         });
         for (const record of page) {
-          if (skippedByIngest(record)) continue;
+          if (skippedByIngest(record) || deps.skip?.(record) === true) continue;
           const holds = holding.has(`${mailbox.slug}\u0000${record.record_id}`);
           if (!holds && !conditionsMayHold(bodyless, await storedCopyEmail(deps, record, { withBody: false }), template.html)) continue;
           if (!holds && needsBody && !conditionsMayHold(conditions, await storedCopyEmail(deps, record), template.html)) continue;

@@ -117,8 +117,9 @@ export interface HousekeepingPanelState {
    *  a `confidence: number` field? Drives the sparkline-section gate.
    *  Topics absent default to false. */
   hasConfidenceField: Record<string, boolean>;
-  /** D-132 P5 — Trust-write rpc in flight, keyed by topic. The drawer
-   *  disables radios for that topic while the boolean is true. */
+  /** Shared per-topic write lock for Run policy, Model pool, Promote, and
+   *  promotion dismissal. These actions all return the entire trust row;
+   *  hosts block further changes while keeping their controls focusable. */
   trustWriting: Record<string, boolean>;
   /** D-132 P5 — Last write error per topic, cleared on next write
    *  attempt. */
@@ -134,8 +135,8 @@ export interface HousekeepingPanelState {
    *  promotes through the banner buttons. The banner renders in
    *  topic-key insertion order; one banner per topic. */
   promotionSuggestions: Record<string, HousekeepingPromotionSuggestion>;
-  /** D-132 P6 — Per-topic in-flight flag for the promote / dismiss
-   *  rpcs the banner fires. Disables both buttons while true. */
+  /** Per-topic banner progress. Promotion also holds `trustWriting` until
+   *  its reply settles, so radio and banner saves cannot overlap. */
   promotionWriting: Record<string, boolean>;
   /** D-132 P6 — Per-topic last error from a banner-driven write. */
   promotionWriteError: Record<string, string>;
@@ -190,8 +191,8 @@ export interface HousekeepingCacheTopicStats {
  *    - `confirmingClear`: true once the user clicks "Clear cache" and the
  *                         inline confirm strip is open (DD: two-stage,
  *                         mirror SI delete). False on Cancel.
- *    - `clearing`     : true while the `housekeeping.cache.clear` rpc is
- *                       in flight. Disables both Confirm + Cancel.
+ *    - `clearing`     : true until the clear and its stats refresh settle.
+ *                       Blocks Confirm + Cancel while preserving focus.
  *    - `clearError`   : inline error from the most recent clear attempt;
  *                       cleared on next confirm-open. */
 export interface HousekeepingCacheCardState {

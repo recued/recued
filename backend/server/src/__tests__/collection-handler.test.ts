@@ -399,6 +399,7 @@ describe('makeCollectionHandlers', () => {
       'collection.calendar.reauth',
       'collection.calendar.resync',
       'collection.calendar.update',
+      'collection.calendar.updateCredentials',
       'collection.deleteRecord',
       'collection.file.delete',
       'collection.file.enroll',
@@ -408,11 +409,18 @@ describe('makeCollectionHandlers', () => {
       'collection.list',
       'collection.listEndpoints',
       'collection.listInstances',
+      // D-318 step 1 — the email chat door's chat mailbox; step 7, the checks
+      // before switching it on and the test round trip.
+      'collection.mail.chat_door.check',
+      'collection.mail.chat_door.get',
+      'collection.mail.chat_door.recent',
+      'collection.mail.chat_door.set',
       'collection.mail.delete',
       'collection.mail.enrollImap',
       'collection.mail.enrollManagedOAuth',
       'collection.mail.enrollOAuth',
       'collection.mail.list',
+      'collection.mail.updateCredentials',
       // D-177 N.12 — `collection.mail.send` is intentionally NOT wired
       // (gateway internal executor only); see the d-177-n12 ratchet test.
       'collection.resync',

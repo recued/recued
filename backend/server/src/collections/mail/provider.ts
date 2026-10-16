@@ -43,6 +43,11 @@ import {
   type MailSentEnvelopeReconciliationQuery,
   type MailSentReconciliationQuery,
   type MailSentReconciliationResult,
+  // D-318 step 2 — proof (a), the Sent lookup by Message-ID.
+  type MailSentByMessageIdQuery,
+  type MailSentByMessageIdResult,
+  type MailSentRepliesQuery,
+  type MailSentRepliesResult,
   // D-239 — mail write-back.
   type MailMoveDestination,
   type MailMoveOutcome,
@@ -78,10 +83,39 @@ export interface InboundMailAttachmentPart {
   /** MIME disposition as observed at source. D-200 reconciliation requires a
    * real attachment; an inline part with the same bytes is not equivalent. */
   disposition?: 'attachment' | 'inline';
+  /** D-318 step 4 — the part's Content-ID, without its brackets: what the HTML
+   *  body names as `cid:…` where an inline image appears (a signature's logo,
+   *  or a photo pasted into the text). Graph's HTML names images so; Gmail's and
+   *  IMAP's parser writes each into the HTML by its bytes instead, so their
+   *  parts leave it out. */
+  content_id?: string;
   fetchBytes(): Promise<Buffer>;
 }
 
+/** D-318 — a MIME part's disposition as the message means it. An explicit
+ *  `Content-Disposition` is what it says. A part with none, inside
+ *  `multipart/related`, is one of the HTML's own resources (RFC 2387): an image
+ *  the message shows — Outlook sends its signature logos so, a Content-ID and
+ *  no disposition (found in a real Outlook 16 reply, 2026-10-14). Any other
+ *  part with none is an attachment, as before. */
+export const mailPartDisposition = (
+  explicit: string | null | undefined,
+  related: boolean,
+): 'inline' | 'attachment' => {
+  const value = (explicit ?? '').trim().toLowerCase();
+  if (value.startsWith('inline')) return 'inline';
+  if (value.startsWith('attachment')) return 'attachment';
+  return related ? 'inline' : 'attachment';
+};
+
 const FILENAME_MAX_BYTES = 255;
+
+/** D-318 step 4 — a Content-ID as the HTML names it: `<logo@x>` → `logo@x`. */
+export const mailContentId = (raw: string | null | undefined): string | undefined => {
+  if (typeof raw !== 'string') return undefined;
+  const id = raw.trim().replace(/^<(.*)>$/, '$1').trim();
+  return id.length > 0 && id.length <= 500 ? id : undefined;
+};
 
 export const sanitizeMailAttachmentFilename = (raw: string, fallback = 'attachment'): string => {
   let s = String(raw ?? '').normalize('NFC');
@@ -220,15 +254,18 @@ export const mailAttachmentPartFromBytes = (input: {
   mime_type: string | undefined;
   source_part_id: string;
   disposition?: 'attachment' | 'inline';
+  content_id?: string | undefined;
   bytes: Buffer;
 }): InboundMailAttachmentPart => {
   const bytes = Buffer.from(input.bytes);
+  const content_id = mailContentId(input.content_id);
   return {
     filename: sanitizeMailAttachmentFilename(input.filename ?? '', 'attachment'),
     mime_type: detectMailAttachmentMimeType(bytes, input.mime_type),
     size: bytes.length,
     source_part_id: input.source_part_id,
     disposition: input.disposition ?? 'attachment',
+    ...(content_id !== undefined ? { content_id } : {}),
     async fetchBytes() {
       return Buffer.from(bytes);
     },
@@ -323,8 +360,16 @@ export interface CanonicalMessage {
    *  `flag.flagStatus === 'flagged'`. */
   is_flagged: boolean;
   has_attachments: boolean;
-  /** Unix-ms receipt timestamp at the source. */
+  /** Unix-ms receipt timestamp at the source. ⚠ Gmail and IMAP take it from the
+   *  message's own `Date:` line, which the SENDER's clock wrote, and fall back to
+   *  the provider's time only when there is none; Graph uses its received time. */
   received_at: number;
+  /** D-318 step 1 — when the mailbox's provider received the message, by its
+   *  own clock: Gmail's `internalDate`, IMAP's `INTERNALDATE`, Graph's
+   *  `receivedDateTime`. Absent when the provider gave none. In memory only,
+   *  like `headers`: the email chat door measures a request's age with it,
+   *  never with a Date line its sender wrote. */
+  provider_received_at?: number;
   /** Plaintext body (canonicalized from HTML when only HTML exists). */
   body_text: string;
   /** Optional raw HTML body. Stored only when the caller enables
@@ -688,6 +733,11 @@ export interface ProviderSyncEvent {
   source_id: string;
   /** Present on `created` and `updated`, omitted on `deleted`. */
   message?: CanonicalMessage;
+  /** D-318 step 6 — found by the provider's recovery scan, not as it arrived:
+   *  its change cursor had expired (Gmail's history, Graph's delta), so the
+   *  window was listed again. The email chat door runs no request found so
+   *  (§4.8, P22). */
+  recovered?: boolean;
 }
 
 export type ProviderSyncCallback = (event: ProviderSyncEvent) => Promise<void>;
@@ -705,6 +755,10 @@ export interface ProviderHealth {
 export interface InitialScanOptions {
   backfill_days: number;
   onMessage: (msg: CanonicalMessage) => Promise<boolean>;
+  /** A mailbox/folder read succeeded, including an empty result. Called before
+   * message or attachment hydration, so access can be confirmed during a long
+   * backfill. Token exchange and profile reads alone are not this evidence. */
+  onAccessVerified?: () => void;
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -999,6 +1053,19 @@ export interface MailProvider {
     query: MailSentReconciliationQuery,
   ): Promise<MailSentReconciliationResult>;
 
+  /** D-318 step 2 — proof (a) for the email chat door: the Sent messages that
+   *  carry one RFC Message-ID, looked up at the provider (Gmail's `SENT` label,
+   *  the IMAP Sent folder, Graph's `sentitems`), never synced. At most
+   *  `MAIL_SENT_BY_MESSAGE_ID_MAX_MATCHES`. */
+  lookupSentByMessageId?(query: MailSentByMessageIdQuery): Promise<MailSentByMessageIdResult>;
+
+  /** D-318 — the Sent messages that REPLY to one Message-ID (`In-Reply-To`),
+   *  looked up at the provider as `lookupSentByMessageId` is: has the chat
+   *  mailbox already answered this request? A restored server, or a second
+   *  copy, remembers none of the answers sent since; the Sent folder does. At
+   *  most `MAIL_SENT_REPLIES_MAX_MATCHES`. */
+  lookupSentReplies?(query: MailSentRepliesQuery): Promise<MailSentRepliesResult>;
+
   /** D-315 §4.4 — one message read again from the provider, whole: its HTML,
    *  headers and sender name, which the stored row does not keep. A template's
    *  preview and a backfill read mail that already arrived through it.
@@ -1159,6 +1226,15 @@ export interface OutgoingMessage {
   /** Compact caller-pinned identity carried as
    * X-Recued-Reconciliation-ID across every provider. */
   reconciliation_id?: string;
+  /** D-318 step 5 — the provider's thread to send into. Gmail files a reply
+   *  sent without its `threadId` in a new thread of the SENDING mailbox, so the
+   *  sender's view of the conversation splits; with it, the reply joins the
+   *  thread (In-Reply-To / References and a matching subject are still
+   *  required). Graph and IMAP thread by those headers alone and ignore it. */
+  thread_id?: string;
+  /** D-318 step 5 — an automatic reply, as Recued's chat answers are: marked so
+   *  auto-responders stay quiet (`MAIL_AUTOMATIC_REPLY_HEADERS`). */
+  automatic?: boolean;
   /** D-172 P2 — resolved file attachments. Each carries decoded
    *  bytes (base64) + filename + mime so the provider renders a
    *  native attachment part (Gmail multipart/mixed; Graph
@@ -1168,6 +1244,25 @@ export interface OutgoingMessage {
    *  `file.read` — providers never reach the warehouse. */
   attachments?: OutgoingAttachment[];
 }
+
+/** D-318 step 5 — what marks a message as an automatic reply: RFC 3834's
+ *  `Auto-Submitted`, which well-behaved auto-responders honour, and Exchange's
+ *  `X-Auto-Response-Suppress`, which Exchange and Outlook honour. Not
+ *  `Precedence: bulk`: that can move a message to a bulk or Promotions tab, and
+ *  an answer must land in the inbox.
+ *
+ *  ⚠ Graph documents a custom header on a message it creates as one named
+ *  `x-`, so a Graph send carries the second alone (`buildGraphMessage`).
+ *
+ *  ⛔ `OOF, AutoReply`, NOT `All`: those two are the auto-responders that could
+ *  loop with an answer. `All` also suppresses delivery and non-delivery
+ *  reports, so an answer refused on the way vanished without a bounce: the
+ *  first Outlook answer never reached Gmail, and nothing said so (live,
+ *  2026-10-15). */
+export const MAIL_AUTOMATIC_REPLY_HEADERS: ReadonlyArray<readonly [name: string, value: string]> = [
+  ['Auto-Submitted', 'auto-replied'],
+  ['X-Auto-Response-Suppress', 'OOF, AutoReply'],
+];
 
 /** D-127 P1.1 — successful-send return shape from
  *  `MailProvider.send`. Carries the provider-side identifier the

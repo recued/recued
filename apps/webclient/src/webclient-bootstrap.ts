@@ -1,3 +1,6 @@
+import { parseRecordsRecordAddress } from './data/records-navigation.js';
+import { createManagedOAuthCaller } from './settings/managed-oauth-panel.js';
+import { createAccountSetupContinuity } from './connections/account-setup-continuity.js';
 /** D-148 § A.4 — PWA-wide webclient bootstrap.
  *
  *  This is the composition layer that wires the webclient's
@@ -361,7 +364,10 @@ import {
   serializeConnectionsCredentialRotationRetry,
   serializeConnectionsPostSafeStopRecovery,
 } from './connections/bootstrap-connections-route.js';
-import { parseConnectionsAddress, parseConnectionsReviewAccess } from './connections/connections-navigation.js';
+import { parseConnectionsAddress, parseConnectionsReviewAccess, parseConnectionsFileAuthentication, parseConnectionsPermissionRepair, parseConnectionsOAuthApps,
+  connectionsPermissionRepairAddress } from './connections/connections-navigation.js';
+import { createPackPermissionRepairContinuity } from './settings/pack-permission-repair.js';
+import { createReconnectWorklistContinuity, isWorklistRepair } from './settings/reconnect-worklist-continuity.js';
 import type { SignInGridCallers } from './connections/sign-in-grid-controls.js';
 import {
   bootstrapPacksRoute,
@@ -466,6 +472,7 @@ import {
   type WorkEntitySourceListCaller,
 } from './data/bootstrap-data-route.js';
 import type { MailFactCallers } from './data/mail-facts-surface.js';
+import type { ReminderCallers } from './data/reminders-surface.js';
 import { createMailTemplateVariableCallers } from './data/mail-template-choices.js';
 import { createMailboxVariableCallers } from './recipes/mailbox-choices.js';
 import { bootstrapSavedDataRoute } from './data/saved-data-route.js';
@@ -591,6 +598,7 @@ import type {
   QuietHoursGetCaller,
   QuietHoursSetCaller,
 } from './settings/quiet-hours-panel.js';
+import type { MailChatDoorSetArgs } from './settings/mail-chat-door-panel.js';
 import type {
   KindPolicyGetCaller,
   KindPolicySetCaller,
@@ -3383,6 +3391,9 @@ export const bootstrapWebclient = async (
     const location = doc.defaultView?.location;
     if (location !== undefined) location.hash = hash;
   };
+  const packPermissionRepairs = createPackPermissionRepairContinuity();
+  const reconnectWorklistRepairs = createReconnectWorklistContinuity();
+  const accountSetupContinuity = createAccountSetupContinuity();
   /** Navigate from an address that only hands over to another route, so Back
    * cannot land on it and hand over again. Without the seam, adds an entry. */
   const navigateHashInPlace = (hash: string): void => {
@@ -6914,6 +6925,15 @@ export const bootstrapWebclient = async (
     () => rpcConn.call('notification.quiet_hours.get', {});
   const quietHoursSetCaller: QuietHoursSetCaller =
     (args) => rpcConn.call('notification.quiet_hours.set', args);
+  // D-318 step 7 — Settings → Email chat: the door's settings, its checks
+  // before switching on, the requests for the test round trip, and the
+  // mailboxes to pick from.
+  const mailChatDoorGetCaller = () => rpcConn.call('collection.mail.chat_door.get', undefined);
+  const mailChatDoorSetCaller = (args: MailChatDoorSetArgs) => rpcConn.call('collection.mail.chat_door.set', args);
+  const mailChatDoorCheckCaller = (args: { chat_mailbox: string; owner_mailboxes: readonly string[] }) =>
+    rpcConn.call('collection.mail.chat_door.check', args);
+  const mailChatDoorRecentCaller = () => rpcConn.call('collection.mail.chat_door.recent', undefined);
+  const mailChatDoorMailboxesCaller = () => rpcConn.call('collection.mail.list', undefined);
   const serverTimeZoneGetCaller: ServerTimeZoneGetCaller =
     () => rpcConn.call('server.timezone.get', {});
   const serverTimeZoneSetCaller: ServerTimeZoneSetCaller =
@@ -7024,6 +7044,14 @@ export const bootstrapWebclient = async (
     options.enablePacksPanel === false
       ? undefined
       : (args) => rpcConn.call('packs.install_preview', args);
+  const reconnectWorklistCaller: import('./settings/reconnect-worklist-panel.js').PackReconnectCaller | undefined =
+    options.enablePacksPanel === false ? undefined : args => rpcConn.call('packs.reconnect_later', args);
+  const authenticationRepairsCaller: import('@recued/contracts').AuthenticationRepairCaller | undefined =
+    options.enableConnectionsEnrollPanel === false ? undefined : async () => {
+      const result = await rpcConn.call('collection.connection.managedOAuth', { action: 'authentication_worklist' });
+      if (result.action !== 'authentication_worklist') throw new Error('Authentication repairs could not be read. Update the server.');
+      return result.worklist;
+    };
   // D-304 — the Delete confirmation's "also removes …". A server predating it
   // rejects the method, which the panel reads as "no line".
   const packsUninstallPreviewCaller: PacksUninstallPreviewCaller | undefined =
@@ -7251,6 +7279,15 @@ export const bootstrapWebclient = async (
       switchWorkTracker.track((input: typeof args) => rpcConn.call('mail_fact.backfill.cancel', input))(args),
     dismissSender: (args) =>
       switchWorkTracker.track((input: typeof args) => rpcConn.call('mail_fact.senders.dismiss', input))(args),
+  };
+  // D-324 — Data → Owned → Reminders. A move and a cancel are tracked so a
+  // server switch waits for them.
+  const dataReminderCallers: ReminderCallers = {
+    list: (args) => rpcConn.call('reminder.list', args),
+    update: (args) =>
+      switchWorkTracker.track((input: typeof args) => rpcConn.call('reminder.update', input))(args),
+    cancel: (args) =>
+      switchWorkTracker.track((input: typeof args) => rpcConn.call('reminder.cancel', input))(args),
   };
   // D-315 §5.2 — a recipe setting that is one of the owner's mail templates:
   // its Settings list them, open one, and duplicate a recipe's to edit it.
@@ -8062,6 +8099,7 @@ export const bootstrapWebclient = async (
       ? undefined
       : {
           list: () => rpcConn.call('collection.mail.list', undefined),
+          updateCredentials: switchWorkTracker.track(args => rpcConn.call('collection.mail.updateCredentials', args, { timeout: 60_000 })),
           enrollImap: (args) =>
             switchWorkTracker.track((input: typeof args) =>
               rpcConn.call(
@@ -8094,6 +8132,9 @@ export const bootstrapWebclient = async (
     options.enableConnectionsEnrollPanel === false
       ? undefined
       : () => rpcConn.call('server.getOAuthAppConfig', undefined);
+  const connectionsOAuthApps: import('./settings/oauth-apps-panel.js').OAuthAppsCaller | undefined =
+    options.enableConnectionsEnrollPanel === false ? undefined : args => args.action === 'list' ? rpcConn.call('server.oauthApps', args)
+      : switchWorkTracker.track((input: RpcRequest<ServerRpcRegistry, 'server.oauthApps'>) => rpcConn.call('server.oauthApps', input))(args);
   const connectionsSetOAuthAppConfig =
     options.enableConnectionsEnrollPanel === false
       ? undefined
@@ -8103,6 +8144,7 @@ export const bootstrapWebclient = async (
     options.enableConnectionsEnrollPanel === false
       ? undefined
       : {
+          updateCredentials: switchWorkTracker.track(args => rpcConn.call('collection.calendar.updateCredentials', { slug: args.slug, password: args.password ?? '' }, { timeout: 60_000 })),
           list: () => rpcConn.call('collection.calendar.list', undefined),
           delete: (args) => switchWorkTracker.track(
             (input: typeof args) => rpcConn.call('collection.calendar.delete', input),
@@ -8703,7 +8745,7 @@ export const bootstrapWebclient = async (
       : (args) => rpcConn.call('collection.connection.startVendorOAuth', args);
   // D-322 — optional broker profiles and Connect sessions.
   const connectionsManagedOAuthCaller: import('./settings/managed-oauth-panel.js').ManagedOAuthCaller | undefined =
-    options.enableConnectionsEnrollPanel === false ? undefined : (args) => rpcConn.call('collection.connection.managedOAuth', args);
+    options.enableConnectionsEnrollPanel === false ? undefined : createManagedOAuthCaller(rpcConn.call);
   // R26.2 Option B — the pure code-exchange rpc. Wired unconditionally with the
   // enroll panel: the PANEL decides whether to use it (loopback only), so the
   // cloud path is untouched for every other origin.
@@ -10008,6 +10050,11 @@ export const bootstrapWebclient = async (
         ? null
         : parseConnectionsAddress(connectionsAddress);
       const initialConnectionAccessReview = parseConnectionsReviewAccess(connectionsSegments);
+      const initialManageOAuthApps = parseConnectionsOAuthApps(connectionsSegments);
+      const initialFileAuthenticationSwitch = parseConnectionsFileAuthentication(connectionsSegments);
+      const permissionRepairTarget = parseConnectionsPermissionRepair(connectionsSegments);
+      const permissionRepair = permissionRepairTarget ? packPermissionRepairs.read(permissionRepairTarget.id, permissionRepairTarget.name)
+        ?? reconnectWorklistRepairs.read(permissionRepairTarget.id, permissionRepairTarget.name) : undefined;
       const initialCredentialRotationServerUpdateRetry =
         parseConnectionsCredentialRotationRetry(connectionsSegments);
       const postSafeStopRecoveryResolution =
@@ -10086,12 +10133,34 @@ export const bootstrapWebclient = async (
       }
       const connectionsRoute = bootstrapConnectionsRoute({
         root: appShell.contentRoot,
+        accountSetupContinuity,
+        listCloudFiles: () => rpcConn.call('data.file.attachments.sources', undefined),
         ...(options.document !== undefined ? { document: options.document } : {}),
         navigate: navigateHash,
         ...(initialConnectionsAddress !== null
           ? { initialAddress: initialConnectionsAddress }
           : {}),
         ...(initialConnectionAccessReview !== null ? { initialConnectionAccessReview } : {}),
+        ...(initialManageOAuthApps ? { initialManageOAuthApps: true } : {}),
+        ...(authenticationRepairsCaller ? { authenticationRepairsCaller } : {}),
+        ...(initialFileAuthenticationSwitch !== null ? { initialFileAuthenticationSwitch } : {}),
+        ...(permissionRepair ? { initialPermissionRepair: permissionRepair } : {}),
+        ...(permissionRepairTarget && !permissionRepair ? { permissionRepairUnavailable: true } : {}),
+        ...(packsInstallPreviewCaller ? { permissionRepairPreviewCaller: packsInstallPreviewCaller } : {}),
+        ...(reconnectWorklistCaller ? { reconnectWorklistCaller, initialWorklistReturn: reconnectWorklistRepairs.takeReturn('connections'),
+          ...(connectionsManagedOAuthCaller ? { onWorklistReconnect: (group: import('@recued/contracts').PackReconnectGroup) => {
+            const repair = reconnectWorklistRepairs.begin(group, 'connections');
+            navigateHash(connectionsPermissionRepairAddress(repair.name, repair.id).hash);
+          } } : {}) } : {}),
+        ...(permissionRepairTarget ? { onPermissionRepairReturn: (verified: boolean, collections?: import('./settings/pack-permission-repair.js').PackPermissionRepair['reconnect_collections']) => {
+          if (permissionRepair && isWorklistRepair(permissionRepair)) {
+            reconnectWorklistRepairs.finish(permissionRepair.id, verified, collections);
+            navigateHash(permissionRepair.return_to === 'connections' ? serializeShellRoute('connections', 'others') : serializeShellRoute('packs'));
+          } else {
+            if (permissionRepair && verified) packPermissionRepairs.complete(permissionRepair.id, collections);
+            navigateHash(permissionRepair ? serializeShellRoute('packs', permissionRepair.resume.pack.slug) : serializeShellRoute('packs'));
+          }
+        } } : {}),
         onHashSync: (hash) => { activeHash = hash; },
         ...(initialCredentialRotationServerUpdateRetry !== null
           ? {
@@ -10171,6 +10240,7 @@ export const bootstrapWebclient = async (
         ...(connectionsGetOAuthAppConfig !== undefined
           ? { getOAuthAppConfig: connectionsGetOAuthAppConfig }
           : {}),
+        ...(connectionsOAuthApps ? { oauthAppsCaller: connectionsOAuthApps } : {}),
         ...(connectionsSetOAuthAppConfig !== undefined
           ? { setOAuthAppConfig: connectionsSetOAuthAppConfig }
           : {}),
@@ -10458,6 +10528,19 @@ export const bootstrapWebclient = async (
         ...(packsInstallPreviewCaller !== undefined
           ? { packsInstallPreviewCaller }
           : {}),
+        ...(packsInstallPreviewCaller && connectionsManagedOAuthCaller ? {
+          onPermissionRepair: request => {
+            const repair = packPermissionRepairs.begin(request);
+            navigateHash(connectionsPermissionRepairAddress(repair.name, repair.id).hash);
+          },
+        } : {}),
+        ...(initialPacksAddress?.kind === 'pack' ? { initialPermissionRepairReturn: packPermissionRepairs.takeReturn(initialPacksAddress.packSlug) } : {}),
+        ...(authenticationRepairsCaller ? { authenticationRepairsCaller } : {}),
+        ...(reconnectWorklistCaller ? { reconnectWorklistCaller, initialWorklistReturn: reconnectWorklistRepairs.takeReturn('packs'),
+          ...(connectionsManagedOAuthCaller ? { onWorklistReconnect: (group: import('@recued/contracts').PackReconnectGroup) => {
+            const repair = reconnectWorklistRepairs.begin(group, 'packs');
+            navigateHash(connectionsPermissionRepairAddress(repair.name, repair.id).hash);
+          } } : {}) } : {}),
         ...(packsUninstallPreviewCaller !== undefined
           ? { packsUninstallPreviewCaller }
           : {}),
@@ -10913,6 +10996,7 @@ export const bootstrapWebclient = async (
         formResponseSetStateCaller: dataFormResponseSetStateCaller,
         formResponseExportCaller: dataFormResponseExportCaller,
         mailFactCallers: dataMailFactCallers,
+        reminderCallers: dataReminderCallers,
         recipeListCaller: recipesListCaller,
         recipeExecuteCaller: switchWorkTracker.track(recipeExecuteCaller),
         manageRescheduleLinkCaller,
@@ -10933,6 +11017,7 @@ export const bootstrapWebclient = async (
         annotationListCaller: dataAnnotationListCaller,
         linkListCaller: dataLinkListCaller,
         sharedListCaller: dataSharedListCaller,
+        ...(hashSource ? {initialRecordsTarget:parseRecordsRecordAddress(parseShellRoute(hashSource.getHash())) ?? undefined} : {}),
         recordsNamespaceListCaller: dataRecordsNamespaceListCaller,
         recordsKindListCaller: dataRecordsKindListCaller,
         recordsSearchCaller: dataRecordsSearchCaller,
@@ -11226,6 +11311,9 @@ export const bootstrapWebclient = async (
                   initialRunId: logsRunAddress.runId,
                   ...(logsRunAddress.returnToChat !== undefined
                     ? { chatReturn: logsRunAddress.returnToChat }
+                    : {}),
+                  ...(logsRunAddress.returnToReception !== undefined
+                    ? { receptionReturn: logsRunAddress.returnToReception }
                     : {}),
                 }
               : logsSegment !== undefined
@@ -11750,6 +11838,11 @@ export const bootstrapWebclient = async (
         kindPolicySetCaller: switchWorkTracker.track(kindPolicySetCaller),
         quietHoursGetCaller,
         quietHoursSetCaller: switchWorkTracker.track(quietHoursSetCaller),
+        mailChatDoorGetCaller,
+        mailChatDoorSetCaller: switchWorkTracker.track(mailChatDoorSetCaller),
+        mailChatDoorCheckCaller,
+        mailChatDoorRecentCaller,
+        mailChatDoorMailboxesCaller,
         serverTimeZoneGetCaller,
         // ⚠ The write also REFRESHES the held value, so a stamp made right after
         // the owner changes the setting carries the new zone rather than the one

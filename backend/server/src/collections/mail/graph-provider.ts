@@ -35,8 +35,16 @@
  *  returns 202 with no id and is rejected by spec § P1.4. Status
  *  mapping mirrors gmail: 401 / 403 → MAIL_SEND_AUTH_FAILED,
  *  4xx other → MAIL_SEND_RECIPIENT_INVALID, 5xx →
- *  MAIL_SEND_NETWORK_FAILED. Sent records appear under Sent Items
- *  on the next inbound delta.
+ *  MAIL_SEND_NETWORK_FAILED; Graph's 400 for a header it will not take,
+ *  and its 413 for a request over 4 MB, → MAIL_SEND_MESSAGE_REFUSED.
+ *  Attachments go one per request (`createGraphDraft`). Sent records
+ *  appear under Sent Items on the next inbound delta.
+ *
+ *  A REPLY's draft is Outlook's own: `POST /me/messages/{id}/createReply`
+ *  on the email it answers, found in this mailbox by its Message-ID, so
+ *  Exchange writes In-Reply-To / References. Graph refuses those two on a
+ *  message it creates (only `x-` headers; live, 2026-10-15). A reply whose
+ *  email is not in this mailbox goes as a new message, unthreaded.
  */
 
 import {
@@ -44,6 +52,14 @@ import {
   MAIL_RECONCILIATION_ID_HEADER,
   MailAdapterError,
   MICROSOFT_TOKEN_URL,
+  MAIL_SENT_BY_MESSAGE_ID_MAX_MATCHES,
+  MAIL_SENT_REPLIES_MAX_MATCHES,
+  type MailSentByMessageIdMatch,
+  type MailSentByMessageIdQuery,
+  type MailSentByMessageIdResult,
+  type MailSentRepliesQuery,
+  type MailSentRepliesResult,
+  type MailSentReplyMatch,
 } from '@recued/contracts';
 import { IngredientError } from '@recued/ingredients';
 import { looksLikeIcs } from '@recued/transforms';
@@ -59,6 +75,7 @@ import {
   createMailSyncOutcomeReporter,
   assertMailSentReconciliationQuery,
   evaluateMailSentReconciliationCandidates,
+  MAIL_AUTOMATIC_REPLY_HEADERS,
   MAIL_SENT_RECONCILIATION_MAX_SCAN,
   mailAttachmentPartFromBytes,
   mailHeaderMap,
@@ -83,6 +100,8 @@ import {
   type ProviderSyncCallback,
   type SavedDraftMeta,
   type SentMessageMeta,
+  normalizeRfcMessageId,
+  mailContentId,
 } from './provider.js';
 import {
   defaultHttpFetcher,
@@ -138,12 +157,26 @@ export interface CreateGraphProviderOptions {
   /** Owner's feature choices for managed accounts; vendor permissions still govern each call. */
   managedSendEnabled?: boolean;
   managedMutationEnabled?: boolean;
+  nativeSendEnabled?: boolean;
+  nativeMutationEnabled?: boolean;
   now?: () => number;
   log?: (level: 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
   scheduler?: ProviderPollScheduler;
 }
 
 const GRAPH_API_BASE = 'https://graph.microsoft.com/v1.0';
+/** D-318 — MAPI's `PidTagInReplyToId`, as Graph names an extended property.
+ *  ⛔ A Sent Items message's `internetMessageHeaders` holds only the `x-`
+ *  headers set when it was made, never `In-Reply-To`: measured on Outlook.com
+ *  (2026-10-15), an answer made with `createReply` listed
+ *  `x-recued-reconciliation-id` and `X-Auto-Response-Suppress` alone, and this
+ *  property held its In-Reply-To. */
+export const GRAPH_IN_REPLY_TO_PROPERTY = 'String 0x1042';
+
+/** A Sent item as `lookupSentReplies` reads it: with Exchange's In-Reply-To. */
+type GraphSentReplyPayload = GraphMessagePayload & {
+  singleValueExtendedProperties?: Array<{ id?: string; value?: string }>;
+};
 /** Graph returns internetMessageHeaders only when explicitly selected. Keep
  * every field consumed by canonicalizeGraph in this one projection so adding
  * the reconciliation header does not silently drop the legacy message body or
@@ -226,6 +259,8 @@ interface GraphAttachmentPayload {
   size?: number;
   isInline?: boolean;
   contentBytes?: string;
+  /** D-318 step 4 — what the HTML body names as `cid:…`. */
+  contentId?: string;
 }
 
 const addressList = (recipients: GraphRecipient[] | undefined): string[] => {
@@ -305,6 +340,8 @@ export const canonicalizeGraph = (
     is_flagged: msg.flag?.flagStatus === 'flagged',
     has_attachments: (msg.hasAttachments ?? false) || attachments.length > 0,
     received_at: Number.isFinite(received) ? received : Date.now(),
+    // D-318 step 1 — Graph's received time is the provider's own already.
+    ...(Number.isFinite(received) ? { provider_received_at: received } : {}),
     body_text: body.text,
     body_html: body.html,
     ...(attachments.length > 0 ? { attachments } : {}),
@@ -337,8 +374,10 @@ export interface GraphSendMessage {
   ccRecipients?: GraphRecipient[];
   bccRecipients?: GraphRecipient[];
   replyTo?: GraphRecipient[];
-  /** Standard RFC 5322 + custom headers. Graph honors In-Reply-To /
-   *  References when set this way on a draft. */
+  /** Custom headers only. ⛔ Graph refuses any other on a message it creates:
+   *  `400 InvalidInternetMessageHeader`, "The internet message header name
+   *  'In-Reply-To' should start with 'x-' or 'X-'." (live, 2026-10-15). A
+   *  reply's In-Reply-To / References come from `createReply` instead. */
   internetMessageHeaders?: Array<{ name: string; value: string }>;
   /** D-172 P2 — inline file attachments. Omitted when none. */
   attachments?: GraphFileAttachment[];
@@ -352,6 +391,14 @@ export interface GraphCreatedDraft {
   id?: string;
   internetMessageId?: string;
   conversationId?: string;
+}
+
+/** How a draft step's failure is told: the send's taxonomy, or D-264's for a
+ *  draft that is only saved — a refusal by its status, and the code for one
+ *  that proves nothing about the message. */
+interface GraphDraftFailure {
+  refused: (status: number, text: string) => never;
+  failed: 'MAIL_SEND_NETWORK_FAILED' | 'MAIL_DRAFT_NETWORK_FAILED';
 }
 
 const buildGraphRecipients = (addresses: string[]): GraphRecipient[] =>
@@ -376,16 +423,21 @@ export const buildGraphMessage = (msg: OutgoingMessage): GraphSendMessage => {
   if (msg.bcc && msg.bcc.length > 0) m.bccRecipients = buildGraphRecipients(msg.bcc);
   if (msg.reply_to) m.replyTo = [{ emailAddress: { address: msg.reply_to } }];
 
+  // `x-` headers alone: Graph refuses In-Reply-To / References here (a reply's
+  // come from `createReply`, `createGraphDraft`).
   const headers: Array<{ name: string; value: string }> = [];
-  if (msg.in_reply_to) headers.push({ name: 'In-Reply-To', value: msg.in_reply_to });
-  if (msg.references && msg.references.length > 0) {
-    headers.push({ name: 'References', value: msg.references.join(' ') });
-  }
   if (msg.reconciliation_id) {
     headers.push({
       name: MAIL_RECONCILIATION_ID_HEADER,
       value: msg.reconciliation_id,
     });
+  }
+  // D-318 step 5 — for the same reason, of the automatic-reply marks only
+  // Exchange's own goes.
+  if (msg.automatic === true) {
+    for (const [name, value] of MAIL_AUTOMATIC_REPLY_HEADERS) {
+      if (/^x-/i.test(name)) headers.push({ name, value });
+    }
   }
   if (headers.length > 0) m.internetMessageHeaders = headers;
 
@@ -429,6 +481,16 @@ const graphGet = async <T>(
   }
   const data = (await res.json()) as T;
   return { ok: true, data };
+};
+
+/** Graph's own code for a refusal (`{"error":{"code":…}}`), when its body has one. */
+const graphErrorCode = (text: string): string | undefined => {
+  try {
+    const code = (JSON.parse(text) as { error?: { code?: unknown } } | null)?.error?.code;
+    return typeof code === 'string' ? code : undefined;
+  } catch {
+    return undefined;
+  }
 };
 
 /** A GET whose answer is a message's raw MIME (`$value`), not JSON. Read as
@@ -637,10 +699,12 @@ export const createGraphProvider = (
         mime_type: attachment.contentType,
         source_part_id: sourcePartId,
         disposition: attachment.isInline === true ? 'inline' : 'attachment',
+        content_id: attachment.contentId,
         bytes: decodeGraphContentBytes(attachment.contentBytes),
       });
     }
     if (!attachment.id) return null;
+    const contentId = mailContentId(attachment.contentId);
     return {
       filename,
       mime_type: normalizeMailAttachmentMimeType(attachment.contentType),
@@ -649,6 +713,7 @@ export const createGraphProvider = (
         : 0,
       source_part_id: sourcePartId,
       disposition: attachment.isInline === true ? 'inline' : 'attachment',
+      ...(contentId !== undefined ? { content_id: contentId } : {}),
       async fetchBytes() {
         const detail = await fetchGraphAttachmentDetail(messageId, attachment.id!);
         if (typeof detail?.contentBytes !== 'string') {
@@ -763,7 +828,10 @@ export const createGraphProvider = (
         if (!page) {
           throw new Error(`graph initial scan could not fetch folder '${folder}'`);
         }
-        for (const msg of page.value ?? []) {
+        const messages = page.value ?? [];
+        if (!Array.isArray(messages)) throw new Error('graph initial scan returned an invalid message list');
+        scanOpts.onAccessVerified?.();
+        for (const msg of messages) {
           if (msg['@removed']) continue;
           try {
             const canonical = canonicalizeGraph(
@@ -826,6 +894,7 @@ export const createGraphProvider = (
   const seedDeltaLink = async (
     folder: string,
     recoveryCallback?: ProviderSyncCallback,
+    onAccessVerified?: () => void,
   ): Promise<string> => {
     // Graph returns a deltaLink even for an empty delta. Seeding is a
     // full current-state walk with no filters. The initial-scan path may
@@ -846,8 +915,11 @@ export const createGraphProvider = (
       if (!page) {
         throw new Error(`graph delta seed could not fetch folder '${folder}'`);
       }
+      const messages = page.value ?? [];
+      if (!Array.isArray(messages)) throw new Error('graph delta seed returned an invalid message list');
+      onAccessVerified?.();
       if (recoveryCallback) {
-        for (const msg of page.value ?? []) {
+        for (const msg of messages) {
           if (!(await emitDeltaMessage(folder, msg, recoveryCallback))) {
             deliveryFailed = true;
           }
@@ -916,7 +988,8 @@ export const createGraphProvider = (
             status: 'invalid_delta_state',
           });
           try {
-            await seedDeltaLink(folder, cb);
+            // Found by this walk, not as it arrived (D-318 §4.8, P22).
+            await seedDeltaLink(folder, (event) => cb({ ...event, recovered: true }));
           } catch (err) {
             outcomes.noteFailure('transient');
             markError(`graph delta recovery failed folder=${folder}`, err);
@@ -967,6 +1040,8 @@ export const createGraphProvider = (
   // back synchronously. Status mapping mirrors gmail (P1.3) and
   // P1.2's severity classification:
   //   401 / 403 → MAIL_SEND_AUTH_FAILED   (recoverable: re-enroll)
+  //   400 InvalidInternetMessageHeader, 413 → MAIL_SEND_MESSAGE_REFUSED
+  //   429        → MAIL_SEND_NETWORK_FAILED (throttled: nothing sent)
   //   4xx other → MAIL_SEND_RECIPIENT_INVALID
   //   5xx        → MAIL_SEND_NETWORK_FAILED
   const throwSendError = (status: number, text: string): never => {
@@ -983,6 +1058,29 @@ export const createGraphProvider = (
       throw new IngredientError(
         'MAIL_SEND_AUTH_FAILED',
         `Graph rejected the send (${status}): ${text.slice(0, 200)}`,
+        detail,
+      );
+    }
+    // The message itself, not who it is to: sent again, it is refused again.
+    // Reported as a recipient, the owner was told to check addresses that were
+    // right, and each D-318 answer was to be retried for a day (live, 2026-10-15).
+    // Too large: Graph's write cap (413, "Request entity too large"). The
+    // message, not a recipient: sent again, it is refused again.
+    if (status === 413 || (status === 400 && graphErrorCode(text) === 'InvalidInternetMessageHeader')) {
+      throw new IngredientError(
+        'MAIL_SEND_MESSAGE_REFUSED',
+        `Graph refused the message (${status}): ${text.slice(0, 200)}`,
+        detail,
+      );
+    }
+    // Throttled, not refused: nothing went, and the same message goes later.
+    // Read as a recipient, it told the owner to check addresses that were
+    // right (the draft taxonomy already said so, D-264).
+    if (status === 429) {
+      markError(`graph send throttled ${status}`, text);
+      throw new IngredientError(
+        'MAIL_SEND_NETWORK_FAILED',
+        `Graph throttled the send (${status}): ${text.slice(0, 200)}`,
         detail,
       );
     }
@@ -1024,27 +1122,85 @@ export const createGraphProvider = (
     return res;
   };
 
-  /** `POST /me/messages` — the create-draft step, shared by `send` (which then
-   *  posts `/send`) and by D-264's `saveDraft` (which stops here). One body, so
-   *  the two paths cannot drift in how a message becomes a Graph resource. */
+  /** A reply's email in this mailbox, by its Message-ID: `createReply` acts on
+   *  it. `null` when the mailbox does not hold it. A failed read throws, so a
+   *  reply never goes unthreaded because the lookup failed. */
+  const findReplyOriginal = async (
+    inReplyTo: string,
+    failure: GraphDraftFailure,
+  ): Promise<string | null> => {
+    const id = normalizeRfcMessageId(inReplyTo);
+    if (id === undefined) return null;
+    const filter = `internetMessageId eq '<${id.replace(/'/g, "''")}>'`;
+    const url = `${GRAPH_API_BASE}/me/messages?$filter=${encodeURIComponent(filter)}`
+      + '&$top=5&$select=id,internetMessageId';
+    const read = async (refresh: boolean) =>
+      graphGet<GraphListResponse<{ id?: string; internetMessageId?: string }>>(
+        url, { accessToken: await ensureToken(refresh), fetcher });
+    let res = await read(false);
+    if (!res.ok && res.status === 401 && !opts.managedFetcher) res = await read(true);
+    if (!res.ok) {
+      if (res.status === 401 || res.status === 403) return failure.refused(res.status, res.text);
+      throw new IngredientError(
+        failure.failed,
+        `Graph could not look up the email this replies to (${res.status}): ${res.text.slice(0, 200)}`,
+        { kind: 'graph', slug: opts.slug, status: res.status },
+      );
+    }
+    const hit = (res.data.value ?? []).find((message) => typeof message.id === 'string'
+      && message.id.length > 0 && normalizeRfcMessageId(message.internetMessageId) === id);
+    return hit?.id ?? null;
+  };
+
+  /** The draft a message is sent from (`send`, which then posts `/send`) or
+   *  saved as (D-264's `saveDraft`, which stops here). One body, so the two
+   *  paths cannot drift in how a message becomes a Graph resource.
+   *
+   *  A reply to an email this mailbox holds is Outlook's own reply
+   *  (`createReply`), which writes the In-Reply-To / References that Graph
+   *  refuses as headers. Anything else is a new draft (`POST /me/messages`).
+   *
+   *  ⛔ The draft is made without its files, and each file is added on its own
+   *  after, for a new message as for a reply: a draft left without them is
+   *  deleted, and the failure told. Graph caps every write request at 4 MB,
+   *  base64 included ("Use the Microsoft Graph API"), so files inline in one
+   *  new message were one request: two 2 MB files came to over 4 MB, and Graph
+   *  answers 413. Its documented way is one file per request, each under 3 MB
+   *  ("Attach large files to Outlook messages": "attach the files
+   *  individually"). A file over that needs an upload session, which this does
+   *  not make: with `MAIL_SEND_ATTACHMENT_MAX_BYTES` at 3 MiB, only a file
+   *  within about 150 KB of the cap can be refused (413, the message refused). */
   const createGraphDraft = async (
     msg: OutgoingMessage,
+    failure: GraphDraftFailure,
   ): Promise<GraphCreatedDraft & { id: string }> => {
-    const createRes = await postWithRetry(
-      `${GRAPH_API_BASE}/me/messages`,
-      JSON.stringify(buildGraphMessage(msg)),
-    );
+    const original = msg.in_reply_to ? await findReplyOriginal(msg.in_reply_to, failure) : null;
+    const { attachments, ...withoutFiles } = buildGraphMessage(msg);
+    const createRes = original === null
+      ? await postWithRetry(`${GRAPH_API_BASE}/me/messages`, JSON.stringify(withoutFiles))
+      : await postWithRetry(
+        `${GRAPH_API_BASE}/me/messages/${encodeURIComponent(original)}/createReply`,
+        JSON.stringify({ message: withoutFiles }),
+      );
     if (!createRes.ok) {
       const text = await createRes.text().catch(() => '');
-      throwSendError(createRes.status, text);
+      failure.refused(createRes.status, text);
     }
     const draft = (await createRes.json()) as GraphCreatedDraft;
     if (!draft || typeof draft.id !== 'string' || draft.id.length === 0) {
       throw new IngredientError(
-        'MAIL_SEND_NETWORK_FAILED',
-        'Graph create-draft returned a malformed response (missing id)',
+        failure.failed,
+        `Graph ${original === null ? 'create-draft' : 'createReply'} returned a malformed response (missing id)`,
         { kind: 'graph', slug: opts.slug, status: createRes.status },
       );
+    }
+    const draftUrl = `${GRAPH_API_BASE}/me/messages/${encodeURIComponent(draft.id)}`;
+    for (const attachment of attachments ?? []) {
+      const added = await postWithRetry(`${draftUrl}/attachments`, JSON.stringify(attachment));
+      if (added.ok) continue;
+      const text = await added.text().catch(() => '');
+      await deleteWithRetry(draftUrl).catch(() => undefined);
+      failure.refused(added.status, text);
     }
     return draft as GraphCreatedDraft & { id: string };
   };
@@ -1083,17 +1239,8 @@ export const createGraphProvider = (
   ): Promise<SavedDraftMeta> => {
     const savedAt = nowOf();
     /** The create step, with the DRAFT taxonomy rather than the send one. */
-    const createDraftOnly = async (): Promise<GraphCreatedDraft & { id: string }> => {
-      const res = await postWithRetry(`${GRAPH_API_BASE}/me/messages`, JSON.stringify(buildGraphMessage(msg)));
-      if (!res.ok) throwDraftError(res.status, await res.text().catch(() => ''));
-      const draft = (await res.json()) as GraphCreatedDraft;
-      if (!draft || typeof draft.id !== 'string' || draft.id.length === 0) {
-        throw new IngredientError('MAIL_DRAFT_NETWORK_FAILED',
-          'Graph create-draft returned a malformed response (missing id)',
-          { kind: 'graph', slug: opts.slug, status: res.status });
-      }
-      return draft as GraphCreatedDraft & { id: string };
-    };
+    const createDraftOnly = (): Promise<GraphCreatedDraft & { id: string }> =>
+      createGraphDraft(msg, { refused: throwDraftError, failed: 'MAIL_DRAFT_NETWORK_FAILED' });
     if (prior) {
       // ⛔ PATCH IS A MERGE, SO ABSENT MEANS UNCHANGED, NOT CLEARED.
       // `buildGraphMessage` omits empty `cc` / `bcc` / `replyTo` — correct for a
@@ -1144,7 +1291,7 @@ export const createGraphProvider = (
     // afresh (`not_sent`).
     let draft: GraphCreatedDraft & { id: string };
     try {
-      draft = await createGraphDraft(msg);
+      draft = await createGraphDraft(msg, { refused: throwSendError, failed: 'MAIL_SEND_NETWORK_FAILED' });
     } catch (err) {
       if (err instanceof IngredientError) {
         err.details = { ...err.details, not_sent: true };
@@ -1159,11 +1306,18 @@ export const createGraphProvider = (
     }
 
     // Step 2 — send the draft. 202 Accepted with empty body on success.
-    const sendRes = await postWithRetry(
-      `${GRAPH_API_BASE}/me/messages/${encodeURIComponent(draft.id)}/send`,
-    );
+    const draftUrl = `${GRAPH_API_BASE}/me/messages/${encodeURIComponent(draft.id)}`;
+    const sendRes = await postWithRetry(`${draftUrl}/send`);
     if (!sendRes.ok) {
       const text = await sendRes.text().catch(() => '');
+      // ⛔ A refusal (4xx) sent nothing and left step 1's draft in the
+      // mailbox's Drafts, and each try made another: four refused answers left
+      // four drafts in the owner's Outlook (live, 2026-10-15, an account whose
+      // sending Microsoft had suspended). It goes. A 5xx proves nothing either
+      // way, so that draft stays: it may be the message on its way.
+      if (sendRes.status >= 400 && sendRes.status < 500) {
+        await deleteWithRetry(draftUrl).catch(() => undefined);
+      }
       throwSendError(sendRes.status, text);
     }
 
@@ -1334,6 +1488,102 @@ export const createGraphProvider = (
       attachments: attachments.parts,
       attachment_set_complete: attachments.complete,
     };
+  };
+
+  /** D-318 step 2 — proof (a): the messages in this account's Sent Items that
+   *  carry one Message-ID. Graph stores `internetMessageId` with its angle
+   *  brackets; the folder is Graph's own record that the account sent it, and
+   *  each hit's id is compared exactly. */
+  const lookupSentByMessageId = async (
+    query: MailSentByMessageIdQuery,
+  ): Promise<MailSentByMessageIdResult> => {
+    try {
+      const filter = `internetMessageId eq '<${query.rfc_message_id.replace(/'/g, "''")}>'`;
+      const url = `${GRAPH_API_BASE}/me/mailFolders/sentitems/messages`
+        + `?$filter=${encodeURIComponent(filter)}`
+        + `&$top=${MAIL_SENT_BY_MESSAGE_ID_MAX_MATCHES}`
+        + '&$select=internetMessageId,toRecipients,subject,sentDateTime';
+      const page = await getReconciliationSource<GraphListResponse<GraphMessagePayload>>(url);
+      const matches: MailSentByMessageIdMatch[] = [];
+      for (const message of (page.value ?? []).slice(0, MAIL_SENT_BY_MESSAGE_ID_MAX_MATCHES)) {
+        if (normalizeRfcMessageId(message.internetMessageId) !== query.rfc_message_id) continue;
+        const sentAt = message.sentDateTime ? Date.parse(message.sentDateTime) : Number.NaN;
+        matches.push({
+          to: addressList(message.toRecipients),
+          subject: message.subject ?? '',
+          sent_at: Number.isFinite(sentAt) ? sentAt : 0,
+        });
+      }
+      return matches.length > 0 ? { status: 'found', matches } : { status: 'not_found' };
+    } catch (err) {
+      markError('graph sent lookup by message id failed', err);
+      return { status: 'unavailable', reason: 'provider_error' };
+    }
+  };
+
+  /** D-318 — the replies this account SENT to one Message-ID: has the chat
+   *  mailbox answered this request? An answer is Outlook's own reply
+   *  (`createReply`), in the request's conversation: the request, found by its
+   *  Message-ID, names the conversation and when it arrived, and the Sent Items
+   *  in it whose In-Reply-To is exactly that id are the replies.
+   *
+   *  ⛔ Every answer in a conversation is in that conversation's Sent Items, so
+   *  a long one holds more than a page of them: read from the request's
+   *  arrival, oldest first, its own answer is among the first (an unordered
+   *  page could leave it out, and the request would be run again). Graph orders
+   *  only by a property the filter names first.
+   *
+   *  ⛔ A Sent item's In-Reply-To is Exchange's own property, not one of its
+   *  headers (`GRAPH_IN_REPLY_TO_PROPERTY`): read from the headers, every answer
+   *  went unrecognised, and a restored server ran its request again (live,
+   *  2026-10-15). */
+  const lookupSentReplies = async (
+    query: MailSentRepliesQuery,
+  ): Promise<MailSentRepliesResult> => {
+    try {
+      const filter = `internetMessageId eq '<${query.rfc_message_id.replace(/'/g, "''")}>'`;
+      const page = await getReconciliationSource<GraphListResponse<GraphMessagePayload>>(
+        `${GRAPH_API_BASE}/me/messages?$filter=${encodeURIComponent(filter)}`
+        + '&$top=5&$select=internetMessageId,conversationId,receivedDateTime',
+      );
+      const arrivals = new Map<string, number>();
+      for (const message of page.value ?? []) {
+        if (normalizeRfcMessageId(message.internetMessageId) !== query.rfc_message_id) continue;
+        if (typeof message.conversationId !== 'string' || message.conversationId.length === 0) continue;
+        const received = message.receivedDateTime ? Date.parse(message.receivedDateTime) : Number.NaN;
+        const arrived = Number.isFinite(received) ? received : 0;
+        arrivals.set(message.conversationId, Math.min(arrivals.get(message.conversationId) ?? arrived, arrived));
+      }
+      const matches: MailSentReplyMatch[] = [];
+      for (const [conversationId, arrived] of [...arrivals].slice(0, 2)) {
+        const sentFilter = `sentDateTime ge ${new Date(arrived).toISOString()}`
+          + ` and conversationId eq '${conversationId.replace(/'/g, "''")}'`;
+        const sent = await getReconciliationSource<GraphListResponse<GraphSentReplyPayload>>(
+          `${GRAPH_API_BASE}/me/mailFolders/sentitems/messages?$filter=${encodeURIComponent(sentFilter)}`
+          + `&$orderby=${encodeURIComponent('sentDateTime asc')}`
+          + `&$top=${MAIL_SENT_REPLIES_MAX_MATCHES}&$select=internetMessageHeaders,sentDateTime`
+          + `&$expand=${encodeURIComponent(`singleValueExtendedProperties($filter=id eq '${GRAPH_IN_REPLY_TO_PROPERTY}')`)}`,
+        );
+        for (const message of sent.value ?? []) {
+          if (matches.length >= MAIL_SENT_REPLIES_MAX_MATCHES) break;
+          const headerOf = (name: string): string | undefined => (message.internetMessageHeaders ?? [])
+            .find((header) => header.name?.toLowerCase() === name)?.value;
+          const inReplyTo = (message.singleValueExtendedProperties ?? [])
+            .find((property) => property.id?.toLowerCase() === GRAPH_IN_REPLY_TO_PROPERTY.toLowerCase())?.value
+            ?? headerOf('in-reply-to');
+          if (normalizeRfcMessageId(inReplyTo) !== query.rfc_message_id) continue;
+          const sentAt = message.sentDateTime ? Date.parse(message.sentDateTime) : Number.NaN;
+          matches.push({
+            reconciliation_id: headerOf(MAIL_RECONCILIATION_ID_HEADER)?.trim() || null,
+            sent_at: Number.isFinite(sentAt) ? sentAt : 0,
+          });
+        }
+      }
+      return matches.length > 0 ? { status: 'found', matches } : { status: 'not_found' };
+    } catch (err) {
+      markError('graph sent replies lookup failed', err);
+      return { status: 'unavailable', reason: 'provider_error' };
+    }
   };
 
   const lookupSentByReconciliationId = async (
@@ -1601,16 +1851,19 @@ export const createGraphProvider = (
   // Tolerant match — Microsoft may return `https://graph.microsoft.com/Mail.Send`
   // for a `Mail.Send` request, and an exact miss makes send silently unavailable
   // (see `grantedScopesInclude`).
-  const sendCapable = opts.managedFetcher ? opts.managedSendEnabled === true : grantedScopesInclude(
-    opts.config().granted_scopes ?? [],
-    GRAPH_SEND_SCOPE,
-  );
+  // ⛔ BOTH SCOPES, because the send is a draft and then `/send`: the draft is
+  // Graph's "create message", which needs `Mail.ReadWrite`. `Mail.Send` alone
+  // reported sendCapable while every send was refused 403 (2026-10-15).
+  const sendCapable = opts.nativeSendEnabled !== false && (opts.managedFetcher ? opts.managedSendEnabled === true : (
+    grantedScopesInclude(opts.config().granted_scopes ?? [], GRAPH_SEND_SCOPE)
+    && grantedScopesInclude(opts.config().granted_scopes ?? [], GRAPH_MODIFY_SCOPE)
+  ));
   const accountEmail = opts.config().account_email ?? '';
   // D-239 — same lockstep + tolerant-match discipline as `sendCapable`.
-  const mutationCapable = opts.managedFetcher ? opts.managedMutationEnabled === true : grantedScopesInclude(
+  const mutationCapable = opts.nativeMutationEnabled !== false && (opts.managedFetcher ? opts.managedMutationEnabled === true : grantedScopesInclude(
     opts.config().granted_scopes ?? [],
     GRAPH_MODIFY_SCOPE,
-  );
+  ));
 
   return {
     kind: 'graph',
@@ -1646,7 +1899,7 @@ export const createGraphProvider = (
           // retry. Re-seeding at "now" would discard changes that happened
           // after the first attempt began.
           if ((await opts.accountStore.get(deltaLinkKey(folder))) === null) {
-            await seedDeltaLink(folder);
+            await seedDeltaLink(folder, undefined, scanOpts.onAccessVerified);
           }
         }
         await runInitialScan(scanOpts);
@@ -1695,6 +1948,8 @@ export const createGraphProvider = (
     },
 
     lookupSentByReconciliationId,
+    lookupSentByMessageId,
+    lookupSentReplies,
 
     ...(sendCapable ? { send: sendImpl } : {}),
     // D-239 — attached as a group, in lockstep with `mutationCapable`.

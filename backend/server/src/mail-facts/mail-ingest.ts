@@ -40,12 +40,12 @@
 
 import { createHash } from 'node:crypto';
 
-import { isMailReconciliationId } from '@recued/contracts';
 
 import type { MailStoredContext, MailUpsertContext } from '../collections/mail/mail-collection.js';
 import { normalizeRfcMessageId, type CanonicalMessage } from '../collections/mail/provider.js';
 
 import type { MailFactWriteResult, MailFactWriter } from './fact-writer.js';
+import { sentByRecued } from './own-mail.js';
 import type { MailFactSourceEmail } from './rules-pass.js';
 import type { MailFactEnvelope } from './standards-pass.js';
 
@@ -58,6 +58,10 @@ export interface MailFactIngestDeps {
    *  by lower-case address. Absent ⇒ none, and a relationship condition never
    *  holds. */
   readonly relationshipsOf?: (address: string) => readonly string[];
+  /** D-318 audit — did Recued send mail under this reconciliation id (its send
+   *  claims)? Only then is a message carrying one Recued's own, and left out.
+   *  Absent ⇒ none is (`own-mail.ts`). */
+  readonly isOwnSend?: (reconciliation_id: string) => boolean;
 }
 
 export interface MailFactIngest {
@@ -158,36 +162,37 @@ export const mailMayTrigger = (
 /** The email's date for its facts: its own, never later than now. */
 export const mailFactEmailAt = (received_at: number, now: number): number => Math.min(received_at, now);
 
-/** Mail the passes never read: what Recued sent itself, and drafts. */
-const passedOver = (msg: CanonicalMessage): boolean =>
-  isMailReconciliationId(msg.reconciliation_id) || msg.direction === 'draft';
-
-export const createMailFactIngest = (deps: MailFactIngestDeps): MailFactIngest => ({
-  onMessageStored(msg, ctx) {
-    if (passedOver(msg)) return;
-    if (mailMayTrigger(msg, { ...ctx, first_seen: true }, deps.now())) {
-      deps.writer.markNews({ slug: ctx.slug, record_id: ctx.record_id });
-    }
-  },
-  onMessageUpserted(msg, ctx) {
-    if (passedOver(msg)) return null;
-    const address = msg.from.trim().toLowerCase();
-    const email = mailFactSourceEmail(msg, ctx, deps.relationshipsOf?.(address) ?? []);
-    const envelope = mailFactEnvelope(msg, ctx);
-    return deps.writer.write({
-      ref: { slug: ctx.slug, record_id: ctx.record_id },
-      email,
-      email_at: mailFactEmailAt(msg.received_at, deps.now()),
-      content_fingerprint: contentFingerprint(email, envelope),
-      may_trigger: mailMayTrigger(msg, ctx, deps.now()),
-      count_health: ctx.first_seen,
-      envelope,
-    });
-  },
-  onRecordsRemoved(slug, record_ids) {
-    deps.writer.removeEmails(slug, record_ids);
-  },
-  onRecordRekeyed(slug, from_record_id, to_record_id) {
-    deps.writer.rekeyEmail(slug, from_record_id, to_record_id);
-  },
-});
+export const createMailFactIngest = (deps: MailFactIngestDeps): MailFactIngest => {
+  /** Mail the passes never read: what Recued sent itself, and drafts. */
+  const passedOver = (msg: CanonicalMessage): boolean =>
+    sentByRecued(msg.reconciliation_id, deps.isOwnSend) || msg.direction === 'draft';
+  return {
+    onMessageStored(msg, ctx) {
+      if (passedOver(msg)) return;
+      if (mailMayTrigger(msg, { ...ctx, first_seen: true }, deps.now())) {
+        deps.writer.markNews({ slug: ctx.slug, record_id: ctx.record_id });
+      }
+    },
+    onMessageUpserted(msg, ctx) {
+      if (passedOver(msg)) return null;
+      const address = msg.from.trim().toLowerCase();
+      const email = mailFactSourceEmail(msg, ctx, deps.relationshipsOf?.(address) ?? []);
+      const envelope = mailFactEnvelope(msg, ctx);
+      return deps.writer.write({
+        ref: { slug: ctx.slug, record_id: ctx.record_id },
+        email,
+        email_at: mailFactEmailAt(msg.received_at, deps.now()),
+        content_fingerprint: contentFingerprint(email, envelope),
+        may_trigger: mailMayTrigger(msg, ctx, deps.now()),
+        count_health: ctx.first_seen,
+        envelope,
+      });
+    },
+    onRecordsRemoved(slug, record_ids) {
+      deps.writer.removeEmails(slug, record_ids);
+    },
+    onRecordRekeyed(slug, from_record_id, to_record_id) {
+      deps.writer.rekeyEmail(slug, from_record_id, to_record_id);
+    },
+  };
+};

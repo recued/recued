@@ -135,6 +135,7 @@ const own = (obj: Record<string, unknown>, key: string): unknown =>
   hasOwn(obj, key) ? obj[key] : undefined;
 
 export interface ConnectionApiHandlerDeps {
+  withAuthRenewal?<T>(row: ConnectionRow, run: () => Promise<T>): Promise<T>;
   /** D-322 — raw vendor HTTP through the owner-selected OAuth broker. */
   managedOAuthFetch?: (auth: Extract<ConnectionAuth, { type: 'managed_oauth' }>, url: string, init: RequestInit) => Promise<Response>;
   /** Host revalidation after asynchronous auth and before each bounded request
@@ -950,6 +951,9 @@ export const injectConnectionApiAuth = (
     authBodyFields?: readonly string[] | undefined;
   },
 ): { readonly body: string | undefined } => {
+  if (auth.type === 'oauth2_refresh' && auth.permission_cleanup_pending) {
+    throw new Error('Finish the saved permission cleanup before using this connection.');
+  }
   switch (auth.type) {
     case 'managed_oauth':
       // The server's broker port applies auth. Never send an unauthenticated native request.
@@ -1430,7 +1434,12 @@ interface OAuth2TokenResponse {
   token_type?: string;
   instance_url?: unknown;
   api_domain?: unknown;
+  scope?: unknown;
 }
+// Untagged credentials share an exchange only within their transport. A
+// server-issued native family also shares across transports in this process.
+const oauthRefreshFlights = new WeakMap<typeof fetch, Map<string, Promise<OAuth2TokenResponse>>>();
+const nativeTokenFlights = new Map<string, Promise<OAuth2TokenResponse>>();
 
 /** Exchange an OAuth2 client id + secret for a short-lived bearer token.
  *  This is adapter-internal credential bootstrap: recipe operations can never
@@ -1530,6 +1539,8 @@ export const exchangeOAuth2ClientCredentials = async (
 export interface OAuth2RefreshResult {
   auth: ConnectionAuth;
   runtime_base: VendorOAuthRuntimeBaseResolution;
+  /** Only an explicit, well-formed token-response scope is grant evidence. */
+  granted_scopes?: readonly string[];
 }
 
 /** Refresh with the provider response metadata retained. Callers that own the
@@ -1541,6 +1552,7 @@ export const refreshOAuth2WithMetadata = async (
   now: () => number,
   provider?: ConnectionVendorProvider | null,
 ): Promise<OAuth2RefreshResult> => {
+  if (auth.permission_cleanup_pending) throw new Error('Finish the saved permission cleanup before renewing this connection.');
   const refreshToken = requireAuthString(auth, 'refresh_token');
   const clientId = requireAuthString(auth, 'client_id');
   const tokenEndpoint = requireOAuthTokenEndpoint(auth, 'OAuth2 refresh');
@@ -1567,18 +1579,28 @@ export const refreshOAuth2WithMetadata = async (
   // re-send to the same trusted origin only; cross-origin is refused
   // before the secret leaves the box.
   const tokenOrigin = new URL(tokenEndpoint).origin;
-  const data = await fetchCredentialJson<OAuth2TokenResponse>({
-    label: 'OAuth2 refresh',
-    endpoint: tokenEndpoint,
-    origin: tokenOrigin,
-    fetchImpl,
-    init: {
-      method: 'POST',
-      headers,
-      body: body.toString(),
-    },
-    details: { token_endpoint: tokenEndpoint },
-  });
+  let flights = auth.native_credential_id ? nativeTokenFlights : oauthRefreshFlights.get(fetchImpl);
+  if (!flights) { flights = new Map(); oauthRefreshFlights.set(fetchImpl, flights); }
+  const flightKey = JSON.stringify([tokenEndpoint, clientId, auth.client_secret, tokenAuthStyle,
+    auth.native_credential_id ? ['family', auth.native_credential_id] : refreshToken]);
+  let flight = flights.get(flightKey);
+  if (!flight) {
+    flight = fetchCredentialJson<OAuth2TokenResponse>({
+      label: 'OAuth2 refresh',
+      endpoint: tokenEndpoint,
+      origin: tokenOrigin,
+      fetchImpl,
+      init: {
+        method: 'POST',
+        headers,
+        body: body.toString(),
+      },
+      details: { token_endpoint: tokenEndpoint },
+    });
+    flights.set(flightKey, flight);
+    void flight.finally(() => flights!.delete(flightKey)).catch(() => {});
+  }
+  const data = await flight;
   if (typeof data.access_token !== 'string' || data.access_token === '') {
     throw new IngredientError(
       'TOKEN_REFRESH_FAILED',
@@ -1591,6 +1613,9 @@ export const refreshOAuth2WithMetadata = async (
       typeof data.refresh_token === 'string' && data.refresh_token !== ''
         ? data.refresh_token
         : refreshToken,
+    ...(auth.required_scopes !== undefined ? { required_scopes: [...auth.required_scopes] } : {}),
+    ...(auth.native_credential_id !== undefined ? { native_credential_id: auth.native_credential_id } : {}),
+    ...(auth.saved_oauth_app !== undefined ? { saved_oauth_app: { ...auth.saved_oauth_app } } : {}),
     client_id: clientId,
     ...(auth.client_secret !== undefined ? { client_secret: auth.client_secret } : {}),
     token_endpoint: tokenEndpoint,
@@ -1600,8 +1625,11 @@ export const refreshOAuth2WithMetadata = async (
       ? { expires_at: now() + data.expires_in * 1_000 }
       : {}),
   };
+  const scopes = typeof data.scope === 'string' && data.scope.length <= 16384 && !/[\r\n\0]/.test(data.scope)
+    ? [...new Set(data.scope.split(/\s+/).filter(Boolean))].sort() : undefined;
   return {
     auth: next,
+    ...(scopes !== undefined && scopes.length <= 256 && scopes.every(s => s.length <= 2048) ? { granted_scopes: scopes } : {}),
     runtime_base: provider === undefined || provider === null
       ? { status: 'not_expected' }
       : resolveVendorOAuthRuntimeBase(
@@ -1786,6 +1814,7 @@ export const refreshAtprotoSession = async (
  *  refresh implementation (single source for the single-flight + lead-time +
  *  best-effort-persist semantics). */
 export interface EnsureFreshAuthDeps {
+  withAuthRenewal?<T>(row: ConnectionRow, run: () => Promise<T>): Promise<T>;
   /** Persist a refreshed OAuth2 auth back to the connection store. Best-effort:
    *  a failure is swallowed — the fresh token is still used for the current call;
    *  the next call sees the un-persisted state and refreshes again (wasteful but
@@ -1825,6 +1854,7 @@ export interface FreshConnectionAuth {
   /** Valid provider-issued replacement for `config.base_url`. */
   runtime_base_url?: string;
 }
+const nativeFamilyFlights = new Map<string, Promise<FreshConnectionAuth>>();
 
 const registeredProviderForRow = (
   row: ConnectionRow,
@@ -1848,21 +1878,16 @@ const registeredProviderForRow = (
  *  later-expired token re-enters the path. The rotated token is persisted
  *  best-effort.
  *
- *  One gate instance per handler instance, so the single-flight only collapses
- *  refreshes WITHIN that instance. Multiple instances in the SAME process (the
- *  executor handler + the watch poll-source handler each build their own) hold
- *  separate maps, so a concurrent refresh of the same connection across
- *  instances can double-refresh and last-writer-wins on the store upsert — the
- *  same pre-existing behavior as the api handler. Tolerable because each refresh
- *  yields a usable token and a stale write self-heals on the next call; a
- *  process-wide gate or a versioned/CAS upsert would tighten it (follow-up).
- *  Across processes (server vs extension) refreshes are independent by design;
- *  LWW on `updated_at` + OAuth2-issuer revocation resolve that cross-runtime
- *  race. */
+ *  Untagged gates remain per handler instance; their raw exchange can be
+ *  shared when they use the same transport and refresh token. Server-issued
+ *  native families share the full exchange and persistence flight across
+ *  handlers and transports in this process. Their host persistence callback
+ *  updates matching grant members while preserving local permission needs.
+ *  Separate processes have independent flights. */
 export const createEnsureFreshAuthDetailed = (
   deps: EnsureFreshAuthDeps,
 ): ((row: ConnectionRow, auth: ConnectionAuth) => Promise<FreshConnectionAuth>) => {
-  const fetchImpl = deps.fetchImpl ?? globalThis.fetch.bind(globalThis);
+  const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
   const now = deps.now ?? (() => Date.now());
   const refreshFlight = new Map<string, Promise<FreshConnectionAuth>>();
 
@@ -1902,6 +1927,7 @@ export const createEnsureFreshAuthDetailed = (
     if (existing) return existing;
     const flight = (async () => {
       try {
+        const renew = async () => {
         const next = await produce();
         // Still within the single-flight, before the map clears in `finally`.
         try {
@@ -1920,6 +1946,8 @@ export const createEnsureFreshAuthDetailed = (
           try { deps.onPersistFailure?.(row, e); } catch { /* sink is advisory */ }
         }
         return next;
+        };
+        return await (deps.withAuthRenewal ? deps.withAuthRenewal(row, renew) : renew());
       } finally {
         refreshFlight.delete(row.pk);
       }
@@ -1929,6 +1957,9 @@ export const createEnsureFreshAuthDetailed = (
   };
 
   return async (row: ConnectionRow, auth: ConnectionAuth): Promise<FreshConnectionAuth> => {
+    if (auth.type === 'oauth2_refresh' && auth.permission_cleanup_pending) {
+      throw new Error('Finish the saved permission cleanup before using this connection.');
+    }
     // D-218 — an AT Protocol session takes the same single-flight and the same
     // persist, and a DIFFERENT freshness rule.
     //
@@ -1993,9 +2024,20 @@ export const createEnsureFreshAuthDetailed = (
     const fresh = haveAccessToken
       && typeof expiresAt === 'number'
       && expiresAt - OAUTH2_REFRESH_LEAD_MS > now();
+    const family = auth.type === 'oauth2_refresh' && auth.native_credential_id
+      ? JSON.stringify([auth.native_credential_id, auth.client_id, auth.client_secret, auth.token_endpoint, auth.token_auth_style]) : undefined;
+    const shared = nativeFamilyFlights;
+    const waiting = family ? shared.get(family) : undefined;
+    const localNeeds = (result: FreshConnectionAuth): FreshConnectionAuth => {
+      if (result.auth.type !== 'oauth2_refresh' || auth.type !== 'oauth2_refresh') return result;
+      const { required_scopes: ignored, saved_oauth_app: ignoredOrigin, ...credential } = result.auth; void ignored; void ignoredOrigin;
+      return { ...result, auth: { ...credential, ...(auth.required_scopes !== undefined ? { required_scopes: [...auth.required_scopes] } : {}),
+        ...(auth.saved_oauth_app !== undefined ? { saved_oauth_app: { ...auth.saved_oauth_app } } : {}) } };
+    };
+    if (waiting) return localNeeds(await waiting);
     if (fresh) return { auth };
 
-    return exchangeInFlight(row, async () => {
+    const flight = exchangeInFlight(row, async () => {
       if (auth.type !== 'oauth2_refresh') {
         return { auth: await exchangeOAuth2ClientCredentials(auth, fetchImpl, now) };
       }
@@ -2022,6 +2064,8 @@ export const createEnsureFreshAuthDetailed = (
           : {}),
       };
     });
+    if (family) { shared.set(family, flight); void flight.finally(() => shared!.delete(family)).catch(() => {}); }
+    return localNeeds(await flight);
   };
 };
 
@@ -2168,12 +2212,13 @@ export const describeConnectionApiRequest = (record: ConnectionRow, params: Reco
 export const createConnectionApiHandler = (
   deps: ConnectionApiHandlerDeps,
 ): ConnectionKindHandler => {
-  const fetchImpl = deps.fetchImpl ?? globalThis.fetch.bind(globalThis);
+  const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
   const now = deps.now ?? (() => Date.now());
 
   // Per-row single-flight OAuth2 refresh gate (shared with connection.mcp).
   const ensureFreshAuth = createEnsureFreshAuthDetailed({
     persistAuth: deps.persistAuth,
+    ...(deps.withAuthRenewal ? { withAuthRenewal: deps.withAuthRenewal } : {}),
     fetchImpl,
     now,
     ...(deps.onPersistFailure ? { onPersistFailure: deps.onPersistFailure } : {}),

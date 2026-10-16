@@ -1790,6 +1790,42 @@ const taskDelete = (deps: WorkEntityIngredientDeps) =>
     return { ok: true as const, id: input.id, tombstoned: tombstone };
   };
 
+/** D-315 slice 7 — `task-mark-reminder-fired`: the D-193 delivery notifier
+ *  says a Recued reminder reached the owner, so it is no longer due.
+ *
+ *  ⛔ Narrow on purpose: the op is `read`-tier (`kernel-op-registry.ts` says
+ *  why), so it may do nothing a `read` could not answer for.
+ *    - Only a Recued reminder (`source_extension_blob.kind = recued_reminder`)
+ *      still `reminder_pending` and not done; any other task is returned as it
+ *      is (`not_due`).
+ *    - Only one Recued keeps itself, on its built-in Source (`recued.task`). A
+ *      task on a connected Source (Asana, say, named by its `source_id`) takes
+ *      its state to the vendor: that is a write the owner reviews, so it is left
+ *      to `task-update` (`vendor_task`). Since D-187 a create naming no Source
+ *      lands on the built-in one, so every reminder Recued makes is one this
+ *      marks.
+ *    - Only its `state`, through `task-update`'s own local path, so the row's
+ *      events and cascade are the ones every task edit has. */
+const taskMarkReminderFired = (deps: WorkEntityIngredientDeps) =>
+  async (input: { id: string }): Promise<{
+    marked: boolean;
+    reason: 'marked' | 'not_due' | 'vendor_task';
+    task: Task;
+  }> => {
+    const localId = resolveWorkEntityInputId(deps, 'task', input.id);
+    const existing = deps.store.readTask(localId);
+    if (!existing) throw new WorkEntityNotFoundError('task', input.id);
+    const blob = existing.source_extension_blob as { kind?: unknown } | undefined;
+    if (blob?.kind !== 'recued_reminder' || existing.state !== 'reminder_pending' || existing.done === true) {
+      return { marked: false, reason: 'not_due', task: existing };
+    }
+    if (existing.source_id !== RECUED_BUILTIN_SOURCE_ID('task')) {
+      return { marked: false, reason: 'vendor_task', task: existing };
+    }
+    const { task } = await taskUpdate(deps)({ id: existing.id, state: 'reminder_fired' });
+    return { marked: true, reason: 'marked', task };
+  };
+
 const taskMarkDone = (deps: WorkEntityIngredientDeps) =>
   async (input: { id: string; done?: boolean; completed_at?: number }): Promise<{ task: Task }> => {
     input = withDateInputs(input, ['completed_at']);
@@ -3205,6 +3241,7 @@ export const createWorkEntityDispatchers = (deps: WorkEntityIngredientDeps) => (
   taskUpdate: taskUpdate(deps),
   taskDelete: taskDelete(deps),
   taskMarkDone: taskMarkDone(deps),
+  taskMarkReminderFired: taskMarkReminderFired(deps),
   noteCreate: noteCreate(deps),
   noteUpdate: noteUpdate(deps),
   noteDelete: noteDelete(deps),

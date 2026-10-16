@@ -64,6 +64,8 @@ import {
   type ChannelRoles,
   type NotificationChannelCapability,
 } from './channel-roles.js';
+// A leaf with no imports of its own, so this cannot close a cycle.
+import { MAIL_CHAT_DOOR_VENDOR } from './mail-chat-door.js';
 
 // ────────────────────────────────────────────────────────────────
 // The vendor slugs — the TYPE-LEVEL half of the registry (D-192 seam 10)
@@ -1177,6 +1179,30 @@ export const isDeclaredMessengerVendor = (
   registry: ReadonlyArray<MessengerVendorDeclaration> = MESSENGER_VENDOR_DECLARATIONS,
 ): vendor is string =>
   typeof vendor === 'string' && getMessengerVendorDeclaration(vendor, registry) !== null;
+
+/** D-318 — the chat doors whose messages run as messenger turns WITHOUT being
+ *  chat transports: no declaration, no `Transport`, no notification channel of
+ *  their own. Today one, the email chat door (`MAIL_CHAT_DOOR_VENDOR`): the owner
+ *  writes from their own mailbox to a chat mailbox, and each request is proven
+ *  theirs before it runs (D-318 §4.2). Each door brings its own ingress and its
+ *  own answer; what it shares with Slack and Telegram is the turn's authority.
+ *
+ *  ⛔ A door is never also a declared transport (checked at load, below): one
+ *  slug meaning two things is the category error D-192 removed. */
+export const MESSENGER_DOOR_VENDORS: ReadonlyArray<string> = [MAIL_CHAT_DOOR_VENDOR];
+
+/** The vendor a messenger turn's source (`ExecutionSource`) may carry: a
+ *  declared chat transport, or a chat door. Anything else fails closed. */
+export const isMessengerSourceVendor = (vendor: unknown): vendor is string =>
+  isDeclaredMessengerVendor(vendor)
+  || (typeof vendor === 'string' && MESSENGER_DOOR_VENDORS.includes(vendor));
+
+{
+  const both = MESSENGER_DOOR_VENDORS.filter((vendor) => isDeclaredMessengerVendor(vendor));
+  if (both.length > 0) {
+    throw new Error(`MESSENGER_DOOR_VENDORS names a declared chat transport: ${both.join(', ')}`);
+  }
+}
 
 // Boot-time registry self-validation (mirrors `connection-vendors.ts`). Each
 // entry is already validated in isolation by `buildMessengerVendorDeclaration`;

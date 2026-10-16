@@ -1,3 +1,4 @@
+import { connectionViewFromRow } from '@recued/contracts';
 import { randomBytes } from 'node:crypto';
 import { createSavedDataViewStore } from '../saved-data-view-store.js';
 import { createSavedTaskViewReader } from '../saved-data-view-task-reader.js';
@@ -9,6 +10,7 @@ import { join, dirname } from 'node:path';
 import { createCertChainHolder, DEFAULT_PUBLIC_PORT } from '@recued/server-tls';
 import { createCliBinaryReachabilityProbe } from '../cli-binary-reachability.js';
 import { createSqliteHandleStateStore } from '../handle/sqlite-store.js';
+import { wireReminderDispatchers } from '../composition/bin/wire-reminders.js';
 import { composeWebhookListeners } from '../composition/bin/wire-webhook-listeners.js';
 import { createWebhookPublicReachable } from '../composition/bin/webhook-public-reachable.js';
 import { composeVendorWebhookPort } from '../composition/bin/wire-vendor-webhook-port.js';
@@ -17,6 +19,10 @@ import { createPreapprovalTelegramIngress } from '../preapproval-telegram-ingres
 import { composePreapproval } from '../composition/bin/wire-preapproval.js';
 import { composeInboundEmailAnswer } from '../composition/bin/wire-inbound-email-answer.js';
 import { materializeMailBody } from '../mail-body-read-handler.js';
+import { composeMailChatTurns } from '../mail-chat-door/turns.js';
+import { composeMailChatAnswers, type MailChatAnswers } from '../mail-chat-door/answers.js';
+import { closeMailSendOutcomeAsk, raiseMailSendOutcomeAsk } from '../mail-send-outcome-ask.js';
+import { createMailSendClaimStore } from '../storage/mail-send-claim-store.js';
 import { linkMailFactRuns, mailFactScreensRpcDeps } from '../mail-facts/screens-wiring.js';
 import { createMailWorkService, MAIL_WORK_MANIFEST } from '../mail-work-service.js';
 import { mailFactAiCallThrough } from '../mail-facts/ai-pass.js';
@@ -34,6 +40,8 @@ import { createAskCardDetailResolver } from '../ask-card-held-op-details.js';
 import { resolveArgEditSchema } from '../preflight-arg-schema-resolver.js';
 import { buildResolverDeps } from '../composition/bin/wire-reception-inbox-deps.js';
 import { createAskLandingEditApproval } from '../ask-landing-edit-approval.js';
+import { createAuthenticationRepairWorklist } from '../authentication-repair-worklist.js';
+import { createInstanceStore } from '../collections/instance-store.js';
 import {
   findReceptionHoldItem,
   handleReceptionInboxApprove,
@@ -402,6 +410,7 @@ export interface ComposeListenersOptions {
     // `data.file.read` pair-RPC (the same one the recipe/ai/mail channels use).
     | 'getRemoteFileReadDeps'
     | 'fileSourceSyncStateRef'
+    | 'oauthAppConnectionUses'
     // D-205 #2c — per-Source CONTACT sync health, for `contact.source.list` (the
     // Sources strip on `#data/contact`). The first reader of the runner's counts.
     | 'contactSourceSyncStateRef'
@@ -450,6 +459,10 @@ export interface ComposeListenersOptions {
     // D-160 A.8 step 6 — the messenger turn wiring drives
     // `runMessengerTurn` + shares the orchestrator's session store.
     | 'chatOrchestratorRef'
+    // D-318 step 5 — the email door reads the answers it sends from it, and
+    // hears of a run that settles after its turn.
+    | 'chatStoreRef'
+    | 'onChatRunSettled'
     // D-188 — master pause flag closes the inbound webhook listeners.
     | 'serverState'
   >;
@@ -459,11 +472,22 @@ export interface ComposeListenersOptions {
     | 'watcherDispatcher'
     | 'calendarStack'
     | 'mailStack'
+    | 'collectionAuthentication'
+    | 'collectionOAuthAppSwitch'
     // D-315 §6.3 — the one fact writer, for a backfill.
     | 'mailFactWriter'
     | 'mailFactTriggerRoom'
     // D-318 P23 — bound here once the notification block exists.
     | 'emailAnswerHook'
+    // D-318 step 1 — the email chat door's settings (the chat mailbox).
+    | 'mailChatDoor'
+    // D-318 step 2 — the Sent-record proof, started here with the owner's notice.
+    | 'mailChatProof'
+    // D-318 §4.13 — the door's conversations, shared with the proof.
+    | 'mailChatConversations'
+    // D-318 step 5 — the conversation's mail in the owner's other mailboxes.
+    | 'mailChatConversationMail'
+    | 'isOwnSend'
     | 'mailFactAiSettled'
     | 'mailFactEvents'
     | 'bootEvents'
@@ -954,6 +978,100 @@ export const composeListeners = async (
   });
   collection.emailAnswerHook.bind((msg, ctx) => inboundEmailAnswer.onMessageUpserted(msg, ctx));
 
+  // D-318 step 2 — proof (a): a message in the chat mailbox is the owner's only
+  // when their own mailbox sent it. Started here, after every mailbox is
+  // registered (`startBootRecoveryAndAdapters` runs before the listeners), with
+  // the notice that tells the owner when one is not.
+  const mailChatProof = collection.mailChatProof;
+  let mailChatAnswers: MailChatAnswers | undefined;
+  let stopMailChatSettled: (() => void) | undefined;
+  if (mailChatProof !== undefined) {
+    const notifier = execution.notificationBlock;
+    if (notifier !== undefined) {
+      mailChatProof.bindNotify((message, extras) => notifier.notify(message, undefined, extras));
+    }
+    // D-318 step 3 — a proven request becomes a chat turn in the `mail` queue
+    // family, in its own conversation (`mail:<chat mailbox>:<conversation>`).
+    // The family is registered here even with nothing proven yet, so turns a
+    // restart left queued run.
+    const mailChatTurns = app.chatOrchestratorRef && collection.mailChatDoor && collection.mailChatConversations
+      ? composeMailChatTurns({
+          orchestrator: app.chatOrchestratorRef,
+          door: collection.mailChatDoor,
+          mailboxes: () => collection.collectionRegistry.list()
+            .filter((entry): entry is MailCollection => entry.platform === 'mail'),
+          readBody: (record) => (app.cacheBlobs
+            ? materializeMailBody(record, app.cacheBlobs)
+            : Promise.resolve(record.body_inline ?? null)),
+          conversations: collection.mailChatConversations,
+          // A reply to a conversation the owner deleted starts a new one.
+          ...(app.chatStoreRef
+            ? { sessionExists: (session_id: string) => app.chatStoreRef!.getSession(session_id) !== null }
+            : {}),
+          // Step 5 — a turn that ended may owe an answer.
+          afterTurn: () => mailChatAnswers?.kick(),
+          // Step 6 — the owner's clock, for when a request too late to act on arrived.
+          timeZone: () => resolveServerTimeZone(
+            storage.serverTimeZoneStore?.read(),
+            Intl.DateTimeFormat().resolvedOptions().timeZone,
+          ),
+          log: (level, msg, data) => {
+            const fn = level === 'warn' ? console.warn : console.log;
+            fn(`[mail-chat] ${msg}`, data ?? '');
+          },
+        })
+      : undefined;
+    if (mailChatTurns !== undefined) mailChatProof.bindAdmit(mailChatTurns.admit);
+    mailChatProof.start();
+    // D-318 step 5 — the answer goes back by email, from the chat mailbox, in
+    // the request's thread. Owed from the answer's own commit (a trigger on the
+    // chat's messages), so it needs the chat's database and store.
+    const answersDb = storage.db;
+    mailChatAnswers = mailChatTurns !== undefined && answersDb !== undefined && app.chatStoreRef
+      && collection.mailChatDoor && collection.mailChatConversations
+      ? composeMailChatAnswers({
+          db: answersDb,
+          chatStore: app.chatStoreRef,
+          door: collection.mailChatDoor,
+          mailboxes: () => collection.collectionRegistry.list()
+            .filter((entry): entry is MailCollection => entry.platform === 'mail'),
+          requests: mailChatProof,
+          conversations: collection.mailChatConversations,
+          claims: createMailSendClaimStore(answersDb),
+          // An answer whose attempt ended unknown is the owner's to settle, as
+          // any fenced send is: "Did this email go out?".
+          askOwner: async (reconciliation_id) => {
+            await raiseMailSendOutcomeAsk({
+              notifier: execution.notificationBlock,
+              claims: createMailSendClaimStore(answersDb),
+              reconciliation_id,
+              now: Date.now(),
+            });
+          },
+          closeOwnerQuestion: (reconciliation_id) =>
+            closeMailSendOutcomeAsk({ notifier: execution.notificationBlock, reconciliation_id }),
+          publicBaseUrl: () => storage.publicAddress.baseUrl('root'),
+          isUnlocked: app.isVaultUnlocked,
+          ...(storage.auditLog ? { auditLog: storage.auditLog } : {}),
+          log: (level, msg, data) => {
+            const fn = level === 'warn' ? console.warn : console.log;
+            fn(`[mail-chat] ${msg}`, data ?? '');
+          },
+        })
+      : undefined;
+    if (mailChatAnswers !== undefined) {
+      const notifier = execution.notificationBlock;
+      if (notifier !== undefined) {
+        mailChatAnswers.bindNotify((message, extras) => notifier.notify(message, undefined, extras));
+      }
+      mailChatAnswers.start();
+      // Part 2 — a run an email turn left waiting for an approval: its result
+      // follows in the thread.
+      const answers = mailChatAnswers;
+      stopMailChatSettled = app.onChatRunSettled?.((settled) => answers.onRunSettled(settled));
+    }
+  }
+
   const vendorWebhookListener = composeVendorWebhookPort({
     webhooksEnabled,
     ...(app.connectionStoreRef ? { connectionStore: app.connectionStoreRef } : {}),
@@ -1028,6 +1146,14 @@ export const composeListeners = async (
       ? { calendarEnroll: collection.calendarStack.enrollDeps }
       : {}),
     ...(collection.mailStack ? { mailEnroll: collection.mailStack.enrollDeps } : {}),
+    // D-318 step 1 — `collection.mail.chat_door.*`, and the chat mailbox's flag
+    // in `collection.mail.list`.
+    ...(collection.mailChatDoor ? { mailChatDoor: collection.mailChatDoor } : {}),
+    // Step 7 — the test round trip's view of each request: the proof's record
+    // and its answer.
+    ...(mailChatProof ? { mailChatRequests: mailChatProof } : {}),
+    ...(mailChatAnswers ? { mailChatAnswers } : {}),
+    ...(storage.auditLog ? { auditLog: storage.auditLog } : {}),
     ...(app.annotationStoreRef
       ? {
           annotationCascade: (col: string, id: string) =>
@@ -1784,6 +1910,7 @@ export const composeListeners = async (
     ? {
         identity: vendorOAuthIdentity,
         flowStore: createVendorOAuthFlowStore(),
+
         resultStore: createVendorOAuthResultStore(),
         // The signed state carries one of these; the cloud callback page
         // forwards the code to `<server_url>/oauth/complete`, and each forms a
@@ -1893,6 +2020,17 @@ export const composeListeners = async (
     localManifestStore: storage.localManifestStore,
     // R21.1 — reactive fan-out drops while the vault is sealed.
     isVaultUnlocked: app.isVaultUnlocked,
+    // D-318 step 1 — the chat mailbox's mail starts no mail recipe.
+    ...(collection.mailChatDoor
+      ? { isChatMailbox: (slug: string) => collection.mailChatDoor!.isChatMailbox(slug) }
+      : {}),
+    // Step 5 — nor do its answers and requests in the owner's other mailboxes.
+    ...(collection.mailChatConversationMail
+      ? {
+          isChatConversationRecord: (slug: string, record_id: string) =>
+            collection.mailChatConversationMail!.isConversationRecord(slug, record_id),
+        }
+      : {}),
     // D-268 — a failed reactive fire finally reaches the owner. Bound here
     // because this is where the dispatcher composition and the notification
     // block meet; the dispatcher itself stays ignorant of the block.
@@ -3225,6 +3363,18 @@ export const composeListeners = async (
       ? {
           connectionDeps: {
             store: app.connectionStoreRef,
+            ...(collection.oauthAppConfigDeps ? { oauthAppConfig: collection.oauthAppConfigDeps.store } : {}),
+            ...(storage.db ? { authenticationRepairs: createAuthenticationRepairWorklist({
+              connections: () => app.connectionStoreRef!.list(),
+              decode: row => decodeAuthFromStorage(row.auth_ciphertext, row, app.keys?.keyProvider('connection')),
+              instances: () => createInstanceStore({ db: storage.db! }).list(),
+              health: (platform, slug) => collection.collectionRegistry.get(platform, slug)?.health(),
+              ...(app.managedOAuth?.collectionProfileSignature ? { brokerProfileSignature: app.managedOAuth.collectionProfileSignature } : {}),
+              ...(storage.workEntityStoreRef ? { sources: () => storage.workEntityStoreRef!.listSources('file') } : {}),
+              ...(app.fileSourceSyncStateRef ? { fileState: id => app.fileSourceSyncStateRef!.get(id) } : {}),
+              ...(collection.oauthAppConfigDeps ? { apps: () => collection.oauthAppConfigDeps!.store.listApps() } : {}),
+              ...(app.oauthAppConnectionUses ? { connectionUses: app.oauthAppConnectionUses } : {}),
+            }) } : {}),
             // D-320 phase 3 (3b) — a deleted connection moves the webhook doors
             // that named it, as a change to a pack's connections does.
             ...(followPackConnectionsWebhookDoors
@@ -3439,6 +3589,8 @@ export const composeListeners = async (
               : {}),
             // D-322 — the execution context uses this same live broker service.
             ...(app.managedOAuth ? { managedOAuth: app.managedOAuth } : {}),
+            ...(collection.collectionAuthentication ? { collectionAuthentication: collection.collectionAuthentication } : {}),
+            ...(collection.collectionOAuthAppSwitch ? { collectionOAuthAppSwitch: collection.collectionOAuthAppSwitch } : {}),
             ...(app.managedOAuthConsumers ? { assertCollectionUnreferenced: app.managedOAuthConsumers.assertUnreferenced } : {}),
             // R2 build step 4c.4 — enroll/delete/grant/revoke fan a fresh
             // runnability snapshot after the mutation commits.
@@ -3543,6 +3695,19 @@ export const composeListeners = async (
       store: storage.quietHoursStore,
       timezoneStore: storage.serverTimeZoneStore,
     },
+    // D-324 — the Data → Reminders list: the same dispatchers as the
+    // `core.reminder.*` ops, so the screen and chat answer alike.
+    ...(storage.db
+      ? {
+          reminderDeps: {
+            dispatchers: wireReminderDispatchers({
+              db: storage.db,
+              serverTimeZoneStore: storage.serverTimeZoneStore,
+              quietHoursStore: storage.quietHoursStore,
+            }),
+          },
+        }
+      : {}),
     hostnameDeps: {
       store: storage.hostnameRegistryStore,
       serverIdentityId: storage.serverInstanceId,
@@ -3685,6 +3850,26 @@ export const composeListeners = async (
       ? {
           packInstallDeps: {
             ...packInstallDepsWithComposition,
+            ...(app.connectionStoreRef ? {
+              getVendorPermissionSourceId: name => app.connectionStoreRef!.getAuthSourceId?.('api', name),
+              getVendorPermissionSnapshot: () => JSON.stringify(app.connectionStoreRef!.list({ kind: 'api' })
+                .map(row => [row.pk, row.updated_at, row.auth_ciphertext, row.config_json, row.granted_scopes_json])),
+              getVendorPermissionConnections: async () => {
+              const store = app.connectionStoreRef!;
+              const rows = store.list({ kind: 'api' });
+              const views = await Promise.all(rows.map(async row => {
+                const view = connectionViewFromRow(row);
+                view.updated_at = row.updated_at;
+                try { view.auth_type = (await decodeAuthFromStorage(row.auth_ciphertext, row, app.keys?.keyProvider('connection'))).type; }
+                catch { /* Locked or unavailable authentication stays unknown. */ }
+                return view;
+              }));
+              if (JSON.stringify(rows.map(r => [r.pk, r.updated_at, r.auth_ciphertext, r.config_json, r.granted_scopes_json]))
+                !== JSON.stringify(store.list({ kind: 'api' }).map(r => [r.pk, r.updated_at, r.auth_ciphertext, r.config_json, r.granted_scopes_json]))) {
+                throw new Error('Saved connections changed while reviewing permissions.');
+              }
+              return views;
+            } } : {}),
             // D-247 D15 — manifest lookup so the install preview can resolve a
             // catalog op's risk tier. Absent ⇒ the recipe reports `unknown`
             // rather than a guessed class, which is the honest degradation.
@@ -4020,6 +4205,17 @@ export const composeListeners = async (
             recipeStore: storage.recipeStore,
             ...(storage.eventBus ? { eventBus: storage.eventBus } : {}),
             ...(collection.mailFactWriter ? { writer: collection.mailFactWriter } : {}),
+            // D-318 audit — the email chat door's conversation is not the owner's
+            // mail: no facts from the chat mailbox, or from its answers and
+            // requests in the owner's other mailboxes.
+            ...(collection.mailChatDoor
+              ? { isChatMailbox: (slug: string) => collection.mailChatDoor!.isChatMailbox(slug) }
+              : {}),
+            ...(collection.mailChatConversationMail
+              ? { isConversationMail: collection.mailChatConversationMail.isConversationMail }
+              : {}),
+            // And Recued's own mail is what its send claims hold, never a header.
+            ...(collection.isOwnSend ? { isOwnSend: collection.isOwnSend } : {}),
             // D-315 §6.3 — a backfill that runs recipes tells each email as it
             // came: it waits for the AI's answer to one before the next.
             aiSettled: collection.mailFactAiSettled,
@@ -4234,6 +4430,7 @@ export const composeListeners = async (
       ? {
           oauthCompletePortDeps: {
             identity: vendorOAuth.identity,
+            ...(collection.oauthAppConfigDeps ? { oauthAppConfig: collection.oauthAppConfigDeps.store } : {}),
             flowStore: vendorOAuth.flowStore,
             resultStore: vendorOAuth.resultStore,
             serverPublicUrl: vendorOAuth.serverPublicUrl,
@@ -4697,6 +4894,9 @@ export const composeListeners = async (
         ? [begin(() => messengerIngressSupervisor.stop())]
         : []),
       begin(() => inboundEmailAnswer.dispose()),
+      ...(mailChatProof !== undefined ? [begin(() => mailChatProof.dispose())] : []),
+      ...(mailChatAnswers !== undefined ? [begin(() => mailChatAnswers!.dispose())] : []),
+      ...(stopMailChatSettled !== undefined ? [begin(() => stopMailChatSettled!())] : []),
       begin(() => { storage.eventBus?.unsubscribe(publicAddressSubscriber); }),
       begin(() => serverHandlerSet.close()),
       begin(() => listenerCoordinator.stop()),

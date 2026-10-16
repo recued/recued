@@ -32,6 +32,7 @@
 
 import { RpcError } from '@recued/contracts';
 import { createEnsureFreshAuth, type EnsureFreshAuthDeps } from '@recued/ingredients';
+import { persistNativeOAuthRenewal, decodeCurrentNativeOAuth, withCurrentConnectionRenewal } from './native-oauth-renewal.js';
 
 import type { ConnectionStoreSqlite } from './storage/connection-store.js';
 import type { FileConnectionCredential } from './file-source-adapters/index.js';
@@ -45,7 +46,7 @@ type DecodeAuthFromStorage = (typeof import('./connection-handler.js'))['decodeA
 type EncodeAuthForStorage = (typeof import('./connection-handler.js'))['encodeAuthForStorage'];
 
 export interface FileSourceConnectionResolverDeps {
-  connectionStore: Pick<ConnectionStoreSqlite, 'get' | 'upsert' | 'persistRefreshedAuth'>;
+  connectionStore: Pick<ConnectionStoreSqlite, 'get' | 'upsert' | 'persistRefreshedAuth'> & Partial<Pick<ConnectionStoreSqlite, 'list' | 'withCredentialLease'>>;
   decodeAuthFromStorage: DecodeAuthFromStorage;
   encodeAuthForStorage: EncodeAuthForStorage;
   /** The connection sub-DEK key provider (absent on a non-vault boot). */
@@ -71,6 +72,10 @@ const buildPersistAuth = (
   now: () => number,
 ): EnsureFreshAuthDeps['persistAuth'] =>
   async (row, newAuth) => {
+    if (newAuth.type === 'oauth2_refresh' && newAuth.native_credential_id) {
+      await persistNativeOAuthRenewal({ store: deps.connectionStore, encode: deps.encodeAuthForStorage, decode: deps.decodeAuthFromStorage,
+        key: deps.keyProvider, now }, row, newAuth); return;
+    }
     const auth_ciphertext = await deps.encodeAuthForStorage(
       newAuth,
       { kind: row.kind, name: row.name },
@@ -123,6 +128,7 @@ export const createFileSourceConnectionResolver = (
 ): ((connection_name: string) => Promise<ResolvedFileSourceConnection | null>) => {
   const now = deps.now ?? ((): number => Date.now());
   const ensureFreshAuth = createEnsureFreshAuth({
+    withAuthRenewal: (row, run) => withCurrentConnectionRenewal(deps.connectionStore, row, run),
     persistAuth: buildPersistAuth(deps, now),
     ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
     now,
@@ -133,11 +139,7 @@ export const createFileSourceConnectionResolver = (
   ): Promise<ResolvedFileSourceConnection | null> => {
     const row = deps.connectionStore.get('api', connection_name);
     if (row === null) return null;
-    const decoded = await deps.decodeAuthFromStorage(
-      row.auth_ciphertext,
-      { kind: row.kind, name: row.name },
-      deps.keyProvider,
-    );
+    const decoded = await decodeCurrentNativeOAuth({ store: deps.connectionStore, decode: deps.decodeAuthFromStorage, key: deps.keyProvider }, row);
     if (decoded.type === 'managed_oauth') {
       const broker = deps.managedOAuth;
       if (!broker) throw new RpcError('not_configured', 'Managed OAuth is unavailable for file access on this server.');

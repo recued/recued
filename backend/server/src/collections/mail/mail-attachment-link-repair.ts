@@ -53,7 +53,7 @@ const tableExists = (db: Database.Database, name: string): boolean =>
 /** The links to remove: from an email whose id two mail tables hold, one an
  *  IMAP mailbox's, to a `mail_attachment` file named by that id alone. */
 const sharedLegacyLinks = (db: Database.Database): Array<{ link_id: string; record_id: string; file_id: string }> => {
-  const mailTables = listCollectionDataTables(db, 'mail');
+  const mailTables = listCollectionDataTables(db, 'mail', { all: true });
   const filesTable = collectionTableName('file', DATA_FILE_RECEIVED_SLUG);
   if (mailTables.length < 2 || !tableExists(db, LINK_TABLE) || !tableExists(db, filesTable)) return [];
   const imapTables = new Set(tableExists(db, 'collection_instances')

@@ -44,6 +44,8 @@ describe('kernel domain registry (§3)', () => {
       'webhook',
       'seller',
       'customer',
+      // D-324 — the owner's reminders.
+      'reminder',
     ]) {
       expect(names).toContain(k);
       expect(getKernelDomain(k)?.class).toBe('closed_kind');

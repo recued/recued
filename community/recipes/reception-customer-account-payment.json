@@ -1,0 +1,48 @@
+{
+  "recipe_id": "reception-customer-account-payment",
+  "version": 1,
+  "chat_exposed": false,
+  "ttl": 0,
+  "metadata": {
+    "name": "Record a customer account payment",
+    "description": "Use “Record a customer account payment” in Recued. Review one received payment and its invoice allocations. Record every payment entry and invoice balance together after owner approval.",
+    "author": "recued-core",
+    "supported_platforms": [],
+    "recipe_bundle": "recued-core/reception-approval",
+    "tags": [
+      "pack:reception",
+      "payments"
+    ],
+    "budget_ms": 30000
+  },
+  "variables": {
+    "account_payment_id": {
+      "label": "Saved account payment",
+      "type": "string"
+    },
+    "expected_plan_hash": {
+      "label": "Reviewed payment digest",
+      "type": "string"
+    },
+    "summary": {
+      "label": "Payment and invoice allocations",
+      "type": "string"
+    }
+  },
+  "steps": [
+    {
+      "id": "record",
+      "op": "core.work-entity.customer-account-payment.apply",
+      "args": {
+        "account_payment_id": "{{config.account_payment_id}}",
+        "expected_plan_hash": "{{config.expected_plan_hash}}",
+        "summary": "{{config.summary}}"
+      }
+    }
+  ],
+  "output": {
+    "render": []
+  },
+  "prefetch_steps": [],
+  "requires": []
+}

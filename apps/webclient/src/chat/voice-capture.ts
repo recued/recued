@@ -191,10 +191,12 @@ export const browserVoiceCaptureFactory = (
  *  not climb toward the server's upload cap unattended. */
 export const VOICE_MAX_MS = 5 * 60 * 1000;
 
-export interface VoiceComposerDeps {
+export interface VoiceComposerDeps<Context = undefined> {
   factory: NonNullable<VoiceCaptureFactory>;
   /** A finished recording, ready to ride the normal attachment path. */
-  onRecording: (file: File) => void;
+  onRecording: (file: File, context: Context | undefined) => void;
+  /** Capture the destination when recording starts, before any async work. */
+  recordingContext?: () => Context;
   /** Repaint. Fired on every state change, including failures. */
   onChange: () => void;
   maxMs?: number;
@@ -226,7 +228,7 @@ const defaultMakeFile = (recording: VoiceRecording): File =>
  *  permission prompt the first time and can sit there for as long as the person
  *  ignores it. Without the phase the button reads "start" throughout, and a
  *  second press while the prompt is open would open a SECOND stream. */
-export const createVoiceComposer = (deps: VoiceComposerDeps): VoiceComposer => {
+export const createVoiceComposer = <Context = undefined>(deps: VoiceComposerDeps<Context>): VoiceComposer => {
   const maxMs = deps.maxMs ?? VOICE_MAX_MS;
   const setTimer = deps.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
   const clearTimer = deps.clearTimer ?? ((h) => { clearTimeout(h as ReturnType<typeof setTimeout>); });
@@ -241,6 +243,8 @@ export const createVoiceComposer = (deps: VoiceComposerDeps): VoiceComposer => {
    *  the awaited factory can resolve AFTER teardown, and a stream opened for a
    *  route that no longer exists must be closed, not adopted. */
   let generation = 0;
+  let discardGeneration = 0;
+  let recordingContext: Context | undefined;
 
   const clearPendingTimer = (): void => {
     if (timer !== null) { clearTimer(timer); timer = null; }
@@ -249,13 +253,15 @@ export const createVoiceComposer = (deps: VoiceComposerDeps): VoiceComposer => {
   const stopRecording = (): void => {
     if (phase !== 'recording' || !session) return;
     const active = session;
+    const mine = discardGeneration;
+    const context = recordingContext;
     session = null;
     phase = 'idle';
     clearPendingTimer();
     deps.onChange();
     void active.stop().then((recording) => {
-      if (destroyed || !recording) return;
-      deps.onRecording(makeFile(recording));
+      if (destroyed || mine !== discardGeneration || !recording) return;
+      deps.onRecording(makeFile(recording), context);
     }).catch(() => {
       // A recorder that threw on stop has already released; there is nothing
       // to attach and nothing the person can act on.
@@ -264,6 +270,7 @@ export const createVoiceComposer = (deps: VoiceComposerDeps): VoiceComposer => {
 
   const start = (): void => {
     const mine = ++generation;
+    recordingContext = deps.recordingContext?.();
     phase = 'opening';
     error = null;
     deps.onChange();
@@ -303,6 +310,7 @@ export const createVoiceComposer = (deps: VoiceComposerDeps): VoiceComposer => {
     },
     cancel: (): void => {
       generation++;
+      discardGeneration++;
       clearPendingTimer();
       const active = session;
       session = null;

@@ -31,7 +31,7 @@ import {
   type OAuthProviderConfig,
 } from '../collections/mail/oauth.js';
 import { createGmailProvider, GMAIL_SEND_SCOPE } from '../collections/mail/gmail-provider.js';
-import { createGraphProvider, GRAPH_SEND_SCOPE } from '../collections/mail/graph-provider.js';
+import { createGraphProvider, GRAPH_MODIFY_SCOPE, GRAPH_SEND_SCOPE } from '../collections/mail/graph-provider.js';
 
 // ────────────────────────────────────────────────────────────────
 // Harness
@@ -313,7 +313,26 @@ describe('Partial-grant degradation — gmail provider', () => {
 });
 
 describe('Partial-grant degradation — graph provider', () => {
-  it('sendCapable=true when granted set contains GRAPH_SEND_SCOPE', () => {
+  it('sendCapable=true when granted set contains GRAPH_SEND_SCOPE and GRAPH_MODIFY_SCOPE', () => {
+    const provider = createGraphProvider({
+      slug: 'work',
+      config: () => ({
+        account_slug: 'work',
+        backfill_days: 7,
+        poll_seconds: 30,
+        folders: ['Inbox'],
+        granted_scopes: ['Mail.Read', 'offline_access', GRAPH_SEND_SCOPE, GRAPH_MODIFY_SCOPE],
+      }),
+      accountStore: makeStore(),
+      providerConfig,
+    });
+    expect(provider.sendCapable).toBe(true);
+    expect(typeof provider.send).toBe('function');
+  });
+
+  // ⛔ 2026-10-15, live: an Outlook grant of Mail.Send alone said it could send
+  // and every send was refused 403, because the send's draft needs Mail.ReadWrite.
+  it('sendCapable=false with Mail.Send alone: the draft the send writes needs Mail.ReadWrite', () => {
     const provider = createGraphProvider({
       slug: 'work',
       config: () => ({
@@ -326,8 +345,8 @@ describe('Partial-grant degradation — graph provider', () => {
       accountStore: makeStore(),
       providerConfig,
     });
-    expect(provider.sendCapable).toBe(true);
-    expect(typeof provider.send).toBe('function');
+    expect(provider.sendCapable).toBe(false);
+    expect(provider.send).toBeUndefined();
   });
 
   it('sendCapable=false on partial grant (Mail.Send requested but not granted)', () => {

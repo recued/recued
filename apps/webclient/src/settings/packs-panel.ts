@@ -1,3 +1,6 @@
+import { PACK_VENDOR_PERMISSION_CONSENT_ATTR, PACK_VENDOR_PERMISSION_REFRESH_ATTR,
+  vendorPermissionAcknowledgementKey, vendorPermissionReview, vendorPermissionReviewRequired } from './pack-vendor-permissions.js';
+import type { PackPermissionRepair, PackPermissionRepairRequest } from './pack-permission-repair.js';
 /** D-145 PA10 follow-on — Settings → Packs panel (Slices A–K).
  *
  *  Surfaces the per-pair pack roster the server returns via `packs.list`
@@ -718,6 +721,7 @@ export type PacksListCaller = () => Promise<{
 }>;
 
 export type PacksInstallCaller = (args: {
+  vendor_permission_consent?: import('@recued/contracts').PackVendorPermissionConsent;
   manifest: unknown;
   granted_permissions: ReadonlyArray<string>;
   /** Exact server-produced review anchor for a bundled Records update. */
@@ -811,6 +815,7 @@ export const deleteRemovesText = (
  *  the server — only `packs.installBySlug` injects the marketplace recipe
  *  resolver. Same grant handling / result shape as the by-value install. */
 export type PacksInstallBySlugCaller = (args: {
+  vendor_permission_consent?: import('@recued/contracts').PackVendorPermissionConsent;
   slug: string;
   granted_permissions: ReadonlyArray<string>;
   /** Exact marketplace manifest rendered by the detail consent surface. */
@@ -843,6 +848,8 @@ export interface PacksPanelDisclosure {
 }
 
 export interface MountPacksPanelOptions {
+  onPermissionRepair?(request: PackPermissionRepairRequest): void;
+  initialPermissionRepairReturn?: PackPermissionRepair;
   /** Host element the panel renders into. The panel appends a single
    *  wrapper div + rebuilds its inner contents across state changes.
    *  `dispose()` drops the wrapper. */
@@ -1318,6 +1325,9 @@ export const mountPacksPanel = (
   let dialogOpenFor: string | null = null;
   /** True while the dialog's `packs.install` rpc is in flight. */
   let installing = false;
+  let permissionRepairStarting = false;
+  let pendingPermissionRepairReturn = opts.initialPermissionRepairReturn;
+  let permissionRepairNotice: string | undefined;
   /** The last failed submit's copy, and the packs its refusal said to install
    *  first (`failure.missing_packs`), which the dialog offers under it. ONE
    *  value, so every one of the places that clears the error clears the offer
@@ -1327,6 +1337,7 @@ export const mountPacksPanel = (
    *  set lives at `dialogPermissions.get(dialogOpenFor)`. Map entries
    *  clear on dialog close (DD#6). */
   const dialogPermissions = new Map<string, Set<string>>();
+  const restoredPermissionSelections = new Set<string>();
   /** D-182 §7.1 (inc 5b.2) — per-pack Access-tier selection for the install
    *  grant picker. Only set for a connection-backed pack (a non-null grant
    *  model); absent ⇒ `read` (the picker's default) on first render. Keyed by
@@ -1363,7 +1374,40 @@ export const mountPacksPanel = (
   /** Clear ALL per-dialog picks for a slug — the single reset point so the
    *  Access + Scope + Connect state share one lifecycle (a slug left in one map
    *  but not another would render a stale pick on a later reopen). */
+  const dialogVendorPermissionsReviewed = new Map<string, string>();
+  const reconnectVendorPermissions = (name: string): void => {
+    if (disposed || installing || permissionRepairStarting || !opts.onPermissionRepair || dialogOpenFor === null) return;
+    const pack = findPackBySlug(dialogOpenFor);
+    const review = vendorPermissionReview(installPreviewFor(dialogOpenFor, pack?.manifest));
+    if (!pack?.manifest || !review?.resolved) return;
+    const slug = pack.slug;
+    const model = grantModelFor(pack);
+    const chosen = effectiveChosenConnection(slug, dialogConnectionCandidates(dialogConnectionRequirement(slug)));
+    const also = chosen && updateStartConnection(slug) === undefined
+      ? (installPreviewFor(slug, pack.manifest)?.shared_connections ?? []).map(account => account.connection_name)
+        .filter(account => account !== chosen && !dialogAlsoUnticked.get(slug)?.has(account)) : [];
+    permissionRepairStarting = true;
+    try {
+      opts.onPermissionRepair({ name, review, resume: {
+        pack: { ...pack, manifest: pack.manifest }, marketplace: pendingAddEntry?.slug === slug,
+        permissions: [...dialogPermissions.get(slug) ?? []],
+        ...(model ? { access: grantAccessFor(slug, model), audience: grantAudienceFor(slug) } : {}),
+        ...(chosen !== undefined ? { chosen_connection: chosen } : {}),
+        also_unticked: [...dialogAlsoUnticked.get(slug) ?? []], also_connections: also,
+        webhook_picks: [...dialogWebhookPicks.get(slug) ?? []], template_keep: [...dialogMailTemplateKeep.get(slug) ?? []],
+        dependency_access: [...dialogDependencyAccess.get(slug) ?? []],
+      } });
+    } catch (error) {
+      permissionRepairStarting = false;
+      dialogError = { text: error instanceof Error ? error.message : 'The permission repair could not be opened.', missingPacks: [] };
+      render();
+    }
+  };
   const clearDialogGrantPicks = (slug: string): void => {
+    permissionRepairStarting = false;
+    permissionRepairNotice = undefined;
+    restoredPermissionSelections.delete(slug);
+    dialogVendorPermissionsReviewed.delete(slug);
     dialogGrantAccess.delete(slug);
     dialogGrantAudience.delete(slug);
     dialogChosenConnection.delete(slug);
@@ -1422,8 +1466,11 @@ export const mountPacksPanel = (
         // marketplace; its preview must resolve from there too, or on a deployed
         // server (which bundles only its foundation packs) it lists nothing it brings in.
         preview = await run({ manifest, ...(pendingAddEntry?.slug === slug ? { marketplace: true } : {}) });
-      } catch {
-        preview = { resolved: false, will_enable: [], hidden_count: 0 };
+      } catch (error) {
+        const olderServer = error !== null && typeof error === 'object' && 'code' in error && error.code === 'unknown_method'
+          || error instanceof Error && /^unknown (?:rpc )?method:/i.test(error.message);
+        preview = { resolved: false, will_enable: [], hidden_count: 0,
+          ...(!olderServer ? { vendor_permission_review_failed: true } : {}) };
       }
       if (installPreviewInFlight === slug) installPreviewInFlight = null;
       if (disposed) return;
@@ -1433,7 +1480,7 @@ export const mountPacksPanel = (
       // the pack's own.
       if (dialogOpenFor === slug) {
         const selection = dialogPermissions.get(slug);
-        for (const dependency of preview.dependency_requires ?? []) selection?.add(dependency.permission);
+        if (!restoredPermissionSelections.has(slug)) for (const dependency of preview.dependency_requires ?? []) selection?.add(dependency.permission);
       }
       render();
     })();
@@ -2080,6 +2127,8 @@ export const mountPacksPanel = (
       { attribute: INSTALL_CONNECT_CANDIDATE_ATTR, qualifiers: [] },
       { attribute: INSTALL_CONNECT_NONE_ATTR, qualifiers: [] },
       { attribute: INSTALL_CONNECT_CUSTOMIZE_ATTR, qualifiers: [] },
+      { attribute: PACK_VENDOR_PERMISSION_CONSENT_ATTR, qualifiers: [] },
+      { attribute: PACK_VENDOR_PERMISSION_REFRESH_ATTR, qualifiers: [] },
     ];
     for (const candidate of candidates) {
       if (!element.hasAttribute?.(candidate.attribute)) continue;
@@ -2703,10 +2752,15 @@ export const mountPacksPanel = (
    *  render so a reuse candidate appears the moment the connection list resolves. */
   const dialogConnectionCandidates = (
     requirement: ConnectionRequirement | undefined,
-  ): EndpointCandidate[] =>
-    requirement === undefined
-      ? []
-      : findEndpointCandidates(requirement, connectionsReadiness.connections() ?? []);
+  ): EndpointCandidate[] => {
+    const views = connectionsReadiness.connections() ?? [];
+    const rank = (name: string): number => {
+      const type = views.find(view => view.name === name)?.auth_type;
+      return type === 'oauth2_refresh' ? 0 : type === 'managed_oauth' ? 1 : 2;
+    };
+    return requirement === undefined ? [] : findEndpointCandidates(requirement, views)
+      .sort((a, b) => rank(a.name) - rank(b.name) || a.name.localeCompare(b.name));
+  };
 
   /** D-194 2b-2 — the connection the install will bind to. Shared by the render
    *  (the picker's `chosen`) + submit (the rpc's `chosen_connection`) so the two
@@ -2736,6 +2790,7 @@ export const mountPacksPanel = (
   /** D-320 slice 2j — tick or untick one shared connection for the open dialog. */
   const toggleAlsoInternal = (connection_name: string): void => {
     if (dialogOpenFor === null || installing) return;
+    dialogVendorPermissionsReviewed.delete(dialogOpenFor);
     const unticked = dialogAlsoUnticked.get(dialogOpenFor) ?? new Set<string>();
     if (unticked.has(connection_name)) unticked.delete(connection_name);
     else unticked.add(connection_name);
@@ -2749,6 +2804,7 @@ export const mountPacksPanel = (
     if (dialogOpenFor === null) return;
     if (installing) return;
     dialogChosenConnection.set(dialogOpenFor, name);
+    dialogVendorPermissionsReviewed.delete(dialogOpenFor);
     render();
   };
 
@@ -2854,6 +2910,7 @@ export const mountPacksPanel = (
     // mutable outer `dialogOpenFor`. The outer reference can flip to
     // `null` on the success path inside the same async block; without
     // the snapshot the map delete would race the assignment.
+    if (permissionRepairStarting) return Promise.resolve();
     const submittingSlug = dialogOpenFor;
     const target = findPackBySlug(submittingSlug);
     if (!target) return Promise.resolve();
@@ -2925,6 +2982,13 @@ export const mountPacksPanel = (
       : [])
       .filter((choice) => choice.entry.twin !== undefined)
       .map((choice) => ({ recipe_id: choice.entry.recipe_id, variable: choice.entry.variable, keep: choice.keep }));
+    const permissionPreview = installPreviewFor(submittingSlug, target.manifest);
+    const reviewedPermissions = vendorPermissionReview(permissionPreview);
+    const permissionsLoading = opts.runInstallPreview !== undefined && permissionPreview === undefined;
+    if (permissionsLoading || vendorPermissionReviewRequired(permissionPreview)
+      && (!reviewedPermissions || dialogVendorPermissionsReviewed.get(submittingSlug)
+        !== vendorPermissionAcknowledgementKey(reviewedPermissions, chosenConnection))) return Promise.resolve();
+    const vendorConsent = reviewedPermissions ? { fingerprint: reviewedPermissions.fingerprint, reconnect_later: true } : undefined;
     installing = true;
     dialogError = null;
     pendingInstallDialogFocus = { kind: 'submit', slug: submittingSlug };
@@ -2944,6 +3008,7 @@ export const mountPacksPanel = (
                 ? { expected_manifest_hash: pendingAddManifestHash }
                 : {}),
               ...(installScope !== undefined ? { install_scope: installScope } : {}),
+              ...(vendorConsent ? { vendor_permission_consent: vendorConsent } : {}),
               ...(chosenConnection !== undefined
                 ? { chosen_connection: chosenConnection }
                 : {}),
@@ -2959,6 +3024,7 @@ export const mountPacksPanel = (
                 ? { expected_manifest_hash: target.manifest_review_hash }
                 : {}),
               ...(installScope !== undefined ? { install_scope: installScope } : {}),
+              ...(vendorConsent ? { vendor_permission_consent: vendorConsent } : {}),
               ...(chosenConnection !== undefined
                 ? { chosen_connection: chosenConnection }
                 : {}),
@@ -2971,7 +3037,8 @@ export const mountPacksPanel = (
         if (!response.result.ok) {
           const failureCode = response.result.failure?.code;
           const failureDetail = response.result.failure?.message;
-          if (isAdded && failureCode === 'review_stale') {
+          if (failureCode === 'review_stale') { dialogInstallPreview.delete(submittingSlug); dialogVendorPermissionsReviewed.delete(submittingSlug); }
+          if (isAdded && failureCode === 'review_stale' && !failureDetail?.startsWith('Vendor permissions or saved connections changed.')) {
             // The server fetched a different marketplace artifact than the one
             // this consent dialog rendered. Discard every value derived from
             // that preview and return to the detail retry state; reopening the
@@ -3311,6 +3378,25 @@ export const mountPacksPanel = (
       document: doc,
       pack,
       ...(installPreview !== undefined ? { installPreview } : {}),
+      vendorPermissionsReviewed: vendorPermissionReview(installPreview) !== undefined
+        && vendorPermissionAcknowledgementKey(vendorPermissionReview(installPreview)!, effectiveChosenConnection(pack.slug, connectionCandidates))
+          === dialogVendorPermissionsReviewed.get(pack.slug),
+      vendorPermissionsLoading: opts.runInstallPreview !== undefined && installPreview === undefined,
+      onReviewVendorPermissions: checked => {
+        if (installing) return;
+        const review = vendorPermissionReview(installPreview);
+        if (checked && review) dialogVendorPermissionsReviewed.set(pack.slug,
+          vendorPermissionAcknowledgementKey(review, effectiveChosenConnection(pack.slug, connectionCandidates)));
+        else dialogVendorPermissionsReviewed.delete(pack.slug);
+        render();
+      },
+      onRefreshVendorPermissions: () => {
+        if (installing || installPreviewInFlight !== null) return;
+        dialogVendorPermissionsReviewed.delete(pack.slug); dialogInstallPreview.delete(pack.slug); render();
+        void connectionsReadiness.refresh().then(() => { if (!disposed && dialogOpenFor === pack.slug) render(); });
+      },
+      ...(opts.onPermissionRepair ? { onReconnectVendorPermissions: reconnectVendorPermissions } : {}),
+      ...(permissionRepairNotice ? { vendorPermissionRepairNotice: permissionRepairNotice } : {}),
       ...(dependenciesLoadingFor(pack) ? { permissionsLoading: true } : {}),
       ...(dialogDependencyAccess.has(pack.slug)
         ? { dependencyAccessPicks: dialogDependencyAccess.get(pack.slug)! }
@@ -4467,6 +4553,28 @@ export const mountPacksPanel = (
 
   const render = (): void => {
     if (disposed) return;
+    if (pendingPermissionRepairReturn && state === 'ready' && dialogOpenFor === null
+      && selectedSlug === pendingPermissionRepairReturn.resume.pack.slug) {
+      const repair = pendingPermissionRepairReturn; const draft = repair.resume; const slug = draft.pack.slug;
+      if (draft.marketplace) pendingAddEntry = draft.pack;
+      const current = findPackBySlug(slug);
+      if (current?.manifest && !current.installed) {
+        pendingPermissionRepairReturn = undefined;
+        openDialog(slug);
+        dialogPermissions.set(slug, new Set(draft.permissions));
+        restoredPermissionSelections.add(slug);
+        if (draft.access) dialogGrantAccess.set(slug, draft.access);
+        if (draft.audience) dialogGrantAudience.set(slug, draft.audience);
+        dialogChosenConnection.set(slug, draft.chosen_connection);
+        dialogAlsoUnticked.set(slug, new Set(draft.also_unticked));
+        dialogWebhookPicks.set(slug, new Map(draft.webhook_picks));
+        dialogMailTemplateKeep.set(slug, new Map(draft.template_keep));
+        dialogDependencyAccess.set(slug, new Map(draft.dependency_access));
+        dialogInstallPreview.delete(slug); dialogVendorPermissionsReviewed.delete(slug);
+        permissionRepairNotice = repair.verified ? `The read-only access check passed for ${repair.name}. Review the refreshed vendor permissions before installing.`
+          + (repair.reconnect_collections?.length ? ' Review connected Mail and Calendar accounts: ' + repair.reconnect_collections.map(use => use.label).join(', ') + '.' : '') : undefined;
+      }
+    }
     const activeElement = (
       doc as unknown as { activeElement?: HTMLElement | null }
     ).activeElement ?? null;

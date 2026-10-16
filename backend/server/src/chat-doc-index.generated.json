@@ -597,7 +597,7 @@
     "section": "The built-in chat",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/ai-chat-and-mcp#the-built-in-chat",
-    "body": "Chat talks to your server. It answers from your warehouse. The warehouse is\nthe place on your server that keeps a copy of your mail, calendar, contacts,\nCRM records, and files. It builds timelines from them. CRM means your\ncustomer records system. Pick a model for chat in Settings →\nAI/Models. It can be a free-pool key or a provider you bring.\n\nSometimes chat wants to act: send, update, or create something. Then the\naction comes to you as an approval. An approval is a pause. Recued stops and\nasks you first. You can fix the details before you say yes. You can approve\njust that one action. You can approve the whole batch it belongs to. Or you\ncan open a grant for the rest of the session. See\n[Grants and approvals](../concepts/grants-and-approvals.md)."
+    "body": "Chat talks to your server. It answers from your warehouse. The warehouse is\nthe place on your server that keeps a copy of your mail, calendar, contacts,\nCRM records, and files. It builds timelines from them. CRM means your\ncustomer records system. Pick a model for chat in Settings →\nAI/Models. It can be a free-pool key or a provider you bring.\n\nEach chat keeps a draft while Chat stays open. A draft is text you have\nnot sent yet. It keeps your chosen reply and files too. Switch chats and\ncome back to keep writing. A **Draft** label marks chats with unsent work.\n**New chat** returns to your draft for a new chat.\n\nA failed send keeps your draft ready to retry. A successful send clears\nonly what your server accepted. Your drafts stay in memory for this Chat\nvisit. Reloading the page or closing the tab loses them. Leaving Chat warns\nbefore throwing away drafts in any chat.\n\nSometimes chat wants to act: send, update, or create something. Then the\naction comes to you as an approval. An approval is a pause. Recued stops and\nasks you first. You can fix the details before you say yes. You can approve\njust that one action. You can approve the whole batch it belongs to. Or you\ncan open a grant for the rest of the session. See\n[Grants and approvals](../concepts/grants-and-approvals.md)."
   },
   {
     "id": "guides/ai-chat-and-mcp#when-nothing-installed-can-do-it",
@@ -1165,7 +1165,143 @@
     "section": "Enroll a connection",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/connections#enroll-a-connection",
-    "body": "Enroll means \"set up and save\". Open **Settings → Connections** and pick a\nprovider. Or let a pack do it. A pack that needs a connection walks you\nthrough the setup while it installs.\n\nEach connection is known by its kind and its name. So `acme-hubspot` and\n`personal-hubspot` are two different connections. Each one has its own\ngrants. A grant is a yes you give ahead of time."
+    "body": "Enroll means \"set up and save\". Open **Connections** and pick a\nprovider. Or let a pack do it. A pack that needs a connection walks you\nthrough the setup while it installs.\n\nEach connection is known by its kind and its name. So `acme-hubspot` and\n`personal-hubspot` are two different connections. Each one has its own\ngrants. A grant is a yes you give ahead of time.\n\nYour list and the Add button come first.\nSearch by name, service, or status to find an account.\nThe status bar shows saved sign-in problems.\nOpen it for repair links and reminders to review access.\nOpen **Apps & APIs** for more sign-in tools.\nExpand **Authentication settings** to find apps, brokers and bulk API moves.\n\nRecued direct OAuth is the first sign-in choice.\nYou can also use a broker.\nMail and Calendar can lead you to the app or broker tools.\nWhen done, choose **Return to mailbox setup** for Mail.\nFor Calendar, choose **Return to calendar setup**.\nThis tab keeps the account name and form choices in memory.\nIt does not carry passwords, app secrets or tokens."
+  },
+  {
+    "id": "guides/connections#repair-a-password-account",
+    "doc": "Connections",
+    "section": "Repair a password account",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#repair-a-password-account",
+    "body": "Open the IMAP mailbox or CalDAV calendar you saved.\nChoose **Update credentials**. Enter the new password or app password.\nChoose **Verify and save credentials**. Recued checks the login first.\nIt then saves the new password.\nThe server, username and account name stay the same.\nSo do the folders or calendars, saved data and sync point.\n\nFor mail with SMTP, you can change either password.\nLeave a field blank to keep the saved value.\nIf SMTP has no password of its own, it uses IMAP's.\nNo test mail is sent.\nA failed check keeps the saved passwords.\nRecued may save the passwords but fail to restart sync.\nIf so, it asks you to restart the server."
+  },
+  {
+    "id": "guides/connections#browse-and-connect-file-sources",
+    "doc": "Connections",
+    "section": "Browse and connect file sources",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#browse-and-connect-file-sources",
+    "body": "**Connections → Files** shows local folders and cloud file sources.\nChoose **Connect cloud source** to pick a service.\nRecued opens that service's setup form.\nChoose **Browse files** to open **Data → Files**.\nFor local folders, find it in the folder's details.\nChoose **Manage authentication** to open the source's saved connection.\nA cloud file list can be out of date.\nThat alone does not mean its sign-in has expired."
+  },
+  {
+    "id": "guides/connections#understand-connection-checks",
+    "doc": "Connections",
+    "section": "Understand connection checks",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#understand-connection-checks",
+    "body": "**Test connection** checks whether the service replies.\nIt shows any HTTP error too.\nA reply does not prove access to private data.\nIt does not prove that all needed permissions were granted.\nUse the pack's read check for the data it needs.\nIf the service cannot be reached, the key may still be valid."
+  },
+  {
+    "id": "guides/connections#reuse-a-saved-oauth-app",
+    "doc": "Connections",
+    "section": "Reuse a saved OAuth app",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#reuse-a-saved-oauth-app",
+    "body": "This needs Recued 26.10.16 or later.\nOpen **Connections → Apps & APIs** and add a Google or Microsoft API connection.\nChoose **Use saved Google app** or **Use saved Microsoft app**.\nPick the saved app you want to use.\nYou can save apps here, in Mail, or in Calendar.\nThe choice appears when the OAuth sign-in addresses match that app's provider.\n\nCheck that the callback URL shown in this form is registered in your app.\nIn Google, enable the API you plan to use.\nReview the scopes, choose **Authorize**, then choose **Save and test**.\nEach API connection gets its own sign-in and permissions.\nThe app secret stays on your server.\nChoose **Enter another app** to use other app details.\nUse **Refresh saved apps** if you changed the saved app in another tab.\n\nIf the saved app's ID changes during setup, choose an app again.\nDo this too if you remove the app.\nChanging it later does not update a saved API connection's credentials.\nUse the connection's normal credential change flow for that."
+  },
+  {
+    "id": "guides/connections#save-more-than-one-oauth-app",
+    "doc": "Connections",
+    "section": "Save more than one OAuth app",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#save-more-than-one-oauth-app",
+    "body": "In **Connections**, choose **Apps & APIs**.\nExpand **Authentication settings**. Choose **Manage saved apps**.\nChoose **Add OAuth app**. Pick Google or Microsoft.\nGive the app a name, such as Work or Personal.\nEnter its Client ID and secret, then choose **Save app**.\nThe secret stays on your server. Recued never shows it again.\n\nYour old Google and Microsoft apps stay as the default apps.\nEach new app has its own name and keys.\nPick a saved app when you connect an API, Mail, or Calendar account.\nThe app choice is separate from the account you sign in to.\n\nUse **Edit** to change an app name or its expiry date.\nUse **Usage and rotate secret** to change its secret.\nLeave the secret blank to keep it.\nMail and Calendar keep using their chosen app for token refresh.\nChanging a default app does not change other named apps.\nSaved API connections keep their own copy of the app keys.\nUse their credential change flow to replace those keys."
+  },
+  {
+    "id": "guides/connections#keep-track-of-a-secret-s-expiry-date",
+    "doc": "Connections",
+    "section": "Keep track of a secret's expiry date",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#keep-track-of-a-secret-s-expiry-date",
+    "body": "In **Connections**, choose **Apps & APIs**.\nExpand **Authentication settings**. Choose **Manage saved apps**.\nChoose **Edit** on the app.\nIf the vendor shows a date for its secret, copy it into **Secret expiry date**.\nLeave it blank if you do not know.\nChoose **Save app**. You do not need to enter the secret again.\n\nReminders show in Apps & APIs from 30 days before the date.\nThey stay visible while the saved apps list is closed.\nThe view updates as your local calendar day changes.\nA passed date does not prove that access has stopped.\nRecued does not look up or test this date.\nNo date recorded means the date is unknown.\n\nChoose **Edit expiry date** to fix or clear it.\nUse **Clear expiry date** to remove the date.\nThis changes the date only.\nChoose **Review usage and rotate secret** to see the app's uses.\nReview the accounts and API copies before you change the secret.\n\nWhen you rotate a secret, enter its new date if known.\nLeave the new date blank if unknown.\nYou can also choose **Clear new expiry date**.\nA successful rotation clears the app's old date and reminder.\nSkipped API copies keep their old secret.\nTheir expiry dates are not tracked here.\nAn expiry reminder does not start sign-in or change access.\n\nYou cannot remove an app while Mail or Calendar uses it.\nYou cannot change its Client ID then, either.\nAdd a new app for a different Client ID.\nMicrosoft Mail and Calendar must use the same app when they share one sign-in.\n\nIf you remove an app while its editor is open in another tab, refresh that tab.\nIts old draft cannot restore the app or replace new keys.\nIf you save app keys in Mail or Calendar and then cancel consent, the app stays saved.\nYou can retry sign-in without entering the secret again."
+  },
+  {
+    "id": "guides/connections#see-app-usage-and-rotate-a-secret",
+    "doc": "Connections",
+    "section": "See app usage and rotate a secret",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#see-app-usage-and-rotate-a-secret",
+    "body": "This needs Recued 26.10.16 or later.\nIn **Connections**, choose **Apps & APIs**.\nExpand **Authentication settings**. Choose **Manage saved apps**.\nChoose **Usage and rotate secret** on the app.\nReview its Mail, Calendar and API uses.\nPacks, recipes, schedules and file sources are shown when known.\nMissing usage is marked as unknown.\nUse this view to fix an app whose saved secret is missing too.\n\nMake a new secret for that same app in the vendor console.\nGoogle’s reset stops the old secret at once.\nSome accounts may need a new sign-in.\nSee [Google’s reset guide](https://docs.cloud.google.com/docs/security/data-loss-prevention/revoking-user-access#rotate_oauth_client_id_secrets).\nFor Microsoft, add a new secret and keep the old one while you test.\nSee [Microsoft’s secret guide](https://learn.microsoft.com/en-us/entra/msidweb/authentication/client-secrets#manage-secret-expiration-and-rotation).\nKeep the Client ID the same.\nPaste the new secret into Recued.\nAdd the new secret's expiry date if you know it.\nLeave it blank to clear the old date after the save.\nConfirmed API copies start checked; clear any you want to skip.\nOld copies with an unknown app start unchecked.\nCheck those only after you review them.\nCopies that share one sign-in must stay together.\nMail and Calendar using the app pick up its new secret when they renew."
+  },
+  {
+    "id": "guides/connections#apply-a-secret-rotation",
+    "doc": "Connections",
+    "section": "Apply a secret rotation",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#apply-a-secret-rotation",
+    "body": "Choose **Review rotation**, then **Apply secret rotation**.\nRecued saves the app and checked copies in one step.\nTheir names, accounts, scopes and sync state stay in place.\nSkipped copies keep their old secret.\nA failed save keeps the previous settings.\n\nThis save does not test the new secret with the vendor.\nFor Microsoft, keep the old secret valid until renewals succeed.\nThen remove it in the vendor console.\nUpdate other tools that use this same app too.\nIf the reply is lost, choose **Check rotation result**.\nIt reads the saved result without repeating the change.\nIf Recued confirms the rotation but cannot confirm its date, refresh the app.\nUse **Edit expiry date** to fix the date without changing the secret again."
+  },
+  {
+    "id": "guides/connections#review-app-permissions",
+    "doc": "Connections",
+    "section": "Review app permissions",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#review-app-permissions",
+    "body": "In **Connections**, choose **Apps & APIs**.\nExpand **Authentication settings**. Choose **Permissions and cleanup**.\nThis shows all saved sign-ins, including those through a broker.\nFor one saved app, open **Manage saved apps**.\nChoose **Review permissions** on that app.\n\nRecued lists each app and its separate sign-ins.\nIt shows what Mail, Calendar, Files and installed workflows need.\nPaused schedules still count as uses.\nEach scope is a vendor permission, such as reading a sheet.\nRequired scopes show which features need them.\nOther uses of the same app can protect a scope too.\n\nA removed pack may leave a scope behind.\nCheck scopes marked **No longer required locally**.\nThen choose **Preview cleanup**.\nThe preview shows what to keep and which uses may be affected.\nIt does not remove access or change your saved sign-ins.\nRefresh if a pack or connection changes during your review.\n\nThese are local records, not a fresh vendor check.\nA requested scope does not prove that the vendor granted it.\nUnknown grants or uses stay unknown.\nOther tools may still need a scope that Recued no longer needs."
+  },
+  {
+    "id": "guides/connections#finish-google-cleanup",
+    "doc": "Connections",
+    "section": "Finish Google cleanup",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#finish-google-cleanup",
+    "body": "For a Recued direct Google Mail, Calendar or API sign-in, open its cleanup preview.\nFor an API sign-in, save the same Google app in **Apps & APIs** first.\nIts Client ID and secret must match the API connection.\nChoose a protected read URL for each API connection shown.\nFor Sheets, you can paste a private spreadsheet URL.\nPublic files cannot prove that the new sign-in works.\nChoose **Start guided Google cleanup**.\nReview the accounts and connections, then choose **Pause accounts and continue**.\nPacks and recipes using a paused connection cannot access Google until recovery ends.\nOther Google apps, file sources and brokers may block this reset.\nTheir uses need a safe way to reconnect first.\nWe must be able to check the API account with its remaining scopes.\nRecued does not ask for more scopes just to check who signed in.\nAn unknown account stays protected.\n\nOpen **Google account access**.\nCheck the app name and Google account.\nRemove the app's access on Google.\nOther tools using the same app may lose access too.\nReturn to Recued and confirm that you did this.\nRecued records your confirmation; it cannot read that Google page."
+  },
+  {
+    "id": "guides/connections#verify-and-save-google-access",
+    "doc": "Connections",
+    "section": "Verify and save Google access",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#verify-and-save-google-access",
+    "body": "Choose **Reconnect and verify Google account**.\nUse the same Google account and grant the access shown.\nRecued checks the new grant and reads the saved source or API resource.\nThe same URL must block a read that has no secret key.\nSeparate grants keep separate saved sign-ins.\nKnown copies of the same API grant share one sign-in.\nRepeat **Reconnect and verify Google account** for each one shown.\nKeep the Google app access in place between these sign-ins.\nOnce all checks pass, choose **Save reduced sign-in**.\nNames and pack and recipe links stay the same.\nYour saved data and sync place stay intact.\nLater sign-ins use the new scope list.\nThe earlier list stays in the server's cleanup history."
+  },
+  {
+    "id": "guides/connections#resume-a-saved-cleanup",
+    "doc": "Connections",
+    "section": "Resume a saved cleanup",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#resume-a-saved-cleanup",
+    "body": "Open **Permissions and cleanup**, then choose **Resume cleanup**.\nThe task stays on your server if you close the browser.\nUse **Refresh saved status** after a lost reply.\nThis reads the saved result without repeating the change.\n\nIf Google still reports access you chose to remove,\nchoose **Repeat Google access reset**.\nRemove the app access on Google, then confirm it again.\nThis clears the earlier checks so each sign-in can be verified afresh.\n\nIf a pack changes during cleanup, choose **Refresh cleanup review**.\nIf an API test file moved or was deleted, open **Change API access checks**.\nChoose a new private read URL, then use **Refresh cleanup review**.\nThis clears the old checks. Sign in again before saving.\nIf it now needs the access you chose to remove, cleanup must stop.\nChoose **Stop cleanup and restore access**, then sign in again.\nThis keeps the old access; it does not claim a scope was removed.\nA later review refresh still keeps that access.\nDo this too if you want to stop after pausing accounts.\nYou can delete an account once you finish or restore its access.\n\nIf an account fails to pause, use **Retry pausing accounts**.\nYou can also refresh the review or stop cleanup and restore access.\nFinish pausing before signing in again."
+  },
+  {
+    "id": "guides/connections#understand-cleanup-limits",
+    "doc": "Connections",
+    "section": "Understand cleanup limits",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#understand-cleanup-limits",
+    "body": "Google may revoke a whole shared sign-in at once.\nMail, Calendar and packs using it can all lose access.\nRemoving one scope can thus need a full reset and new consent.\nMicrosoft can limit who may change a grant.\nWork or school accounts may need an admin.\nBroker apps can have fixed scopes too.\n\nThe preview does not perform these changes.\nAsking for fewer scopes does not prove old consent was removed.\nDeleting a broker connection does not prove that either.\nGuided Google cleanup checks a fresh grant and saves its scope list.\nThe app-access reset on Google is a step you confirm yourself.\nMicrosoft, broker and unsupported Google API sign-ins still use the preview and vendor review.\nThey do not yet have this guided reset.\nGoogle file sources still need a safe way to restore access first."
+  },
+  {
+    "id": "guides/connections#get-help-with-oauth-sign-in",
+    "doc": "Connections",
+    "section": "Get help with OAuth sign-in",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#get-help-with-oauth-sign-in",
+    "body": "Choose **Troubleshoot OAuth** in the connection or account form.\nIt is also in saved apps and Nango broker settings.\nPick the symptom closest to what you saw.\nThe guide shows checks for your sign-in method.\nIt can help with blocked apps, scopes, secrets and lost replies.\n\nThe guide keeps observed errors separate from what you report.\nA denied request can have more than one cause.\nUse the callback shown for that flow.\nNango uses its own vendor callback.\nIt also has an API key, separate from the vendor app secret.\n\nTick each check as you review it.\nThese ticks do not prove that sign-in or API access works.\nUse the normal access check after any repair.\nIf a result is still pending, check it before starting again.\nThe guide does not change credentials or start sign-in.\nApp-only connections show checks for token requests.\nThey do not use a sign-in window.\nChanging the app or account starts a new checklist.\n\nChoose **Copy help summary** to share the checks with support.\nIt omits account IDs, secrets, raw errors and callback URLs.\nKeep passwords, tokens and returned sign-in links private."
+  },
+  {
+    "id": "guides/connections#switch-the-oauth-app-for-mail-or-calendar",
+    "doc": "Connections",
+    "section": "Switch the OAuth app for Mail or Calendar",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#switch-the-oauth-app-for-mail-or-calendar",
+    "body": "This needs Recued 26.10.16 or later.\nOpen **Connections → Mail** or **Calendar**, then open the account.\nChoose **Manage authentication → Change OAuth app**.\nPick a different saved Google or Microsoft app.\nReview the account, permissions and callback URL.\nRegister that callback URL on the chosen app.\n\nChoose **Authorize and verify account**.\nSign in to the same vendor account.\nRecued checks the account and its access before you can apply.\nAn unknown or different account stops the switch.\n\nChoose **Apply OAuth app switch** after the checks pass.\nThe account name, saved data, folder choices and sync state stay in place.\nSending and editing keep their old limits, even if the vendor grants more access.\nMicrosoft Mail and Calendar switch together when they share one sign-in.\nSync pauses briefly, then resumes.\n\nIf the reply is lost, choose **Check result** before starting again.\nIf sync needs a restart, restart Recued and check the result.\nAccounts linked through Apps & APIs use **Switch authentication** instead.\nUse **Manage saved apps** to add an app before trying this flow."
+  },
+  {
+    "id": "guides/connections#switch-saved-apps-for-several-mail-and-calendar-accounts",
+    "doc": "Connections",
+    "section": "Switch saved apps for several Mail and Calendar accounts",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#switch-saved-apps-for-several-mail-and-calendar-accounts",
+    "body": "Open the **Mail** or **Calendar** list in **Connections**.\nChoose **Bulk switch saved OAuth apps**.\nPick one destination saved app, then select up to 20 native accounts.\nThe list can include both Mail and Calendar for that vendor.\nAccounts already using the chosen app are skipped.\n\nChoose **Review selected accounts**.\nRecued groups collections that share a sign-in.\nThose collections switch together, even if you selected only one.\nRead the account names, kept resource choices, permissions and callback URL.\nChoose **Authorize and verify account** for each group you want to switch.\nSign in to the same vendor account for each group.\nA different or unknown account cannot pass the check.\n\nChoose **Apply verified groups** after reviewing the checks.\nEach group saves in one step. Names, data, selections and sync state stay in place.\nA failed group keeps its saved app. Other verified groups can still switch.\nEarlier successful switches stay applied if a later one fails.\n**Stop remaining switches** lets the current switch finish and stops the rest.\nOpening another account view also stops the rest after the current switch finishes.\nExpired reviews need a fresh sign-in."
+  },
+  {
+    "id": "guides/connections#check-bulk-saved-app-switch-results",
+    "doc": "Connections",
+    "section": "Check bulk saved-app switch results",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#check-bulk-saved-app-switch-results",
+    "body": "Choose **Check switch results** after a lost reply.\nReopening bulk switching in the same browser tab reads saved attempt results.\nIt never resumes unstarted switches or repeats an apply.\nAn earlier switch can have used a different app.\nThat result does not count as a move to your newly selected app.\nRecued reads the saved result before naming its destination.\nThe browser keeps account references and attempt IDs, without tokens or codes.\nKeep the view open if browser result recovery is unavailable.\nIf sync needs a restart, restart Recued, then check the result.\nChoose **Choose accounts again** when all results are confirmed.\nAccounts linked through Apps & APIs use **Switch authentication** instead."
   },
   {
     "id": "guides/connections#sign-in-through-nango",
@@ -1173,7 +1309,7 @@
     "section": "Sign in through Nango",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/connections#sign-in-through-nango",
-    "body": "A broker is another server that holds your vendor sign-in and makes API\ncalls for you. Nango is one such broker. You can choose it under **How to\nconnect → Managed OAuth**. It works with API packs. Mail, Calendar and file\nsync can also use these saved connections.\n\nOpen **Connections → Apps & APIs → Manage OAuth brokers** to set up a\nbroker first. You can also add one while setting up a connection.\nChoose **Add broker** to open the form.\n\n1. Enter a **Profile name**. Use a name you know.\n2. Enter its **Server URL**. For Nango Cloud, use `https://api.nango.dev`.\n   You can use your own Nango server too. It can run on another machine.\n3. Paste its **Environment API key**. Get it from **Environment Settings → API\n   Keys** in Nango. An environment is a separate place for test or live\n   accounts. The key chooses that place. It does not mean a local machine.\n4. If your own Nango server has a separate sign-in page, open **Separate\n   Connect UI (optional)** and enter its **Connect UI origin**. This is the\n   start of that page's address. Otherwise, leave it blank.\n5. Click **Test and save broker**.\n\nTo change its name or key, choose **Edit broker**. Leave the key blank to\nkeep the saved one. Use a new key from the same\nNango environment. With saved accounts, Recued checks that both keys reach\nthe same accounts. Change the key before you revoke the old one.\nFor a different environment, add a new broker profile. Connect its accounts\nagain. Do this too if the old key no longer works.\n\nUse **Close brokers** when you are done. Recued asks before you leave a\nform you have not saved. **Remove profile** asks you first. Your Nango\naccounts stay. You cannot remove a profile used by a saved connection."
+    "body": "A broker is another server that holds your vendor sign-in and makes API\ncalls for you. Nango is one such broker. You can choose it under **How to\nconnect → Managed OAuth**. It works with API packs. Mail, Calendar and file\nsync can also use these saved connections.\n\nFirst, open **Connections → Apps & APIs**.\nExpand **Authentication settings**. Choose **Manage OAuth brokers**.\nSet up a broker there. You can also add one while setting up a connection.\nChoose **Add broker** to open the form.\n\n1. Enter a **Profile name**. Use a name you know.\n2. Enter its **Server URL**. For Nango Cloud, use `https://api.nango.dev`.\n   You can use your own Nango server too. It can run on another machine.\n3. Paste its **Environment API key**. Get it from **Environment Settings → API\n   Keys** in Nango. An environment is a separate place for test or live\n   accounts. The key chooses that place. It does not mean a local machine.\n4. If your own Nango server has a separate sign-in page, open **Separate\n   Connect UI (optional)** and enter its **Connect UI origin**. This is the\n   start of that page's address. Otherwise, leave it blank.\n5. Click **Test and save broker**.\n\nTo change its name or key, choose **Edit broker**. Leave the key blank to\nkeep the saved one. Use a new key from the same\nNango environment. With saved accounts, Recued checks that both keys reach\nthe same accounts. Change the key before you revoke the old one.\nFor a different environment, add a new broker profile. Connect its accounts\nagain. Do this too if the old key no longer works.\n\nUse **Close brokers** when you are done. Recued asks before you leave a\nform you have not saved. **Remove profile** asks you first. Your Nango\naccounts stay. You cannot remove a profile used by a saved connection."
   },
   {
     "id": "guides/connections#choose-a-vendor-app",
@@ -1189,7 +1325,7 @@
     "section": "Reuse or reauthorize an account",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/connections#reuse-or-reauthorize-an-account",
-    "body": "Recued checks for Nango accounts when you pick a vendor app. If it finds\naccounts, it starts with **Use an existing Nango account**. Pick one and\nclick **Use selected account**. Then save and probe the connection.\nA probe checks whether Recued can reach it. It does not prove that every\nneeded permission was granted.\n\nIf there are no accounts, Recued offers **Authorize a new account**.\nYou can also choose this when you need another account. Each new sign-in\ncreates another Nango connection. After consent, save and probe before\nstarting again.\n\n**Reauthorize** keeps the same Nango connection.\nIf Recued has already requested all the needed scopes\nin completed sign-in flows, it reuses the account without new consent.\nGranted permissions stay unknown. Save and probe, then check the access\nneeded by your task. No custom Nango function or extra setup is needed.\n\nTo repair access, choose **Review sign-in again**. Check the request.\nThen choose **Sign in again** for new consent. This also keeps\nthe same Nango connection. Recued checks the scope needs of all its saved\nconnections that share that account."
+    "body": "Recued checks for Nango accounts when you pick a vendor app. If it finds\naccounts, it starts with **Use an existing Nango account**. Pick one and\nclick **Use selected account**. Then save and test the connection.\nA probe checks whether Recued can reach it. It does not prove that every\nneeded permission was granted.\n\nIf there are no accounts, Recued offers **Authorize a new account**.\nYou can also choose this when you need another account. Each new sign-in\ncreates another Nango connection. After consent, save and test before\nstarting again.\n\n**Reauthorize** keeps the same Nango connection.\nIf Recued has already requested all the needed scopes\nin completed sign-in flows, it reuses the account without new consent.\nGranted permissions stay unknown. Save and test, then check the access\nneeded by your task. No custom Nango function or extra setup is needed.\n\nTo repair access, choose **Review sign-in again**. Check the request.\nThen choose **Sign in again** for new consent. This also keeps\nthe same Nango connection. Recued checks the scope needs of all its saved\nconnections that share that account."
   },
   {
     "id": "guides/connections#keep-scope-history",
@@ -1232,6 +1368,14 @@
     "body": "Before you sign in or switch, review **Account and impact preview**.\nIt shows the saved account and the account you chose.\nRecued shows a vendor email when existing access can read it.\nAn unknown email stays unknown. Recued does not ask for extra\npermissions just to find your email.\n\nThe preview lists packs, recipes, dishes, schedules, Mail, Calendar,\nand file sources that use the connection. A dish holds a recipe's\nsaved settings. Some recipes can choose this account, but use\nanother one by default. Those rows say **can choose this account**.\nPaused work stays on the list and says **paused**.\nNamed API links count too. A need that names no account type\nis shown as a possible use.\n\nOther local connections may share the selected Nango account.\nA new consent can affect their access before you save.\nThe list covers this Recued server. Other tools may also use\nthat account. Missing local use is shown as unknown.\n\nAfter sign-in, Recued reads the actual account again.\nReview it before saving or choosing **Verify and switch**.\nIf that read fails, choose **Refresh account and impact**.\nRecued keeps the account you just signed in to for the next review.\nIf the account or its use changes, refresh the review.\nYour connection name stays the same after the switch.\nMail and Calendar bindings pin their broker account.\nReview and reconnect those collections after switching accounts.\n\nAccount details do not prove access to all data or actions.\nUse a pack's read checks to test the resource you need."
   },
   {
+    "id": "guides/connections#move-several-connections-to-your-own-app",
+    "doc": "Connections",
+    "section": "Move several connections to your own app",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#move-several-connections-to-your-own-app",
+    "body": "Set up a direct OAuth connection for the vendor API first.\nAuthorize it with the scope needs of the connections you will move.\nKeep this source connection outside the group you will move.\n\nOpen **Connections → Apps & APIs → Bulk authentication migration**.\nPick one vendor API service and up to 20 connections.\nChoose **Recued direct OAuth**, then pick the direct source connection.\nChoose **Review direct OAuth account and permissions**.\nRecued renews the source keys. It does not open Nango sign-in.\n\nGive each connection a private, read-only API URL.\nChoose **Check all selected connections** and review the results.\nThen choose **Apply verified connections**.\nA failed row keeps Nango in place. Later rows can still switch.\nEach row is checked again before its saved keys change.\n\nNames, packs, recipes, and API settings stay linked.\nUse the Mail and Calendar links to reconnect the listed collections.\nOld Nango accounts are kept. Scope needs stay tracked for each connection.\nThese native connections share key renewal in Recued.\nWhen the vendor changes a refresh token, Recued updates the linked keys.\nGrants are unknown if the vendor reports no scopes.\n**Stop migration** stops later rows. It keeps prior successful switches.\nUse **Refresh results** after a lost reply.\nReviews expire after 30 minutes. A restart never resumes a migration."
+  },
+  {
     "id": "guides/connections#move-several-connections-to-nango",
     "doc": "Connections",
     "section": "Move several connections to Nango",
@@ -1240,12 +1384,20 @@
     "body": "Open **Connections**, then **Apps & APIs**.\nChoose **Bulk authentication migration**.\nPick one vendor API service and up to 20 connections.\nTheir names stay the same. Packs and recipes keep those names.\n\nReview the current accounts and the shared permission needs.\nChoose a Nango broker and account, then sign in if needed.\nOne sign-in can serve this group.\nRecued does not ask for extra permissions to find email.\n\nGive each connection a read-only URL that needs sign-in.\nA private Google Sheets link works for Sheets.\nChoose **Check all selected connections**.\nThis reads each resource. It does not switch a saved account yet.\nReview each account, local use, and check result.\nThen choose **Apply verified connections**.\n\nA failed check leaves that connection as it is.\nOther verified connections can still switch.\nA successful switch stays applied if a later one fails.\nThese read checks do not prove write access or all scopes.\nReview Mail and Calendar bindings after an account change.\n\nUse **Refresh results** after a lost reply.\nYou can reopen **Recent migration reviews** on this server.\nOpening a review never applies it.\n**Stop migration** stops later switches and keeps prior successes.\n\nReviews last up to 30 minutes.\nA server restart clears the review and never resumes it.\nRead the saved connections before starting again.\nYour browser stores no credential for this flow."
   },
   {
+    "id": "guides/connections#switch-back-to-your-own-oauth-app",
+    "doc": "Connections",
+    "section": "Switch back to your own OAuth app",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#switch-back-to-your-own-oauth-app",
+    "body": "You can move a Nango connection back to Recued direct OAuth.\nIts name and API address stay the same. Packs and recipes stay linked.\nYour saved sign-in stays active while you review the new one.\n\n1. Open **Connections → Apps & APIs**.\n   Find the saved connection. Choose **Manage authentication**.\n2. Choose **Change authentication method**. Pick **Recued direct OAuth**.\n3. Enter your app's client ID and secret, if it needs one.\n4. Use **Authorize** to sign in with that app.\n   Recued fills the refresh token. You can also paste a token for that app.\n5. Choose **Review direct OAuth account and permissions**.\n   Check the account, scope needs, and work that uses this connection.\n   An email can be unknown with the access you have.\n6. Enter a private, read-only API URL. A Google Sheets link also works.\n7. Choose **Verify and switch**.\n\nRecued renews the native keys and checks access with the vendor.\nThe same URL must refuse a call with no sign-in.\nFailed checks keep Nango in place. A passed read does not prove write access.\nThe old account's scope grants are cleared. Local scope needs stay tracked.\nIf the vendor reports no scopes, its grants stay unknown.\nApp or scope edits need a new review. Reviews expire after 30 minutes.\n\nCheck the Mail and Calendar uses in the preview.\nTheir saved broker links need a fresh connection through your own app.\nThe old Nango account is kept. You can remove it once no work needs it."
+  },
+  {
     "id": "guides/connections#switch-a-saved-connection-to-nango",
     "doc": "Connections",
     "section": "Switch a saved connection to Nango",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/connections#switch-a-saved-connection-to-nango",
-    "body": "You can move an API connection from your own OAuth app or bearer token to\nNango. You can also choose another Nango account or broker profile.\nIts name stays the same. Packs and recipes keep their bindings.\nThe new account may see different data.\n\n1. In **Connections → Apps & APIs**, choose **Edit** on the saved connection.\n2. Choose **Switch authentication**.\n3. Choose a broker and vendor app. Pick an existing account, or sign in to a\n   new one.\n4. Review the needed permissions. Then authorize the chosen account.\n5. Enter a **Read-only access check URL** for a resource that needs sign-in.\n   It must be within the saved API. For Google Sheets, paste a sheet link.\n6. Choose **Verify and switch**.\n\nRecued reads that resource through the new account. It checks that the same\nresource refuses a call with no sign-in. It discards the response body.\nIf the check fails, Recued keeps the saved sign-in. You can fix the check\nURL and retry. A passed read does not prove each scope or write permission.\nFor a denied read, choose **Review sign-in again** for the chosen account.\nReview its request, then sign in again before retrying the access check.\nIf this form's sign-in expires, choose **Review authorization again**.\nIt checks the account you signed in to. It can reuse that account.\nIt does not create another Nango connection.\nYou can retry a failed review. The account choice stays.\n\nUse **Keep current authentication** to leave the switch form.\nThe saved sign-in stays active until the switch passes. Recued does not\nremove the old Nango account or revoke old vendor consent.\nNew consent can change the chosen Nango account at once. Keep its full\nscope list if other tools use it."
+    "body": "You can move an API connection from your own OAuth app or bearer token to\nNango. You can also choose another Nango account or broker profile.\nIts name stays the same. Packs and recipes keep their bindings.\nThe new account may see different data.\n\n1. In **Connections → Apps & APIs**, choose **Edit** on the saved connection.\n2. Choose **Manage authentication → Change authentication method**.\n3. Choose a broker and vendor app. Pick an existing account, or sign in to a\n   new one.\n4. Review the needed permissions. Then authorize the chosen account.\n5. Enter a **Read-only access check URL** for a resource that needs sign-in.\n   It must be within the saved API. For Google Sheets, paste a sheet link.\n6. Choose **Verify and switch**.\n\nRecued reads that resource through the new account. It checks that the same\nresource refuses a call with no sign-in. It discards the response body.\nIf the check fails, Recued keeps the saved sign-in. You can fix the check\nURL and retry. A passed read does not prove each scope or write permission.\nFor a denied read, choose **Review sign-in again** for the chosen account.\nReview its request, then sign in again before retrying the access check.\nIf this form's sign-in expires, choose **Review authorization again**.\nIt checks the account you signed in to. It can reuse that account.\nIt does not create another Nango connection.\nYou can retry a failed review. The account choice stays.\n\nUse **Keep current authentication** to leave the switch form.\nThe saved sign-in stays active until the switch passes. Recued does not\nremove the old Nango account or revoke old vendor consent.\nNew consent can change the chosen Nango account at once. Keep its full\nscope list if other tools use it."
   },
   {
     "id": "guides/connections#see-where-a-nango-account-is-used",
@@ -1272,6 +1424,62 @@
     "body": "First save a managed API connection for the service. Then open **Connections\n→ Mail** or **Calendar**, add an account, and choose Google or Microsoft.\nUnder **How to connect**, choose **Managed OAuth — saved API connection**.\nPick your saved connection and give the account a name. When only one saved\nconnection fits, Recued picks it for you. You do not need another app ID,\napp secret or sign-in.\n\nThe API base URL must match the service:\n\n| Service | API base URL |\n|:---|:---|\n| Gmail | `https://gmail.googleapis.com/gmail/v1` |\n| Google Calendar | `https://www.googleapis.com/calendar/v3` |\n| Outlook Mail or Calendar | `https://graph.microsoft.com/v1.0` |\n\nMail sending, mail changes and Calendar writes start off. Turn on only the\nwrite options you need when you add the account. These switches let Recued\ntry a write; they do not grant new vendor access. Add the needed scopes to\nthe API connection and sign in again there first. The vendor still checks\neach call. If Nango gives no scope list, permissions stay unknown.\n\nTo change these write options later, remove and add the Mail or Calendar\naccount again with the saved API connection. This does not delete the\nremote Nango account. Each account's menu also links back to **Apps & APIs**\nfor reconnecting its source. Remove the Mail and Calendar accounts before\nremoving the API connection they use."
   },
   {
+    "id": "guides/connections#switch-authentication-for-existing-mail-or-calendar",
+    "doc": "Connections",
+    "section": "Switch authentication for existing Mail or Calendar",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#switch-authentication-for-existing-mail-or-calendar",
+    "body": "Open **Connections → Mail** or **Calendar**.\nSelect the Google or Microsoft account you want to keep.\nChoose **Manage authentication**. Then choose **Change authentication method**.\n\nPick a saved API connection for the same service. This is the source for\nthe new sign-in. **Recued direct OAuth** comes first. You can also use a\nbroker. To set up or fix the source, open **Apps & APIs**. Then return here.\n\nChoose **Verify account and access**. Recued checks that both sign-ins use\nthe same vendor account. It also reads your chosen folders or calendars.\nIt sends no mail and edits no events. The review shows the email if the\nvendor gives it; otherwise, it says **Unknown**. If the account differs or\ncannot be proved, your saved collection stays as it is.\n\nReview the scopes. Then choose **Apply authentication switch**. Recued\nchecks the account and access again before it saves the switch.\n\nThese stay the same:\n\n- The collection name and its links to your work.\n- Your folder or calendar choices and stored data.\n- The sync state, its saved keys, and the backfill flag.\n- The send and write options you already chose.\n\nThe tokens stay in the saved API source. A vendor may still expire a sync\ncursor. The adapter will use its usual way to start sync again."
+  },
+  {
+    "id": "guides/connections#permissions-and-migration-recovery",
+    "doc": "Connections",
+    "section": "Permissions and migration recovery",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#permissions-and-migration-recovery",
+    "body": "The vendor must report the grants for any send or write option you keep.\nRead checks do not prove that you can send mail or edit events.\n\nAn empty Microsoft mailbox or calendar needs reported full read grants too.\nBasic read access does not include bodies. If a native token renews or expires\nafter your review, verify again to review its current grants.\n\nIf the reply is lost, choose **Check result**. Recued keeps that check across\na page reload. If the switch was saved but sync needs a restart, restart the\nserver, then check the result again.\nIf grants are unknown, Recued can check reads but cannot prove writes.\nIf Gmail is empty, there is no mail body to test. It then needs a\nvendor-reported mail read grant. Add any missing scopes to the source\nand sign in there first."
+  },
+  {
+    "id": "guides/connections#recover-a-mail-or-calendar-sign-in-switch",
+    "doc": "Connections",
+    "section": "Recover a Mail or Calendar sign-in switch",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#recover-a-mail-or-calendar-sign-in-switch",
+    "body": "If you lose the reply, choose **Check result**. You can also reopen the\nreview to read the saved result. Recued will not repeat the sign-in flow.\nA failed check keeps the old config. If the server stops during a check,\nyou must review it again; the switch will not resume on its own.\n\nIf the switch was saved but the collection did not restart, check its\nstatus. Restart the server to resume sync."
+  },
+  {
+    "id": "guides/connections#find-sign-ins-that-need-repair",
+    "doc": "Connections",
+    "section": "Find sign-ins that need repair",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#find-sign-ins-that-need-repair",
+    "body": "Open **Connections**. Find **Authentication repairs** below the tabs.\nThe same list is on **Packs**.\nIt joins account problems with your **Reconnect later** Pack reminders.\n\nUse **Refresh** to read the saved status again.\nThis does not call vendors, sign you in, or change your account.\nA token that needs its usual refresh is not a failed sign-in.\n\nEach entry shows the known uses of that account.\nSome uses may be unknown; Recued says so when the list is incomplete.\nChoose **Open connection**, **Open Mail**, or **Open Calendar** to review it.\nFor files, you can open the source to check its last sync.\nUse **Manage saved OAuth apps** to review an app or its secret date.\nYour own OAuth app stays the first choice. A broker is optional.\n\nA failed file read can have more than one cause.\nIt does not prove that more permissions will fix it.\nAn app secret date is the date you saved, not a vendor error.\nThe list keeps these cases clear.\n\n**Mark reviewed** clears only a Pack permission reminder.\nIt does not clear a sign-in or file-source failure.\nAfter a repair, choose **Refresh**.\nFile failures clear after the source records a successful sync.\nIf part of the status cannot be read, unlock Recued or try again."
+  },
+  {
+    "id": "guides/connections#switch-a-cloud-file-source-s-sign-in",
+    "doc": "Connections",
+    "section": "Switch a cloud file source's sign-in",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#switch-a-cloud-file-source-s-sign-in",
+    "body": "Open **Data → Files** and choose the cloud source you want to keep.\nChoose **Manage authentication**, then **Change authentication method**.\nYou can also open its saved connection in **Connections → Apps & APIs**.\nChoose **Manage authentication**, then **Change authentication method** there.\n\nThis works for Google Drive, Dropbox, Box, OneDrive, and SharePoint.\nChoose **Verify this file and continue** after selecting a saved file, or choose\n**Continue with metadata only**. Recued then checks the account and metadata.\nThe existing source must work. Large sources can take longer to check.\n\n**Direct OAuth** is the first choice. Choose a saved OAuth app or enter\nyour own app, then sign in with the same account.\nYou can also choose **Managed OAuth**, a broker profile, and its account.\nYou can reuse a saved Nango account or sign in there.\nThe reverse switch from Nango to direct OAuth works here too."
+  },
+  {
+    "id": "guides/connections#review-a-file-source-sign-in-switch",
+    "doc": "Connections",
+    "section": "Review a file-source sign-in switch",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#review-a-file-source-sign-in-switch",
+    "body": "Review the account, permissions, file count, and saved location.\nRecued compares complete metadata listings from both sign-ins.\nA different or unknown account, missing file access, or an incomplete list\nblocks the switch. Metadata-only checks do not download file bytes or prove\ndownload permissions. Write permissions remain separate.\n\nChoose **Verify and switch** to apply.\nYour source ID and connection name stay the same.\nRecued keeps your mirrored records and links from your work.\nIt keeps the import scope, drive or folder choice, and sync cursor.\nThe next sync uses the new sign-in. A vendor may still expire a cursor;\nthe adapter uses its usual reset path.\n\nIf files change during review, reopen **Switch authentication** to check\nthe original source again. A review lasts 30 minutes.\nIf a check fails, the old sign-in stays active.\nIf a reply is lost, use the saved credential result to check what happened.\nThat status check does not repeat sign-in or apply the switch again.\n\nLocal folders, S3 keys, and Notion tokens keep their own setup flows."
+  },
+  {
+    "id": "guides/connections#verify-a-file-download-or-export",
+    "doc": "Connections",
+    "section": "Verify a file download or export",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#verify-a-file-download-or-export",
+    "body": "When starting a file source's sign-in switch, choose a file yourself.\nSearch the saved files by name or path, then choose\n**Verify this file and continue**. Recued never picks a sample for you.\nIf a file is missing, sync the source first. If it is too large or cannot\nbe exported, the list shows why.\n\nRecued checks the file with the current sign-in first.\nThen you choose a new sign-in. It must pass the same check during review\nand before the switch. Downloads must return the same bytes.\nGoogle Docs, Sheets, and Slides use the same DOCX, XLSX, and PPTX exports\nas normal file reads. Exports must match the file and format.\nTheir bytes can differ with each read.\n\nEach check allows up to **10 MiB** and **60 seconds**.\nThe check uses the bytes in memory. Recued does not add them to your\nrecords or save an attachment. It does not send them to AI.\nThe preview shows the file's name and path, if known.\nIt shows the format and check result.\n\nIf a check fails or cannot prove access, your old sign-in stays.\nA public file cannot prove sign-in access. Choose a private file.\nIf the file changes, reopen the switch and check it again.\nTurning off the remote file-fetch capability also blocks this switch.\n\n**Continue with metadata only** is an explicit choice.\nIts preview says that download/export access was not checked.\nA passed file check covers that file and format.\nIt does not prove access to every file or writes."
+  },
+  {
     "id": "guides/connections#use-a-saved-connection-for-file-sync",
     "doc": "Connections",
     "section": "Use a saved connection for file sync",
@@ -1293,7 +1501,7 @@
     "section": "HubSpot: a key or your own app",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/connections#hubspot-a-key-or-your-own-app",
-    "body": "HubSpot gives you two ways in. You pick one under **How to connect**.\n\nA **Service Key** is the easy way, and it suits most people. You make a key\nin HubSpot and paste it into the form. It is under **Development → Keys →\nService keys**. You need to be a Super Admin there, or have Developer tools\naccess. There is no app to make and no sign-in. So it works from any\naddress, `127.0.0.1` too. When you save, Recued tries the key. So a wrong\nkey shows at once.\n\nWhen you make the key, tick the scopes the form lists. They let packs read\nyour records and change them, and every change still goes through Recued's\napprovals. For a key that only reads, skip the second group. When you save,\nRecued also reads which scopes the key has. If a pack needs one the key lacks, the\npack's page names it under **Connections**. Add that scope to the key in\nHubSpot. Then click **Probe** on the connection, so Recued reads it again.\nHubSpot suggests a new key every six months. Paste it into the same\nconnection.\n\n**Your own app** is the hard way. HubSpot makes new apps only with its\ncommand-line tool. That needs sandbox access, which only paid HubSpot plans\nhave. So on a free account, use a Service Key. With an app, you sign in\nthrough it."
+    "body": "HubSpot gives you two ways in. You pick one under **How to connect**.\n\nA **Service Key** is the easy way, and it suits most people. You make a key\nin HubSpot and paste it into the form. It is under **Development → Keys →\nService keys**. You need to be a Super Admin there, or have Developer tools\naccess. There is no app to make and no sign-in. So it works from any\naddress, `127.0.0.1` too. When you save, Recued tries the key. So a wrong\nkey shows at once.\n\nWhen you make the key, tick the scopes the form lists. They let packs read\nyour records and change them, and every change still goes through Recued's\napprovals. For a key that only reads, skip the second group. When you save,\nRecued also reads which scopes the key has. If a pack needs one the key lacks, the\npack's page names it under **Connections**. Add that scope to the key in\nHubSpot. Then click **Test connection** on the connection, so Recued reads it again.\nHubSpot suggests a new key every six months. Paste it into the same\nconnection.\n\n**Your own app** is the hard way. HubSpot makes new apps only with its\ncommand-line tool. That needs sandbox access, which only paid HubSpot plans\nhave. So on a free account, use a Service Key. With an app, you sign in\nthrough it."
   },
   {
     "id": "guides/connections#apps-sign-in-through-a-callback",
@@ -1352,12 +1560,236 @@
     "body": "- [Connect Gmail and Google Calendar](../setup/connect-google.md). Which way\n  keeps working for your kind of Google account.\n- [Connect Outlook and Microsoft 365](../setup/connect-microsoft.md). Who\n  makes the sign-in app for your kind of Microsoft account.\n- [Grants and approvals](../concepts/grants-and-approvals.md). How your\n  server checks each granted action when it runs."
   },
   {
+    "id": "guides/customer-jobs",
+    "doc": "Customer jobs",
+    "section": "Customer jobs",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-jobs",
+    "body": "Customer jobs brings your customer work into one place.\nA job starts with a quote. Added work stays on that job.\nYou can track the work, customer replies, and bills.\nYou can also keep receipts and review emails before sending them.\n\n**This guide covers Recued 26.10.16 and later.**\nEarlier releases do not have this layout.\nSee [Updates](../setup/updates.md) to update your server.\n\nRecued records money you have got or sent back.\nIt does not take payments, send refunds, or check your bank."
+  },
+  {
+    "id": "guides/customer-jobs#start-with-these-packs",
+    "doc": "Customer jobs",
+    "section": "Start with these packs",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-jobs#start-with-these-packs",
+    "body": "A pack adds a set of tools to Recued.\nInstall **Quote Pipeline** and **Invoice Book** from Packs.\nQuote Pipeline holds quotes. Invoice Book holds bills and money records.\nAn invoice is a bill you send to a customer.\n\nUpdate Recued before updating your packs.\nUse Quote Pipeline version 2 or later.\nFor all the money tools here, use Invoice Book version 9 or later.\nIf you use Billable Hours, update it to version 2 first.\nThen update Invoice Book. Review any pack data update before installing it.\n\nFor email, add a Mail account that can send.\nYou can use jobs, owner alerts, print, and downloads without Mail.\nTo share customer links, set up [Reachability](../setup/reachability.md)."
+  },
+  {
+    "id": "guides/customer-jobs#find-your-way-around-reception",
+    "doc": "Customer jobs",
+    "section": "Find your way around Reception",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-jobs#find-your-way-around-reception",
+    "body": "Open **Reception** in Recued.\nIts main choices are:\n\n| Choice | What you do there |\n| --- | --- |\n| Inbox | Read incoming requests and review customer replies |\n| Customer work | Track jobs, sign-offs, bills, and follow-ups |\n| Records | Read saved answers sent through Reception |\n| Manage | Set up pages, forms, and links, or review abuse |\n\nThe customer uses the link you share.\nThey do not need to open your job board.\nKeep your owner app and paired devices private."
+  },
+  {
+    "id": "guides/customer-jobs#choose-a-customer-work-view",
+    "doc": "Customer jobs",
+    "section": "Choose a customer work view",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-jobs#choose-a-customer-work-view",
+    "body": "Open **Reception → Customer work**.\n\n| View | Use it for |\n| --- | --- |\n| Jobs | Work, replies, and balances for each job |\n| Sign-offs | New quotes, added work, and saved customer requests |\n| Accounts | Jobs you have grouped under one customer |\n| Receivables | Bills that customers still owe you |\n| Follow-ups | Saved reminders for replies, work, and payments |\n\nOn a small screen, scroll the view names sideways.\nThe current view is marked."
+  },
+  {
+    "id": "guides/customer-jobs#start-your-daily-review",
+    "doc": "Customer jobs",
+    "section": "Start your daily review",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-jobs#start-your-daily-review",
+    "body": "1. Open **Customer work → Jobs**.\n2. Choose **Needs review** to find replies waiting for you.\n3. Choose **Overdue payment** to find late bills.\n4. Choose **Waiting** to find requests still with the customer.\n5. Choose **All jobs** to return to the wider list.\n\nWork and payment each have their own state.\nA completed task can still have an unpaid bill.\nA paid bill does not mark the task done.\nCheck both before closing a job."
+  },
+  {
+    "id": "guides/customer-jobs#find-and-open-a-job",
+    "doc": "Customer jobs",
+    "section": "Find and open a job",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-jobs#find-and-open-a-job",
+    "body": "Enter a customer name, quote, or bill ref.\nA ref is the label you use to find a bill.\nChoose **Search jobs**.\nOpen **Filters** for **Show jobs** and **Job history**.\nUse **Older jobs** and **Newer jobs** to change pages.\nThe count covers the page shown.\nSee [Large job lists](customer-signoffs.md#browse-larger-job-lists) for more on paging.\n\nChoose **Open job** on the row you want.\nThe other row action takes you to its next step.\nFor example, **Review reply** opens that customer's review.\n\nThe job header keeps its customer and quote in view.\nIt also shows a balance and a main action.\nChoose **Back to jobs** to return to your page and place.\nYour search and filters stay set."
+  },
+  {
+    "id": "guides/customer-jobs#use-the-job-sections",
+    "doc": "Customer jobs",
+    "section": "Use the job sections",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-jobs#use-the-job-sections",
+    "body": "| Section | What you will find |\n| --- | --- |\n| Overview | The agreement, work state, reply, and sign-off receipt |\n| Activity | Saved changes and reviews |\n| Billing | Bills, payments, credits, refunds, and documents |\n| Follow-ups | Completion and invoice reminders for this job |\n| Closeout | Checks to finish before you archive the job |\n\nOn a phone, scroll these names sideways to see more.\nChanging a section may ask you to save or discard edits.\nCancel that move to keep working in the form."
+  },
+  {
+    "id": "guides/customer-jobs#prepare-and-share-a-quote",
+    "doc": "Customer jobs",
+    "section": "Prepare and share a quote",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-jobs#prepare-and-share-a-quote",
+    "body": "1. Add an open quote in Quote Pipeline Records.\n2. Open **Customer work → Sign-offs**.\n3. Open **New customer sign-off** if it is closed. Choose the quote.\n4. Enter your business name and the full scope of work.\n5. Set the task title, invoice reference, VAT, and dates.\n6. Choose **Preview customer sign-off**. Read the full offer.\n7. Choose **Publish sign-off link**, then share that link.\n\nScope means the work and terms you offer.\nThe customer sees all the scope you enter.\nPrivate quote notes stay private.\nCheck the text before you publish it.\n\nThe public page offers **Accept this quote** and **Decline this quote**.\nIt shows that the reply was sent.\nYou still review their reply before you release work.\n\nSee [Prepare a request](customer-signoffs.md#prepare-a-request) for every field and setup step."
+  },
+  {
+    "id": "guides/customer-jobs#review-a-customer-reply",
+    "doc": "Customer jobs",
+    "section": "Review a customer reply",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-jobs#review-a-customer-reply",
+    "body": "1. Choose **Review reply** on the job, or open **Reception → Inbox**.\n2. Read the saved offer and the customer's reply.\n3. Check the task and invoice plan.\n4. Approve the plan when you are ready to start work.\n\nYour approval adds the task and invoice together.\nThe job then shows the released work and its bill.\nIf your review is still waiting, the work has not been released.\nA declined quote adds no work.\n\nIf terms or records changed, the old review may stop.\nOpen the current request and review the latest state.\nSee [Respond, review and release](customer-signoffs.md#respond-review-and-release)."
+  },
+  {
+    "id": "guides/customer-jobs#track-work-and-ask-for-completion",
+    "doc": "Customer jobs",
+    "section": "Track work and ask for completion",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-jobs#track-work-and-ask-for-completion",
+    "body": "Open the job's **Overview** and read **Agreed scope**.\nChoose **Open task** to update the task in its editor.\nYou can finish or reopen work without changing its payment state.\n\nTo ask the customer about delivery:\n\n1. Choose **Request completion** in Overview.\n2. Describe the work you delivered.\n3. Choose **Preview completion** and read the customer text.\n4. Choose **Publish completion link**. Share it.\n5. Review the customer's reply in Reception Inbox.\n\nA request alone does not close the task.\nReview acceptance or requested fixes before choosing the next action.\nSee [Completion responses](customer-signoffs.md#review-completion-responses)."
+  },
+  {
+    "id": "guides/customer-jobs#add-more-work-to-the-same-job",
+    "doc": "Customer jobs",
+    "section": "Add more work to the same job",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-jobs#add-more-work-to-the-same-job",
+    "body": "Open **View sign-off request** from Overview.\nChoose **Add work** on the released request.\nDescribe the extra work and its price.\nRead the preview, publish its link, and share it.\n\nThe customer gives a fresh reply for the added work.\nYou then review and approve its release.\nThe same unfinished task gets the added scope.\nIts own invoice holds the added charge.\nThe earlier agreement and invoice stay saved.\n\nSee [Add work after release](customer-signoffs.md#add-work-after-release)."
+  },
+  {
+    "id": "guides/customer-jobs#choose-the-right-bill",
+    "doc": "Customer jobs",
+    "section": "Choose the right bill",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-jobs#choose-the-right-bill",
+    "body": "Open the job's **Billing** section.\nEach invoice has its own ref and balance.\nAdded work can have its own invoice.\nCheck the ref before saving money entries.\n\nUse **Record payment**, **Issue credit**, **Refunds**, or **Documents** beside that invoice.\nChoose **View payment history** for its saved entries.\nIn that view, use **Payments**, **Credits**, **Refunds**, or **Documents**.\n\n**Open invoice record** opens that exact bill in Records.\nIf its record is missing or cannot be read, review it there.\nReturn to the job and refresh once you have checked that record."
+  },
+  {
+    "id": "guides/customer-jobs#record-money-you-have-received",
+    "doc": "Customer jobs",
+    "section": "Record money you have received",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-jobs#record-money-you-have-received",
+    "body": "1. Choose **Record payment** beside the right invoice.\n2. Enter the sum you got and its date.\n3. Add the method and payment ref from your own records.\n4. Review the form, then choose **Run**.\n5. Review and approve if Recued asks you to.\n6. Check the result and refresh Billing.\n\nEnter a partial payment when only part was paid.\nFor a 120.0000 GBP bill, a 20.1234 GBP payment leaves 99.8766 GBP.\nThe bill stays open while money is still owed.\nRecued keeps the exact saved sums.\n\nRecued refuses an invalid amount, overpayment, or repeat submission.\nIf a run is waiting for review, its change is not saved yet.\nCheck a failed or unclear result before trying again."
+  },
+  {
+    "id": "guides/customer-jobs#review-a-credit-refund-or-correction",
+    "doc": "Customer jobs",
+    "section": "Review a credit, refund, or correction",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-jobs#review-a-credit-refund-or-correction",
+    "body": "You preview these changes, then review them as the owner.\nA preview alone changes no money records.\n\n1. Enter the details and choose the form's **Preview** action.\n2. Read the reason, sums, and new balances.\n3. Choose the form's **Review** action.\n4. Follow its **Runs** link to the exact waiting run.\n5. Check the run's status and approve when it is right.\n6. Use its return link, then refresh the job or account.\n\nA waiting run has not saved the change.\nIf the data changed, make a fresh preview and review.\nStarting a new form does not cancel a review already in Runs.\nCheck that review before submitting the same change again."
+  },
+  {
+    "id": "guides/customer-jobs#issue-a-credit-or-record-a-refund",
+    "doc": "Customer jobs",
+    "section": "Issue a credit or record a refund",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-jobs#issue-a-credit-or-record-a-refund",
+    "body": "A credit reduces what a customer owes.\nIt does not record a payment or change the bill's original total.\n\nFor an unpaid sum, open **Billing → Issue credit**.\nThis opens the credit form.\nFrom payment history, use **Credits → Issue invoice credit**.\nEnter its sum, date, and reason for the customer copy.\nPreview the new balance, then review and approve it.\nSee [Credit an unpaid invoice](customer-signoffs.md#credit-an-unpaid-invoice).\n\nFor money already paid, choose **Billing → Refunds**.\nChoose **Manage refunds and receipts**.\nSave the paid invoice credit before you save money sent back.\nOnly record a refund after you send the money back yourself.\nRecued sends no money.\nSee [Refund steps](customer-signoffs.md#record-a-completed-refund) for the full process."
+  },
+  {
+    "id": "guides/customer-jobs#correct-a-saved-money-entry",
+    "doc": "Customer jobs",
+    "section": "Correct a saved money entry",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-jobs#correct-a-saved-money-entry",
+    "body": "Open the entry's saved rows.\nFor a payment, use **View payment history** and find its row.\nChoose **Correct recorded payment**.\nEnter the right details and a reason.\nPreview, review, and approve the fix.\n\nFor a credit, open **Credits** and choose **Correct invoice credit** beside its row.\nFor a refund, open **Refunds** and choose **Correct a recorded refund**.\nChoose the refund in its form.\nFor a whole account payment, use its row in **Account payment history**.\nThe old values and reason stay saved.\nA fix can reopen a bill or change a refund balance.\nOld email drafts may need a new review.\n\nSee the full steps for [payments](customer-signoffs.md#fix-a-recorded-payment),\n[credits](customer-signoffs.md#fix-an-invoice-credit),\n[refunds](customer-signoffs.md#fix-a-recorded-refund), and\n[account payments](customer-signoffs.md#correct-a-whole-account-payment)."
+  },
+  {
+    "id": "guides/customer-jobs#open-and-share-receipts",
+    "doc": "Customer jobs",
+    "section": "Open and share receipts",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-jobs#open-and-share-receipts",
+    "body": "A sign-off receipt shows the saved terms and customer reply.\nOpen **Overview → View sign-off receipt** to read it.\n\nA payment receipt shows one saved payment and its bill balance.\nOpen **Billing → View payment history**.\nFind the payment, then choose **View payment receipt**.\nUse **Back to payment history** to return to that row.\n\nUse the receipt's print or download action to keep a copy.\nDownloads are HTML files you can open offline.\nPrint can also save a PDF through your browser.\n\nTo email a copy, enter one customer email and choose a sending account.\nReview the saved draft in Mail, then choose **Send**.\nSaving a draft does not send it.\nPrivate notes stay out of customer copies."
+  },
+  {
+    "id": "guides/customer-jobs#read-a-job-or-account-statement",
+    "doc": "Customer jobs",
+    "section": "Read a job or account statement",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-jobs#read-a-job-or-account-statement",
+    "body": "A statement brings bills and payments into one copy.\nFor one job, open **Billing → View job payment statement**.\nFor linked jobs, open the account's statement from **Accounts**.\n\nRead the totals at the top first.\nEach type of money has its own totals, such as GBP or USD.\nInvoice rows show the amount still owed and the due date.\nOn a small screen, scroll those rows sideways.\nOpen **Full statement and transaction history** for the full detail.\n\nRefunds you owe and debts owed to you each have their own total.\nCheck the capture date before sharing a copy.\nRefresh and make a new copy when entries change.\nSee [Job statements](customer-signoffs.md#job-payment-statements) and\n[account statements](customer-signoffs.md#customer-account-statements)."
+  },
+  {
+    "id": "guides/customer-jobs#group-jobs-in-a-customer-account",
+    "doc": "Customer jobs",
+    "section": "Group jobs in a customer account",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-jobs#group-jobs-in-a-customer-account",
+    "body": "An account is a set of jobs you choose for one customer.\nMatching names alone do not group jobs.\n\n1. Open **Customer work → Accounts**.\n2. Choose **New customer account** and enter its name.\n3. Use **Find customer jobs** or **More jobs to link**.\n4. Tick the jobs that belong to this customer.\n5. Check the full list you chose. Confirm it.\n6. Choose **Save customer account**.\n\nChoose **View saved account statement** to read the saved account's copy.\nWhen editing an account, wait for its job choices to load.\nSave or discard your edits before changing accounts."
+  },
+  {
+    "id": "guides/customer-jobs#save-account-contact-details",
+    "doc": "Customer jobs",
+    "section": "Save account contact details",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-jobs#save-account-contact-details",
+    "body": "In Accounts, choose **Edit contact defaults** beside the customer.\nSave a contact name, email address, and sending Mail account.\nThese choices fill new account email forms.\nThey do not rewrite drafts you already saved.\nYou still review the message before sending it.\n\nSee [Saved account contacts](customer-signoffs.md#save-account-contact-defaults) for changes and clearing fields."
+  },
+  {
+    "id": "guides/customer-jobs#record-one-payment-across-several-jobs",
+    "doc": "Customer jobs",
+    "section": "Record one payment across several jobs",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-jobs#record-one-payment-across-several-jobs",
+    "body": "Choose **Open account payments** beside the saved account.\nEnter the payment you have already got.\nSplit its sum across the listed invoices in one currency.\nCheck each sum and the total before reviewing it.\nApprove the exact account payment run in Runs.\n\nThe payment changes its invoice entries together.\nAfter approval, use **Account payment history** to open one receipt for the full payment.\nUse **Correct account payment** there to fix the whole saved payment.\nSee [Account payment steps](customer-signoffs.md#record-one-payment-across-a-customer-account)."
+  },
+  {
+    "id": "guides/customer-jobs#set-and-review-follow-ups",
+    "doc": "Customer jobs",
+    "section": "Set and review follow-ups",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-jobs#set-and-review-follow-ups",
+    "body": "A follow-up is a saved date to remind you of a next step.\nSet offer follow-ups beside the request in **Sign-offs**.\nSet work and invoice dates in the job's **Follow-ups** section.\nSet account payment dates beside the saved account in **Accounts**.\n\nChoose the date and save the form.\nLeave email fields blank for an alert just to you.\nFor an email draft, choose a sending account and customer email.\nSave the matching customer link when the form asks for it.\n\nOpen **Customer work → Follow-ups** to review the wider queue.\nOpen the group for the kind of work you need.\nUse **Snooze** or **Pause** as needed.\nReview an email draft, then send it through Mail.\nSaving a date does not send an email.\n\nReplies, payments, and changed records can stop an old reminder.\nIf a send has an unknown result, check Mail before trying again.\nSee [Follow-up details](customer-signoffs.md#follow-up-with-a-customer)."
+  },
+  {
+    "id": "guides/customer-jobs#check-late-bills-in-receivables",
+    "doc": "Customer jobs",
+    "section": "Check late bills in Receivables",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-jobs#check-late-bills-in-receivables",
+    "body": "Receivables means money that customers still owe you.\nOpen **Customer work → Receivables**.\nIt includes bills released with customer jobs, including added work.\nOther Invoice Book bills stay in Records.\n\nThe view groups debt by currency and days late.\n**Current** means due today or later.\nThe late groups are **1–30**, **31–60**, **61–90**, and **91+ days**.\nDates use your server's time zone.\nThe sums come from the records now.\nThis view cannot show what was owed on a past date.\n\nOpen an invoice or job timeline to check a source.\nRefresh the view after changing its bills or payments.\nSee [Receivables steps](customer-signoffs.md#review-receivables-aging)."
+  },
+  {
+    "id": "guides/customer-jobs#read-one-job-s-activity",
+    "doc": "Customer jobs",
+    "section": "Read one job's Activity",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-jobs#read-one-job-s-activity",
+    "body": "Open the job's **Activity** section.\nUse **Activity type** or **Find activity** to narrow the rows.\nUse **Older activity** and **Newer activity** for more rows.\nChoose **Refresh timeline** to get a fresh view.\n\nAn entry can be a preview or an applied change.\nA saved email draft does not mean the email was sent.\nCheck the row's state and open its source when needed.\nYou can return to the timeline you were reading from that source view.\nSome older task edits have no saved time.\nSee [Job history details](customer-signoffs.md#see-one-jobs-timeline)."
+  },
+  {
+    "id": "guides/customer-jobs#close-out-and-archive-a-job",
+    "doc": "Customer jobs",
+    "section": "Close out and archive a job",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-jobs#close-out-and-archive-a-job",
+    "body": "1. Open the job's **Closeout** section.\n2. Read the work, reply, money, and follow-up checks.\n3. Use the checklist links to fix each issue.\n4. Choose **Recheck closeout** after making changes.\n5. Tick the box to confirm your review.\n6. Choose **Archive job** when the checks allow it.\n\nFinish the work and settle unpaid bills.\nRecord refunds still owed and resolve waiting reviews.\nCheck any unknown email result in Mail.\nYou can also archive a declined or cancelled offer with no released work.\n\nArchiving keeps bills, receipts, replies, and account links.\nJob reminders stop while the job is archived.\nAccount statements keep linked archived jobs."
+  },
+  {
+    "id": "guides/customer-jobs#find-and-restore-archived-work",
+    "doc": "Customer jobs",
+    "section": "Find and restore archived work",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-jobs#find-and-restore-archived-work",
+    "body": "Open Jobs, then **Filters → Job history → Archived jobs**.\nOpen the job and choose **Closeout → Restore job**.\nRestore keeps the task and balances as they are.\nIt does not reopen work or undo money entries.\n\nIf archived work or billing changes, it returns to the active view.\nRestore the job and review that change.\nSee [Closeout rules](customer-signoffs.md#close-out-and-archive-a-job)."
+  },
+  {
+    "id": "guides/customer-jobs#handle-a-slow-or-changed-view",
+    "doc": "Customer jobs",
+    "section": "Handle a slow or changed view",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-jobs#handle-a-slow-or-changed-view",
+    "body": "Wait for a form or report to finish loading.\nIf Jobs fails to load, choose **Refresh jobs**.\nThe last loaded rows stay visible while you retry.\nUse **Older jobs** to keep looking through a large history.\n\nIf a job cannot be loaded, return to Jobs and refresh.\nIf an invoice or run is missing, review its saved source.\nRecued does not pick a different item in its place.\n\nWhen a review says its data changed, refresh and preview again.\nCheck failed or unknown runs before submitting a second entry.\nFor a saved copy, check its date and refresh it before emailing."
+  },
+  {
+    "id": "guides/customer-jobs#more-detailed-help",
+    "doc": "Customer jobs",
+    "section": "More detailed help",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-jobs#more-detailed-help",
+    "body": "- [Customer sign-offs](customer-signoffs.md): exact fields, money rules, and limits.\n- [Reception](reception.md): pages, forms, incoming requests, and public access.\n- [Grants and approvals](../concepts/grants-and-approvals.md): how a review holds a change.\n- [Connections](connections.md): add or repair the Mail account you use to send."
+  },
+  {
     "id": "guides/customer-signoffs",
     "doc": "Customer sign-offs",
     "section": "Customer sign-offs",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/customer-signoffs",
-    "body": "Customer sign-offs link quotes, Reception, Tasks and Invoice Book.\nThe customer sees one saved quote and scope.\nScope means the work and terms you offer.\nTheir reply waits for you in Reception Inbox.\nYou then approve a fixed task and invoice plan.\nRecued marks the quote won and adds both records together."
+    "body": "Customer sign-offs link quotes, Reception, Tasks and Invoice Book.\nThe customer sees one saved quote and scope.\nScope means the work and terms you offer.\nTheir reply waits for you in Reception Inbox.\nYou then approve a fixed task and invoice plan.\nRecued marks the quote won and adds both records together.\n\nFor a guided route through the new Reception layout, start with\n[Customer jobs](customer-jobs.md).\nIt covers quotes, replies, work, billing, follow-ups, and closeout.\nThis page keeps the full field details and money rules.\nThe new layout and money tools need Recued 26.10.16 or later."
   },
   {
     "id": "guides/customer-signoffs#track-customer-jobs",
@@ -1365,7 +1797,151 @@
     "section": "Track customer jobs",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/customer-signoffs#track-customer-jobs",
-    "body": "This view comes in the next release after 26.10.13.\nOpen **Reception → Customer jobs** to plan your day.\nNew agreed work stays on the same job row.\nWork, replies and bills have their own columns.\nWork marked done can still have unpaid bills.\nPayment does not mark work as done.\nDeclined or cancelled extra work stays in the reply column.\nIt does not change the agreed price or scope.\n\nSearch by their name, quote or bill ref.\nPick a view in **Show jobs**, then choose **Search jobs**.\nFind jobs waiting for a reply, fixes or your review.\nAlso find work with a late bill.\nUse **Newer jobs** and **Older jobs** to browse the list.\nIf a page fails, choose **Refresh jobs** to retry.\nThe last loaded jobs stay visible while you retry.\nRefresh keeps open scope text and focus on the same job action.\n\nUse **Request completion** to draft a note about the work.\nThe latest agreed scope goes with it.\nRead the preview before you share it.\nUse **Record payment** for the bill you were paid for.\nEnter the sum you got, then choose **Run**.\nReview work in **Reception Inbox**.\nUse **View receipt** to read the saved terms and work reply.\nOnly work you released counts in the agreed price.\nCheck missing or changed records in Records.\nAn unreadable work reply needs review. It is not shown as a wait for the customer.\nA balance moved to a new bill needs review there too."
+    "body": "These steps need Recued 26.10.16 or later.\nOpen **Reception → Customer work → Jobs** to plan your day.\nNew agreed work stays on the same job row.\nOpen a job to see its work, replies and bills.\nThe job header stays in view as you read.\nUse **Overview**, **Activity**, **Billing**, **Follow-ups** or **Closeout**.\n**Back to jobs** keeps your search, page and place in the list.\nUse **Accounts**, **Receivables** or **Follow-ups** in Customer work for wider views.\nWork marked done can still have unpaid bills.\nPayment does not mark work as done.\nDeclined or cancelled extra work stays in the reply column.\nIt does not change the agreed price or scope.\n\nSearch by their name, quote or bill ref.\nOpen **Filters**, pick a view in **Show jobs**, then choose **Search jobs**.\nFind jobs waiting for a reply, fixes or your review.\nAlso find work with a late bill.\nUse **Newer jobs** and **Older jobs** to browse the list.\nIf a page fails, choose **Refresh jobs** to retry.\nThe last loaded jobs stay visible while you retry.\nRefresh keeps open scope text and focus on the same job action.\n\nUse **Request completion** to draft a note about the work.\nThe latest agreed scope goes with it.\nRead the preview before you share it.\nOpen **Billing**. Use **Record payment** for the bill you were paid for.\nUse **Issue credit**, **Refunds** or **Documents** for that bill.\nCorrections stay beside the entries they change.\nEnter the sum you got, then choose **Run**.\nReview work in **Reception Inbox**.\nUse **View sign-off receipt** to read the saved terms and work reply.\nOnly work you released counts in the agreed price.\nCheck missing or changed records in Records.\nAn unreadable work reply needs review. It is not shown as a wait for the customer.\nA balance moved to a new bill needs review there too."
+  },
+  {
+    "id": "guides/customer-signoffs#payment-history-and-receipts",
+    "doc": "Customer sign-offs",
+    "section": "Payment history and receipts",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#payment-history-and-receipts",
+    "body": "These steps need Recued 26.10.16 or later.\nOpen a job, then choose **Billing**. You can also open its sign-off request.\nChoose **View payment history**.\nThis shows paid bills too.\nEach bill for added work has its own list.\nEach row shows the sum, date, method and payment ref you wrote down.\nUse **Older payments** and **Newer payments** to browse more than 50 rows.\n\nChoose **View payment receipt** for one payment.\nA receipt is a copy you can give to your customer.\nIt shows that payment and the bill balance at the time shown.\nUse **Print payment receipt / save PDF** or **Download payment receipt**.\nThe download is an HTML file you can open without a connection.\nPrivate notes stay out of the copy.\n\nFor email, enter one customer email.\nChoose a mail account that can send.\nChoose **Review payment receipt email** to save a private draft.\nReview it in the mail composer, then choose **Send**.\nRecued uses your usual mail approval controls.\nKeep the payment and balance text in the email.\nIf the rows change, refresh the list and make a new receipt.\nIf Mail is down, print and download still work.\nDid an email send end without a clear result?\nCheck that result in Mail before you draft one more.\n\nRecued reads each payment row in Invoice Book.\nIt adds them up and checks the bill.\nIf they do not agree, review payment posting in Records.\nDo this before you make a receipt.\nA missing row also stops copies.\nIf a row or pack cannot be read, copies stop.\nA list with over 1,000 payments needs review in Records.\nThese are payments you wrote down.\nRecued does not check a bank account.\nReading or sending a receipt does not change money or work."
+  },
+  {
+    "id": "guides/customer-signoffs#fix-a-recorded-payment",
+    "doc": "Customer sign-offs",
+    "section": "Fix a recorded payment",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#fix-a-recorded-payment",
+    "body": "These steps need Recued 26.10.16 or later.\nOpen a job in **Reception → Customer work → Jobs**.\nChoose **Billing**, then **View payment history**.\nChoose **Correct recorded payment** on the row you need to fix.\n\nYou can change its amount, date, method or reference.\nEnter a **Reason for correction**.\nTo remove an entry written twice, choose **Void recorded payment**.\nThe old values and your reason stay in **Payment correction history**.\n\nChoose **Preview payment correction**.\nCheck the old and new paid sums and bill balance.\nA preview changes no money.\nChoose **Review payment correction**, then **Review in Runs**.\nThe change waits for your own approval.\nYour approval changes the payment and bill together.\n\nIf either row has changed, refresh payment history and preview again.\nA paid bill may open again if the paid sum falls.\nOld receipt and statement drafts need a fresh review.\nCopies you saved show their capture date.\n\nThe payment rows must agree with the bill before you correct them.\nReview failed payment posting, changed bills or carried bills in Records first.\nThese changes correct local money records.\nUse **Older corrections** and **Newer corrections** to read more than 50 rows.\nPrepared previews show that no money has changed yet."
+  },
+  {
+    "id": "guides/customer-signoffs#credit-an-unpaid-invoice",
+    "doc": "Customer sign-offs",
+    "section": "Credit an unpaid invoice",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#credit-an-unpaid-invoice",
+    "body": "These steps need Recued 26.10.16 or later.\nUse Invoice Book version 6 or later to issue credits.\nThe pack update keeps saved bills and payments.\nReview its data update before you install it.\n\nOpen a job in **Reception → Customer work → Jobs**.\nChoose **Billing**, then **Issue credit** beside the bill.\nThis opens the credit form.\nFrom **View payment history**, choose **Credits**, then **Issue invoice credit**.\nEnter the **Credit amount**, **Credit date** and **Credit reason (shown on customer copy)**.\nA credit can only cover the unpaid part.\nYou can read up to 1,000 credits per bill.\nAt this limit, you cannot add one more here.\nThe bill total stays the same.\nNo payment is made or added.\nFor money already paid, use **Refunds → Manage refunds and receipts**.\n\nChoose **Preview invoice credit** and check the reason and new balance.\nThen choose **Review invoice credit** and **Review credit in Runs**.\nEach credit waits for your own approval.\nApproval saves the credit and lowers the bill balance together.\nIf the bill, payments or credits have changed, refresh and preview again."
+  },
+  {
+    "id": "guides/customer-signoffs#view-invoice-credit-history",
+    "doc": "Customer sign-offs",
+    "section": "View invoice credit history",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#view-invoice-credit-history",
+    "body": "Open **View payment history**, then choose **Credits**.\n**Invoice credit history** keeps the amount, reason and reviewed run.\nIt shows which previews are prepared and which credits are issued.\nChoose **Older invoice credits** or **Newer invoice credits** for more rows.\nFor an issued credit, choose **View customer credit copy**.\nThen choose **Print invoice credit** or **Download invoice credit**.\nThe HTML download works without a connection.\nIt shows the original bill total and the balance at the time shown.\nPrivate invoice and payment notes stay out of the copy.\n\nJobs and copies show credits on their own line.\nMoney received has its own sum.\nA balance cleared with a credit does not count as a bill paid in full.\nPayment reminders stop once no balance is due.\nOld drafts need a fresh review.\nThis includes receipts, statements and payment reminders.\nMissing or changed credit records stop copies until you review Records.\nOriginal credits stay in history when you fix a mistake.\nThis view does not send refunds."
+  },
+  {
+    "id": "guides/customer-signoffs#credit-money-already-paid",
+    "doc": "Customer sign-offs",
+    "section": "Credit money already paid",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#credit-money-already-paid",
+    "body": "These steps need Recued 26.10.16 or later.\nUse Invoice Book version 8 or later.\nUse Reception — Approval version 9 or later.\nReview the pack data update before you install it.\nIt keeps your saved bills, payments and credits.\n\nA paid invoice credit is money you owe back.\nIt has its own row. A link points to the old payment.\nThat payment stays saved. The old bill total stays the same.\nAny debt the customer still owes stays the same.\n\nOpen a job in **Reception → Customer work → Jobs**.\nChoose **Billing**, then **Refunds** beside the bill.\nChoose **Manage refunds and receipts**.\nSet **Refund entry type** to **Issue a paid invoice credit**.\nChoose **Original payment (this history page)**.\nFor an older payment, close this entry first. Then page payment history.\nEnter **Refund or paid credit amount**, **Entry date** and **Reason (shown on customer copies)**.\nCredits on one payment share a limit. Their sum must fit within that payment.\n\nChoose **Preview refund entry**, then **Review refund entry**.\nChoose **Review refund entry in Runs** to give your approval.\nThe preview changes no money records.\nApproval saves the paid credit. It also saves the sum owed back.\nReturn the money outside Recued. Then record that refund here."
+  },
+  {
+    "id": "guides/customer-signoffs#record-a-completed-refund",
+    "doc": "Customer sign-offs",
+    "section": "Record a completed refund",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#record-a-completed-refund",
+    "body": "First return the money outside Recued.\nOpen **Billing → Refunds**, then choose **Manage refunds and receipts**.\nSet **Refund entry type** to **Record a completed refund**.\nChoose the **Paid invoice credit to refund**.\nEnter the amount, date and reason.\nYou can add **Refund method** and **Refund reference**.\nUse a new refund reference for that payment.\n\nChoose **Preview refund entry** and check each amount.\nThen choose **Review refund entry** and review it in Runs.\nEach entry needs your own approval.\nYou can record part of a refund now. Record the rest later.\nThe sum must fit within what you owe on that credit.\nThe old payment stays saved in full.\nThe bill total and agreed work stay the same.\nRecued saves a record. It does not send money.\n\nA payment linked to a paid credit stays as it was.\nYou cannot change or void it from this view.\nOld payment reviews stop once a paid credit is issued.\nIf a bill or money record changes, refresh it. Then preview again."
+  },
+  {
+    "id": "guides/customer-signoffs#read-refund-balances",
+    "doc": "Customer sign-offs",
+    "section": "Read refund balances",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#read-refund-balances",
+    "body": "**Paid invoice credits** is the sum you agreed to give back.\n**Recorded refunds** is money you have marked as sent back.\n**Refund still owed** is the part you still owe back.\n**Recorded net received** is money in, less refunds you recorded.\n**Invoice after all credits** starts with the old bill total. It takes off both kinds of credit.\nThe customer's remaining debt has its own line.\n\nFor example, a customer paid a bill of 100 in full.\nYou issue a paid credit of 20.\nYou now owe 20 back. The customer owes zero.\nAfter you record that refund, **Recorded net received** is 80.\nThe old payment still shows 100.\n\nJobs with a refund owed appear under **Needs attention**.\nPayment follow-ups wait while you owe a refund.\nOnce you record the full refund, a debt may still be due. In that case, follow-ups can be due again.\nA follow-up you paused stays paused.\nPaid credits and refunds make old email drafts stale.\nThis includes payment receipts and job statements. It also includes payment reminders.\nPrepare and review a new draft with the current sums."
+  },
+  {
+    "id": "guides/customer-signoffs#view-refund-receipts",
+    "doc": "Customer sign-offs",
+    "section": "View refund receipts",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#view-refund-receipts",
+    "body": "**Paid credit and refund history** keeps both steps.\nIt shows which entries are prepared. It marks which ones were applied.\nIt shows the paired client that made the preview. It also shows the reviewed run and who ran it, when saved.\nChoose **Older refund entries** or **Newer refund entries** for more rows.\nA queued review waits in Runs. It stays pending until you approve it.\nChoose **Close refund entry**, then refresh payment history to see that result.\n\nFor an applied credit, choose **View paid invoice credit**.\nFor money returned, choose **View customer refund receipt**.\nChoose **Print refund document / save PDF** or **Download refund document**.\nThe HTML download works offline. It has no active code.\nIt shows the old payment and linked credit. It also shows the recorded refund.\nThe balances are a snapshot at the time shown.\nPrivate staff notes stay out of the copy.\n\nTo email a refund receipt, choose the customer email. Choose the mail account too.\nChoose **Review refund receipt email**.\nThis saves a private draft. Review it and choose **Send**.\nThe normal mail approval controls still apply.\nIf Mail is down, you can still print the copy. You can download it too.\nChoose **Close refund document** to clear its email fields."
+  },
+  {
+    "id": "guides/customer-signoffs#fix-a-recorded-refund",
+    "doc": "Customer sign-offs",
+    "section": "Fix a recorded refund",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#fix-a-recorded-refund",
+    "body": "These steps need Recued 26.10.16 or later.\nUse Invoice Book version 9 or later.\nUse Reception — Approval version 10 or later.\nReview the pack data update in Packs.\nIt keeps your saved bills, payments, credits and refunds.\n\nOpen a job in **Reception → Customer work → Jobs**.\nChoose **Billing**, then **Refunds** beside the bill.\nChoose **Correct a recorded refund**.\nChoose the **Refund to correct**.\nThis list includes saved replacements from earlier fixes.\n\nSet **Refund correction action** to **Reverse this refund entry**.\nUse this when the saved refund was a mistake.\nEnter **Refund reversal date**.\nEnter **Refund correction reason (shown on customer copies)**.\nThe old refund stays saved. A linked reversal marks it as reversed.\nThat old amount drops out of the recorded refund total.\nThe amount you owe back rises by the same sum.\n\nThe old bill, payments and paid credits stay the same.\nThe customer's debt and agreed work stay the same too.\nRecued does not send or recover money.\nIt only fixes the saved record."
+  },
+  {
+    "id": "guides/customer-signoffs#replace-wrong-refund-details",
+    "doc": "Customer sign-offs",
+    "section": "Replace wrong refund details",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#replace-wrong-refund-details",
+    "body": "Choose **Reverse and replace this refund entry**.\nSet **Replacement refund amount** and **Replacement refund date**.\nEnter **Replacement refund reason (shown on customer copy)**.\nYou can set **Replacement refund method** and **Replacement refund reference**.\nThe new entry uses the same payment and paid credit.\nIt can keep the old entry's refund reference.\nIt cannot reuse a reference on another active refund for that payment.\nThe new amount must fit within that credit's unused sum.\n\nChoose **Preview refund correction** and check each amount.\nThe preview shows the old refund and any new entry.\nIt also shows the new refund owed and net sum received.\nThen choose **Review refund correction**.\nUse **Review refund correction in Runs** to give your approval.\nEach fix needs a fresh choice from you.\nNothing changes if you deny it.\nIf a record changes first, refresh and preview again.\n\nFor a queued review, choose **Close refund correction**.\nReview it in Runs, then refresh payment history.\nThe history shows who made the preview and the saved run.\nUse **Older refund corrections** or **Newer refund corrections** for more rows."
+  },
+  {
+    "id": "guides/customer-signoffs#get-corrected-refund-copies",
+    "doc": "Customer sign-offs",
+    "section": "Get corrected refund copies",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#get-corrected-refund-copies",
+    "body": "Open **Refund correction history** after a fix is applied.\nChoose **View refund correction notice** for the old entry.\nChoose **View corrected refund receipt** for its new entry.\nIf all refunds were reversed, choose **View refund corrections**.\nThat opens the saved history and its copies.\n\nThe notice marks the old refund as reversed.\nIt shows the reason and any linked new refund.\nThe corrected receipt links back to the old entry.\nIf you fix that new entry later, it gets a notice too.\nEach copy shows the current sums at the time shown.\nJob statements also mark reversed refunds and show their links.\nThey leave reversed amounts out of the refund total.\n\nPrint or download the copy as you do for a refund receipt.\nTo email it, choose the email and mail account.\nChoose **Review refund receipt email**, review the draft, then **Send**.\nA correction makes old receipt and statement drafts stale.\nIt also makes old payment reminder drafts stale.\nOpen a fresh copy before you draft again.\nAn unclear send on a linked refund stops new receipt drafts.\nCheck that send in Mail before you try again."
+  },
+  {
+    "id": "guides/customer-signoffs#refund-record-limits",
+    "doc": "Customer sign-offs",
+    "section": "Refund record limits",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#refund-record-limits",
+    "body": "Each bill can hold up to 1,000 paid credits here. It can also hold up to 1,000 refunds.\nEach bill can hold up to 1,000 refund reversals too.\nAt the refund row limit, you can still reverse an entry. You cannot add a replacement there.\nA job statement has its own limit. It includes up to 1,000 paid credits, refunds and refund reversals in all.\nAt these limits, open Records. Review the full saved history.\nA copy includes every row it needs. If it cannot, it stops with a clear error.\nIt does not show a cut-off total as a full statement.\n\nIf paid credit, refund or refund reversal rows are missing, new entries stop. Copies stop too. The same is true for changed rows.\nThis also covers rows removed and made again. The same text does not make them the same row.\nReview the old saved history before going on.\nApplied entries stay in the review history."
+  },
+  {
+    "id": "guides/customer-signoffs#fix-an-invoice-credit",
+    "doc": "Customer sign-offs",
+    "section": "Fix an invoice credit",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#fix-an-invoice-credit",
+    "body": "These steps need Recued 26.10.16 or later.\nUpdate Invoice Book to version 7 or later to use it.\nIts data update keeps saved bills, payments and credits.\nReview that update in Packs before you install it.\n\nOpen **View payment history** on the bill.\nChoose **Credits**.\nFind the issued credit and choose **Correct invoice credit**.\nChoose **Reverse this credit** or **Reverse and replace this credit**.\nEnter the **Reverse date** and a reason for the fix.\nThe reason is shown on customer copies.\nFor a new credit, set its amount, date and reason too.\nA new credit can only cover the restored unpaid balance.\n\nChoose **Preview credit correction** and check the balance change.\nThen choose **Review credit correction** and **Review in Runs**.\nEach fix waits for your own approval.\nThe old credit stays saved in full.\nA new row marks its reversal.\nThe linked new credit, if any, is saved at the same time.\nMoney received and the original bill total stay the same.\nA date or reason fix can leave the balance unchanged."
+  },
+  {
+    "id": "guides/customer-signoffs#view-credit-fixes",
+    "doc": "Customer sign-offs",
+    "section": "View credit fixes",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#view-credit-fixes",
+    "body": "**Credit correction history** shows each fix and its reviewed run.\nIt shows which previews are prepared and which fixes are applied.\nUse **Older credit corrections** or **Newer credit corrections** for more rows.\nAn issued credit can only be reversed once.\nIts customer copy is then marked **Reversed**.\nThe copy names the new credit, if there is one.\nThe new copy names the credit it replaces.\nYou can fix the new credit too.\n\nBills, job statements and receipts use the net credit sum.\nThis is the issued sum less the reversed sum.\nStatements keep both the old credit and its reversal.\nOld email drafts need a fresh review after a fix.\nThis includes receipts, statements and payment reminders.\nA saved follow-up may be due again when a balance opens.\nReview its new draft before you send.\nPaused follow-ups stay paused.\nAt 1,000 credit rows, you can still reverse a credit.\nYou cannot add a new row for a replacement here."
+  },
+  {
+    "id": "guides/customer-signoffs#job-payment-statements",
+    "doc": "Customer sign-offs",
+    "section": "Job payment statements",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#job-payment-statements",
+    "body": "These steps need Recued 26.10.16 or later.\nOpen **Reception → Customer work → Jobs**.\nOpen a job with a released bill, then choose **Billing → View job payment statement**.\nA statement is one copy of all its bills and recorded payments.\nIt includes the first bill and each bill for added work.\nIt shows their dates, payment details and balances.\nThe top shows the total billed, recorded paid and still due.\nInvoice rows show exact sums. Scroll the rows sideways on a small screen.\nOpen **Full statement and transaction history** to read the supporting text.\nWork you have not released stays out of these totals.\nPaid jobs can have statements too.\n\nChoose **Print job payment statement / save PDF** or **Download job payment statement**.\nThe download is an HTML file you can open without a connection.\nFor email, enter one customer email and choose a mail account.\nChoose **Review job payment statement email** to save a private draft.\nRead it in the mail composer, then choose **Send**.\nKeep the bill, payment and balance text in the email.\nIf any bill or payment changes, refresh and review a new statement.\nRelease of new added work also needs a new statement.\nMail outages leave print and download ready.\n\nEvery payment list must agree with its bill before you make a statement.\nA missing or moved bill stops the whole copy.\nSo does a changed agreement or a pack that cannot be read.\nReview those records first; a partial copy could give the wrong balance.\nA job with over 100 released bills needs Records review.\nSo does one with over 1,000 payments or 1,000 credits.\nPrivate notes stay out of the copy.\nThese totals reflect your records at the time shown.\nThey do not confirm a bank balance.\nMaking or sending a statement does not change money or work."
+  },
+  {
+    "id": "guides/customer-signoffs#customer-account-statements",
+    "doc": "Customer sign-offs",
+    "section": "Customer account statements",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#customer-account-statements",
+    "body": "These steps need Recued 26.10.16 or later.\nOpen **Reception → Customer work → Accounts**.\nAn account groups the jobs you choose for one customer.\nThe same name does not link jobs by itself.\n\nChoose **New customer account**. Enter **Customer account name**.\nUse **Find customer jobs** or **More jobs to link** to find jobs.\nTick each job that belongs to this customer.\nThe selected list keeps choices from earlier pages and searches.\nCheck the full list. Confirm that these jobs belong to this account.\nThen choose **Save customer account**.\nAfter saving, a **Saved customer account** box stays on screen.\nUse **View saved account statement** to open its copy.\nUse **Edit saved customer account** to change it.\nThese actions stay here if the list refresh fails.\n\nEach job can belong to just one account.\nTo move it, first remove it from the old account.\n\nUse **Edit account** to change its name or job list.\nUse **Remove job** in the selected list to remove it.\nThis keeps that job's bills, payments and work.\nYou can leave an account empty, but it cannot make a statement.\nUse **Discard account edits** to leave edits you do not want.\nIf someone else changes the account, refresh before saving again."
+  },
+  {
+    "id": "guides/customer-signoffs#read-a-customer-account-statement",
+    "doc": "Customer sign-offs",
+    "section": "Read a customer account statement",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#read-a-customer-account-statement",
+    "body": "Choose **View account statement** for the account you need.\nOne copy includes all its linked jobs and their released bills.\nEach currency has its own sums. There is no exchange rate.\nThe customer's debt and refunds you owe have separate lines.\nThey do not cancel each other out.\nCredits, refunds and their fixes stay in the job details.\nWork not yet released stays out of the sums.\nPrivate notes stay out too.\n\nChoose **Print account statement / save PDF** or **Download account statement**.\nThe download is an HTML file you can read offline.\nFor email, enter one customer email and choose a mail account.\nChoose **Review account statement email**. This saves a private draft.\nRead it, then choose **Send**. The usual mail approval controls apply.\nClose another open customer email before reviewing this one.\nIf Mail is down, you can still print or download."
+  },
+  {
+    "id": "guides/customer-signoffs#keep-account-copies-current",
+    "doc": "Customer sign-offs",
+    "section": "Keep account copies current",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#keep-account-copies-current",
+    "body": "A changed account or linked bill makes an old draft stale.\nSo do changed payments, credits, refunds or released added work.\nRefresh and review a new statement before you send.\nCheck an unclear send result in Mail before you draft again.\nThe copy shows your saved records at the time shown.\nIt does not confirm a bank balance or move money.\n\nYou can save up to 1,000 accounts, with 100 jobs per account.\nA full account copy can include up to 500 bills and 5,000 money rows.\nEach job keeps its own statement limits too.\nMissing, moved or unreadable records stop the whole copy.\nIf a limit is reached, review the full job statements in Records.\nA partial copy is never shown as the full account."
   },
   {
     "id": "guides/customer-signoffs#prepare-a-request",
@@ -1373,7 +1949,7 @@
     "section": "Prepare a request",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/customer-signoffs#prepare-a-request",
-    "body": "Use Recued 26.10.12 or later. Update Recued before updating packs.\nIf Billable Hours is already installed, update it before Invoice Book.\n\n1. Install **Quote Pipeline version 2** and **Invoice Book version 5** from Packs.\n2. Add an open quote in Quote Pipeline Records.\n   Set the customer, amount, currency and valid-until date.\n3. Open **Reception → Customer sign-offs**. Choose the quote.\n4. Enter your business name and full scope.\n   List what you will do and leave out. Include the terms they must accept.\n   Private quote notes stay private. The scope you enter is shared in full.\n5. Set the task title and a unique invoice reference.\n   Set VAT and dates as shown below.\n6. Set a link life of 1–30 days. Select **Preview customer sign-off**.\n   Check the exact customer text, task and invoice plan.\n7. Select **Publish sign-off link**. Share the returned link yourself.\n\nBefore publishing, you can choose **Save this link for follow-up emails**.\nRecued then keeps an encrypted copy for your reminders.\nLeaving this off keeps the link out of the reminder store.\n\nThe link needs a public server name. See\n[Reachability](../setup/reachability.md).\nOpen `/reception` under **Settings → Server → Exposure** for that address.\nUse Public for an internet address, or LAN for visitors on your network.\nThe preview expires after ten minutes.\nPreview again if the app asks you to.\n\nA new request replaces earlier active requests for that quote.\nThis also replaces an accepted request still waiting for your review."
+    "body": "The first sign-off tools need Recued 26.10.12 or later.\nThese steps use the layout of Recued 26.10.16 and later.\nUpdate Recued before updating packs.\nIf Billable Hours is already installed, update it before Invoice Book.\n\n1. Install **Quote Pipeline version 2** and **Invoice Book version 5 or later** from Packs.\n2. Add an open quote in Quote Pipeline Records.\n   Set the customer, amount, currency and valid-until date.\n3. Open **Reception → Customer work → Sign-offs**.\n   Open **New customer sign-off** if it is closed. Choose the quote.\n4. Enter your business name and full scope.\n   List what you will do and leave out. Include the terms they must accept.\n   Private quote notes stay private. The scope you enter is shared in full.\n5. Set the task title and a unique invoice reference.\n   Set VAT and dates as shown below.\n6. Set a link life of 1–30 days. Select **Preview customer sign-off**.\n   Check the exact customer text, task and invoice plan.\n7. Select **Publish sign-off link**. Share the returned link yourself.\n\nBefore publishing, you can choose **Save this link for follow-up emails**.\nRecued then keeps an encrypted copy for your reminders.\nLeaving this off keeps the link out of the reminder store.\n\nThe link needs a public server name. See\n[Reachability](../setup/reachability.md).\nOpen `/reception` under **Settings → Server → Exposure** for that address.\nUse Public for an internet address, or LAN for visitors on your network.\nThe preview expires after ten minutes.\nPreview again if the app asks you to.\n\nA new request replaces earlier active requests for that quote.\nThis also replaces an accepted request still waiting for your review."
   },
   {
     "id": "guides/customer-signoffs#vat-and-dates",
@@ -1405,7 +1981,7 @@
     "section": "Follow up with a customer",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/customer-signoffs#follow-up-with-a-customer",
-    "body": "Choose **Set follow-up** on a request waiting for its customer.\nSet the follow-up date and time in your device's timezone.\nLeave the email and account blank for a reminder just to you.\nRecued reminds you when it is due and respects your quiet hours.\nThe date stays saved when your server restarts.\n\nFor an email reminder, choose a sending mail account and enter one customer email.\nIf you saved the link when publishing, leave the link field blank.\nFor an older request, paste its active offer link.\nPrepare a new request if that link is no longer available.\nChoose **Save follow-up**.\n\n**Customer follow-ups** shows upcoming and due dates, with the earliest first.\nUse **Snooze 1 day** to move the date, or **Pause follow-up** to stop it.\nEach date must be before the offer expires.\n**Earlier follow-ups** and **More follow-ups** let you page through the queue.\nRefresh keeps your page and any unsaved edits.\n\nWhen it is due, choose **Review reminder email**.\nThis saves a draft and opens the normal mail editor.\nReview the message, then choose **Send** and approve it if Recued asks.\nPreparing the draft does not send it.\nTo change the customer, account or link, edit the follow-up and prepare a new draft.\n\nReminders stop when the customer replies, or the offer is cancelled, expired or replaced.\nA reply stops them even while it waits to be processed.\nChanged quotes and inactive or changed links stop them too.\nThese checks still apply to a message waiting for send approval.\nThe same reminder cannot be sent twice by a retry or server restart.\nIf an email's outcome is unknown, review it in Mail before scheduling another.\nSending from an exported copy in another mail app uses that app's controls."
+    "body": "Choose **Set follow-up** on a request waiting for its customer.\nSet the follow-up date and time in your device's timezone.\nLeave the email and account blank for a reminder just to you.\nRecued reminds you when it is due and respects your quiet hours.\nThe date stays saved when your server restarts.\n\nFor an email reminder, choose a sending mail account and enter one customer email.\nIf you saved the link when publishing, leave the link field blank.\nFor an older request, paste its active offer link.\nPrepare a new request if that link is no longer available.\nChoose **Save follow-up**.\n\n**Customer work → Follow-ups → Sign-off requests** shows saved dates, with the earliest first.\nUse **Snooze 1 day** to move the date, or **Pause follow-up** to stop it.\nEach date must be before the offer expires.\n**Earlier follow-ups** and **More follow-ups** let you page through the queue.\nRefresh keeps your page and any unsaved edits.\n\nWhen it is due, choose **Review reminder email**.\nThis saves a draft and opens the normal mail editor.\nReview the message, then choose **Send** and approve it if Recued asks.\nPreparing the draft does not send it.\nTo change the customer, account or link, edit the follow-up and prepare a new draft.\n\nReminders stop when the customer replies, or the offer is cancelled, expired or replaced.\nA reply stops them even while it waits to be processed.\nChanged quotes and inactive or changed links stop them too.\nThese checks still apply to a message waiting for send approval.\nThe same reminder cannot be sent twice by a retry or server restart.\nIf an email's outcome is unknown, review it in Mail before scheduling another.\nSending from an exported copy in another mail app uses that app's controls."
   },
   {
     "id": "guides/customer-signoffs#follow-the-released-work",
@@ -1445,7 +2021,7 @@
     "section": "Keep a sign-off receipt",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/customer-signoffs#keep-a-sign-off-receipt",
-    "body": "Receipts also show requests to confirm work for this offer.\nThis includes requests for its released parents.\nThey show the saved delivery, customer reply and any owner close or reopen action.\nLater offers stay in their own receipts. Customer copies omit reply comments and visitor identity.\n\nSelect **View receipt** on a request in **Requests and responses**.\nIt shows the saved offer and the customer's reply.\nYour release has its own line.\nA reply can show while it waits to be processed.\nIt does not mean work has been released.\n\nFor added work, the receipt starts with the first offer.\nIt then lists the released requests that led to this one.\nLater work has its own receipt.\nChoose the last released request to see the full chain.\nEach release shows its invoice reference.\n\nSelect **Download receipt** to save an HTML file.\nYou can open it offline.\nUse **Print / save PDF** to print or save from your browser.\nThe copy shows the terms and customer name.\nIt leaves out private quote notes, contact details and reply comments.\nIt leaves out share links too.\nThe saved offer stays the same when you edit the live quote.\nNew requests keep the exact offered text.\nOlder ones rebuild it from the saved terms.\nThe receipt marks that text as rebuilt.\nAn unreadable or missing reply is shown as unavailable.\n\nThe receipt shows when it was captured.\nUse **Refresh receipt** to get a newer reply or release.\nTo check work or payments now, use the task and invoice controls."
+    "body": "Receipts also show requests to confirm work for this offer.\nThis includes requests for its released parents.\nThey show the saved delivery, customer reply and any owner close or reopen action.\nLater offers stay in their own receipts. Customer copies omit reply comments and visitor identity.\n\nSelect **View sign-off receipt** on a request in **Requests and responses**.\nIt shows the saved offer and the customer's reply.\nYour release has its own line.\nA reply can show while it waits to be processed.\nIt does not mean work has been released.\n\nFor added work, the receipt starts with the first offer.\nIt then lists the released requests that led to this one.\nLater work has its own receipt.\nChoose the last released request to see the full chain.\nEach release shows its invoice reference.\n\nSelect **Download receipt** to save an HTML file.\nYou can open it offline.\nUse **Print / save PDF** to print or save from your browser.\nThe copy shows the terms and customer name.\nIt leaves out private quote notes, contact details and reply comments.\nIt leaves out share links too.\nThe saved offer stays the same when you edit the live quote.\nNew requests keep the exact offered text.\nOlder ones rebuild it from the saved terms.\nThe receipt marks that text as rebuilt.\nAn unreadable or missing reply is shown as unavailable.\n\nThe receipt shows when it was captured.\nUse **Refresh receipt** to get a newer reply or release.\nTo check work or payments now, use the task and invoice controls."
   },
   {
     "id": "guides/customer-signoffs#changed-quotes-expiry-and-retries",
@@ -1456,12 +2032,116 @@
     "body": "The server checks the full saved quote and revision.\nIt checks before showing the form and saving a reply.\nIt checks again when you approve the release.\nA changed quote or newer scope blocks release.\nSo does an expired link or a missing pack.\nFor a first sign-off, an expired quote also blocks release.\nA pack that is not ready blocks it too.\nIf any write fails, none take effect.\n\nThe customer's reply and your release decision stay separate.\nIf you reject the review, their accepted reply stays recorded.\nRequests and responses shows that review closed without releasing work.\nCheck the run in Runs. To try again, cancel and prepare a new request."
   },
   {
+    "id": "guides/customer-signoffs#follow-up-on-completed-work",
+    "doc": "Customer sign-offs",
+    "section": "Follow up on completed work",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#follow-up-on-completed-work",
+    "body": "These steps need Recued 26.10.16 or later.\nOpen **Reception → Customer work → Jobs**.\nOpen a job, then choose **Follow-ups**.\nFor a work request waiting for a reply, choose **Follow up on completion**.\nSet a time and choose **Save follow-up**.\nYou can save an owner alert with no mail account.\n\nFor an email draft, choose a mail account and enter the customer's email.\nWhen you share a new work link, you can choose **Save this link for follow-up emails**.\nFor an older request, paste its active work link in the follow-up form.\nThe saved link is encrypted. It must be for this request and server.\n\nDue requests appear in **Customer work → Follow-ups → Completion requests**.\nChoose **Snooze 1 day** or **Pause follow-up** as needed.\nChoose **Review reminder email** to save and open an email draft.\nReview it, then choose **Send**. Your normal mail approval controls still apply.\n\nA reply, expiry, cancelled request or change to the work stops the reminder.\nThis check also applies to drafts already waiting to send.\nEmail delivery does not close the task or mark a bill paid.\nCheck an unknown send result in Mail before starting another reminder."
+  },
+  {
+    "id": "guides/customer-signoffs#follow-up-on-payment",
+    "doc": "Customer sign-offs",
+    "section": "Follow up on payment",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#follow-up-on-payment",
+    "body": "These steps need Recued 26.10.16 or later.\nOpen **Reception → Customer work → Jobs**.\nOpen a job, then choose **Follow-ups**.\nChoose **Follow up on payment** for the invoice you want to follow up.\nEach invoice for added work has its own follow-up.\nSet a time and choose **Save payment follow-up**.\nLeave the account and email blank for an alert just to you.\nUse **Snooze payment 1 day** or **Pause payment follow-up** as needed.\n\nFor an email, choose a mail account and enter the customer's email.\nSave your changes before reviewing an email.\nClose the form to keep the earlier saved settings.\nWhen the date is due, choose **Review payment reminder email**.\nThis saves a private draft with the invoice reference, due date and current recorded balance.\nReview it, then choose **Send**. Your normal mail approval controls apply.\nKeep the invoice details line when editing the message.\n\nIf a payment or invoice changes after drafting, the old email cannot send.\nClose it, save the follow-up again and review a fresh draft.\nSettled, carried, changed or missing invoices stop the reminder.\nMissing invoice data does too.\nAn old offer link expiring or work being marked done does not settle an invoice.\nSending a reminder does not record payment or change the work."
+  },
+  {
     "id": "guides/customer-signoffs#retries-and-cancellation",
     "doc": "Customer sign-offs",
     "section": "Retries and cancellation",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/customer-signoffs#retries-and-cancellation",
     "body": "Each request keeps one review and one set of record IDs.\nA retry cannot add a second invoice.\nIt cannot bring back an invoice you deleted after release.\n\n**Cancel request** closes the link.\nIt also blocks any release still waiting for you.\nIts Inbox entry may stay. Reject that entry to close it.\nThis does not undo work already released.\nFix those tasks or invoices in their own views.\n\nUse **Manage share link** on a waiting request for link controls.\nYou can rotate a lost link there."
+  },
+  {
+    "id": "guides/customer-signoffs#record-one-payment-across-a-customer-account",
+    "doc": "Customer sign-offs",
+    "section": "Record one payment across a customer account",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#record-one-payment-across-a-customer-account",
+    "body": "Open **Reception → Customer work → Accounts**. Choose **Open account payments** beside a saved account. Enter the amount you have already received. Add its date, method and reference. Take these from your own proof of payment.\n\nSelect one currency. Enter an amount beside each invoice being paid. Leave the other invoices blank. This splits one payment across those invoices. Each split is called an allocation. The splits must add up to the exact amount received. Each must fit what that invoice is owed.\n\nYou can pay part or all of up to 100 invoices. Use jobs you linked to this account. Use one currency for each payment. You can include added work you have released. Invoice credits and refunds keep their own balances."
+  },
+  {
+    "id": "guides/customer-signoffs#review-and-approve-an-account-payment",
+    "doc": "Customer sign-offs",
+    "section": "Review and approve an account payment",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#review-and-approve-an-account-payment",
+    "body": "Choose **Preview account payment**. Check each split and the debt left. Then choose **Review account payment**. Approve the saved payment in **Runs**. A preview changes no invoice balance.\n\nApproval saves all entries and invoice balances together. The account, jobs and billing records must still match. If they change, refresh the balances. Then preview the payment again. Repeating the same approved review does not record another payment.\n\nAfter you submit, **Start another account payment** opens a fresh entry. The review you sent stays in **Runs**. A new entry does not cancel that review."
+  },
+  {
+    "id": "guides/customer-signoffs#account-payment-receipts-and-corrections",
+    "doc": "Customer sign-offs",
+    "section": "Account payment receipts and corrections",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#account-payment-receipts-and-corrections",
+    "body": "**Account payment history** shows prepared and applied payments. After approval, choose **View account payment receipt**. This opens one combined customer copy. Print it or save a PDF. You can also download an offline HTML copy.\n\nTo email the receipt, prepare a private draft. Review it before you send. Send follows your normal Mail rules. If an included invoice or payment changes, prepare a fresh receipt email. If you do not know whether a past email went out, check Mail first. Then prepare the next receipt.\n\nTo change just one split, use that invoice’s **Payment history**. The account payment keeps its original splits. A new receipt shows current entries and invoice balances. It marks changed or removed splits.\n\nRemoving a job from the account keeps the payment group. Its receipt stays linked to the invoices where you recorded payment. Account statements and reminders use the current invoice records."
+  },
+  {
+    "id": "guides/customer-signoffs#correct-a-whole-account-payment",
+    "doc": "Customer sign-offs",
+    "section": "Correct a whole account payment",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#correct-a-whole-account-payment",
+    "body": "In **Account payment history**, choose **Correct account payment**. This loads the current receipt and all the original splits. Enter a reason. You can change the amounts, date, method and reference. The date, method and reference will apply to all entries you keep.\n\nUse only the active splits from this payment. The amounts must add up to the new total. Enter zero beside a split to remove it. A removed split cannot be brought back. To remove all active splits, choose **Void all active allocations**. This changes your records. It does not send a refund.\n\nChoose **Preview account payment correction**. Check each old and new amount, balance and date. Then choose **Review account payment correction**. Approve the saved review in **Runs**. Closing the editor keeps that review in Runs.\n\nAll invoice changes and their history are saved together. If any record changes before you approve, refresh the receipt and preview again. An old review cannot change those records. A retry cannot apply the same change twice."
+  },
+  {
+    "id": "guides/customer-signoffs#receipts-after-an-account-correction",
+    "doc": "Customer sign-offs",
+    "section": "Receipts after an account correction",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#receipts-after-an-account-correction",
+    "body": "The original account payment stays in history. The new receipt shows current entries and marks changes or removals. Each invoice keeps the reason in its own correction history too. Refresh the receipt to print or save a new customer copy.\n\nOld receipt emails are blocked after a correction. Make a fresh draft from the new receipt. Entries with paid invoice credits or linked refunds need their own review. The group editor will not change them."
+  },
+  {
+    "id": "guides/customer-signoffs#follow-up-on-a-customer-account",
+    "doc": "Customer sign-offs",
+    "section": "Follow up on a customer account",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#follow-up-on-a-customer-account",
+    "body": "Open **Reception → Customer work → Accounts**.\nChoose **Follow up on account payment** for the saved account.\nSet the date and time. Choose **Save account payment follow-up**.\nLeave the email and mail account blank for an alert just to you.\nFor a customer email, fill in both fields.\n\nOne account follow-up covers all its linked jobs and released added work.\nIt holds their invoice reminders until you pause it.\nThis hold stays in place after you send the account email.\n\nWhen it is due, choose **Review account payment reminder email**.\nThis saves a private draft. Review it in Mail, then choose **Send**.\nThe draft lists each unpaid bill and its due date.\nIt shows a sum for each currency. It does not record a payment.\n\nA change to the account or its bills makes an old draft stale.\nSo do payments, credits, refunds and their fixes.\nEdit and save the follow-up again to make a fresh draft.\nA paid account stops follow-up. Missing records stop it too.\nRefunds still owed to the customer also stop it.\nReview the full account statement before you proceed.\n\nUse **Snooze account payment 1 day** to move the date.\nUse **Pause account payment follow-up** to stop it.\nClose the follow-up editor before using these queue actions.\nSave any edits first to keep them.\nYou can pause a stopped follow-up from its editor too.\nIf an email result is unknown, check it in Mail first.\nUntil you resolve it, the same bills cannot get another reminder.\nThat rule still holds if you move a job to a new account."
+  },
+  {
+    "id": "guides/customer-signoffs#close-out-and-archive-a-job",
+    "doc": "Customer sign-offs",
+    "section": "Close out and archive a job",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#close-out-and-archive-a-job",
+    "body": "Open a job in **Customer work → Jobs**, then choose **Closeout**.\nCheck the work, customer reply, unpaid bills, refunds and follow-ups.\nUse each checklist link to resolve a blocker, then choose **Recheck closeout**.\nThe work must be done. Bills must be settled or cleared with credits.\nRecord any refund still owed. Resolve pending offers and completion reviews.\nIf an email result is unknown, check it in Mail first.\nYou can also archive a declined or cancelled offer with no released work.\n\nA completion reply is shown on its own.\nIf none was requested, closeout says so. It does not invent customer acceptance.\nTick the review box. Then choose **Archive job**.\nIf the job changes before you save, refresh and review it again.\n\nOpen **Filters**, then choose **Job history → Archived jobs** to find the saved job.\nOpen the job, choose **Closeout**, then **Restore job**.\nRestore keeps the task and balances as they are.\nIt does not reopen work, undo payment or send a message.\n\nArchiving keeps all invoices, receipts, replies and account links.\nAccount statements still include linked archived jobs.\nSaved job follow-ups stay saved but cannot send while the job is archived.\nAccount follow-ups stop if an archived job has unpaid bills.\nOwner-paused schedules stay paused after restore.\n\nIf archived work or billing changes, the job returns to the active view.\nIts card says it changed after closeout. Restore it and review the change.\nRestore is also available when its billing records need repair."
+  },
+  {
+    "id": "guides/customer-signoffs#see-one-job-s-timeline",
+    "doc": "Customer sign-offs",
+    "section": "See one job's timeline",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#see-one-job-s-timeline",
+    "body": "Open a job in **Customer work → Jobs**, then choose **Activity**.\nSee saved offers, added work, invoices, payment entries and reviews.\nIt also shows completion replies, credits, refunds and archive history.\nThe current work and balances stay at the top.\n\nUse **Activity type** or **Find activity** to narrow the view.\nUse **Older activity** and **Newer activity** to move through it.\nChoose **Refresh timeline** to check for new activity.\nIf the job changes between pages, refresh and start from the newest page.\n\nA preview means the change was prepared for review.\nA recorded change has its own entry after review.\nCustomer replies and owner actions have separate entries too.\nA saved email draft does not mean the email was sent.\nUnknown email results still need review in Mail.\n\nEach row shows when its source record was saved.\nPayment, credit and refund dates are shown on their own.\nA current payment entry shows its latest saved values.\nCorrection reviews keep earlier values, even after a payment is voided.\nRows with no saved time sit at the end.\nSome older task edits, cancelled requests and changed schedules have no saved time.\nTheir latest state is shown with the job or request.\n\nOpen a row's sign-off receipt, invoice history or closeout to review its source.\nYou can return to the captured timeline from those views.\nAccount payments show their invoice entries for this job.\nFull account payment receipts stay in **Customer accounts**."
+  },
+  {
+    "id": "guides/customer-signoffs#review-receivables-aging",
+    "doc": "Customer sign-offs",
+    "section": "Review receivables aging",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#review-receivables-aging",
+    "body": "Open **Reception → Customer work → Receivables**.\nSee debts on bills made when you release work.\nThis includes added work and jobs you archived.\nOther Invoice Book bills stay in Records.\n\nThe view shows its capture time and date.\nIt uses the time zone on your server.\n**Current** means due today or later.\nLate bills fall into **1–30**, **31–60**, **61–90** or **91+ days**.\nAge counts days, even when clocks jump ahead or back.\nThe view reads balances saved now.\nIt cannot show balances from a past date.\n\nEach currency has its own totals.\nPayments and bill credits reduce what is owed.\nRefunds show what you owe back to customers.\nThey have their own line.\nThey do not pay off debt on other bills.\nMarking work done does not clear a bill.\n\nSearch by customer, quote or invoice.\nChoose a currency or age view.\nThen choose **Find receivables**.\nTotals follow the search and currency.\nThey stay the same when you change only the age view or page.\nChoose **Needs review** to see bills with unknown balances.\nThose bills stay out of totals, with a warning.\nA zero verified total does not mean those bills are paid.\nUse **More receivables** and **Previous receivables** to browse all rows.\n\nOpen **View invoice history** or **View job timeline** to read a source.\nClose that view to return to the captured report.\nClose a source view before you open another job from the board.\nChoose **Refresh aging** to check for new payments or changes.\nIf bills or the reporting day change between pages, refresh.\nStart again from the first page.\nThe last loaded report stays visible after a read fails.\nThis view reads saved records.\nIt does not send reminders or change money."
+  },
+  {
+    "id": "guides/customer-signoffs#save-account-contact-defaults",
+    "doc": "Customer sign-offs",
+    "section": "Save account contact defaults",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#save-account-contact-defaults",
+    "body": "Open **Customer work → Accounts**.\nBeside a saved account, choose **Edit contact defaults**.\nSave a contact name, one email address, and the Mail account to use.\nEach field can be blank.\nChoose **Save contact defaults**, then **Close contact defaults**.\nThese choices are saved on your server, for this account.\nA shared name does not link two accounts.\n\nThe contact name helps you check who to email.\nIt does not change the name on bills or copies.\nNew account statement and payment receipt email forms use these saved choices.\nNew account follow-ups use them too.\nCheck the email and Mail account each time.\nYou can change both for that email.\nEach email still needs your review and **Send**.\nSaving these choices does not send an email or set a follow-up.\n\nSaved drafts and follow-ups keep their own choices.\nThis includes follow-ups set just to remind you.\nA new contact choice does not change those older choices.\nContact edits do not change the job list or payment facts for this account.\n\nIf the saved Mail account cannot send, choose one that can.\nRecued does not pick a different sender for you.\nYou can still print or save a statement if contact choices cannot load.\nYour own email edits stay in place if saved choices arrive late.\n\nTo clear all choices, choose **Clear contact fields**, then **Save contact defaults**.\nIf two clients edit at once, the older edit must be refreshed.\nYour local edits stay on screen after a save fails.\nSave or discard them before leaving."
+  },
+  {
+    "id": "guides/customer-signoffs#browse-larger-job-lists",
+    "doc": "Customer sign-offs",
+    "section": "Browse larger job lists",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#browse-larger-job-lists",
+    "body": "Open **Customer work → Jobs** and choose a view or search.\nLarge lists load in small parts.\nChoose **Older jobs** to keep looking.\nChoose **Newer jobs** to go back.\n\nA short or empty page can still have more jobs.\nA note tells you when more jobs remain to check.\nChoose **Older jobs** to continue with the same view.\nEach card still checks its saved scope and balances.\nWork status and money owed stay separate.\n\nYour unsaved delivery edits stay in place as you browse.\nA failed read keeps the last page on screen.\nUse **Refresh jobs** to retry that page.\nChanging the search or view starts from the newest jobs."
   },
   {
     "id": "guides/exposing-recipes-to-chat",
@@ -1624,6 +2304,22 @@
     "body": "- **Reception pages**: pages you build from blocks. A block can be text, a\n  form, or links.\n- **Scheduling links**: offer time slots and take bookings.\n- **Intake forms**: a form with set fields. It collects a request from a\n  client or someone you work with.\n- **File drops**: a place where someone can hand you a file.\n- **Approval links**: let one chosen person answer a question you sent to\n  them.\n- **Customer sign-offs**: share an exact quote and scope, then review its task\n  and invoice before releasing work. See [Customer sign-offs](customer-signoffs.md)."
   },
   {
+    "id": "guides/reception#find-your-reception-views",
+    "doc": "Reception",
+    "section": "Find your Reception views",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/reception#find-your-reception-views",
+    "body": "Recued 26.10.16 groups Reception into four views.\n\n| View | What you do there |\n| --- | --- |\n| Inbox | Review incoming requests and customer replies |\n| Customer work | Track jobs, sign-offs, accounts, bills, and saved dates |\n| Records | Read saved form answers and other incoming records |\n| Manage | Set up pages, forms, and links, or review abuse |\n\nOpen **Customer work** to choose a view.\nIt has **Jobs**, **Sign-offs**, and **Accounts**.\nUse **Receivables** for money owed and **Follow-ups** for saved dates.\nOpen **Manage** for **Endpoints** and **Abuse**.\nEndpoints are the pages, forms, and links you share.\nOn a small screen, scroll the view names sideways.\n\nSee [Customer jobs](customer-jobs.md) for the full daily steps."
+  },
+  {
+    "id": "guides/reception#follow-a-customer-job-from-quote-to-closeout",
+    "doc": "Reception",
+    "section": "Follow a customer job from quote to closeout",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/reception#follow-a-customer-job-from-quote-to-closeout",
+    "body": "Start in **Customer work → Sign-offs**.\nPreview a quote, publish its customer link, and share it.\nThe customer's reply waits in Inbox for your review.\nYour approval adds its task and invoice together.\n\nOpen **Customer work → Jobs**, then choose **Open job**.\nUse **Overview**, **Activity**, **Billing**, **Follow-ups**, or **Closeout**.\nWork, customer replies, and money each have their own state.\nCheck each one before you close the job.\n\nBilling holds payment, credit, refund, and document actions beside each invoice.\nA credit lowers what is owed. A refund records money you already returned.\nRecued does not collect payments or send refunds.\nCloseout shows what to fix before you archive the job.\n\nSee the [step-by-step Customer jobs guide](customer-jobs.md)."
+  },
+  {
     "id": "guides/reception#make-a-page-from-a-template-or-a-sentence",
     "doc": "Reception",
     "section": "Make a page from a template or a sentence",
@@ -1669,7 +2365,7 @@
     "section": "Related",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/reception#related",
-    "body": "- [Grants and approvals](../concepts/grants-and-approvals.md): the gate that\n  holds requests that come in.\n- [Selling access](selling-access.md): a reception page can hold the link to\n  a seller's checkout."
+    "body": "- [Customer jobs](customer-jobs.md): daily work, billing, receipts, accounts, and closeout.\n- [Grants and approvals](../concepts/grants-and-approvals.md): the gate that\n  holds requests that come in.\n- [Selling access](selling-access.md): a reception page can hold the link to\n  a seller's checkout."
   },
   {
     "id": "guides/recipes-and-packs",
@@ -1702,6 +2398,30 @@
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/recipes-and-packs#dependencies",
     "body": "A recipe can need a capability pack. During setup, Recued shows you which\nknown packs are missing. You can install them first, together with the\nrecipe. Packs\nyou already have stay visible. They are not installed a second time.\n\nDo you want the JSON for recipe pins, typed contents, and needed versions?\nSee the [pack manifest reference](../reference/pack-manifest.md)."
+  },
+  {
+    "id": "guides/recipes-and-packs#review-vendor-permissions-before-installing-or-updating",
+    "doc": "Recipes and packs",
+    "section": "Review vendor permissions before installing or updating",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/recipes-and-packs#review-vendor-permissions-before-installing-or-updating",
+    "body": "The setup screen lists the vendor scopes a pack needs. For an update, it\nshows added scopes and those no longer needed. It includes other packs that\ninstall or update with it. If the old scope list cannot be read, it says so.\n\nFor saved accounts, the review compares those needs with recorded vendor\ngrants. Missing grant data stays **Unknown**. Direct Recued OAuth comes first\nwhen choosing an account for a new install. An update keeps its current account.\n\nTo fix access first, choose **Review permissions in Apps & APIs**. **Copy\nrequired scopes** gives you the list to use in that account's sign-in form.\nReturn to setup and choose **Refresh permission review** after reconnecting.\n\nYou can also check **I reviewed vendor permissions** and install now, then\nreconnect later. Some actions may need that new consent before they work.\nInstalling a pack grants no vendor scopes and starts no sign-in by itself.\nYour Recued access and approval choices still govern its actions.\n\nIf a pack or account changes after review, Recued asks for a fresh review.\nScopes an update no longer needs are not revoked at the vendor."
+  },
+  {
+    "id": "guides/recipes-and-packs#reconnect-from-a-pack",
+    "doc": "Recipes and packs",
+    "section": "Reconnect from a Pack",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/recipes-and-packs#reconnect-from-a-pack",
+    "body": "When a Pack needs more access, select **Reconnect now** next to its saved account.\nRecued keeps your Pack choices and opens that connection.\n\nReview the scopes and account, then sign in. For direct OAuth, Recued can use a\nsaved Google or Microsoft app that matches the current app. Its secret stays on\nyour server. Other apps use the usual app fields. Add the app's sign-in URL if\nit is blank. The request keeps known current Pack needs and adds the new scopes.\n\nEnter a private test URL, check access, and apply. Recued returns to the Pack\nwith a new review. Confirm that review to install. This check reads data. It\ndoes not test writes.\n\nNango keeps the same broker and account ID. New consent keeps the saved scope\nlist. **Install now and reconnect later** is still an option. If a linked Mail\nor Calendar account needs review, Recued shows it on return.\n\nA repair draft stays in this browser session for up to 30 minutes. A reload or\nserver change clears it. You can go back to the Pack; a check in progress must\nfinish first."
+  },
+  {
+    "id": "guides/recipes-and-packs#reconnect-later",
+    "doc": "Recipes and packs",
+    "section": "Reconnect later",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/recipes-and-packs#reconnect-later",
+    "body": "Open **Packs**, or **Connections → Apps & APIs**, to see **Reconnect later**.\nIt lists missing or unknown vendor permissions for installed Packs, grouped by\nsaved account. Select **Reconnect** to use the same sign-in and check access.\nThis does not install a Pack or change its connection name.\n\nIf grants are still unknown, the reminder stays. Select **Mark reviewed** once\nyou have reviewed the scopes. This hides the reminder; it does not grant access\nor prove that every action works. Use **Show reviewed** and **Restore reminder**\nto bring it back. Known missing grants need a reconnect and cannot be marked\nreviewed.\n\nReviews are saved on your server. New Pack needs or a new saved credential can\nbring a reminder back. Token renewal keeps your review. Removing a Pack drops\nits reminder. A missing account binding shows that a connection is needed.\nConfirmed grants clear the reminder too."
   },
   {
     "id": "guides/recipes-and-packs#programs-a-pack-runs",
@@ -1869,7 +2589,7 @@
     "section": "Start here",
     "eyebrow": "Documentation",
     "url": "https://recued.com/docs/index#start-here",
-    "body": "- [Set up Recued](getting-started.md) and pair your first device.\n- See [how the four parts of Recued fit together](concepts/how-recued-works.md).\n- See [what stays on your server and what can leave](concepts/security-and-privacy.md).\n- Learn why [you browse recipes one by one, but install packs as one box](guides/recipes-and-packs.md)."
+    "body": "- [Set up Recued](getting-started.md) and pair your first device.\n- See [how the four parts of Recued fit together](concepts/how-recued-works.md).\n- See [what stays on your server and what can leave](concepts/security-and-privacy.md).\n- Learn why [you browse recipes one by one, but install packs as one box](guides/recipes-and-packs.md).\n- Follow [customer jobs from quote to closeout](guides/customer-jobs.md) in Reception."
   },
   {
     "id": "index#what-the-documentation-covers",
@@ -1877,7 +2597,7 @@
     "section": "What the documentation covers",
     "eyebrow": "Documentation",
     "url": "https://recued.com/docs/index#what-the-documentation-covers",
-    "body": "| Area | What you will find |\n| --- | --- |\n| Setup | How to install, pair, get reached from outside, update, back up, and set up AI |\n| Concepts | Safety, privacy, who you are, grants, approvals, the audit diary, and what stays local |\n| Guides | Connections, recipes, packs, writing your own, publishing, and selling access |\n| Reference | The exact fields for recipes, ingredients, and packs, the transforms, and the glossary |"
+    "body": "| Area | What you will find |\n| --- | --- |\n| Setup | How to install, pair, get reached from outside, update, back up, and set up AI |\n| Concepts | Safety, privacy, who you are, grants, approvals, the audit diary, and what stays local |\n| Guides | Connections, customer jobs, Reception, recipes, packs, writing your own, publishing, and selling access |\n| Reference | The exact fields for recipes, ingredients, and packs, the transforms, and the glossary |"
   },
   {
     "id": "index#engineering-reference",
@@ -2614,6 +3334,14 @@
     "eyebrow": "Reference",
     "url": "https://recued.com/docs/reference/transforms#calendar-events",
     "body": "| Transform | Parameters | Returns |\n| --- | --- | --- |\n| `event_when` | `event`, `time_zone?`, `part?` | when a calendar event happens |\n\n`event_when` takes a calendar event and says when it happens on your clock.\nIt reads `start_at`, `end_at`, and `is_all_day`. It gives back `start`, `end`,\n`day`, `time`, `date_time`, and `text`. An all-day event says `All day` where\na time would go. Use `part` to get just one of them, like `\"part\": \"time\"`.\nInside `map`, leave out `field`, and each whole event goes in."
+  },
+  {
+    "id": "reference/transforms#times-in-words",
+    "doc": "Transforms",
+    "section": "Times in words",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/transforms#times-in-words",
+    "body": "| Transform | Parameters | Returns |\n| --- | --- | --- |\n| `date_from_text` | `input`, `time_zone?`, `default_time?` | the time some words name |\n\nThis finds a time in a line of text. Take \"Call the dentist tomorrow at\n9am\". It gives back three things. The time it found is `at`, in Unix\nmilliseconds. The line with the time taken out is `text`: \"Call the\ndentist\". The words it read are `phrase`: \"tomorrow at 9am\".\n\nIt reads days like `today`, `tomorrow`, `friday`, and `oct 20`. It reads\ntimes like `9am` and `21:30`. It reads spans like `in 2 hours` and\n`in 3 days`. A day with no time gets `default_time`. That is 9:00 unless you\nset it. When it finds no time, `at` is `null`. It reads English only.\n\nGive `time_zone` the value `{{context.server.time_zone}}`. Then \"tomorrow\"\nis your tomorrow, not the server's."
   },
   {
     "id": "reference/transforms#logic",

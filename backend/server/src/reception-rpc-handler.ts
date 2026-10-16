@@ -1,3 +1,8 @@
+import { handleCustomerRefundCorrectionPrepare,handleCustomerRefundCorrectionHistory,handleCustomerRefundPrepare,handleCustomerRefundHistory,handleCustomerRefundCopy,handleCustomerRefundDraft } from './customer-refund-rpc-handler.js';
+import { handleCustomerCreditCorrectionPrepare,handleCustomerCreditCorrectionHistory,handleCustomerInvoiceCreditPrepare,handleCustomerInvoiceCreditHistory,handleCustomerInvoiceCreditCopy } from './customer-invoice-credit-rpc-handler.js';
+import { handleCustomerAccountPaymentCorrectionPrepare,handleCustomerAccountPaymentCorrectionHistory } from './customer-account-payment-correction-rpc-handler.js';
+import { handleCustomerAccountPaymentPrepare,handleCustomerAccountPaymentHistory,handleCustomerAccountPaymentReceipt,handleCustomerAccountPaymentReceiptDraft } from './customer-account-payment-rpc-handler.js';
+import { handleCustomerPaymentCorrectionPrepare,handleCustomerPaymentCorrectionHistory } from './customer-payment-correction-rpc-handler.js';
 /** D-149 P3 § A.3 — `reception.*` rpc handler slice.
  *
  *  Reserved admin-only rpc methods over Reception's local stores.
@@ -287,10 +292,25 @@ import {
 // ────────────────────────────────────────────────────────────────
 
 export interface ReceptionRpcDeps {
+  readonly getCustomerAccountContactDefaultsService?: () => import('./customer-account-contact-defaults-service.js').CustomerAccountContactDefaultsService;
+  readonly getCustomerReceivablesAgingService?: () => import('./customer-receivables-aging-service.js').CustomerReceivablesAgingService;
+  readonly getCustomerJobTimelineService?: () => import('./customer-job-timeline-service.js').CustomerJobTimelineService;
+  readonly getCustomerJobCloseoutService?: () => import('./customer-job-closeout-service.js').CustomerJobCloseoutService;
   readonly getApprovalWorkflowService?: () => import('./approval-workflow-service.js').ApprovalWorkflowService;
   readonly getQuoteCompletionService?: () => import('./quote-completion-service.js').QuoteCompletionService;
   readonly getQuoteSignoffService?: () => import('./quote-signoff-service.js').QuoteSignoffService;
   readonly getQuoteSignoffReminderService?: () => import('./quote-signoff-reminder-service.js').QuoteSignoffReminderService;
+  readonly getCustomerJobPaymentStatementService?: () => import('./customer-job-payment-statement-service.js').CustomerJobPaymentStatementService;
+  readonly getCustomerAccountStatementService?: () => import('./customer-account-statement-service.js').CustomerAccountStatementService;
+  readonly getCustomerAccountPaymentService?: () => import('./customer-account-payment-service.js').CustomerAccountPaymentService;
+  readonly getCustomerAccountPaymentCorrectionService?: () => import('./customer-account-payment-correction-service.js').CustomerAccountPaymentCorrectionService;
+  readonly getCustomerRefundService?: () => import('./customer-refund-service.js').CustomerRefundService;
+  readonly getCustomerInvoiceCreditService?: () => import('./customer-invoice-credit-service.js').CustomerInvoiceCreditService;
+  readonly getCustomerPaymentCorrectionService?: () => import('./customer-payment-correction-service.js').CustomerPaymentCorrectionService;
+  readonly getCustomerPaymentReceiptService?: () => import('./customer-payment-receipt-service.js').CustomerPaymentReceiptService;
+  readonly getQuotePaymentReminderService?: () => import('./quote-payment-reminder-service.js').QuotePaymentReminderService;
+  readonly getCustomerAccountPaymentReminderService?: () => import('./customer-account-payment-reminder-service.js').CustomerAccountPaymentReminderService;
+  readonly getQuoteCompletionReminderService?: () => import('./quote-completion-reminder-service.js').QuoteCompletionReminderService;
   readonly getStore: () => PublicEndpointRegistryStore;
   readonly getPreviewStore: () => PreviewHashStore;
   /** Source the active reception pepper. Throws when the FileVault is
@@ -439,13 +459,62 @@ type ReceptionMethods =
   | 'reception.signoff.prepare_addition'
   | 'reception.signoff.publish'
   | 'reception.signoff.list'
+  | 'reception.jobs.receivables'
+  | 'reception.jobs.timeline'
+  | 'reception.jobs.closeout.get'
+  | 'reception.jobs.archive'
+  | 'reception.jobs.restore'
   | 'reception.jobs.list'
+  | 'reception.accounts.list'
+  | 'reception.accounts.get'
+  | 'reception.accounts.save'
+  | 'reception.accounts.contact.get'
+  | 'reception.accounts.contact.set'
+  | 'reception.accounts.statement'
+  | 'reception.accounts.statement.draft'
+  | 'reception.accounts.payment.reminders.get'
+  | 'reception.accounts.payment.reminders.set'
+  | 'reception.accounts.payment.reminders.list'
+  | 'reception.accounts.payment.reminders.draft'
+  | 'reception.accounts.payment.correction.prepare'
+  | 'reception.accounts.payment.correction.history'
+  | 'reception.accounts.payment.prepare'
+  | 'reception.accounts.payment.history'
+  | 'reception.accounts.payment.receipt'
+  | 'reception.accounts.payment.receipt.draft'
+  | 'reception.jobs.payment.statement'
+  | 'reception.jobs.payment.statement.draft'
+
   | 'reception.signoff.cancel'
   | 'reception.signoff.receipt'
   | 'reception.signoff.completion.prepare'
   | 'reception.signoff.completion.publish'
   | 'reception.signoff.completion.list'
   | 'reception.signoff.completion.cancel'
+  | 'reception.signoff.payment.history'
+  | 'reception.signoff.payment.receipt'
+  | 'reception.signoff.payment.receipt.draft'
+  | 'reception.signoff.invoice.credit.correction.prepare'
+  | 'reception.signoff.invoice.credit.correction.history'
+  | 'reception.signoff.refund.correction.prepare'
+  | 'reception.signoff.refund.correction.history'
+  | 'reception.signoff.refund.prepare'
+  | 'reception.signoff.refund.history'
+  | 'reception.signoff.refund.copy'
+  | 'reception.signoff.refund.receipt.draft'
+  | 'reception.signoff.invoice.credit.prepare'
+  | 'reception.signoff.invoice.credit.history'
+  | 'reception.signoff.invoice.credit.copy'
+  | 'reception.signoff.payment.correction.prepare'
+  | 'reception.signoff.payment.correction.history'
+  | 'reception.signoff.payment.reminders.get'
+  | 'reception.signoff.completion.reminders.get'
+  | 'reception.signoff.payment.reminders.set'
+  | 'reception.signoff.completion.reminders.set'
+  | 'reception.signoff.payment.reminders.list'
+  | 'reception.signoff.completion.reminders.list'
+  | 'reception.signoff.payment.reminders.draft'
+  | 'reception.signoff.completion.reminders.draft'
   | 'reception.signoff.reminders.get'
   | 'reception.signoff.reminders.set'
   | 'reception.signoff.reminders.list'
@@ -4364,13 +4433,62 @@ export const makeReceptionHandlers = (
       'reception.signoff.prepare_addition',
       'reception.signoff.publish',
       'reception.signoff.list',
+      'reception.jobs.receivables',
+      'reception.jobs.timeline',
+      'reception.jobs.closeout.get',
+      'reception.jobs.archive',
+      'reception.jobs.restore',
       'reception.jobs.list',
+      'reception.accounts.list',
+      'reception.accounts.get',
+      'reception.accounts.save',
+      'reception.accounts.contact.get',
+      'reception.accounts.contact.set',
+      'reception.accounts.statement',
+      'reception.accounts.statement.draft',
+      'reception.accounts.payment.reminders.get',
+      'reception.accounts.payment.reminders.set',
+      'reception.accounts.payment.reminders.list',
+      'reception.accounts.payment.reminders.draft',
+      'reception.accounts.payment.correction.prepare',
+      'reception.accounts.payment.correction.history',
+      'reception.accounts.payment.prepare',
+      'reception.accounts.payment.history',
+      'reception.accounts.payment.receipt',
+      'reception.accounts.payment.receipt.draft',
+      'reception.jobs.payment.statement',
+      'reception.jobs.payment.statement.draft',
+
       'reception.signoff.cancel',
       'reception.signoff.receipt',
       'reception.signoff.completion.prepare',
       'reception.signoff.completion.publish',
       'reception.signoff.completion.list',
       'reception.signoff.completion.cancel',
+      'reception.signoff.payment.history',
+      'reception.signoff.payment.receipt',
+      'reception.signoff.payment.receipt.draft',
+      'reception.signoff.invoice.credit.prepare',
+      'reception.signoff.invoice.credit.history',
+      'reception.signoff.invoice.credit.copy',
+      'reception.signoff.invoice.credit.correction.prepare',
+      'reception.signoff.invoice.credit.correction.history',
+      'reception.signoff.refund.correction.prepare',
+      'reception.signoff.refund.correction.history',
+      'reception.signoff.refund.prepare',
+      'reception.signoff.refund.history',
+      'reception.signoff.refund.copy',
+      'reception.signoff.refund.receipt.draft',
+      'reception.signoff.payment.correction.prepare',
+      'reception.signoff.payment.correction.history',
+      'reception.signoff.payment.reminders.get',
+      'reception.signoff.completion.reminders.get',
+      'reception.signoff.payment.reminders.set',
+      'reception.signoff.completion.reminders.set',
+      'reception.signoff.payment.reminders.list',
+      'reception.signoff.completion.reminders.list',
+      'reception.signoff.payment.reminders.draft',
+      'reception.signoff.completion.reminders.draft',
       'reception.signoff.reminders.get',
       'reception.signoff.reminders.set',
       'reception.signoff.reminders.list',
@@ -4399,9 +4517,137 @@ export const makeReceptionHandlers = (
       'reception.compose.propose',
     ],
     handlers: {
+      'reception.jobs.receivables': async (args,client) => {
+        const { handleCustomerReceivablesAging } = await import('./customer-receivables-aging-rpc-handler.js');return handleCustomerReceivablesAging(deps,args,client);
+      },
+      'reception.jobs.timeline': async (args,client) => {
+        const { handleCustomerJobTimeline } = await import('./customer-job-timeline-rpc-handler.js');return handleCustomerJobTimeline(deps,args,client);
+      },
+      'reception.jobs.closeout.get': async (args,client) => {
+        const { handleCustomerJobCloseoutGet } = await import('./customer-job-closeout-rpc-handler.js');return handleCustomerJobCloseoutGet(deps,args,client);
+      },
+      'reception.jobs.archive': async (args,client) => {
+        const { handleCustomerJobArchive } = await import('./customer-job-closeout-rpc-handler.js');return handleCustomerJobArchive(deps,args,client);
+      },
+      'reception.jobs.restore': async (args,client) => {
+        const { handleCustomerJobRestore } = await import('./customer-job-closeout-rpc-handler.js');return handleCustomerJobRestore(deps,args,client);
+      },
       'reception.jobs.list': async (args, client) => {
         const { handleCustomerJobsList } = await import('./customer-jobs-rpc-handler.js');
         return handleCustomerJobsList(deps, args, client);
+      },
+      'reception.accounts.list': async (args,client) => {
+        const { handleCustomerAccountsList } = await import('./customer-account-rpc-handler.js');
+        return handleCustomerAccountsList(deps,args,client);
+      },
+      'reception.accounts.contact.get': async (args,client) => {
+        const { handleCustomerAccountContactDefaultsGet } = await import('./customer-account-contact-defaults-rpc-handler.js');return handleCustomerAccountContactDefaultsGet(deps,args,client);
+      },
+      'reception.accounts.contact.set': async (args,client) => {
+        const { handleCustomerAccountContactDefaultsSet } = await import('./customer-account-contact-defaults-rpc-handler.js');return handleCustomerAccountContactDefaultsSet(deps,args,client);
+      },
+      'reception.accounts.get': async (args,client) => {
+        const { handleCustomerAccountGet } = await import('./customer-account-rpc-handler.js');
+        return handleCustomerAccountGet(deps,args,client);
+      },
+      'reception.accounts.save': async (args,client) => {
+        const { handleCustomerAccountSave } = await import('./customer-account-rpc-handler.js');
+        return handleCustomerAccountSave(deps,args,client);
+      },
+      'reception.accounts.statement': async (args,client) => {
+        const { handleCustomerAccountStatement } = await import('./customer-account-rpc-handler.js');
+        return handleCustomerAccountStatement(deps,args,client);
+      },
+      'reception.accounts.payment.reminders.get': async (args,client) => {
+        const { handleAccountPaymentReminderGet } = await import('./customer-account-payment-reminder-rpc-handler.js');
+        return handleAccountPaymentReminderGet(deps,args,client);
+      },
+      'reception.accounts.payment.reminders.set': async (args,client) => {
+        const { handleAccountPaymentReminderSet } = await import('./customer-account-payment-reminder-rpc-handler.js');
+        return handleAccountPaymentReminderSet(deps,args,client);
+      },
+      'reception.accounts.payment.reminders.list': async (args,client) => {
+        const { handleAccountPaymentReminderList } = await import('./customer-account-payment-reminder-rpc-handler.js');
+        return handleAccountPaymentReminderList(deps,args,client);
+      },
+      'reception.accounts.payment.reminders.draft': async (args,client) => {
+        const { handleAccountPaymentReminderDraft } = await import('./customer-account-payment-reminder-rpc-handler.js');
+        return handleAccountPaymentReminderDraft(deps,args,client);
+      },
+      'reception.accounts.statement.draft': async (args,client) => {
+        const { handleCustomerAccountStatementDraft } = await import('./customer-account-rpc-handler.js');
+        return handleCustomerAccountStatementDraft(deps,args,client);
+      },
+      'reception.jobs.payment.statement': async (args,client) => {
+        const { handleCustomerJobPaymentStatement } = await import('./customer-job-payment-statement-rpc-handler.js');
+        return handleCustomerJobPaymentStatement(deps,args,client);
+      },
+      'reception.jobs.payment.statement.draft': async (args,client) => {
+        const { handleCustomerJobPaymentStatementDraft } = await import('./customer-job-payment-statement-rpc-handler.js');
+        return handleCustomerJobPaymentStatementDraft(deps,args,client);
+      },
+      'reception.signoff.payment.history': async (args,client) => {
+        const { handleCustomerPaymentHistory } = await import('./customer-payment-receipt-rpc-handler.js');
+        return handleCustomerPaymentHistory(deps,args,client);
+      },
+      'reception.signoff.payment.receipt': async (args,client) => {
+        const { handleCustomerPaymentReceipt } = await import('./customer-payment-receipt-rpc-handler.js');
+        return handleCustomerPaymentReceipt(deps,args,client);
+      },
+      'reception.signoff.payment.receipt.draft': async (args,client) => {
+        const { handleCustomerPaymentReceiptDraft } = await import('./customer-payment-receipt-rpc-handler.js');
+        return handleCustomerPaymentReceiptDraft(deps,args,client);
+      },
+      'reception.signoff.invoice.credit.correction.prepare': (args,client) => handleCustomerCreditCorrectionPrepare(deps,args,client),
+      'reception.signoff.invoice.credit.correction.history': (args,client) => handleCustomerCreditCorrectionHistory(deps,args,client),
+      'reception.signoff.refund.correction.prepare': (args,client) => handleCustomerRefundCorrectionPrepare(deps,args,client),
+      'reception.signoff.refund.correction.history': (args,client) => handleCustomerRefundCorrectionHistory(deps,args,client),
+      'reception.signoff.refund.prepare': (args,client) => handleCustomerRefundPrepare(deps,args,client),
+      'reception.signoff.refund.history': (args,client) => handleCustomerRefundHistory(deps,args,client),
+      'reception.signoff.refund.copy': (args,client) => handleCustomerRefundCopy(deps,args,client),
+      'reception.signoff.refund.receipt.draft': (args,client) => handleCustomerRefundDraft(deps,args,client),
+      'reception.signoff.invoice.credit.prepare': (args,client) => handleCustomerInvoiceCreditPrepare(deps,args,client),
+      'reception.signoff.invoice.credit.history': (args,client) => handleCustomerInvoiceCreditHistory(deps,args,client),
+      'reception.signoff.invoice.credit.copy': (args,client) => handleCustomerInvoiceCreditCopy(deps,args,client),
+      'reception.accounts.payment.correction.prepare': (args,client) => handleCustomerAccountPaymentCorrectionPrepare(deps,args,client),
+      'reception.accounts.payment.correction.history': (args,client) => handleCustomerAccountPaymentCorrectionHistory(deps,args,client),
+      'reception.accounts.payment.prepare': (args,client) => handleCustomerAccountPaymentPrepare(deps,args,client),
+      'reception.accounts.payment.history': (args,client) => handleCustomerAccountPaymentHistory(deps,args,client),
+      'reception.accounts.payment.receipt': (args,client) => handleCustomerAccountPaymentReceipt(deps,args,client),
+      'reception.accounts.payment.receipt.draft': (args,client) => handleCustomerAccountPaymentReceiptDraft(deps,args,client),
+      'reception.signoff.payment.correction.prepare': (args,client) => handleCustomerPaymentCorrectionPrepare(deps,args,client),
+      'reception.signoff.payment.correction.history': (args,client) => handleCustomerPaymentCorrectionHistory(deps,args,client),
+      'reception.signoff.payment.reminders.get': async (args, client) => {
+        const { handlePaymentReminderGet } = await import('./quote-payment-reminder-rpc-handler.js');
+        return handlePaymentReminderGet(deps, args, client);
+      },
+      'reception.signoff.payment.reminders.set': async (args, client) => {
+        const { handlePaymentReminderSet } = await import('./quote-payment-reminder-rpc-handler.js');
+        return handlePaymentReminderSet(deps, args, client);
+      },
+      'reception.signoff.payment.reminders.list': async (args, client) => {
+        const { handlePaymentReminderList } = await import('./quote-payment-reminder-rpc-handler.js');
+        return handlePaymentReminderList(deps, args, client);
+      },
+      'reception.signoff.payment.reminders.draft': async (args, client) => {
+        const { handlePaymentReminderDraft } = await import('./quote-payment-reminder-rpc-handler.js');
+        return handlePaymentReminderDraft(deps, args, client);
+      },
+      'reception.signoff.completion.reminders.get': async (args, client) => {
+        const { handleCompletionReminderGet } = await import('./quote-completion-reminder-rpc-handler.js');
+        return handleCompletionReminderGet(deps, args, client);
+      },
+      'reception.signoff.completion.reminders.set': async (args, client) => {
+        const { handleCompletionReminderSet } = await import('./quote-completion-reminder-rpc-handler.js');
+        return handleCompletionReminderSet(deps, args, client);
+      },
+      'reception.signoff.completion.reminders.list': async (args, client) => {
+        const { handleCompletionReminderList } = await import('./quote-completion-reminder-rpc-handler.js');
+        return handleCompletionReminderList(deps, args, client);
+      },
+      'reception.signoff.completion.reminders.draft': async (args, client) => {
+        const { handleCompletionReminderDraft } = await import('./quote-completion-reminder-rpc-handler.js');
+        return handleCompletionReminderDraft(deps, args, client);
       },
       'reception.signoff.reminders.get': async (args, client) => {
         const { handleSignoffReminderGet } = await import('./quote-signoff-reminder-rpc-handler.js');

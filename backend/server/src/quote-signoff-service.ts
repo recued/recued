@@ -1,3 +1,8 @@
+import { isCustomerJobArchived,jobArchiveTableExists } from './storage/customer-job-archive-store.js';
+import { ensureCustomerJobReadIndex,customerJobRootSql,customerJobOriginalSql,customerJobParentSql,readCustomerJobCandidates } from './storage/customer-job-read-index.js';
+import { readCustomerRefundLedger } from './customer-refund-ledger.js';
+import { customerRefundBalanceFields } from '@recued/contracts';
+import type { CustomerInvoiceCreditEntry } from '@recued/contracts';
 /** Core adapter joining the explicitly supported Quote Pipeline and Invoice
  * Book contracts. Packs do not read each other's private Records here.
  * Release rechecks installed schemas and the frozen quote or amendment base
@@ -30,6 +35,10 @@ import {
   type RecordsExecutionBinding,
   type RecordsFriendlyRecord,
   type Task,
+  type CustomerPaymentHistory,
+  type CustomerPaymentEntry,
+  type CustomerJobPaymentStatement,
+  type CustomerJobPaymentStatementInvoice,
 } from '@recued/contracts';
 import { recordsCatalogSlug } from '@recued/ingredient-authoring';
 import type { RecordsStore } from './records/store.js';
@@ -45,7 +54,7 @@ const INVOICES = { publisher: 'recued-core', pack_slug: 'invoice-book' };
  *  26.10.12 cut). An owner who has not updated the pack yet keeps working. */
 export const QUOTE_SIGNOFF_PACK_VERSIONS: Readonly<Record<string, readonly number[]>> = {
   'quote-pipeline': [2],
-  'invoice-book': [4, 5],
+  'invoice-book': [4, 5, 6, 7, 8, 9],
 };
 const TABLE = 'quote_signoffs';
 const DAY = 86_400_000;
@@ -206,6 +215,9 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
   deps.db.exec('CREATE INDEX IF NOT EXISTS quote_signoffs_state_created ON quote_signoffs(state, created_at DESC, signoff_id)');
   deps.db.function('quote_signoff_search_text', { deterministic: true }, (value: unknown) =>
     typeof value === 'string' ? searchText(value) : '');
+  deps.db.function('customer_job_search_text', { deterministic: true }, (value: unknown) =>
+    typeof value === 'string' ? value.toLowerCase() : '');
+  ensureCustomerJobReadIndex(deps.db);
 
   // Track only tasks used by this adapter. A content hash / wall-clock cannot
   // detect an edit followed by restoration at the same timestamp. The durable
@@ -237,6 +249,16 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
   };
   const quoteOf = (row: Row): RecordsFriendlyRecord => JSON.parse(row.quote_json) as RecordsFriendlyRecord;
   const planOf = (row: Row): Plan => JSON.parse(row.plan_json) as Plan;
+  /** Damaged amendment terms can move a request out of the root index. Check
+   * the quote's saved digests before trusting a complete scoped job or balance.
+   * Stream the indexed quote history; never export a silently smaller job. */
+  const assertQuoteJobRouting = (quoteId: string,code = 'customer_jobs_unavailable'): void => {
+    for (const row of deps.db.prepare(`SELECT * FROM ${TABLE} WHERE quote_id=?`).iterate(quoteId) as IterableIterator<Row>) {
+      let valid = false;
+      try { valid = row.plan_hash === hash({ quote: quoteOf(row),plan: planOf(row) }); } catch { /* Unreadable terms cannot establish job membership. */ }
+      if (!valid) throw new QuoteSignoffError(code,'A saved request for this quote has damaged terms. Review its job history in Records.');
+    }
+  };
   const binding = (owner: typeof QUOTES, action: string, entity: string): RecordsExecutionBinding => {
     const ns = deps.records.getNamespace(owner);
     // These are versioned core adapters, not an untyped join of arbitrary packs.
@@ -258,6 +280,83 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
     }
     return found;
   };
+  deps.db.exec("CREATE INDEX IF NOT EXISTS core_record_outbox_credit_identity_idx ON core_record_outbox(publisher,pack_slug,pk) WHERE kind='credit_note'");
+  deps.db.exec("CREATE INDEX IF NOT EXISTS core_record_outbox_refund_identity_idx ON core_record_outbox(publisher,pack_slug,pk) WHERE kind='refund';CREATE INDEX IF NOT EXISTS core_record_outbox_paid_credit_identity_idx ON core_record_outbox(publisher,pack_slug,pk) WHERE kind='paid_credit'");
+  deps.db.exec("CREATE INDEX IF NOT EXISTS core_record_outbox_credit_reversal_identity_idx ON core_record_outbox(publisher,pack_slug,pk) WHERE kind='credit_reversal'");
+  const invoiceCredits = (invoice: RecordsFriendlyRecord) => {
+    const paidBinding = binding(INVOICES,'get','invoice');
+    const credited = recordedMoney(invoice.amount_credited ?? '0',String(invoice.total));
+    const entries: CustomerInvoiceCreditEntry[] = [];
+    const evidence: Array<{ record: RecordsFriendlyRecord;changes: unknown }> = [];
+    if (paidBinding.pack_version < 6) {
+      if (units(credited) !== 0n) throw new QuoteSignoffError('customer_credit_unavailable','Update Invoice Book before reading invoice credits.');
+      return { credited,entries,evidence,refunds: undefined };
+    }
+    const get = binding(INVOICES,'get','credit_note');const search = binding(INVOICES,'search','credit_note');
+    let cursor: string | undefined;let sum = 0n;
+    const lifecycle = deps.db.prepare("SELECT count(*) AS n,max(event_id) AS event_id FROM core_record_outbox WHERE publisher=? AND pack_slug=? AND kind=? AND pk=?");
+    do {
+      const page = deps.records.ownerSearch({ owner: INVOICES,entity: 'credit_note',filters: { invoice_ref: `invoice/${invoice.id}` },limit: 200,...(cursor ? { cursor } : {}) });
+      for (const record of page.records) {
+        const amount = recordedMoney(record.amount,String(invoice.total));
+        if (units(amount) <= 0n || record.currency !== invoice.currency || record.invoice_ref !== `invoice/${invoice.id}`
+          || typeof record.credit_ref !== 'string' || !record.credit_ref.trim() || record.credit_ref.length > 128 || /[\u0000-\u001f]/.test(record.credit_ref)
+          || typeof record.reason !== 'string' || !record.reason.trim() || record.reason.length > 1000 || /[\u0000\r]/.test(record.reason)) {
+          throw new QuoteSignoffError('customer_credit_unavailable','An invoice credit is incomplete. Review its record.');
+        }
+        if (record.replaces_credit_ref != null && (typeof record.replaces_credit_ref !== 'string' || !record.replaces_credit_ref.startsWith('credit_note/'))) {
+          throw new QuoteSignoffError('customer_credit_unavailable','A replacement credit link is invalid. Review its record.');
+        }
+        entries.push({ credit_id: record.id,credit_ref: record.credit_ref,amount,issued_on: date(record.issued_on,'Credit date'),reason: record.reason,
+          ...(typeof record.replaces_credit_ref === 'string' ? { replaces_credit_id: record.replaces_credit_ref.slice('credit_note/'.length) } : {}) });
+        sum += units(amount);
+        evidence.push({ record,changes: lifecycle.get(INVOICES.publisher,INVOICES.pack_slug,'credit_note',record.id) });
+      }
+      cursor = page.next_cursor;
+      if (entries.length > 1000 || entries.length === 1000 && cursor) throw new QuoteSignoffError('customer_credit_unavailable','This invoice has over 1,000 credits. Review its records.');
+    } while (cursor);
+    let reversalBindings;
+    if (paidBinding.pack_version >= 7) {
+      reversalBindings = { get: binding(INVOICES,'get','credit_reversal'),search: binding(INVOICES,'search','credit_reversal') };
+      const byId = new Map(entries.map(entry => [entry.credit_id,entry]));let count = 0;
+      const invalidReversal = (): never => { throw new QuoteSignoffError('customer_credit_unavailable','Credit reversals do not match their original entries. Review the invoice in Records.'); };
+      do {
+        const page = deps.records.ownerSearch({ owner: INVOICES,entity: 'credit_reversal',filters: { invoice_ref: `invoice/${invoice.id}` },limit: 200,...(cursor ? { cursor } : {}) });
+        for (const record of page.records) {
+          if (++count > 1000) invalidReversal();
+          const original = typeof record.credit_ref === 'string' && record.credit_ref.startsWith('credit_note/') ? byId.get(record.credit_ref.slice('credit_note/'.length)) : undefined;
+          const amount = recordedMoney(record.amount,String(invoice.total));
+          if (!original) return invalidReversal();
+          if (original.reversal || original.amount !== amount || record.currency !== invoice.currency || record.invoice_ref !== `invoice/${invoice.id}`
+            || typeof record.reason !== 'string' || !record.reason.trim() || record.reason.length > 1000 || /[\u0000\r]/.test(record.reason)
+            || record.reversal_ref !== 'CRV-'+record.id) invalidReversal();
+          let replacement: CustomerInvoiceCreditEntry | undefined;
+          if (record.replacement_ref != null) {
+            replacement = typeof record.replacement_ref === 'string' && record.replacement_ref.startsWith('credit_note/') ? byId.get(record.replacement_ref.slice('credit_note/'.length)) : undefined;
+            if (!replacement || replacement.credit_id === original.credit_id || replacement.replaces_credit_id !== original.credit_id) invalidReversal();
+          }
+          original.reversal = { correction_id: record.id,reason: record.reason as string,reversed_on: date(record.reversed_on,'Reversal date'),
+            ...(replacement ? { replacement_credit_id: replacement.credit_id } : {}) };
+          sum -= units(amount);evidence.push({ record,changes: lifecycle.get(INVOICES.publisher,INVOICES.pack_slug,'credit_reversal',record.id) });
+        }
+        cursor = page.next_cursor;
+        if (count === 1000 && cursor) invalidReversal();
+      } while (cursor);
+      for (const entry of entries) {
+        if (entry.replaces_credit_id && byId.get(entry.replaces_credit_id)?.reversal?.replacement_credit_id !== entry.credit_id) invalidReversal();
+        const visited = new Set<string>();let current: CustomerInvoiceCreditEntry | undefined = entry;
+        while (current?.replaces_credit_id) {
+          if (visited.has(current.credit_id)) invalidReversal();visited.add(current.credit_id);current = byId.get(current.replaces_credit_id);
+        }
+      }
+    } else if (entries.some(entry => entry.replaces_credit_id)) {
+      throw new QuoteSignoffError('customer_credit_unavailable','Update Invoice Book before reading replacement credits.');
+    }
+    if (sum !== units(credited)) throw new QuoteSignoffError('customer_credit_unavailable','Credit entries do not match the invoice credit total. Review its records.');
+    entries.sort((a,b) => a.issued_on < b.issued_on ? 1 : a.issued_on > b.issued_on ? -1 : a.credit_id < b.credit_id ? -1 : 1);
+    const refunds = readCustomerRefundLedger({ db: deps.db,records: deps.records,binding: (action,entity) => binding(INVOICES,action,entity) },invoice);
+    return { credited,entries,evidence,get,search,refunds,...(reversalBindings ? { reversalBindings } : {}) };
+  };
   const currentQuote = (id: string): RecordsFriendlyRecord => {
     binding(QUOTES, 'get', 'quote');
     const quote = deps.records.ownerGet(QUOTES, 'quote', id);
@@ -271,13 +370,15 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
   const additionBase = (parentId: string) => {
     const parent = load(parentId); const parentPlan = planOf(parent);
     const root = parentPlan.addition ? load(parentPlan.addition.root_signoff_id) : parent;
+    if (isCustomerJobArchived(deps.db,root.signoff_id)) throw new QuoteSignoffError('customer_job_archived','Restore the archived customer job before adding work.');
     const rootPlan = planOf(root); const acceptedQuote = quoteOf(root);
     if (root.state !== 'released' || parent.state !== 'released' || rootPlan.addition || root.quote_id !== parent.quote_id) {
       throw new QuoteSignoffError('quote_signoff_not_released', 'Choose a released agreement before adding work.');
     }
-    const additions = deps.db.prepare(`SELECT * FROM ${TABLE} WHERE state='released'
-      AND json_extract(plan_json,'$.addition.root_signoff_id')=?
-      ORDER BY json_extract(plan_json,'$.addition.revision')`).all(root.signoff_id) as Row[];
+    assertQuoteJobRouting(root.quote_id,'quote_signoff_base_unavailable');
+    const additions = deps.db.prepare(`SELECT * FROM ${TABLE} WHERE ${customerJobRootSql()}=?
+      AND state='released' AND signoff_id<>?
+      ORDER BY json_extract(plan_json,'$.addition.revision')`).all(root.signoff_id,root.signoff_id) as Row[];
     let tip = root.signoff_id; let amount = units(rootPlan.amount); let scope = rootPlan.scope;
     for (const [index, row] of additions.entries()) {
       const plan = planOf(row); const addition = plan.addition!;
@@ -390,16 +491,20 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
           // A carried balance still needs follow-up even when its task is done.
           const paid = recordedMoney(invoice.amount_paid, plan.amount);
           const outstanding = recordedMoney(invoice.outstanding, plan.amount);
+          const credits = invoiceCredits(invoice);
           const due = date(invoice.due_on, 'Invoice due date');
           const status = invoice.status;
-          if (units(paid) + units(outstanding) === units(plan.amount)
+          if (units(paid) + units(credits.credited) + units(outstanding) === units(plan.amount)
             && (status === 'carried_forward' || !invoice.carried_to)
             && (status === 'open' && units(outstanding) > 0n
-              || status === 'settled' && units(outstanding) === 0n
+              || status === 'settled' && units(outstanding) === 0n && units(credits.credited) === 0n
+              || status === 'credited' && units(outstanding) === 0n && units(credits.credited) > 0n
               || status === 'carried_forward' && units(outstanding) > 0n
                 && typeof invoice.carried_to === 'string' && invoice.carried_to.trim())) {
             result.invoice = { availability: 'current', status, amount_paid: paid, outstanding,
+              ...(credits.entries.length ? { amount_credited: credits.credited } : {}),
               due_on: due, overdue: status === 'open' && due < today(),
+              ...(credits.refunds?.balance ?? {}),
               ...(status === 'carried_forward' ? { carried_to: invoice.carried_to as string } : {}) };
           }
         }
@@ -413,10 +518,10 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
       result.follow_up = followUp(row);
       result.can_request_completion = result.follow_up.task.availability === 'current'
         && !deps.db.prepare(`SELECT 1 FROM ${TABLE} WHERE state='released'
-          AND json_extract(plan_json,'$.addition.parent_signoff_id')=? LIMIT 1`).get(row.signoff_id);
+          AND ${customerJobParentSql()}=? LIMIT 1`).get(row.signoff_id);
       result.can_add_work = result.follow_up.task.availability === 'current' && !result.follow_up.task.done
         && !deps.db.prepare(`SELECT 1 FROM ${TABLE} WHERE quote_id=? AND state='released'
-          AND json_extract(plan_json,'$.addition.parent_signoff_id')=? LIMIT 1`).get(row.quote_id, row.signoff_id);
+          AND ${customerJobParentSql()}=? LIMIT 1`).get(row.quote_id, row.signoff_id);
     }
     return result;
   };
@@ -541,6 +646,81 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
       })();
     };
 
+  /** Freeze each invoice and its complete linked ledger in one read transaction. */
+  const paymentHistorySnapshot = (id: string): CustomerPaymentHistory => {
+    return deps.db.transaction(() => {
+      const row = load(id);
+      if (row.state !== 'released') throw new QuoteSignoffError('customer_payment_not_released', 'Payment history needs a released customer invoice.');
+      const saved = receipt(id, () => null).receipt.requests.find(entry => entry.signoff_id === id)!;
+      const signoff = ownerSummary(row);
+      const result: CustomerPaymentHistory = {
+        signoff_id: id,invoice_id: `quote_signoff_${id}`,invoice_ref: saved.release!.invoice_ref,
+        business_name: saved.business_name,customer: saved.customer,quote_label: saved.quote_label,
+        ...(saved.quote_reference ? { quote_reference: saved.quote_reference } : {}),
+        currency: saved.currency,total: saved.amount,captured_at: deps.now(),
+        invoice: signoff.follow_up?.invoice ?? { availability: 'unavailable' },
+        consistency: 'unavailable',payments: [],snapshot_hash: null,
+      };
+      try {
+        const invoiceBinding = binding(INVOICES,'get','invoice');
+        const getBinding = binding(INVOICES,'get','payment');
+        const searchBinding = binding(INVOICES,'search','payment');
+        const namespace = deps.records.getNamespace(INVOICES);
+        const rows: RecordsFriendlyRecord[] = [];
+        let cursor: string | undefined;
+        do {
+          const page = deps.records.ownerSearch({ owner: INVOICES,entity: 'payment',
+            filters: { invoice_ref: `invoice/${result.invoice_id}` },limit: 200,...(cursor ? { cursor } : {}) });
+          rows.push(...page.records);cursor = page.next_cursor;
+          if (rows.length > 1000 || rows.length === 1000 && cursor) {
+            throw new QuoteSignoffError('customer_payment_limit', 'This invoice has over 1,000 payments. Review its history in Records.');
+          }
+        } while (cursor);
+        const optional = (value: unknown,label: string): string | undefined => {
+          if (value === undefined || value === null || value === '') return;
+          if (typeof value !== 'string' || value.length > 512 || /[\u0000-\u001f]/.test(value)) {
+            throw new QuoteSignoffError('customer_payment_unavailable', `${label} is unavailable. Review the payment in Records.`);
+          }
+          return value;
+        };
+        let sum = 0n;
+        const lifecycle = deps.db.prepare(`SELECT count(*) AS n,max(event_id) AS event_id FROM core_record_outbox
+          WHERE publisher=? AND pack_slug=? AND kind=? AND pk=?`);
+        const evidence = rows.map(record => {
+          const amount = recordedMoney(record.amount, result.total);
+          if (units(amount) <= 0n || record.invoice_ref !== `invoice/${result.invoice_id}`) {
+            throw new QuoteSignoffError('customer_payment_unavailable','A payment amount or invoice link is unavailable. Review Records.');
+          }
+          sum += units(amount);
+          const method = optional(record.method,'Payment method');const reference = optional(record.reference,'Payment reference');
+          const entry: CustomerPaymentEntry = { payment_id: record.id,amount,received_on: date(record.received_on,'Payment date'),
+            ...(method ? { method } : {}),...(reference ? { reference } : {}) };
+          return { entry,record,changes: lifecycle.get(INVOICES.publisher,INVOICES.pack_slug,'payment',record.id) };
+        }).sort((a,b) => a.entry.received_on < b.entry.received_on ? 1 : a.entry.received_on > b.entry.received_on ? -1
+          : a.entry.payment_id < b.entry.payment_id ? -1 : a.entry.payment_id > b.entry.payment_id ? 1 : 0);
+        result.payments = evidence.map(item => item.entry);
+        const creditEvidence = invoiceCredits(deps.records.ownerGet(INVOICES,'invoice',result.invoice_id)!);
+        if (creditEvidence.entries.length) result.credit_notes = creditEvidence.entries;
+        if (creditEvidence.refunds?.paid_credits.length) { result.paid_credits = creditEvidence.refunds.paid_credits;result.refunds = creditEvidence.refunds.refunds; }
+        if (result.invoice.availability !== 'current' || result.invoice.status === 'carried_forward') {
+          result.issue = 'The original invoice is missing, changed or unavailable. Review it in Records before copying a receipt.';
+        } else if (sum !== units(result.invoice.amount_paid)) {
+          result.consistency = 'mismatch';
+          result.issue = 'Payment entries do not match the invoice’s recorded paid amount. Review the payment posting in Records before copying a receipt.';
+        } else {
+          result.consistency = 'matched';
+          result.snapshot_hash = hash({ id,terms: saved,invoice: deps.records.ownerGet(INVOICES,'invoice',result.invoice_id),
+            invoiceChanges: lifecycle.get(INVOICES.publisher,INVOICES.pack_slug,'invoice',result.invoice_id),
+            namespace: namespace?.activation_generation,invoiceBinding,getBinding,searchBinding,evidence,creditEvidence });
+        }
+      } catch (error) {
+        if (error instanceof QuoteSignoffError && error.code === 'customer_payment_limit') throw error;
+        result.payments = [];result.consistency = 'unavailable';result.snapshot_hash = null;
+        result.issue = 'The complete payment history is unavailable. Review its records and installed Invoice Book before copying a receipt.';
+      }
+      return result;
+    })();
+  };
   return {
     prepare(input: QuoteSignoffPrepareInput): QuoteSignoffSummary {
       const quoteId = text(input.quote_id, 'Quote', 512);
@@ -618,21 +798,196 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
           endpoint_id: null, responded_at: null, released_at: null, intent_id: null };
         freezeCustomerPreview(row);
         deps.db.prepare(`UPDATE ${TABLE} SET state='superseded' WHERE state IN ('draft','publishing','waiting','accepted')
-          AND json_extract(plan_json,'$.addition.root_signoff_id')=?`).run(base.root.signoff_id);
+          AND ${customerJobRootSql()}=?`).run(base.root.signoff_id);
         deps.db.prepare(`INSERT INTO ${TABLE} (signoff_id,quote_id,quote_json,plan_json,plan_hash,state,created_at,expires_at)
           VALUES (?,?,?,?,?,'draft',?,?)`).run(row.signoff_id, row.quote_id, row.quote_json, row.plan_json, row.plan_hash, row.created_at, row.expires_at);
         return summary(row);
       }).immediate();
     },
     get: (id: string): QuoteSignoffSummary => summary(load(id)),
+    paymentHistorySnapshot,
+    /** Exact current ledger and installed bindings for an account payment allocation. */
+    paymentPostingSnapshot(id: string) {
+      return deps.db.transaction(() => {
+        const history = paymentHistorySnapshot(id);
+        if (history.consistency !== 'matched' || !history.snapshot_hash || history.invoice.availability !== 'current'
+          || history.invoice.status !== 'open' || units(history.invoice.outstanding) <= 0n) {
+          throw new QuoteSignoffError('customer_account_payment_unavailable','Refresh the account and choose an open invoice with a complete payment ledger.');
+        }
+        if (history.payments.length >= 1000) throw new QuoteSignoffError('customer_account_payment_limit','This invoice already has 1,000 payment entries. Review it in Records.');
+        const invoice = deps.records.ownerGet(INVOICES,'invoice',history.invoice_id)!;
+        const invoice_binding = binding(INVOICES,'update','invoice');const payment_binding = binding(INVOICES,'create','payment');
+        return { history,invoice,invoice_binding,payment_binding,write_hash: hash({ invoice_binding,payment_binding }) };
+      })();
+    },
+    /** The full current ledger plus exact installed write bindings for one reviewed correction. */
+    paymentCorrectionSnapshot(id: string,payment_id: string,action: 'correct' | 'void') {
+      return deps.db.transaction(() => {
+        const history = paymentHistorySnapshot(id);
+        if (history.consistency !== 'matched' || !history.snapshot_hash || history.invoice.availability !== 'current'
+          || history.invoice.status === 'carried_forward') {
+          throw new QuoteSignoffError('customer_correction_unavailable',history.issue ?? 'Review payment posting in Records before correcting this invoice.');
+        }
+        const invoice = deps.records.ownerGet(INVOICES,'invoice',history.invoice_id);
+        const payment = deps.records.ownerGet(INVOICES,'payment',payment_id);
+        if (!invoice || !payment || !history.payments.some(entry => entry.payment_id === payment_id)
+          || payment.invoice_ref !== `invoice/${history.invoice_id}`) {
+          throw new QuoteSignoffError('customer_correction_missing','This payment is no longer recorded against the selected invoice.',404);
+        }
+        if (history.paid_credits?.some(credit => credit.payment_id === payment_id)) throw new QuoteSignoffError('customer_refund_linked_payment','This payment has paid invoice credits or refunds. Keep its original entry and review the linked refund history.');
+        const invoice_binding = binding(INVOICES,'update','invoice');
+        const payment_binding = binding(INVOICES,action === 'void' ? 'delete' : 'update','payment');
+        return { history,invoice,payment,invoice_binding,payment_binding,write_hash: hash({ invoice_binding,payment_binding }) };
+      })();
+    },
+    invoiceCreditSnapshot(id: string) {
+      return deps.db.transaction(() => {
+        const history = paymentHistorySnapshot(id);
+        const invoice_binding = binding(INVOICES,'update','invoice');
+        if (invoice_binding.pack_version < 6) throw new QuoteSignoffError('customer_credit_upgrade','Update Invoice Book from Packs before issuing invoice credits.');
+        if (history.consistency !== 'matched' || !history.snapshot_hash || history.invoice.availability !== 'current' || history.invoice.status !== 'open') {
+          throw new QuoteSignoffError('customer_credit_unavailable','Invoice credits need a complete, matching open invoice with an unpaid balance. Review payment and credit posting in Records.');
+        }
+        if ((history.credit_notes?.length ?? 0) >= 1000) {
+          throw new QuoteSignoffError('customer_credit_limit','This invoice already has 1,000 credits. Review its history in Records before adding more.');
+        }
+        const invoice = deps.records.ownerGet(INVOICES,'invoice',history.invoice_id)!;
+        const credit_binding = binding(INVOICES,'create','credit_note');
+        return { history,invoice,invoice_binding,credit_binding,write_hash: hash({ invoice_binding,credit_binding }) };
+      })();
+    },
+    customerRefundCorrectionSnapshot(id: string,refund_id: string) {
+      return deps.db.transaction(() => {
+        if (binding(INVOICES,'get','invoice').pack_version<9) throw new QuoteSignoffError('customer_refund_correction_upgrade','Update Invoice Book from Packs before correcting refunds.');
+        const history=paymentHistorySnapshot(id);const refund_binding=binding(INVOICES,'create','refund');const reversal_binding=binding(INVOICES,'create','refund_reversal');
+        if (history.consistency!=='matched' || !history.snapshot_hash || history.invoice.availability!=='current' || history.invoice.status==='carried_forward') throw new QuoteSignoffError('customer_refund_unavailable','Refund corrections need complete matching invoice, payment, credit and refund records. Review Records.');
+        const refund=history.refunds?.find(r=>r.refund_id===refund_id);
+        if (!refund || refund.reversal) throw new QuoteSignoffError('customer_refund_stale','This refund is missing or already reversed. Refresh payment history.');
+        return { history,refund,refund_binding,reversal_binding,write_hash: hash({ refund_binding,reversal_binding }) };
+      })();
+    },
+    customerRefundSnapshot(id: string) {
+      return deps.db.transaction(() => {
+        const history=paymentHistorySnapshot(id);if (binding(INVOICES,'get','invoice').pack_version<8) throw new QuoteSignoffError('customer_refund_upgrade','Update Invoice Book from Packs before recording refunds.');const credit_binding=binding(INVOICES,'create','paid_credit');const refund_binding=binding(INVOICES,'create','refund');
+        if (credit_binding.pack_version<8) throw new QuoteSignoffError('customer_refund_upgrade','Update Invoice Book from Packs before recording refunds.');
+        if (history.consistency!=='matched' || !history.snapshot_hash || history.invoice.availability!=='current' || history.invoice.status==='carried_forward') throw new QuoteSignoffError('customer_refund_unavailable','Refunds need complete matching invoice, payment and credit records. Review Records.');
+        return { history,credit_binding,refund_binding,write_hash: hash({ credit_binding,refund_binding }) };
+      })();
+    },
+    invoiceCreditCorrectionSnapshot(id: string,credit_id: string) {
+      return deps.db.transaction(() => {
+        const history = paymentHistorySnapshot(id);const invoice_binding = binding(INVOICES,'update','invoice');
+        if (invoice_binding.pack_version < 7) throw new QuoteSignoffError('customer_credit_correction_upgrade','Update Invoice Book from Packs before correcting credits.');
+        if (history.consistency !== 'matched' || !history.snapshot_hash || history.invoice.availability !== 'current' || !['open','credited'].includes(history.invoice.status)) {
+          throw new QuoteSignoffError('customer_credit_correction_unavailable','Credit corrections need a complete, matching invoice. Review its payment and credit records.');
+        }
+        const credit = history.credit_notes?.find(entry => entry.credit_id === credit_id);
+        if (!credit || credit.reversal) throw new QuoteSignoffError('customer_credit_correction_unavailable','This credit is missing or already reversed. Refresh payment history.');
+        const invoice = deps.records.ownerGet(INVOICES,'invoice',history.invoice_id)!;
+        const credit_binding = binding(INVOICES,'create','credit_note');const reversal_binding = binding(INVOICES,'create','credit_reversal');
+        return { history,invoice,credit,invoice_binding,credit_binding,reversal_binding,write_hash: hash({ invoice_binding,credit_binding,reversal_binding }) };
+      })();
+    },
+    /** Freeze the complete released chain and all ledgers in one SQLite snapshot.
+     * Pending offers do not add to money owed; no partial customer copy is returned. */
+    jobPaymentStatementSnapshot(id: string): CustomerJobPaymentStatement {
+      return deps.db.transaction((): CustomerJobPaymentStatement => {
+        const root = load(id);
+        if (planOf(root).addition) throw new QuoteSignoffError('customer_statement_invalid', 'Open the payment statement from the original customer job.', 400);
+        if (root.state !== 'released') throw new QuoteSignoffError('customer_statement_not_released', 'A job payment statement needs a released customer invoice.');
+        const rows = deps.db.prepare(`SELECT * FROM ${TABLE} WHERE ${customerJobRootSql()}=?
+          ORDER BY rowid LIMIT 10001`).all(id) as Row[];
+        if (rows.length > 10000) throw new QuoteSignoffError('customer_statement_limit', 'This job history is too large to export completely. Review its records.');
+        assertQuoteJobRouting(root.quote_id,'customer_statement_unavailable');
+        for (const row of rows) {
+          if (!QUOTE_SIGNOFF_STATES.includes(row.state) || (row.state === 'released') !== (row.released_at !== null)
+            || row.plan_hash !== hash({ quote: quoteOf(row),plan: planOf(row) })) {
+            throw new QuoteSignoffError('customer_statement_unavailable', 'The job agreement history is inconsistent. Review its saved requests before preparing a statement.');
+          }
+        }
+        const released = rows.filter(row => row.state === 'released')
+          .sort((a,b) => (planOf(a).addition?.revision ?? 0) - (planOf(b).addition?.revision ?? 0));
+        if (released.length > 100) throw new QuoteSignoffError('customer_statement_limit', 'This job has over 100 released invoices. Review its history in Records.');
+        const terms = receipt(released.at(-1)!.signoff_id,() => null).receipt.requests;
+        if (terms[0]?.signoff_id !== id || terms.length !== released.length
+          || terms.some((entry,index) => entry.signoff_id !== released[index]?.signoff_id)) {
+          throw new QuoteSignoffError('customer_statement_unavailable', 'The released invoices do not form one complete job agreement. Review its saved requests.');
+        }
+        const histories = released.map(row => paymentHistorySnapshot(row.signoff_id));
+        if (histories.reduce((count,history) => count + history.payments.length,0) > 1000) {
+          throw new QuoteSignoffError('customer_statement_limit', 'This job has over 1,000 recorded payments. Review its complete history in Records.');
+        }
+        if (histories.reduce((count,history) => count + (history.credit_notes?.length ?? 0),0) > 1000) {
+          throw new QuoteSignoffError('customer_statement_limit', 'This job has over 1,000 recorded credits. Review its complete history in Records.');
+        }
+        if (histories.reduce((count,h) => count+(h.paid_credits?.length ?? 0)+(h.refunds?.length ?? 0)+(h.refunds?.filter(r=>r.reversal).length ?? 0),0)>1000) throw new QuoteSignoffError('customer_statement_limit','This job has over 1,000 paid credit, refund and correction entries. Review its complete history in Records.');
+        const invoices: CustomerJobPaymentStatementInvoice[] = histories.map((history,index) => {
+          if (history.consistency !== 'matched' || !history.snapshot_hash || history.invoice.availability !== 'current'
+            || history.invoice.status === 'carried_forward') {
+            throw new QuoteSignoffError('customer_statement_unavailable', `Invoice ${history.invoice_ref} needs review in Records before preparing a complete job statement.`);
+          }
+          const record = deps.records.ownerGet(INVOICES,'invoice',history.invoice_id);
+          let issued_on: string;
+          try { issued_on = date(record?.issued_on,'Invoice issue date'); }
+          catch { throw new QuoteSignoffError('customer_statement_unavailable', `Invoice ${history.invoice_ref} has an invalid issue date. Review it in Records before preparing a statement.`); }
+          return { signoff_id: history.signoff_id,invoice_id: history.invoice_id,invoice_ref: history.invoice_ref,
+            revision: terms[index]!.revision,issued_on,due_on: history.invoice.due_on,
+            total: history.total,amount_paid: history.invoice.amount_paid,outstanding: history.invoice.outstanding,payments: history.payments,
+            ...(history.invoice.amount_credited ? { amount_credited: history.invoice.amount_credited,credits: history.credit_notes } : {}),
+            ...customerRefundBalanceFields(history.invoice),...(history.paid_credits?.length ? { paid_credits: history.paid_credits,refunds: history.refunds } : {}) };
+        });
+        const first = histories[0]!;
+        if (histories.some(history => history.customer !== first.customer || history.currency !== first.currency)) {
+          throw new QuoteSignoffError('customer_statement_unavailable', 'This job contains conflicting customers or currencies. Review its invoices.');
+        }
+        const sum = (field: 'total' | 'amount_paid' | 'outstanding' | 'amount_credited' | 'amount_refund_credited' | 'amount_refunded' | 'refund_due' | 'net_received' | 'net_invoice_total') => decimal(invoices.reduce((total,invoice) => total + units(invoice[field] ?? '0.0000'),0n));
+        return { format: 'recued.customer-job-payment-statement',version: histories.some(h=>h.refunds?.some(r=>r.reversal)) ? 4 : histories.some(h=>h.paid_credits?.length) ? 3 : 2,captured_at: deps.now(),
+          statement_hash: hash({ root,rows: released,histories: histories.map(history => history.snapshot_hash) }),
+          job_id: id,business_name: first.business_name,customer: first.customer,quote_label: first.quote_label,
+          ...(first.quote_reference ? { quote_reference: first.quote_reference } : {}),
+          currency: first.currency,invoiced_total: sum('total'),amount_paid: sum('amount_paid'),outstanding: sum('outstanding'),invoices,
+          ...(invoices.some(invoice => invoice.amount_credited) ? { amount_credited: sum('amount_credited') } : {}),
+          ...(histories.some(h=>h.paid_credits?.length) ? { amount_refund_credited: sum('amount_refund_credited'),amount_refunded: sum('amount_refunded'),refund_due: sum('refund_due'),net_received: decimal(invoices.reduce((n,i)=>n+units(i.net_received ?? i.amount_paid),0n)),net_invoice_total: decimal(invoices.reduce((n,i)=>n+units(i.net_invoice_total ?? decimal(units(i.total)-units(i.amount_credited ?? '0.0000'))),0n)) } : {}) };
+      })();
+    },
+    /** Read the invoice and its lifecycle evidence in one synchronous snapshot.
+     * Approval-link expiry and task completion do not settle an invoice. */
+    paymentReminderSnapshot(id: string) {
+      return deps.db.transaction(() => {
+        const row = load(id);const signoff = ownerSummary(row);const invoice = signoff.follow_up?.invoice;
+        let fingerprint: string | null = null;
+        if (row.state === 'released' && invoice?.availability === 'current') {
+          const record = deps.records.ownerGet(INVOICES,'invoice',signoff.invoice_id!);
+          const namespace = deps.records.getNamespace(INVOICES);
+          const changes = deps.db.prepare(`SELECT count(*) AS n,max(event_id) AS event_id FROM core_record_outbox
+            WHERE publisher=? AND pack_slug=? AND kind='invoice' AND pk=?`)
+            .get(INVOICES.publisher,INVOICES.pack_slug,signoff.invoice_id);
+          fingerprint = hash({ record,activation_generation: namespace?.activation_generation,
+            binding: binding(INVOICES,'get','invoice'),changes,credits: invoiceCredits(record!) });
+        }
+        return { ...signoff,invoice_fingerprint: fingerprint };
+      })();
+    },
     /** Freeze task, invoice and canonical reply reads together. A large or
      * corrupt history fails explicitly rather than returning a partial job. */
-    customerJobsSnapshot<T,C>(readIntent: (endpoint: string | null) => T, readCompletion: (root: string) => C) {
+    jobCloseoutFingerprint(id: string) {
+      const root = load(id);if (planOf(root).addition) throw new QuoteSignoffError('customer_job_closeout_invalid','Choose the original customer job.',400);
+      assertQuoteJobRouting(root.quote_id);
+      const taskId = `quote_signoff_${id}`;
+      if (root.state === 'released') deps.db.prepare('INSERT OR IGNORE INTO quote_signoff_task_versions (task_id,revision) VALUES (?,0)').run(taskId);
+      const rows = deps.db.prepare(`SELECT * FROM ${TABLE} WHERE ${customerJobRootSql()}=? ORDER BY signoff_id`).all(id);
+      return hash({ rows,task: deps.work?.readTask(taskId) ?? null,task_revision: taskRevision(taskId) });
+    },
+    customerJobCandidates: (input: Parameters<typeof readCustomerJobCandidates>[1]) => ({ ...readCustomerJobCandidates(deps.db,input),captured_at: deps.now() }),
+    customerJobsSnapshot<T,C>(readIntent: (endpoint: string | null) => T, readCompletion: (root: string) => C,jobId?: string) {
       return deps.db.transaction(() => {
         const captured_at = deps.now();
-        const rows = deps.db.prepare(`SELECT * FROM ${TABLE}
-          ORDER BY rowid LIMIT 10001`).all() as Row[];
-        if (rows.length > 10000) throw new QuoteSignoffError('customer_jobs_too_large', 'The job history is too large to read completely. Browse saved requests in Customer sign-offs.');
+        const rows = jobId === undefined ? deps.db.prepare(`SELECT * FROM ${TABLE} ORDER BY rowid LIMIT 10001`).all() as Row[]
+          : deps.db.prepare(`SELECT * FROM ${TABLE} WHERE ${customerJobRootSql()}=? ORDER BY rowid LIMIT 10001`).all(jobId) as Row[];
+        if (rows.length > 10000) throw new QuoteSignoffError('customer_jobs_too_large', jobId === undefined
+          ? 'The job history is too large to read completely. Browse saved requests in Customer sign-offs.'
+          : 'This job has too many saved requests to read completely. Review its requests in Customer sign-offs.');
+        if (jobId !== undefined) for (const quoteId of new Set(rows.map(row => row.quote_id))) assertQuoteJobRouting(quoteId);
         const groups = new Map<string, Row[]>(); const originals = new Map<string, Row>();
         for (const row of rows) {
           if (!QUOTE_SIGNOFF_STATES.includes(row.state) || (row.state === 'released') !== (row.released_at !== null)
@@ -645,8 +1000,11 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
           const group = groups.get(root) ?? []; group.push(row);groups.set(root,group);
           if (!plan.addition) originals.set(row.quote_id,row);
         }
+        const latestOriginal = (quoteId: string) => jobId === undefined ? originals.get(quoteId)?.signoff_id
+          : (deps.db.prepare(`SELECT signoff_id FROM ${TABLE} WHERE quote_id=? AND ${customerJobOriginalSql()}=1 ORDER BY rowid DESC LIMIT 1`).get(quoteId) as { signoff_id: string } | undefined)?.signoff_id;
         const roots = rows.filter(row => !planOf(row).addition
-          && (row.state === 'released' || originals.get(row.quote_id)?.signoff_id === row.signoff_id));
+          && (row.state === 'released' || latestOriginal(row.quote_id) === row.signoff_id
+            || jobArchiveTableExists(deps.db) && Boolean(deps.db.prepare('SELECT 1 FROM customer_job_archives WHERE job_id=?').get(row.signoff_id))));
         const originalIds = new Set(rows.filter(row => !planOf(row).addition).map(row => row.signoff_id));
         if ([...groups.keys()].some(root => !originalIds.has(root))) throw new QuoteSignoffError('customer_jobs_unavailable', 'A job is missing its original agreement. Review saved requests in Records.');
         if (roots.length > 2000) throw new QuoteSignoffError('customer_jobs_too_large', 'Too many jobs to read completely. Browse saved requests in Customer sign-offs.');
@@ -687,11 +1045,13 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
         const last = snapshot.requests.at(-1)!;
         if (last.state !== 'released') throw new QuoteSignoffError('quote_signoff_not_released', 'Choose a released agreement before requesting completion.');
         const root = snapshot.root_signoff_id;
+        assertQuoteJobRouting(load(root).quote_id,'quote_signoff_history_unavailable');
+        if (isCustomerJobArchived(deps.db,root)) throw new QuoteSignoffError('customer_job_archived','Restore the archived customer job before requesting or reviewing completion.');
         const released = deps.db.prepare(`SELECT count(*) AS count FROM ${TABLE} WHERE state='released'
-          AND json_extract(plan_json,'$.addition.root_signoff_id')=?`).get(root) as { count: number };
+          AND ${customerJobRootSql()}=? AND signoff_id<>?`).get(root,root) as { count: number };
         if (released.count !== snapshot.requests.length - 1) throw new QuoteSignoffError('quote_signoff_superseded', 'Choose the latest released agreement before requesting completion.');
         if (deps.db.prepare(`SELECT 1 FROM ${TABLE} WHERE state IN ('draft','publishing','waiting','accepted')
-          AND json_extract(plan_json,'$.addition.root_signoff_id')=? LIMIT 1`).get(root)) {
+          AND ${customerJobRootSql()}=? LIMIT 1`).get(root)) {
           throw new QuoteSignoffError('quote_signoff_superseded', 'Review or cancel the pending added work before requesting completion.');
         }
         const task = deps.work?.readTask(`quote_signoff_${root}`);

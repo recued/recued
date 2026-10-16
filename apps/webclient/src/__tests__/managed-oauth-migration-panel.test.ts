@@ -22,9 +22,42 @@ const fixture = (call: (args: ManagedOAuthRequest) => Promise<ManagedOAuthRespon
     const button = { dataset: { bulkAction: action, bulkResume: resume }, disabled: false, closest() { return this; } };
     for (const listener of listeners.get('click') ?? []) listener({ target: button, preventDefault() {} } as unknown as Event);
   };
-  return { panel, host, click, closed };
+  const change = (attributes: string[], dataset: Record<string, string>, value: string, checked = false, type = 'change') => {
+    const field = { dataset, value, checked, hasAttribute: (key: string) => attributes.includes(key) };
+    for (const listener of listeners.get(type) ?? []) listener({ target: field, type } as unknown as Event);
+  };
+  return { panel, host, click, change, closed };
 };
 describe('D-322 bulk migration UI', () => {
+  it('defaults to direct OAuth and checks selected rows using a separate reviewed native source', async () => {
+    const work = { ...candidate, authentication: 'broker' as const, verification_url: 'https://sheets.googleapis.com/v4/private' };
+    const source = { ...candidate, name: 'native-source', display_name: 'Native account' };
+    const impact = { fingerprint: 'b'.repeat(64), phase: 'before_save' as const, mode: 'switch' as const, consent: 'reuse' as const,
+      target: { authentication: 'direct_oauth' as const, identity: { status: 'unknown' as const, reason: 'unsupported' as const } }, connections: [], warnings: [] };
+    const reviewed = { auth: { type: 'direct_oauth' as const, authorization_receipt: 'r'.repeat(43), requested_scopes: ['sheet-read'] },
+      expires_at: 9999999999, required_scopes: ['sheet-read'], impact, warnings: ['Vendor scope grants are unknown.'] };
+    const calls: ManagedOAuthRequest[] = [];
+    const f = fixture(async args => {
+      calls.push(args);
+      if (args.action === 'migration_candidates') return { action: args.action, candidates: args.names ? [work] : [work, source] };
+      if (args.action === 'review_direct_authentication') return { action: args.action, ...reviewed };
+      if (args.action === 'migration_prepare') return { action: args.action, migration: { ...view(), id: args.id, target: impact.target,
+        rows: [{ connection: work, state: 'verified', impact }] } };
+      if (args.action === 'retire_direct_authentication') return { action: args.action };
+      return { action: 'migration_status', migrations: [] };
+    });
+    await f.panel.load(); f.change([], { bulkSelect: work.name }, '', true); f.click('authorize');
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(f.host.innerHTML).toContain('value="direct_oauth" selected'); expect(f.host.innerHTML).toContain('Native account');
+    f.click('prepare'); expect(calls.some(c => c.action === 'migration_prepare')).toBe(false);
+    f.click('review-direct'); await new Promise<void>(resolve => setImmediate(resolve));
+    expect(calls).toContainEqual({ action: 'review_direct_authentication', source_name: source.name, scopes: ['sheet-read'],
+      selections: [{ name: work.name, expected_updated_at: 2 }] });
+    f.click('prepare'); await new Promise<void>(resolve => setImmediate(resolve));
+    expect(calls.find(c => c.action === 'migration_prepare')).toMatchObject({ auth: reviewed.auth, impact_fingerprint: impact.fingerprint,
+      selections: [{ name: work.name, verification_url: work.verification_url }] });
+    expect(calls.every(c => !['start', 'profiles', 'integrations', 'migration_apply'].includes(c.action))).toBe(true); f.panel.dispose();
+  });
   it('keeps a stop result when an older status reply arrives afterwards', async () => {
     let finish!: (r: ManagedOAuthResponse) => void; let statuses = 0;
     const old = new Promise<ManagedOAuthResponse>(resolve => { finish = resolve; });

@@ -276,15 +276,33 @@ describe('D-132 P6 — promotion banner', () => {
     );
   });
 
-  it('disables both buttons + flips the Promote label while a write is in flight', () => {
+  it('keeps both busy buttons focusable while a write is in flight', () => {
     const html = renderHousekeepingPromotionBanner({
       suggestions: { summary: suggestion() },
       writing: { summary: true },
       writeError: {},
     });
-    const matches = html.match(/<button[^>]*disabled/g) ?? [];
+    const matches = html.match(/<button[^>]*aria-disabled="true"[^>]*aria-busy="true"/g) ?? [];
     expect(matches.length).toBe(2);
+    expect(html).not.toMatch(/<button[^>]*\sdisabled(?:\s|>)/);
     expect(html).toContain('Promoting…');
+  });
+
+  it.each([false, true])('the panel shares the topic lock with promotion progress %s without locking other topics', (promoting) => {
+    const html = renderHousekeepingPanel({
+      ...baseState(), tasks: [aiTask()], expandedTopic: 'summary', now: NOW,
+      trustWriting: { summary: true }, promotionWriting: promoting ? { summary: true } : {},
+      promotionSuggestions: { summary: suggestion(), thread_signals: suggestion({ topic: 'thread_signals' }) },
+    });
+    const summaryButtons = html.match(/<button[^>]*data-action="housekeeping-promotion-[^"]+"[^>]*data-topic="summary"[^>]*>/g) ?? [];
+    const otherButtons = html.match(/<button[^>]*data-action="housekeeping-promotion-[^"]+"[^>]*data-topic="thread_signals"[^>]*>/g) ?? [];
+    expect(summaryButtons).toHaveLength(2);
+    expect(summaryButtons.every((button) => button.includes('aria-disabled="true"') && !/\sdisabled(?:\s|>)/.test(button))).toBe(true);
+    expect(otherButtons).toHaveLength(2);
+    expect(otherButtons.every((button) => !button.includes('aria-disabled'))).toBe(true);
+    expect(html).toMatch(/<fieldset[^>]*class="housekeeping-producer-runpolicy"[^>]*aria-busy="true"/);
+    expect(html).toMatch(/<fieldset[^>]*data-group="housekeeping-pool"[^>]*aria-busy="true"/);
+    expect(html.includes('Promoting…')).toBe(promoting);
   });
 
   it('renders the inline error block when a banner write failed', () => {

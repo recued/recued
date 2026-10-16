@@ -1,3 +1,4 @@
+import { fileSourceOAuthProvider } from '@recued/contracts';
 /** D-125 P7.1 — Settings → Connections page renderer.
  *
  *  Pure HTML — every state input arrives via `props`. The host wires
@@ -24,6 +25,7 @@
 
 import {
   getVendorProvider,
+  savedOAuthAppsForIssuer,
   localhostOriginForNumberedLoopback,
   vendorHasEngagement,
   CONNECTION_INBOUND_SECRET_FIELDS,
@@ -34,9 +36,12 @@ import {
   type ConnectionKind,
   type ConnectionVendorProvider,
   type ConnectionView,
+  type ConnectionAuthType,
   type ReleaseCheckStatus,
 } from '@recued/contracts';
 import { e } from '../template.js';
+import { renderAuthenticationReconnect } from './authentication-reconnect.js';
+import { renderAuthenticationManagement } from './manage-authentication.js';
 import {
   REFERENCE_PROVENANCE_STYLES,
   renderProvenance,
@@ -93,6 +98,8 @@ import {
 import {
   connectionFormRunsOAuthDance,
   connectionOAuthCredentialReadiness,
+  selectedSavedOAuthAppIssuer,
+  compatibleSavedOAuthAppIssuer,
   connectionOAuthHttpsEndpointIssue,
   isConnectionOAuthLockedField,
 } from './oauth-credentials.js';
@@ -140,6 +147,16 @@ export interface ConnectionsPageProps extends ConnectionsPageState {
 }
 
 const KIND_ORDER: readonly ConnectionKind[] = ['api', 'mcp', 'notification'];
+const AUTH_LABELS: Record<ConnectionAuthType, string> = {
+  none: 'No authentication', bearer: 'Bearer token', basic: 'Username and password', header: 'API key in headers',
+  query: 'API key in URL', oauth2_refresh: 'Recued direct OAuth', managed_oauth: 'OAuth broker (optional)',
+  oauth2_client_credentials: 'OAuth app credentials', atproto_session: 'AT Protocol app password',
+  request_signature: 'Signed requests', body_field: 'Credentials in request body',
+};
+const healthOfView = (connection: ConnectionView) => {
+  const health = connection.health as { status?: string; last_error?: string; last_probed_at?: number } | undefined;
+  return health && typeof health === 'object' ? health : undefined;
+};
 const KIND_LABELS: Record<ConnectionKind, string> = {
   api: 'API',
   mcp: 'MCP',
@@ -308,6 +325,7 @@ const renderRow = (
   engagementHealth: ConnectionsPageState['engagementHealth'],
   installedPacks: readonly InstalledPackScopes[],
   mcpPackStatus: Readonly<Record<string, McpPackStatusView>> | undefined,
+  managedOAuthAvailable = false,
 ): string => {
   const key = connectionRowKey(conn.kind, conn.name);
   const probing = probeInFlight.has(key);
@@ -335,12 +353,20 @@ const renderRow = (
     <div class="connections-row-wrap" data-conn-key="${e(key)}">
       <div class="connections-row" data-conn-key="${e(key)}">
         <div class="connections-row-info">
-          <strong class="connections-row-name">${e(conn.name)}</strong>
-          ${conn.subtype ? `<span class="connections-row-subtype">${e(conn.subtype)}</span>` : ''}
+          <div class="connections-row-identity">
+            <strong class="connections-row-name">${e(conn.display_name || conn.name)}</strong>
+            ${conn.subtype ? `<span class="connections-row-subtype">${e(conn.subtype)}</span>` : ''}
+            ${conn.display_name && conn.display_name !== conn.name ? `<span class="connections-row-display">${e(conn.name)}</span>` : ''}
+          </div>
           <span class="connections-row-summary">${e(summaryFor(conn))}</span>
-          <span class="connections-row-display">${e(conn.display_name)}</span>
+          <div class="connections-row-meta">
+            ${conn.kind === 'api' ? `<span>${e(conn.auth_type === 'managed_oauth' ? 'OAuth broker' : conn.auth_type ? AUTH_LABELS[conn.auth_type] : 'Authentication not reported')}${['managed_oauth', 'oauth2_refresh'].includes(conn.auth_type ?? '') ? ' · ' + e(typeof conn.account_email === 'string' && conn.account_email ? conn.account_email : 'Account unknown') : ''}</span>` : ''}
+            <span>${e(healthOfView(conn)?.status === 'ok' && !healthOfView(conn)?.last_error ? 'Last check passed' : healthOfView(conn)?.status === 'auth_failed' ? 'Access denied — needs attention' : healthOfView(conn)?.status === 'unreachable' ? 'Could not reach service' : 'Access not verified')}</span>
+          </div>
         </div>
         <div class="connections-row-actions">
+          ${managedOAuthAvailable && conn.kind === 'api' && ['oauth2_refresh', 'bearer', 'managed_oauth'].includes(conn.auth_type ?? '')
+            ? button({ label: 'Manage authentication', action: 'connections-manage-row-authentication', size: 'sm', data: { kind: conn.kind, name: conn.name }, disabled: deleting }) : ''}
           ${
             showEngagement
               ? button({
@@ -361,14 +387,15 @@ const renderRow = (
             disabled: deleting,
           })}
           ${button({
-            label: probing ? 'Probing…' : 'Probe',
+            label: probing ? 'Testing…' : 'Test connection',
             size: 'xs',
             action: 'connections-probe',
             data: { kind: conn.kind, name: conn.name },
-            disabled: probing || deleting,
+            disabled: deleting,
+            ariaDisabled: probing, ariaBusy: probing,
           })}
           ${button({
-            label: deleting ? 'Deleting…' : 'Delete',
+            label: deleting ? 'Removing…' : 'Remove',
             size: 'xs',
             variant: 'danger-text',
             action: 'connections-delete',
@@ -517,6 +544,7 @@ const renderKindGroup = (
   installedPacks: readonly InstalledPackScopes[],
   mcpPackStatus: Readonly<Record<string, McpPackStatusView>> | undefined,
   signInGrids = false,
+  managedOAuthAvailable = false,
 ): string => {
   if (rows.length === 0) return '';
   const grids = kind === 'api' && signInGrids
@@ -525,10 +553,10 @@ const renderKindGroup = (
   return `
     <section class="connections-group" data-kind="${e(kind)}">
       <h3 class="connections-group-title">${e(KIND_LABELS[kind])} (${rows.length})</h3>
-      ${grids}
       <div class="connections-group-rows">
-        ${rows.map((r) => renderRow(r, probeInFlight, deleteInFlight, engagementHealth, installedPacks, mcpPackStatus)).join('')}
+        ${rows.map((r) => renderRow(r, probeInFlight, deleteInFlight, engagementHealth, installedPacks, mcpPackStatus, managedOAuthAvailable)).join('')}
       </div>
+      ${grids}
     </section>
   `;
 };
@@ -691,10 +719,18 @@ const renderRecentProbe = (
       : `${authType} checked, and now in use for ${p.kind}/${p.name}. Future provider calls use the replacement.${checked}${expiry}`;
     return `<div class="connections-credential-receipt" data-connection-credential-receipt="verified" role="status" aria-live="polite">${inlineOk(
       message,
-    )}</div>`;
+    )}${renderAuthenticationReconnect(p.reconnect_collections)}</div>`;
   }
-  const tone = p.status === 'ok' ? 'ok' : p.status === 'unknown' ? 'hint' : 'warn';
-  const message = `Last checked for ${p.kind}/${p.name}: ${p.status}`;
+  const httpStatus = p.last_error?.match(/^http_status_(\d{3})$/)?.[1];
+  const tone = httpStatus || p.last_error && p.status === 'ok' ? 'warn' : p.status === 'ok' ? 'ok' : p.status === 'unknown' ? 'hint' : 'warn';
+  const detail = httpStatus ? `Service responded with HTTP ${httpStatus}. Access was not verified.`
+    : p.last_error === 'body_field_auth_not_probeable' ? 'This check cannot test credentials sent in a request body. Verify them through a protected operation.'
+    : p.last_error === 'managed_oauth_permissions_unverified' ? 'The broker reached the service. Vendor permissions remain unverified; test a protected resource.'
+    : p.kind === 'api' && p.status === 'ok' ? 'The service responded. This does not confirm every permission or access to your data.'
+    : p.status === 'auth_failed' ? 'The service denied access. Review the saved sign-in and vendor permissions.'
+    : p.status === 'unreachable' ? 'The service could not be reached. This does not prove the credentials are wrong.'
+    : p.last_error ?? 'Review the connection before relying on access.';
+  const message = `Last checked for ${p.kind}/${p.name}: ${httpStatus ? 'needs attention' : p.status}. ${detail}`;
   if (tone === 'ok') return inlineOk(message);
   if (tone === 'warn') return inlineError(message);
   return inlineHint(message);
@@ -1271,7 +1307,13 @@ const renderListView = (props: ConnectionsPageProps): string => {
   if (props.error) {
     return inlineError(props.error);
   }
-  const groups = groupByKind(props.connections);
+  const filters = props.inventoryFilters;
+  const visible = props.connections.filter(row => (!filters?.query || [row.display_name, row.name, row.vendor, row.base_url].join(' ').toLowerCase().includes(filters.query.toLowerCase()))
+    && (!filters?.vendor || row.vendor === filters.vendor)
+    && (!filters?.status || (filters.status === 'checked' ? healthOfView(row)?.status === 'ok' && !healthOfView(row)?.last_error
+      : filters.status === 'attention' ? ['auth_failed', 'unreachable'].includes(healthOfView(row)?.status ?? '') || !!healthOfView(row)?.last_error
+      : !healthOfView(row) || healthOfView(row)?.status === 'unknown')));
+  const groups = groupByKind(visible);
   const installedPacks = props.installedPacks ?? [];
   const groupBlocks = KIND_ORDER.map((kind) =>
     renderKindGroup(
@@ -1283,6 +1325,7 @@ const renderListView = (props: ConnectionsPageProps): string => {
       installedPacks,
       props.mcpPackStatus,
       props.signInGrids === true,
+      props.managedOAuthAvailable === true,
     ),
   ).join('');
   const empty =
@@ -1293,6 +1336,12 @@ const renderListView = (props: ConnectionsPageProps): string => {
         })
       : '';
   return `
+    <div class="connections-add-row">${button({ label: '+ Add Connection', variant: 'primary', size: 'sm', action: 'connections-open-add' })}</div>
+    ${props.connections.length ? `<div class="connections-inventory-filters" role="group" aria-label="Filter connections">
+      <label>Search connections<input type="search" data-conn-inventory-filter="query" value="${e(filters?.query ?? '')}" autocomplete="off"></label>
+      <label>Vendor<select data-conn-inventory-filter="vendor"><option value="">All vendors</option>${[...new Set(props.connections.map(row => row.vendor).filter((vendor): vendor is string => typeof vendor === 'string' && !!vendor))].map(vendor => `<option value="${e(vendor)}"${filters?.vendor === vendor ? ' selected' : ''}>${e(vendor)}</option>`).join('')}</select></label>
+      <label>Status<select data-conn-inventory-filter="status"><option value="">All statuses</option><option value="checked"${filters?.status === 'checked' ? ' selected' : ''}>Last check passed</option><option value="attention"${filters?.status === 'attention' ? ' selected' : ''}>Needs attention</option><option value="unknown"${filters?.status === 'unknown' ? ' selected' : ''}>Not verified</option></select></label>
+      <span role="status">${visible.length} of ${props.connections.length}</span></div>` : ''}
     ${renderRecentProbe(
       props.dialog,
       props.postSafeStopRecoveries,
@@ -1301,14 +1350,7 @@ const renderListView = (props: ConnectionsPageProps): string => {
     ${renderPackInventoryRecovery(props.packInventoryRecovery)}
     ${empty}
     ${groupBlocks}
-    <div class="connections-add-row">
-      ${button({
-        label: '+ Add Connection',
-        variant: 'primary',
-        size: 'sm',
-        action: 'connections-open-add',
-      })}
-    </div>
+    ${props.connections.length && !visible.length ? inlineHint('No connections match these filters.') : ''}
   `;
 };
 
@@ -1318,7 +1360,7 @@ const renderListView = (props: ConnectionsPageProps): string => {
 // convenience pre-fill, never a gate.
 const renderKindPicker = (): string => `
   <div class="connections-picker">
-    <h3 class="connections-picker-title">Pick a connection kind</h3>
+    <h3 class="connections-picker-title" data-connection-dialog-heading tabindex="-1">Pick a connection kind</h3>
     <div class="connections-picker-section">
       <div class="connections-picker-grid">
         ${CONNECTION_KIND_CHOICES.map((c) => `
@@ -1340,7 +1382,7 @@ const renderKindPicker = (): string => `
 
 const renderSubtypePicker = (kind: 'mcp' | 'notification'): string => `
   <div class="connections-picker">
-    <h3 class="connections-picker-title">Pick a ${e(KIND_LABELS[kind])} subtype</h3>
+    <h3 class="connections-picker-title" data-connection-dialog-heading tabindex="-1">Pick a ${e(KIND_LABELS[kind])} subtype</h3>
     <div class="connections-picker-grid">
       ${CONNECTION_SUBTYPE_CHOICES[kind].map((c) => `
         <button type="button"
@@ -1669,7 +1711,7 @@ const renderField = (
             : []),
           ...optList.map((opt) => ({
             value: opt,
-            label: field.optionLabels?.[opt] ?? opt,
+            label: field.optionLabels?.[opt] ?? (field.key === 'auth.type' ? AUTH_LABELS[opt as ConnectionAuthType] : undefined) ?? opt,
             selected: opt === (value || (!isDynamic ? optList[0] || '' : '')),
           })),
         ];
@@ -1793,6 +1835,7 @@ export const connectionFormValidationIssue = (
   mode: ConnectionsDialogState['mode'],
 ): ConnectionFormValidationIssue | null => {
   if (schema.fields.some(field => field.key === 'switch.verification_url') && !values['auth.authorization_receipt']?.trim()) {
+    if (values['auth.type'] === 'oauth2_refresh') return formValidationIssue('auth.client_id', 'Direct OAuth app', 'Authorize the direct OAuth app, then review its account and permissions before switching authentication.');
     return formValidationIssue('auth.broker_profile_id', 'Broker account', 'Review permissions and authorize the selected account before switching authentication.');
   }
   const name = values.name?.trim() ?? '';
@@ -1842,6 +1885,7 @@ export const connectionFormValidationIssue = (
   }
   for (const field of schema.fields) {
     if (field.showWhen && !field.showWhen(values)) continue;
+    if (field.key === 'auth.client_secret' && selectedSavedOAuthAppIssuer({ vendor: null,values }) !== null) continue;
     if (mode === 'edit' && !authPatchIntent && field.key.startsWith('auth.')) continue;
     // D-127 P4.3 — dynamic-options select with an empty resolved list
     // can never be satisfied; surface the field's emptyGuidance so the
@@ -2379,6 +2423,36 @@ const noRedirectAlternative = (vendor: string): { option: string; field: string 
  *   - error: an inline error message above the button surfaces
  *     `oauthError` (rpc rejection, popup blocked, user denied
  *     consent). */
+const renderSavedOAuthApps = (dialog: ConnectionsDialogState): string => {
+  if (dialog.mode !== 'create' && !dialog.authenticationSwitch || dialog.kind !== 'api' || !dialog.savedOAuthApps) return '';
+  const issuer = compatibleSavedOAuthAppIssuer(dialog);
+  if (!issuer) return '';
+  const label = issuer === 'google' ? 'Google' : 'Microsoft';
+  const state = dialog.savedOAuthApps;
+  const apps = savedOAuthAppsForIssuer(state.config, issuer).filter(app => app.has_secret && (dialog.authenticationManagement !== 'app'
+    || (dialog.authenticationManagementCurrentAppId ? app.id !== dialog.authenticationManagementCurrentAppId : app.client_id !== dialog.authenticationManagementCurrentClientId)));
+  const selected = selectedSavedOAuthAppIssuer(dialog) !== null;
+  const choice = dialog.values['auth.saved_oauth_app_choice'] ?? dialog.values['auth.saved_oauth_app_id'] ?? apps[0]?.id;
+  const validChoice = apps.some(app => app.id === choice);
+  const locked = state.loading || Boolean(state.error) || dialog.saving || dialog.oauthInFlight;
+  if (dialog.authenticationManagement === 'reauthorize') return '<section class="connections-oauth" data-saved-oauth-apps><h4>Current OAuth app</h4><p>Using the current saved ' + label + ' app: <code>' + e(dialog.values['auth.client_id'] ?? '') + '</code>.</p>' + (selected ? '<p>Its secret stays on your server.</p>' : '<p>Enter the current app credentials below if needed. Choose Change OAuth app to use another app.</p>') + '</section>';
+  return `<section class="connections-oauth" data-saved-oauth-apps aria-label="OAuth app">
+    <h4>OAuth app</h4>
+    ${state.canManage ? button({ label: 'Manage saved apps', size: 'sm', variant: 'link', action: 'connections-manage-oauth-apps', disabled: dialog.saving || dialog.oauthInFlight }) : ''}
+    ${selected ? `<p>Using your saved ${label} app: <code>${e(dialog.values['auth.client_id'] ?? '')}</code>.</p>
+      <p>The secret stays on your server. Review the permissions below, then authorize this API connection.</p>
+      ${button({ label: 'Enter another app',size: 'sm',action: 'connections-enter-oauth-app',disabled: dialog.saving || dialog.oauthInFlight })}` : ''}
+    ${apps.length ? `<label>Saved ${label} app <select data-conn-field="auth.saved_oauth_app_choice"${locked ? ' disabled' : ''}>
+      ${validChoice ? '' : '<option value="" selected>Choose a saved app</option>'}
+      ${apps.map(app => `<option value="${e(app.id)}"${app.id === choice ? ' selected' : ''}>${e(app.label)} · ${e(app.client_id)}</option>`).join('')}
+      </select></label><p>${state.error ? 'Refresh saved apps to check them.' : `Your saved ${label} app is ready to use for this API connection.`}</p>
+      ${button({ label: `Use saved ${label} app`,size: 'sm',action: 'connections-use-saved-oauth-app',data: { issuer },disabled: locked || !validChoice })}`
+      : `<p>${state.loading ? 'Loading saved apps…' : `Add a ${label} app under Saved OAuth apps, or save one in Mail or Calendar.`}</p>`}
+    ${state.error ? `<p role="status">${e(state.error)}</p>` : ''}
+    ${button({ label: 'Refresh saved apps',size: 'sm',variant: 'link',action: 'connections-refresh-saved-oauth-apps',disabled: state.loading || dialog.saving || dialog.oauthInFlight })}
+  </section>`;
+};
+
 const renderVendorOAuth = (dialog: ConnectionsDialogState): string => {
   // Render the in-app consent affordance for a registered vendor flow OR a
   // generic `api` oauth2_refresh form (R14 — any BYO vendor). On the generic
@@ -2415,8 +2489,11 @@ const renderVendorOAuth = (dialog: ConnectionsDialogState): string => {
   const postAuthorizationNextStep = hasUsableToken
     && tokenFromAuthorization
     && !dialog.saving
-    ? `<p class="rx-msg rx-msg-warn connections-oauth-next-step" data-oauth-next-step role="status">
-        <strong>Not saved yet.</strong> Select <em>Save and probe</em> to store this
+    ? dialog.authenticationSwitch ? `<p class="rx-msg rx-msg-warn connections-oauth-next-step" data-oauth-next-step role="status">
+        <strong>Not saved yet.</strong> Review the direct OAuth account and permissions, then select <em>${dialog.authenticationRepair ? 'Verify access and return to pack' : dialog.authenticationManagement ? 'Verify and apply' : 'Verify and switch'}</em>.
+        The saved authentication stays active until the native API check passes.
+      </p>` : `<p class="rx-msg rx-msg-warn connections-oauth-next-step" data-oauth-next-step role="status">
+        <strong>Not saved yet.</strong> Select <em>Save and test</em> to store this
         connection on your server. Authorizing proved the provider issued a token;
         the probe is the separate check that the token actually reaches
         ${probeTarget.length > 0 ? `<code>${e(probeTarget)}</code>` : 'the API'}
@@ -2718,7 +2795,7 @@ const renderConnectionSetupGuideHandoff = (
         </li>
         <li>
           <strong>Bring the issued values back to Recued</strong>
-          <p>Enter the provider-issued client ID and any secret it issued only in the connection form—not in the AI guide. Recued will take you to the next unfinished field or ${isRefresh ? 'authorization' : 'Save and probe'} action.</p>
+          <p>Enter the provider-issued client ID and any secret it issued only in the connection form—not in the AI guide. Recued will take you to the next unfinished field or ${isRefresh ? 'authorization' : 'Save and test'} action.</p>
           ${returnAction}
         </li>
       </ol>
@@ -3022,7 +3099,7 @@ const renderCredentialRotation = (
 ): string => {
   if (dialog.mode !== 'edit') return '';
   if (dialog.authenticationSwitch) {
-    return '<p role="status">Verify and switch reads the chosen resource through the new account. It does not prove every scope or write permission. Your saved authentication stays active until this check passes.</p>';
+    return `<p role="status">${dialog.authenticationRepair ? 'Verify access' : dialog.authenticationManagement ? 'Verify and apply' : 'Verify and switch'} reads the chosen resource through the reviewed authorization. It does not prove every scope or write permission. Your saved authentication stays active until this check passes.</p>`;
   }
   if (dialog.values['auth.type'] === 'managed_oauth') {
     return '<p role="status">Reauthorize in the broker to request additional permissions. This updates the broker account immediately; save the verified authorization in Recued when complete.</p>';
@@ -3255,7 +3332,7 @@ const renderConnectionOnboarding = (
         ? ''
         : `<p class="connections-onboarding-note" role="note"><strong>Before you continue:</strong> ${e(guide.note)}</p>`}
       <p class="connections-onboarding-verification">
-        <strong>What Save and probe checks:</strong> ${e(guide.verification)}
+        <strong>What Save and test checks:</strong> ${e(guide.verification)}
       </p>
     </section>
   `;
@@ -3322,11 +3399,15 @@ const renderForm = (
     validationIssue,
   );
   const renderSchemaField = (field: ConnectionField): string => renderField(
-    managedConsent && dialog.mode === 'edit' && field.key === 'config.base_url' ? { ...field, readonly: true } : field,
+    (dialog.authenticationRepair && ['auth.client_id', 'auth.token_endpoint', 'auth.scopes'].includes(field.key))
+      || (dialog.authenticationManagement === 'reauthorize' && ['auth.client_id', 'auth.token_endpoint'].includes(field.key))
+      || (managedConsent && dialog.mode === 'edit' && field.key === 'config.base_url')
+      || (selectedSavedOAuthAppIssuer(dialog) !== null && field.key === 'auth.client_id') ? { ...field, readonly: true,
+        ...(dialog.authenticationRepair && field.key === 'auth.scopes' ? { help: 'This request keeps known current permissions and adds the Pack scopes. Review the full request before signing in.' } : {}) } : field,
     dialog.values,
     dynamicOptions,
     dialog.mode,
-    dialog.saving || (dialog.oauthInFlight && isConnectionOAuthLockedField(field.key)),
+    dialog.saving || Boolean((dialog.authenticationRepair || dialog.authenticationManagement && dialog.authenticationManagement !== 'method') && field.key === 'auth.type') || (dialog.oauthInFlight && isConnectionOAuthLockedField(field.key)),
     dialog.oauthErrorFieldKey,
     dialog.credentialCorrection?.fieldKeys ?? [],
     dialog.hintedFields,
@@ -3339,14 +3420,19 @@ const renderForm = (
     : schema.fields.find((field) => field.key === onboardingSelectorKey);
   return `
     <div class="connections-form" data-stage="form"${dialog.vendor ? ` data-vendor="${e(dialog.vendor)}"` : ''}>
-      <h3 class="connections-form-title">
-        ${e(dialog.authenticationSwitch ? 'Switch ' : dialog.mode === 'edit' ? 'Edit ' : 'Add ')}${e(schema.label)}
+      <h3 class="connections-form-title" data-connection-dialog-heading tabindex="-1">
+        ${e(dialog.authenticationManagement ? 'Manage authentication for ' : dialog.authenticationRepair ? 'Reconnect ' : dialog.authenticationSwitch ? 'Switch ' : dialog.mode === 'edit' ? 'Edit ' : 'Add ')}${e(dialog.authenticationManagement && dialog.authenticationSwitch ? dialog.authenticationSwitch.display_name || dialog.authenticationSwitch.name : schema.label)}
       </h3>
       <p class="connections-form-description">${e(schema.description)}</p>
+      ${dialog.authenticationManagement && dialog.authenticationSwitch ? renderAuthenticationManagement({ prefix: 'connections',
+        action: dialog.authenticationManagement, current: dialog.authenticationSwitch.managed_oauth ? 'Broker sign-in' : dialog.authenticationSwitch.auth_type === 'oauth2_refresh' ? 'Recued direct OAuth' : 'Saved authentication',
+        canReauthorize: ['oauth2_refresh', 'managed_oauth'].includes(dialog.authenticationSwitch.auth_type ?? ''),
+        canChangeApp: !dialog.authenticationRepair && dialog.authenticationManagementCanChangeApp === true,
+        canChangeMethod: !dialog.authenticationRepair, busy: dialog.saving || dialog.oauthInFlight || dialog.externalChange !== null }) : ''}
       ${dialog.authenticationSwitch ? `<section class="connections-auth-switch-summary" data-authentication-switch-summary>
         <p><strong>${e(dialog.authenticationSwitch.display_name)}</strong> (<code>${e(dialog.authenticationSwitch.name)}</code>)</p>
         <p>${dialog.authenticationSwitch.managed_oauth ? `Current Nango account: <code>${e(dialog.authenticationSwitch.managed_oauth.connection_id)}</code>.` : 'Current authentication: your saved direct credential.'}</p>
-        <p>A different account may see different data. The saved authentication stays active until the access check passes.</p>
+        <p>${dialog.authenticationRepair ? 'Review the account and permissions before applying this reauthorization.' : fileSourceOAuthProvider(dialog.vendor, dialog.values['config.base_url']) ? 'The same vendor account and complete file visibility are required. Metadata checks may take longer for large sources.' : 'A different account may see different data.'} The saved authentication stays active until the access check passes.</p>
       </section>` : ''}
       <p class="connections-form-draft-protection" data-connection-draft-protection>
         Changes you make stay only in this tab. Recued will ask before you leave.
@@ -3373,12 +3459,20 @@ const renderForm = (
         : ''}
       <div class="connections-form-fields">
         ${schema.fields
-          .filter((field) => field.key !== onboardingSelectorKey)
+          .filter((field) => !(field.key === 'switch.verification_url' && dialog.authenticationSwitch && fileSourceOAuthProvider(dialog.vendor, dialog.values['config.base_url'])) && field.key !== onboardingSelectorKey
+            && !(field.key === 'auth.client_secret' && selectedSavedOAuthAppIssuer(dialog) !== null))
           .map(renderSchemaField)
           .join('')}
       </div>
+      ${renderSavedOAuthApps(dialog)}
       ${renderVendorOAuth(dialog)}
+      ${dialog.authenticationSwitch && dialog.values['auth.type'] === 'oauth2_refresh' ? `<section data-direct-oauth-review>
+        <div data-direct-oauth-impact></div>
+        ${button({ label: dialog.directAuthenticationReview ? 'Review direct OAuth again' : 'Review direct OAuth account and permissions',
+          size: 'sm', action: 'connections-review-direct-authentication', disabled: dialog.saving || dialog.oauthInFlight || dialog.externalChange !== null })}
+      </section>` : ''}
       ${dialog.values['auth.type'] === 'managed_oauth' ? '<div data-managed-oauth-host></div>' : ''}
+      ${['oauth2_refresh', 'oauth2_client_credentials'].includes(dialog.values['auth.type'] ?? '') ? '<div data-connection-oauth-help-host></div>' : ''}
       ${dialog.error && dialog.credentialCorrection === null && dialog.error !== validationIssue?.message
         ? inlineError(dialog.error)
         : ''}
@@ -3386,7 +3480,7 @@ const renderForm = (
         ${managedOAuthAvailable && dialog.mode === 'edit' && kind === 'api' && !dialog.authenticationSwitch
           && ['oauth2_refresh', 'bearer', 'managed_oauth'].includes(dialog.values['auth.type'] ?? '')
           && schema.fields.some(field => field.key === 'auth.type' && field.options?.includes('managed_oauth'))
-          ? button({ label: 'Switch authentication', size: 'sm', action: 'connections-switch-authentication',
+          ? button({ label: 'Manage authentication', size: 'sm', action: 'connections-manage-authentication',
               disabled: dialog.saving || dialog.oauthInFlight || dialog.externalChange !== null }) : ''}
         ${dialog.authenticationSwitch ? button({ label: 'Keep current authentication', size: 'sm',
           action: 'connections-cancel-authentication-switch', disabled: dialog.saving || dialog.oauthInFlight }) : ''}
@@ -3412,16 +3506,16 @@ const renderForm = (
         })}
         ${button({
           label: dialog.saving
-            ? dialog.authenticationSwitch ? 'Verifying and switching…'
+            ? dialog.authenticationManagement ? 'Verifying and applying…' : dialog.authenticationSwitch ? 'Verifying and switching…'
               : credentialRotation && !managedConsent
               ? 'Verifying replacement…'
               : 'Saving…'
-            : dialog.authenticationSwitch ? 'Verify and switch'
+            : dialog.authenticationRepair ? 'Verify access and return to pack' : dialog.authenticationManagement ? 'Verify and apply' : dialog.authenticationSwitch ? 'Verify and switch'
             : dialog.mode === 'edit'
               ? credentialRotation
                 ? managedConsent ? 'Save authorization' : 'Verify and replace'
                 : 'Save changes'
-              : 'Save and probe',
+              : 'Save and test',
           variant: 'primary',
           size: 'sm',
           action: 'connections-submit-form',
@@ -3589,6 +3683,9 @@ export const renderConnectionsPage = (props: ConnectionsPageProps): string => {
  *  options-page + sidebar both already include the primitive
  *  stylesheet so we only add page-specific rules here. */
 export const CONNECTIONS_PAGE_STYLES = `
+.connections-inventory-filters{display:flex;flex-wrap:wrap;align-items:end;gap:10px;margin:12px 0;font-size:13px}
+.connections-inventory-filters label{display:grid;gap:5px;min-width:0}.connections-inventory-filters label:first-child{flex:1 1 180px}
+.connections-inventory-filters input,.connections-inventory-filters select{box-sizing:border-box;min-width:0;max-width:100%;font:inherit;padding:9px;border:1px solid var(--border);border-radius:7px;background:var(--surface);color:var(--fg)}
 ${REFERENCE_PROVENANCE_STYLES}
 .connections-page {
   box-sizing: border-box;
@@ -3785,11 +3882,22 @@ ${REFERENCE_PROVENANCE_STYLES}
 }
 .connections-row-info {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
   flex: 1;
   min-width: 0;
 }
+.connections-row-identity, .connections-row-meta {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.connections-row-meta { font-size: 11px; color: var(--fg-muted); }
+.connections-row-meta > span { min-width: 0; }
 .connections-row-name {
   min-width: 0;
   overflow-wrap: anywhere;
@@ -4935,6 +5043,8 @@ ${REFERENCE_PROVENANCE_STYLES}
   margin-bottom: 12px;
 }
 .connections-field-row {
+  min-width: 0;
+  max-width: 100%;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -4948,6 +5058,9 @@ ${REFERENCE_PROVENANCE_STYLES}
   font-size: 12px;
   font-weight: 500;
 }
+/* Safari can include a native select's unpainted option text in its parent's
+   scroll area at narrow widths. Keep that text inside the closed control. */
+.connections-field-row select { overflow: hidden; }
 .connections-field-required {
   color: var(--danger);
   font-weight: 600;

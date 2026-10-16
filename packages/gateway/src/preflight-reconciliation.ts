@@ -651,7 +651,9 @@ export const buildPreflightAsk = (args: {
   const action = named ?? 'a boundary-crossing call';
   // A bound customer acceptance always needs a fresh owner decision.
   const freshReview = named !== undefined && isApprovalWorkflowOperation(named)
-    || context.authorization_provenance?.lift_reason === 'review_approval_workflow';
+    || ['core.work-entity.customer-account-payment.correct','customer-account-payment-correct','core-customer-account-payment-correct','core.work-entity.customer-account-payment.apply','customer-account-payment-apply','core-customer-account-payment-apply','core.work-entity.customer-refund.correct','customer-refund-correct','core-customer-refund-correct','core.work-entity.customer-refund.apply','customer-refund-apply','core-customer-refund-apply','core.work-entity.customer-payment.correct','customer-payment-correct','core-customer-payment-correct','core.work-entity.customer-invoice.credit','customer-invoice-credit','core-customer-invoice-credit','core.work-entity.customer-invoice.credit.correct','customer-invoice-credit-correct','core-customer-invoice-credit-correct'].includes(named ?? '')
+    || context.authorization_provenance?.lift_reason === 'review_approval_workflow'
+    || context.authorization_provenance?.lift_reason === 'review_customer_payment';
   const sessionGrant = freshReview ? undefined : context.session_grant;
   const overrideOffer = freshReview ? undefined : context.owner_override_offer;
   // WHICH account this lands in — unless the op id already said so.
@@ -909,6 +911,7 @@ const readAuthorizationProvenance = (
     && v.lift_reason !== 'review_commitment'
     && v.lift_reason !== 'review_quote_signoff'
     && v.lift_reason !== 'review_approval_workflow'
+    && v.lift_reason !== 'review_customer_payment'
     && v.lift_reason !== 'quality'
   ) return undefined;
   return {

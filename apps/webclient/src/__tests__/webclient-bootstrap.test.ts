@@ -2704,6 +2704,27 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
     await handle.dispose();
   });
 
+  it('D-318 step 7 wires Settings -> Email chat, and reads the door only once it is opened', async () => {
+    const methods = (fixture: ReturnType<typeof buildOpts>): unknown[] => fixture.transportControls.sendCalls()
+      .filter((s) => s !== null && typeof s === 'object' && (s as { type?: unknown }).type === 'rpc')
+      .map((s) => (s as { method?: unknown }).method);
+
+    const opened = buildOpts();
+    opened.hashSource.setHash('#settings/email-chat');
+    const handle = await bootstrapWebclient(opened.opts);
+    await flush();
+    expect(methods(opened)).toEqual(expect.arrayContaining(['collection.mail.chat_door.get', 'collection.mail.list']));
+    await handle.dispose();
+
+    // Settings opened elsewhere: the door is not read.
+    const elsewhere = buildOpts();
+    elsewhere.hashSource.setHash('#settings');
+    const other = await bootstrapWebclient(elsewhere.opts);
+    await flush();
+    expect(methods(elsewhere)).not.toContain('collection.mail.chat_door.get');
+    await other.dispose();
+  });
+
   it('D-200 Slice 6e wires owner offer transitions to the reserved Seller RPC', async () => {
     const fixture = buildOpts();
     fixture.hashSource.setHash(

@@ -131,6 +131,64 @@ describe('D-124 Phase 2.2 — dispatcher backfill gate', () => {
     expect(h.store.get('t-mail')?.last_fired_at).toBeNull();
   });
 
+  it('D-318 step 1 — a mail event from the chat mailbox starts no recipe; another mailbox’s does', async () => {
+    h.store.create({
+      trigger_id: 't-mail',
+      recipe_id: 'r-mail',
+      publisher_id: 'local',
+      pattern: 'data.mail.**.created',
+      enabled: true,
+      created_at: 1_000,
+    });
+    const dispatcher = createEventTriggerDispatcher({
+      bus: h.bus,
+      store: h.store,
+      runtime: { runRecipe: h.runRecipe },
+      isChatMailbox: (slug) => slug === 'recued-chat',
+      now: () => 10_000,
+    });
+    dispatcher.rebuild();
+
+    emit(h.bus, { platform: 'mail', slug: 'recued-chat', entity_type: 'message', event_kind: 'created' });
+    await flush();
+    expect(h.runRecipe).not.toHaveBeenCalled();
+    expect(h.store.get('t-mail')?.last_fired_at).toBeNull();
+
+    emit(h.bus, { platform: 'mail', slug: 'work', entity_type: 'message', event_kind: 'created', record_id: 'rec-2' });
+    await flush();
+    expect(h.runRecipe).toHaveBeenCalledTimes(1);
+  });
+
+  it('D-318 step 5 — the conversation’s mail in another mailbox starts no recipe; that mailbox’s own does', async () => {
+    h.store.create({
+      trigger_id: 't-mail',
+      recipe_id: 'r-mail',
+      publisher_id: 'local',
+      pattern: 'data.mail.**.created',
+      enabled: true,
+      created_at: 1_000,
+    });
+    const asked: Array<[string, string]> = [];
+    const dispatcher = createEventTriggerDispatcher({
+      bus: h.bus,
+      store: h.store,
+      runtime: { runRecipe: h.runRecipe },
+      isChatConversationRecord: (slug, record_id) => { asked.push([slug, record_id]); return record_id === 'answer-1'; },
+      now: () => 10_000,
+    });
+    dispatcher.rebuild();
+
+    emit(h.bus, { platform: 'mail', slug: 'work', entity_type: 'message', event_kind: 'created', record_id: 'answer-1' });
+    await flush();
+    expect(h.runRecipe).not.toHaveBeenCalled();
+    expect(h.store.get('t-mail')?.last_fired_at).toBeNull();
+    expect(asked).toEqual([['work', 'answer-1']]);
+
+    emit(h.bus, { platform: 'mail', slug: 'work', entity_type: 'message', event_kind: 'created', record_id: 'rec-2' });
+    await flush();
+    expect(h.runRecipe).toHaveBeenCalledTimes(1);
+  });
+
   it('suppresses what a draining collection published on another’s behalf: a mailbox’s first scan and its attachments', async () => {
     h.store.create({
       trigger_id: 't-file',

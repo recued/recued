@@ -23,7 +23,6 @@
  */
 
 import {
-  isMailReconciliationId,
   type CollectionRecord,
   type MailFactEmailRef,
   type MailFactEmailSummary,
@@ -43,6 +42,7 @@ import { looksLikeSecurityNotice } from './security-notice.js';
 import { readAsSent } from './owner-request.js';
 import { runStandardsPass, type MailFactEnvelope } from './standards-pass.js';
 import { readStoredEmail, storedCopyEmail, type StoredEmailDeps } from './stored-email.js';
+import { sentByRecued } from './own-mail.js';
 
 const DAY_MS = 86_400_000;
 /** At most this many stored emails are walked for one preview. */
@@ -77,8 +77,8 @@ const hotString = (record: CollectionRecord, key: string): string => {
 };
 
 /** Skipped by the ingest, so skipped here: drafts, and mail Recued sent. */
-const ingestSkips = (record: CollectionRecord): boolean =>
-  record.hot_fields.direction === 'draft' || isMailReconciliationId(record.hot_fields.reconciliation_id);
+const ingestSkips = (record: CollectionRecord, isOwnSend: TemplatePreviewDeps['isOwnSend']): boolean =>
+  record.hot_fields.direction === 'draft' || sentByRecued(record.hot_fields.reconciliation_id, isOwnSend);
 
 export const summaryOf = (
   deps: Pick<TemplatePreviewDeps, 'retentionDays'>,
@@ -255,7 +255,7 @@ export const previewTemplate = async (
     scanned += 1;
     const { walker, record } = next;
     if (skip !== undefined && skip.slug === walker.mailbox.slug && skip.record_id === record.record_id) continue;
-    if (ingestSkips(record)) continue;
+    if (ingestSkips(record, deps.isOwnSend)) continue;
     // First cut on the hot fields; the body is read only when a condition
     // on it can be decided from the stored text.
     const bodyless = conditions.filter((condition) => condition.field !== 'body');

@@ -1,3 +1,5 @@
+export * from './customer-refunds.js';
+export * from './customer-refund-corrections.js';
 // Runtime constants
 export { OPS, UNARY_OPS } from './conditions.js';
 export { NS } from './namespaces.js';
@@ -2789,6 +2791,8 @@ export {
   resolveMessengerVendorRoles,
   listMessengerVendors,
   isDeclaredMessengerVendor,
+  MESSENGER_DOOR_VENDORS,
+  isMessengerSourceVendor,
 } from './messenger-vendors.js';
 export type {
   MessengerSurface,
@@ -3249,6 +3253,31 @@ export type {
   QuietHoursDigestItem,
 } from './quiet-hours.js';
 
+// D-324 — a reminder is its own record: rung once, on time, then over.
+export {
+  REMINDER_STATES,
+  REMINDER_PENDING_MAX,
+  REMINDER_TEXT_MAX,
+  REMINDER_HISTORY_MS,
+  REMINDER_LATE_MS,
+  REMINDER_PAST_GRACE_MS,
+  REMINDER_LIST_LINK,
+  isReminderState,
+  formatReminderTime,
+  formatReminderWhen,
+  reminderDeliveryText,
+} from './reminder.js';
+export type {
+  Reminder,
+  ReminderOrigin,
+  ReminderState,
+  ReminderView,
+  ReminderChangeReason,
+  ReminderListResult,
+  ReminderUpdateResult,
+  ReminderCancelResult,
+} from './reminder.js';
+
 // D-269 step 3 follow-on — zoned wall clock, shared by the server sweep and the
 // client's quiet-hours preview (which cannot import from `backend/`).
 export { zonedWallClockToEpochMs, zoneOffsetMsAt, cronZoneFor } from './zoned-wall-clock.js';
@@ -3325,6 +3354,7 @@ export type {
   CollectionAuthState,
   FileAdapterType,
   CollectionInstanceRow,
+  MailSyncStatus,
   // D-117 — calendar caps live on the same instance row as the file
   // caps; consumers narrow on `platform`.
   CollectionCaps,
@@ -4535,6 +4565,8 @@ export {
 
 export * from './quote-signoff.js';
 export * from './quote-signoff-reminders.js';
+export * from './quote-completion-reminders.js';
+export * from './quote-payment-reminders.js';
 export * from './quote-completion.js';
 export * from './customer-jobs.js';
 export * from './approval-workflow.js';
@@ -5063,6 +5095,7 @@ export {
   GCAL_SCOPE,
   GRAPH_MAIL_READ_SCOPE,
   GRAPH_MAIL_SEND_SCOPE,
+  GRAPH_MAIL_READWRITE_SCOPE,
   GRAPH_CALENDAR_SCOPE,
   GRAPH_OFFLINE_SCOPE,
   GRAPH_USER_READ_SCOPE,
@@ -5096,6 +5129,14 @@ export {
   OPENER_RELAY_MESSAGE_KIND,
   OAUTH_APP_ISSUERS,
   oauthAppIssuerForProvider,
+  OAUTH_APP_ID,
+  isOAuthAppSecretExpiryDate,
+  oauthAppSecretExpiry,
+  OAUTH_APP_EXPIRY_WARNING_DAYS,
+  savedOAuthAppsForIssuer,
+  oauthAppStatusForSelection,
+  isSavedOAuthApp,
+  isOAuthAppsResponse,
 } from './foundational-oauth.js';
 export type {
   MailOAuthProvider,
@@ -5105,6 +5146,10 @@ export type {
   OAuthAppIssuer,
   OAuthAppConfigStatus,
   OAuthAppConfigSnapshot,
+  SavedOAuthApp,
+  OAuthAppSecretExpiryStatus,
+  OAuthAppsRequest,
+  OAuthAppsResponse,
   SetOAuthAppConfigArgs,
   ClearOAuthAppConfigArgs,
 } from './foundational-oauth.js';
@@ -6858,8 +6903,80 @@ export type { InstallOffer } from './install-offers.js';
 // D-315 — mail facts: the built-in fact types, the template shape, the fact and
 // thing records, and the event vocabulary.
 export * from './mail-facts.js';
+export {
+  MAIL_CHAT_ASK_PREFIX_DEFAULT,
+  MAIL_CHAT_ASK_PREFIX_MAX_LENGTH,
+  isMailChatAskPrefix,
+  isMailChatStaleAfterMinutes,
+  MAIL_CHAT_BURST_MAX,
+  MAIL_CHAT_BURST_WINDOW_MS,
+  MAIL_CHAT_DOOR_DEFAULTS,
+  MAIL_CHAT_DOOR_VENDOR,
+  MAIL_CHAT_ENROL_ATTEMPTS_MAX,
+  MAIL_CHAT_ENROL_CODE_LENGTH,
+  MAIL_CHAT_ENROL_CODE_TTL_MS,
+  MAIL_CHAT_ENROLLED_SENDERS_MAX,
+  isMailChatEnrollableAddress,
+  mailChatCheckerOrg,
+  MAIL_CHAT_OWNER_MAILBOXES_MAX,
+  MAIL_CHAT_STALE_AFTER_MINUTES_DEFAULT,
+  MAIL_CHAT_STALE_AFTER_MINUTES_MAX,
+  MAIL_CHAT_STALE_AFTER_MINUTES_MIN,
+  MAIL_CHAT_RECENT_REQUESTS_MAX,
+  mailChatSessionId,
+  MAIL_SENT_BY_MESSAGE_ID_MAX_MATCHES,
+  MAIL_SENT_REPLIES_MAX_MATCHES,
+  type MailChatDoorCheck,
+  type MailChatDoorCheckResult,
+  type MailChatDoorRecentRequest,
+  type MailChatDoorSettings,
+  type MailChatEnrolFailure,
+  type MailChatEnrolledSender,
+  type MailSentByMessageIdMatch,
+  type MailSentByMessageIdQuery,
+  type MailSentByMessageIdResult,
+  type MailSentRepliesQuery,
+  type MailSentRepliesResult,
+  type MailSentReplyMatch,
+} from './mail-chat-door.js';
 export * from './mail-work.js';
 // D-322 — owner-selected managed OAuth brokers.
 export * from './managed-oauth.js';
+export * from './file-source-authentication.js';
+export * from './file-download-verification.js';
+export * from './authentication-repair-worklist.js';
 export * from './pack-access.js';
 export type { PackConnectionChange, PackConnectionsView } from './pack-connections.js';
+
+export { savedOAuthAppIssuerForEndpoints,savedOAuthAppRequestedScopes,withSavedOAuthAppProvider } from './oauth-app-reuse.js';
+export * from './pack-vendor-permissions.js';
+export * from './pack-reconnect-worklist.js';
+export * from './customer-payment-receipts.js';
+
+export * from './customer-job-payment-statements.js';
+export * from './customer-account-statements.js';
+export * from './customer-account-contact-defaults.js';
+export * from './customer-payment-corrections.js';
+
+export * from './customer-invoice-credits.js';
+export * from './customer-credit-corrections.js';
+
+export * from './collection-oauth-app-switch.js';
+export * from './collection-permissions.js';
+
+export * from './oauth-app-usage.js';
+
+export * from './customer-account-payments.js';
+export * from './customer-account-payment-corrections.js';
+
+export * from './customer-account-payment-reminders.js';
+
+export * from './customer-job-closeout.js';
+export * from './customer-job-timeline.js';
+
+// D-322 §43 — permission consolidation and cleanup preview.
+export type { OAuthPermissionRequirement, OAuthPermissionNeeds, OAuthPermissionScope, OAuthPermissionGroup, OAuthPermissionInventory, OAuthPermissionCleanupPreview, OAuthPermissionRequest } from './oauth-permission-consolidation.js';
+export { isOAuthPermissionInventory, isOAuthPermissionCleanupPreview } from './oauth-permission-consolidation.js';
+export * from './customer-receivables-aging.js';
+export type { OAuthPermissionCleanupJob, OAuthPermissionCleanupTarget, OAuthPermissionCleanupAuthorization, OAuthPermissionCleanupRequest } from './oauth-permission-cleanup.js';
+export { OAUTH_PERMISSION_CLEANUP_ACTIONS, isOAuthPermissionCleanupJob, isOAuthPermissionCleanupAuthorization } from './oauth-permission-cleanup.js';

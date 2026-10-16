@@ -141,11 +141,16 @@ describe('grantedScopesInclude', () => {
 });
 
 describe('provider send-capability wiring', () => {
-  it('enables Graph send for a resource-qualified Mail.Send grant', () => {
+  it('enables Graph send for a resource-qualified Mail.Send and Mail.ReadWrite grant', () => {
     expectSendState(
-      graphProvider(['https://graph.microsoft.com/Mail.Send']),
+      graphProvider(['https://graph.microsoft.com/Mail.Send', 'https://graph.microsoft.com/Mail.ReadWrite']),
       true,
     );
+  });
+
+  // ⛔ 2026-10-15: the send writes a draft first, which needs Mail.ReadWrite.
+  it('keeps Graph send unavailable with Mail.Send alone', () => {
+    expectSendState(graphProvider(['https://graph.microsoft.com/Mail.Send']), false);
   });
 
   it('keeps Graph send unavailable without Mail.Send', () => {
@@ -212,13 +217,23 @@ const enrollWithScopes = async (
 };
 
 describe('handleMailEnrollOAuth send_capable', () => {
-  it('reports true for a resource-qualified Microsoft Mail.Send scope', async () => {
+  it('reports true for resource-qualified Microsoft Mail.Send and Mail.ReadWrite scopes', async () => {
+    const result = await enrollWithScopes(
+      'graph',
+      'https://graph.microsoft.com/Mail.Read '
+        + 'https://graph.microsoft.com/Mail.Send '
+        + 'https://graph.microsoft.com/Mail.ReadWrite',
+    );
+    expect(result.send_capable).toBe(true);
+  });
+
+  it('reports false for Microsoft Mail.Send without Mail.ReadWrite', async () => {
     const result = await enrollWithScopes(
       'graph',
       'https://graph.microsoft.com/Mail.Read '
         + 'https://graph.microsoft.com/Mail.Send',
     );
-    expect(result.send_capable).toBe(true);
+    expect(result.send_capable).toBe(false);
   });
 
   it('reports false when the Microsoft Mail.Send scope is absent', async () => {

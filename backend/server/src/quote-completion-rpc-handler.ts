@@ -72,7 +72,13 @@ export const handleCompletionPrepare = (deps: ReceptionRpcDeps, input: QuoteComp
   } catch (error) { service.cancel(completion.completion_id); throw error; }
 });
 export const handleCompletionPublish = (deps: ReceptionRpcDeps, input: QuoteCompletionPublishInput, caller: Caller) => run(async () => {
-  const service = serviceFor(deps,caller); shape(input,['completion_id','preview_hash']);
+  const service = serviceFor(deps,caller); shape(input,['completion_id','preview_hash','remember_link_for_reminders']);
+  if (input.remember_link_for_reminders !== undefined && typeof input.remember_link_for_reminders !== 'boolean') {
+    throw new RpcError('quote_completion_invalid','Choose whether to save the link for follow-up emails.',400);
+  }
+  if (input.remember_link_for_reminders && !deps.getQuoteCompletionReminderService) {
+    throw new RpcError('not_configured','Completion reminders are unavailable on this server.',503);
+  }
   const completionId = id(input.completion_id);
   if (typeof input.preview_hash !== 'string' || !/^[a-f0-9]{64}$/.test(input.preview_hash)) throw new RpcError('quote_completion_invalid','Preview completion before publishing its link.',400);
   service.reservePublish(completionId);
@@ -83,6 +89,7 @@ export const handleCompletionPublish = (deps: ReceptionRpcDeps, input: QuoteComp
     endpoint = created.endpoint_id; service.attachEndpoint(completionId,endpoint);
     await handleReceptionEndpointEnable(deps,{ endpoint_id: endpoint },owner);
     if (service.checkLink(completionId,endpoint) !== null) throw new QuoteSignoffError('quote_completion_superseded','The work changed while publishing. Preview a new completion request.');
+    if (input.remember_link_for_reminders) deps.getQuoteCompletionReminderService!().rememberLink(completionId,created.share_url_once);
     return { completion: service.get(completionId),share_url: created.share_url_once };
   } catch (error) {
     if (endpoint) await handleReceptionEndpointRevoke(deps,{ endpoint_id: endpoint },{ instance_id: caller!.instance_id }).catch(() => {});

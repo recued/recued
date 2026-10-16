@@ -168,6 +168,29 @@ describe('createMailSourceWalker', () => {
     expect(walker.fetchOne('mZ')).toBeNull();
   });
 
+  it('D-318 step 1 — leaves the chat mailbox out of every walk and every lookup', () => {
+    const registry = createCollectionRegistry();
+    registry.register(makeStubMailCollection('recued-chat', [fakeRecord('chat-1')]));
+    registry.register(makeStubMailCollection('work', [fakeRecord('work-1')]));
+    const walker = createMailSourceWalker(registry, { isChatMailbox: (slug) => slug === 'recued-chat' });
+
+    expect(Array.from(walker.walkAfter('', 10)).map((r) => r.target_id)).toEqual(['work-1']);
+    expect(walker.fetchOne('chat-1')).toBeNull();
+    expect(walker.fetchOne('work-1')?.target_id).toBe('work-1');
+  });
+
+  it('D-318 step 5 — leaves the conversation’s mail in another mailbox out of every walk and every lookup', () => {
+    const registry = createCollectionRegistry();
+    registry.register(makeStubMailCollection('work', [fakeRecord('answer-1'), fakeRecord('work-1')]));
+    const walker = createMailSourceWalker(registry, {
+      isChatConversationRecord: (record) => record.record_id === 'answer-1',
+    });
+
+    expect(Array.from(walker.walkAfter('', 10)).map((r) => r.target_id)).toEqual(['work-1']);
+    expect(walker.fetchOne('answer-1')).toBeNull();
+    expect(walker.fetchOne('work-1')?.target_id).toBe('work-1');
+  });
+
   it('skips non-mail collections in the registry', () => {
     const registry = createCollectionRegistry();
     registry.register(makeStubMailCollection('a', [fakeRecord('mA')]));
@@ -193,6 +216,23 @@ describe('createSourceWalkerRegistry', () => {
     expect(walker).toBeDefined();
     const out = Array.from(walker!.walkAfter('', 10));
     expect(out.map((r) => r.target_id)).toEqual(['m1']);
+  });
+
+  it('D-318 step 1 — hands the chat-mailbox check to the mail walker', () => {
+    const registry = createCollectionRegistry();
+    registry.register(makeStubMailCollection('recued-chat', [fakeRecord('chat-1')]));
+    registry.register(makeStubMailCollection('work', [fakeRecord('work-1')]));
+    const sw = createSourceWalkerRegistry({ collections: registry, isChatMailbox: (slug) => slug === 'recued-chat' });
+    expect(Array.from(sw.get('mail')!.walkAfter('', 10)).map((r) => r.target_id)).toEqual(['work-1']);
+  });
+
+  it('D-318 step 5 — hands the conversation check to the mail walker', () => {
+    const registry = createCollectionRegistry();
+    registry.register(makeStubMailCollection('work', [fakeRecord('answer-1'), fakeRecord('work-1')]));
+    const sw = createSourceWalkerRegistry({
+      collections: registry, isChatConversationRecord: (record) => record.record_id === 'answer-1',
+    });
+    expect(Array.from(sw.get('mail')!.walkAfter('', 10)).map((r) => r.target_id)).toEqual(['work-1']);
   });
 
   it('routes the calendar scope to a live calendar walker (D-131 A.5)', () => {

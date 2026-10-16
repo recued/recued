@@ -132,6 +132,8 @@ export type MailComposeFilePickCaller = (
 ) => Promise<readonly string[]>;
 
 export interface MailComposeDeps {
+  /** Notify a host when a dialog opens, closes, or changes its busy state. */
+  onStateChanged?: () => void;
   /** D-269 step 1 — the server's resolved IANA zone for a scheduled send's
    *  activation stamp. Absent ⇒ this browser's, as before. */
   serverTimeZone?: () => string | undefined;
@@ -467,6 +469,7 @@ export const mountMailCompose = (
     const dialog = composeDialog(state);
     if (dialog === null) {
       host.innerHTML = '';
+      deps.onStateChanged?.();
       return;
     }
     host.innerHTML = renderMailComposeDialog({
@@ -493,6 +496,7 @@ export const mountMailCompose = (
       ...(mailboxStatus ? { mailboxStatus } : {}),
         ...(draftBusyLabel ? { busyLabel: draftBusyLabel } : {}) } } : {}),
     });
+    deps.onStateChanged?.();
   };
 
   const setState = (next: MailComposeState): void => {

@@ -27,7 +27,9 @@
  *        for that address's domain. The header map keeps a header's FIRST
  *        value (`mailHeaderMap`), and a receiver prepends its stamp, so a
  *        sender's planted stamp further down is never the one read. No stamp,
- *        no pass.
+ *        no pass. And (D-318 step 8) a pass is read only from a stamp that
+ *        parses cleanly, so a sender's address written into the receiver's own
+ *        stamp cannot read as one (`authentication-results.ts`).
  *
  *  Everything else is ignored, and the ask stays open, answerable in the web
  *  app (the always-on `ui` channel).
@@ -58,6 +60,7 @@ import {
   type NotificationBlock,
 } from '@recued/notification';
 
+import { dmarcPassFor } from '../../collections/mail/authentication-results.js';
 import type { MailUpsertContext } from '../../collections/mail/mail-collection.js';
 import type { CanonicalMessage } from '../../collections/mail/provider.js';
 import { mailMayTrigger } from '../../mail-facts/mail-ingest.js';
@@ -87,20 +90,8 @@ const domainOf = (address: string): string => {
 };
 
 /** Does an `Authentication-Results` value (RFC 8601) report a DMARC pass for
- *  `domain`? Each `;`-separated result is read on its own, its comments
- *  removed: `dmarc=pass (p=NONE) header.from=example.com`. A stamp with no
- *  authserv-id (Microsoft's starts at its first result) reads the same. */
-export const dmarcPassFor = (header: string | undefined, domain: string): boolean => {
-  if (header === undefined || domain === '') return false;
-  const want = domain.toLowerCase();
-  for (const part of header.replace(/\([^()]*\)/g, ' ').split(';')) {
-    const result = part.trim().toLowerCase();
-    if (!/^dmarc\s*=\s*pass\b/.test(result)) continue;
-    const from = /\bheader\.from\s*=\s*"?([^\s;"]+)"?/.exec(result)?.[1];
-    if (from === want) return true;
-  }
-  return false;
-};
+ *  `domain`? Shared with the email chat door (`authentication-results.ts`). */
+export { dmarcPassFor } from '../../collections/mail/authentication-results.js';
 
 /** How a message proves it is the owner's reply, or `null` when it does not. */
 export const emailAnswerProof = (

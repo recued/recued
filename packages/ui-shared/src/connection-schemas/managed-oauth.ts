@@ -4,8 +4,10 @@ import type { ConnectionSchema } from './types.js';
 /** D-322 §23 — authentication can change while the named service and its config stay pinned. */
 export const withAuthenticationSwitchSchema = (schema: ConnectionSchema): ConnectionSchema => ({
   ...schema, label: 'authentication', onboarding: undefined, probe: undefined,
-  description: 'Choose a broker account, review permissions, then verify API access before applying. Your connection name and bindings stay in place.',
-  fields: [...schema.fields.map(field => field.key === 'auth.type' ? { ...field, hidden: true }
+  description: 'Choose Recued direct OAuth or a broker account, review permissions, then verify API access before applying. Your connection name and bindings stay in place.',
+  fields: [...schema.fields.map(field => field.key === 'auth.type' ? { ...field, hidden: false, label: 'New authentication',
+      help: 'Choose how Recued connects to this service.',
+      options: ['oauth2_refresh', 'managed_oauth'], optionLabels: { oauth2_refresh: 'Recued direct OAuth — your OAuth app', managed_oauth: 'Managed OAuth — broker account' } }
     : field.key.startsWith('auth.') ? field : { ...field, readonly: true }),
     { key: 'switch.verification_url', label: 'Read-only access check URL', type: 'text',
       help: 'Use a resource this account can read within the saved API. For Google Sheets, paste a spreadsheet link. The response body is discarded.' }],
@@ -17,7 +19,7 @@ export const withManagedOAuthSchema = (schema: ConnectionSchema, authType?: stri
   if (!selector?.options?.some((type) => type === 'oauth2_refresh' || type === 'bearer' || type === 'managed_oauth')) return schema;
   const authSelector = { ...selector, hidden: false,
     options: [...new Set([...selector.options, 'managed_oauth'])],
-    optionLabels: { managed_oauth: 'Managed OAuth', oauth2_refresh: 'Your own OAuth app', bearer: 'Bearer token', ...selector.optionLabels } };
+    optionLabels: { managed_oauth: 'OAuth broker (optional)', oauth2_refresh: 'Recued direct OAuth', bearer: 'Bearer token', ...selector.optionLabels } };
   if (authType !== 'managed_oauth') {
     if (selector.options.includes('managed_oauth')) return schema;
     return { ...schema, fields: schema.fields.map((field) => field.key === 'auth.type' ? authSelector : field) };

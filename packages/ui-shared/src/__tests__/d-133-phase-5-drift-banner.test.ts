@@ -8,7 +8,7 @@
  *    - `housekeeping-drift-dismiss`  — fires dismissal rpc
  *
  *  Visibility filter: banners render only for `severity != 'none'`
- *  AND `dismissed_at === undefined`. */
+ *  AND `dismissed_at === undefined`, or a dismissal is still pending. */
 
 import { describe, expect, it } from 'vitest';
 import {
@@ -166,14 +166,16 @@ describe('D-133 P5 — drift banner content', () => {
     expect(html).toMatch(/data-action="housekeeping-drift-dismiss"[^>]*data-source-topic="purpose"/);
   });
 
-  it('disables both buttons while writing[topic] is true', () => {
+  it('keeps both pending dismissal buttons focusable until the write settles', () => {
     const html = renderHousekeepingDriftBanner({
-      signals: { purpose: drift() },
+      signals: { purpose: drift({ dismissed_at: NOW }) },
       writing: { purpose: true },
       writeError: {},
     });
-    expect(html).toMatch(/data-action="housekeeping-drift-review"[^>]*disabled/);
-    expect(html).toMatch(/data-action="housekeeping-drift-dismiss"[^>]*disabled/);
+    expect(html).toMatch(/data-action="housekeeping-drift-review"[^>]*aria-disabled="true"[^>]*aria-busy="true"/);
+    expect(html).toMatch(/data-action="housekeeping-drift-dismiss"[^>]*aria-disabled="true"[^>]*aria-busy="true"/);
+    expect(html).not.toMatch(/<button[^>]*\sdisabled(?:\s|>)/);
+    expect(html).toContain('Dismissing…');
   });
 
   it('renders an inline error block when writeError[topic] is set', () => {

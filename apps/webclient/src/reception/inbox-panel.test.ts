@@ -336,6 +336,7 @@ const setup = (opts: {
   failListAfterDecision?: boolean;
   listGateAfterFirst?: Promise<void>;
   headingLevel?: 2 | 3;
+  initialTargetId?:string;
 }): Harness => {
   const calls: ConnCall[] = [];
   let items = [...opts.items];
@@ -409,6 +410,7 @@ const setup = (opts: {
     conn,
     document,
     now: () => NOW,
+    ...(opts.initialTargetId ? {initialTargetId:opts.initialTargetId} : {}),
     ...(opts.headingLevel !== undefined
       ? { headingLevel: opts.headingLevel }
       : {}),
@@ -1338,4 +1340,14 @@ describe('reception inbox panel — an approval that runs several items', () => 
     expect(texts(root, 'reception-inbox-detail-covers')).toEqual([]);
     expect(texts(root, 'reception-inbox-muted')).toContain('There is nothing to change here.');
   });
+});
+
+
+describe('Customer work review handoffs',()=>{
+ it.each(['signoff_id','completion_id'] as const)('selects the exact %s review and focuses it instead of the first queue item',async key=>{
+  const h=setup({initialTargetId:'selected-request',items:[item({hold_id:'unrelated',preview:{title:'Unrelated request'},arg_schema:{fields:[]}}),item({hold_id:'exact-review',args:{[key]:'selected-request'},arg_schema:{fields:[]}})]});await flush();expect(h.mount.getState().selected_hold_id).toBe('exact-review');expect(h.document.activeElement?.getAttribute(RECEPTION_INBOX_DETAIL_HEADING_ATTR)).toBe('exact-review');expect(h.approveCalls()).toHaveLength(0);h.mount.dispose();
+ });
+ it('leaves a missing target explicit and does not choose an unrelated approval',async()=>{
+  const h=setup({initialTargetId:'gone',items:[item({hold_id:'unrelated',arg_schema:{fields:[]}})]});await flush();expect(h.mount.getState().selected_hold_id).toBeNull();expect(h.mount.getState().error).toContain('requested review');expect(h.approveCalls()).toHaveLength(0);h.mount.dispose();
+ });
 });

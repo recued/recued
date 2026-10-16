@@ -39,11 +39,10 @@ const listenWss = (
     });
   });
 
-/** Start a plain HTTP server on an ephemeral port; resolve with the port. */
-const listenHttp = (handler: http.RequestListener): Promise<number> =>
+/** Start a fixture on IPv4 loopback, matching the connector's enrolled URL. */
+const listenHttp = (server: http.Server): Promise<number> =>
   new Promise((resolve) => {
-    const server = http.createServer(handler);
-    server.listen(0, () => {
+    server.listen(0, '127.0.0.1', () => {
       cleanups.push(() => new Promise<void>((r) => server.close(() => r())));
       resolve((server.address() as AddressInfo).port);
     });
@@ -80,16 +79,34 @@ describe('mcp-ws-connector — real socket', () => {
   });
 
   it('refuses a non-101 upgrade response (3xx not followed — SSRF)', async () => {
-    // A plain HTTP server answers the upgrade with a 302. followRedirects
-    // is false, so `ws` surfaces it as unexpected-response → the connect
-    // rejects instead of chasing the Location to an internal host.
-    const port = await listenHttp((_req, res) => {
-      res.writeHead(302, { location: 'http://169.254.169.254/' });
+    // Handle the upgrade explicitly, rather than depending on HTTP request
+    // fallback. The local target records any accidental redirect without ever
+    // sending a request to a real internal/metadata host.
+    let targetRequests = 0;
+    const target = http.createServer((_req, res) => {
+      targetRequests += 1;
+      res.writeHead(401);
       res.end();
     });
+    target.on('upgrade', (_req, socket) => {
+      targetRequests += 1;
+      socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+    });
+    const targetPort = await listenHttp(target);
+    let upgradeRequests = 0;
+    const redirect = http.createServer();
+    redirect.on('upgrade', (_req, socket) => {
+      upgradeRequests += 1;
+      socket.end('HTTP/1.1 302 Found\r\n'
+        + `Location: ws://127.0.0.1:${targetPort}/\r\n`
+        + 'Connection: close\r\nContent-Length: 0\r\n\r\n');
+    });
+    const port = await listenHttp(redirect);
     await expect(
       createWsConnect()(`ws://127.0.0.1:${port}/`, {}),
     ).rejects.toThrow(/handshake rejected: HTTP 302/);
+    expect(upgradeRequests).toBe(1);
+    expect(targetRequests).toBe(0);
   });
 
   it('rejects with an AbortError when the connect signal fires', async () => {

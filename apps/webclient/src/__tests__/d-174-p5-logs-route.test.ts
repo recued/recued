@@ -293,6 +293,7 @@ const mountRoute = (overrides: {
   initialRunId?: string;
   initialRecipeId?: string;
   chatReturn?: ChatPlanAddress;
+  receptionReturn?: string;
   replaceState?: (
     data: unknown,
     unused: string,
@@ -343,6 +344,7 @@ const mountRoute = (overrides: {
     ...(overrides.initialRecipeId !== undefined
       ? { initialRecipeId: overrides.initialRecipeId }
       : {}),
+    ...(overrides.receptionReturn !== undefined ? {receptionReturn:overrides.receptionReturn} : {}),
     ...(overrides.chatReturn !== undefined
       ? { chatReturn: overrides.chatReturn }
       : {}),
@@ -2660,5 +2662,24 @@ describe('D-237 P2 residual — the all-refused run is visible to a reader', () 
     );
     expect(summary.yieldNotice?.kind).toBe('all-refused');
     expect(summary.tone).not.toBe('attention');
+  });
+});
+
+
+describe('Customer approval handoff',()=>{
+  it('loads the exact pending run, retains its return on reload and drops it for another run',async()=>{
+    const getCaller=vi.fn<RunsGetCaller>(async({run_id})=>({run:{...runDetail('awaiting_approval','approval-requested'),audit:{...runDetail().audit,run_id,status:'awaiting_approval'}}}));
+    const rig=mountRoute({initialRunId:'run-1',receptionReturn:'#reception/jobs/job%2F1/billing',getCaller});
+    await rig.route.whenLoaded();
+    expect(getCaller).toHaveBeenCalledWith({run_id:'run-1'});
+    let html=rig.root.children[0]?.innerHTML??'';
+    expect(html).toContain('Back to customer job');
+    expect(html).toContain('href="#reception/jobs/job%2F1/billing"');
+    expect(html).toContain('#logs/run-1/return/reception/jobs/job%2F1/billing');
+    expect(rig.route.getSelectedRun()?.audit.status).toBe('awaiting_approval');
+    await rig.route.openRun('other-run');
+    html=rig.root.children[0]?.innerHTML??'';
+    expect(html).not.toContain('data-logs-reception-return');
+    rig.route.dispose();
   });
 });

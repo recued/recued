@@ -52,11 +52,22 @@ export const RECEPTION_SECTIONS = [
   { id: 'jobs', label: 'Customer jobs' },
   { id: 'records', label: 'Records' },
   { id: 'signoffs', label: 'Customer sign-offs' },
+  { id: 'accounts', label: 'Accounts' },
+  { id: 'receivables', label: 'Receivables' },
+  { id: 'followups', label: 'Follow-ups' },
   { id: 'abuse', label: 'Abuse' },
   { id: 'endpoints', label: 'Endpoints' },
 ] as const;
 
 export type ReceptionSection = (typeof RECEPTION_SECTIONS)[number]['id'];
+
+export const RECEPTION_CUSTOMER_SECTIONS: readonly ReceptionSection[] = ['jobs','signoffs','accounts','receivables','followups'];
+export const RECEPTION_NAV_GROUPS = [
+  { section: 'inbox',label: 'Inbox' },{ section: 'jobs',label: 'Customer work' },
+  { section: 'records',label: 'Records' },{ section: 'endpoints',label: 'Manage' },
+] as const;
+export const receptionNavGroup = (section: ReceptionSection): ReceptionSection =>
+  RECEPTION_CUSTOMER_SECTIONS.includes(section) ? 'jobs' : section === 'abuse' ? 'endpoints' : section;
 
 /** The section a bare `#reception` (or an unknown segment) lands on. */
 export const RECEPTION_DEFAULT_SECTION: ReceptionSection = 'inbox';
@@ -138,6 +149,7 @@ export const RECEPTION_SECTION_NAV_STYLES = `
 [${RECEPTION_ROUTE_TABS_ATTR}] {
   box-sizing: border-box;
   display: inline-flex;
+  overflow-x: auto;
   gap: 4px;
   width: fit-content;
   max-width: 100%;
@@ -157,6 +169,8 @@ export const RECEPTION_SECTION_NAV_STYLES = `
   font-size: 13px;
   color: var(--fg-muted);
   cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
   transition: color 140ms ease, background-color 140ms ease, box-shadow 140ms ease;
 }
 [${RECEPTION_ROUTE_TABS_ATTR}] .reception-route-tab:hover {
@@ -172,6 +186,17 @@ export const RECEPTION_SECTION_NAV_STYLES = `
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+[data-customer-job-header]{position:sticky;top:0;z-index:5;background:var(--bg,var(--surface));padding:10px 0 4px;border-bottom:1px solid var(--border);display:grid;gap:8px}
+[data-customer-job-header] h2,[data-customer-job-header] p{margin:0}[data-customer-job-header] h2{font-size:20px}
+[data-customer-job-header] a{color:var(--accent)}[data-customer-job-header] .customer-job-primary{justify-self:start;font-weight:650}
+[data-job-detail]>[data-jobs-board]>h2{display:none}
+[data-customer-job-header] .customer-work-tabs{margin:0;padding-bottom:4px}
+[data-job-tab-hint]{color:var(--fg-muted);font-size:12px}
+.customer-work-tabs{display:flex;gap:6px;overflow-x:auto;max-width:100%;padding:4px 0 12px;margin-bottom:16px}
+.customer-work-tabs a{flex:0 0 auto;white-space:nowrap;padding:9px 12px;color:var(--fg-muted);text-decoration:none;border-radius:8px;font-size:14px}
+.customer-work-tabs a[aria-current=page]{color:var(--accent);background:var(--accent-weak);font-weight:650}
+[data-customer-followup-group]{padding:14px;border:1px solid var(--border);border-radius:10px}[data-customer-followup-group]>summary{font-weight:650;cursor:pointer}
+[data-customer-work]{display:grid;gap:16px;min-width:0}[data-customer-work]>[hidden]{display:none!important}
 /* The route host already owns the outer padding; the endpoints-spine + abuse-section
    reception-page block would otherwise double it. Neutralize the inner
    pad so the section content aligns with the header + tab bar. */
@@ -189,6 +214,7 @@ export const RECEPTION_SECTION_NAV_STYLES = `
   white-space: nowrap;
   border: 0;
 }
+@media(max-width:640px){[data-customer-route] .reception-route-subtitle{display:none}[data-customer-route] .reception-route-header{margin-bottom:12px}}
 @media (max-width: 720px) {
   [${RECEPTION_ROUTE_HOST_ATTR}] {
     padding: 18px 14px 28px;
@@ -198,19 +224,9 @@ export const RECEPTION_SECTION_NAV_STYLES = `
     width: 100%;
   }
   [${RECEPTION_ROUTE_TABS_ATTR}] .reception-route-tab {
-    min-width: 0;
-    flex: 1 1 0;
-    padding-inline: 6px;
+    flex: 0 0 auto;
+    padding-inline: 12px;
     text-align: center;
-    overflow-wrap: anywhere;
-  }
-}
-@media (max-width: 340px) {
-  [${RECEPTION_ROUTE_TABS_ATTR}] {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  [${RECEPTION_ROUTE_TABS_ATTR}] .reception-route-tab {
     overflow-wrap: normal;
   }
 }

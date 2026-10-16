@@ -428,6 +428,13 @@ export type CollectionCaps =
   | FileCollectionCaps
   | import('./calendar.js').CalendarCollectionCaps;
 
+/** Mail onboarding evidence. A successful read may find no messages, and does
+ * not mean the initial history has finished importing. */
+export interface MailSyncStatus {
+  access_verified: boolean;
+  initial_sync_complete: boolean;
+}
+
 /** Phase 7 (D-110) — DB-backed instance row surfaced over the rpc
  *  `collection.listInstances`. Carries everything parseRecipe needs
  *  to validate a recipe's ingredient/instance pairing: the slug
@@ -450,6 +457,7 @@ export interface CollectionInstanceRow {
   adapter_type: string;
   /** D-322 — borrowed API connection name. No broker secrets or remote handle. */
   managed_connection_name?: string;
+  source_authentication?: 'direct_oauth' | 'broker';
   /** Cached capability shape. File rows carry `FileCollectionCaps`,
    *  calendar rows carry `CalendarCollectionCaps`. Consumers narrow
    *  on `platform` before reading platform-specific cap fields. */

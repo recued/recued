@@ -4662,6 +4662,9 @@ export const mountAiModelsPage = (
     renderedSlotClearConfirm = null;
     const active = (doc as Partial<Document>).activeElement as
       HTMLElement | null | undefined;
+    // The cache sub-mount keeps its DOM, but detaching its host below still
+    // drops native focus. Restore the same child after re-parenting it.
+    const cacheFocus = active != null && cacheHost?.contains?.(active) ? active : null;
     const focusedTab = active !== undefined && active !== null
       ? active.getAttribute?.(AI_MODELS_TAB_ATTR) ?? null
       : null;
@@ -4826,6 +4829,10 @@ export const mountAiModelsPage = (
       });
     }
     if (!focusRestored) focusRestored = restoreOwnedFocus(ownedFocus);
+    if (!focusRestored && cacheFocus !== null && aiTab === 'usage') {
+      cacheFocus.focus?.({ preventScroll: true });
+      focusRestored = true;
+    }
     const slotClearFocusKey = slotClearFocusAfterRender;
     slotClearFocusAfterRender = null;
     if (slotClearFocusKey !== null && !focusRestored) {

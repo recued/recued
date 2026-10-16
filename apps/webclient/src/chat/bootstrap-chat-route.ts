@@ -2786,8 +2786,9 @@ export interface BootstrapChatRouteOptions {
   initialConnectedSource?: ChatConnectedSource;
   connectedSourceStatusCaller?: () => Promise<ChatConnectedSourceStatus>;
   connectedSourcePoll?: ChatConnectedSourcePollScheduler;
-  /** Defaults to 2500ms, bounded to 24 follow-up checks. */
+  /** Defaults to 2500ms, slowing after the first minute of a long import. */
   connectedSourcePollIntervalMs?: number;
+  /** Optional cap; by default polling continues until ready or dismissed. */
   connectedSourcePollMaxAttempts?: number;
   /** Called once when the source context is consumed or dismissed so the
    * shell can silently canonicalize the durable URL without remounting Chat
@@ -3646,9 +3647,10 @@ export const bootstrapChatRoute = (
   // Shell-frame Step 3 — the composer's typed-but-unsent text, held in the
   // closure (NOT route state) so a re-render driven by a picker change or an
   // inbound broadcast re-applies it to the rebuilt textarea instead of
-  // blanking mid-compose. Cleared on a successful send + on a context switch
-  // (open another session / start a new chat).
+  // blanking mid-compose. Conversation switches park it in memory; only a
+  // confirmed send or explicit discard clears the draft.
   let composerDraft = '';
+  let composerDraftOwner: { sessionId: string | null; discarded: boolean } = { sessionId: null, discarded: false };
   // Auto-seeded onboarding/source prompts are recoverable scaffolding, not
   // unsaved user work. Typing, choosing a follow-up, or preparing an action
   // draft promotes the composer to protected work for the shell leave guard.
@@ -3960,6 +3962,7 @@ export const bootstrapChatRoute = (
   let sessionListRequest = 0;
   let pendingSubmission: { key: string; id: string } | null = null;
   let draftCreationId: string | null = null;
+  const sendDispatches = new Set<string | null>();
 
   const trackTurn = (sessionId: string, turnId: string): void => {
     const turns = turnsInFlightBySession.get(sessionId);
@@ -4394,7 +4397,7 @@ export const bootstrapChatRoute = (
   const connectedSourcePollIntervalMs =
     opts.connectedSourcePollIntervalMs ?? 2_500;
   const connectedSourcePollMaxAttempts =
-    opts.connectedSourcePollMaxAttempts ?? 24;
+    opts.connectedSourcePollMaxAttempts ?? Infinity;
   const timerWindow = doc.defaultView;
   const connectedSourcePoll = opts.connectedSourcePoll
     ?? (timerWindow === undefined || timerWindow === null
@@ -6845,23 +6848,32 @@ export const bootstrapChatRoute = (
       title = `Getting ${provider} ready for Chat`;
       copy = 'Checking that Recued has read enough to search this account.';
     } else if (viewState === 'pending') {
-      badge = 'Reading it for the first time';
-      title = `${provider} is connected`;
-      copy = state.aiAvailable === false
+      badge = connectedSource.lane === 'mail' ? 'Checking mailbox access' : 'Reading it for the first time';
+      title = connectedSource.lane === 'mail' ? `${provider} sign-in saved` : `${provider} is connected`;
+      copy = connectedSource.lane === 'mail'
+        ? 'Your sign-in is saved. Recued is checking mailbox access in the background; you do not need to sign in again.'
+        : state.aiAvailable === false
         ? 'Recued can keep reading while you set up Chat. We will bring you back when it is ready.'
         : 'Recued is finishing its first read. As soon as it can search this account, we will suggest a first question.';
+    } else if (viewState === 'syncing') {
+      badge = 'Connected — syncing';
+      title = `${provider} is connected`;
+      copy = 'Mailbox access is verified. Mail already received is available; the rest is syncing in the background.';
     } else if (viewState === 'ready') {
       badge = 'Ready to ask';
       title = `${provider} is ready for Chat`;
       copy = state.aiAvailable === false
-        ? 'Recued has finished its first read. Set up Chat, and we will bring you back with a first question ready.'
+        ? 'Recued can search this account. Set up Chat, and we will bring you back with a first question ready.'
         : connectedSourcePromptSeeded
           ? 'Here is a first question you could ask. Change it, or send it as it is.'
-          : 'Recued has finished its first read. You can ask Chat about this account now.';
+          : 'Recued can search this account. You can ask Chat about it now.';
     } else if (viewState === 'attention') {
-      badge = 'Needs attention';
-      title = `${provider} needs attention`;
-      copy = 'The account is saved, but something is wrong with the connection. Chat cannot rely on it yet.';
+      const interrupted = connectedSourceStatus.authState === 'degraded';
+      badge = interrupted ? 'Sync interrupted' : 'Needs attention';
+      title = interrupted ? `${provider} sync interrupted` : `${provider} needs attention`;
+      copy = interrupted
+        ? 'Your sign-in is saved. A sync attempt failed; Recued will keep trying in the background.'
+        : 'The account is saved, but something is wrong with the connection. Chat cannot rely on it yet.';
     } else if (viewState === 'missing') {
       badge = 'Waiting for account';
       title = `Finding ${provider} in Connections`;
@@ -8133,7 +8145,9 @@ export const bootstrapChatRoute = (
         // An in-flight send owns the composer; `opening` is waiting on the
         // browser's own prompt and has nothing to toggle.
         if (state.sending || hasPendingInitialDraft() || phase === 'opening') mic.disabled = true;
-        mic.addEventListener('click', () => { voiceComposer?.toggle(); });
+        mic.addEventListener('click', () => {
+          voiceComposer?.toggle();
+        });
         inputRow.appendChild(mic);
         // ⚠ A stopped recording SENDS ITSELF, so discard has to exist while the
         // recording is still running — after the upload finalizes there is no
@@ -8328,19 +8342,89 @@ export const bootstrapChatRoute = (
     if (factory === null) return null;
     return createVoiceComposer({
       factory,
-      onRecording: (file) => {
-        pendingVoiceSend = true;
-        attachments.attach(file);
-        // `rows()` is in attach order, so the recording is the row just added.
-        const rows = attachments.rows();
-        const added = rows.length > 0 ? rows[rows.length - 1] : undefined;
-        pendingVoiceRowId = added?.id ?? null;
-        if (added !== undefined) voiceRowIds.add(added.id);
-        render();
+      recordingContext: () => composerDraftOwner,
+      onRecording: (file, owner) => {
+        if (!owner || owner.discarded) return;
+        const current = owner === composerDraftOwner;
+        if (current) pendingVoiceSend = true;
+        const id = attachments.attach(file, owner.sessionId);
+        if (current) pendingVoiceRowId = id ?? null;
+        if (id !== undefined) voiceRowIds.add(id);
+        renderPreservingHandoffFocus();
       },
       onChange: () => { render(); },
     });
   })();
+
+  interface ParkedComposerDraft {
+    text: string;
+    protected: boolean;
+    reply: ChatReplyDraft | null;
+    submission: { key: string; id: string } | null;
+    creationId: string | null;
+    owner: typeof composerDraftOwner;
+    investigation: BootstrapChatRouteOptions['initialWorkSubmission'];
+    followup: ConnectedSourceFollowupDraft | null;
+    continuation: ApprovedPlanContinuationDraft | null;
+    diagnosis: DataVerificationDiagnosisDraft | null;
+    verification: DataVerificationLanding | null;
+    error: ClassifiedRpcError | null;
+  }
+  // Route-lifetime only, scoped to this paired Chat mount. Unsent work never
+  // enters browser storage or the server's conversation history.
+  const parkedComposerDrafts = new Map<string | null, ParkedComposerDraft>();
+  const parkComposerDraft = (discard = false): void => {
+    const id = state.activeSessionId;
+    if (discard) {
+      composerDraftOwner.discarded = true;
+      parkedComposerDrafts.delete(id);
+      composerAttachments.discardDraft(id);
+    } else {
+      parkedComposerDrafts.set(id, {
+        text: composerDraft, protected: composerDraftProtected, reply: composerReply,
+        submission: pendingSubmission, creationId: draftCreationId, owner: composerDraftOwner,
+        investigation: workInvestigationDraft?.sessionId === id ? workInvestigationDraft : undefined,
+        followup: connectedSourceFollowupDraft, continuation: approvedPlanContinuationDraft,
+        diagnosis: dataVerificationDiagnosisDraft,
+        verification: dataVerificationLanding?.address.sessionId === id ? dataVerificationLanding : null,
+        error: state.error === sendError ? sendError : null,
+      });
+    }
+    // A voice upload may finish in the background, but navigation never sends
+    // that draft automatically. A recording still using the mic needs its
+    // existing explicit discard guard.
+    pendingVoiceSend = false;
+    pendingVoiceRowId = null;
+    if (discard || voiceComposer?.phase() !== 'idle') voiceComposer?.cancel();
+  };
+  const restoreComposerDraft = (id: string | null): void => {
+    const draft = parkedComposerDrafts.get(id);
+    parkedComposerDrafts.delete(id);
+    composerDraftOwner = draft?.owner ?? { sessionId: id, discarded: false };
+    composerDraft = draft?.text ?? '';
+    composerDraftProtected = draft?.protected ?? false;
+    composerReply = draft?.reply ?? null;
+    pendingSubmission = draft?.submission ?? null;
+    draftCreationId = draft?.creationId ?? null;
+    workInvestigationDraft = draft?.investigation
+      ?? (workInvestigationDraft?.sessionId === id ? workInvestigationDraft : undefined);
+    connectedSourceFollowupDraft = draft?.followup ?? null;
+    approvedPlanContinuationDraft = draft?.continuation ?? null;
+    dataVerificationDiagnosisDraft = draft?.diagnosis ?? null;
+    dataVerificationLanding = draft?.verification
+      ?? (dataVerificationLanding?.address.sessionId === id ? dataVerificationLanding : null);
+    sendError = draft?.error ?? null;
+    composerAttachments.activateDraft(id);
+  };
+  const hasComposerDraft = (id: string | null): boolean => {
+    const draft = parkedComposerDrafts.get(id);
+    return composerAttachments.hasDraft(id) || (id === state.activeSessionId
+      ? composerReply !== null || (composerDraftProtected && composerDraft.trim().length > 0)
+      : draft !== undefined && (draft.reply !== null || (draft.protected && draft.text.trim().length > 0)));
+  };
+  const hasParkedComposerWork = (): boolean =>
+    [...parkedComposerDrafts.values()].some(draft =>
+      draft.reply !== null || (draft.protected && draft.text.trim().length > 0));
 
   let renderedSessionId: string | null = null;
   let followFirstTranscriptFor: string | null = null;
@@ -8479,7 +8563,7 @@ export const bootstrapChatRoute = (
     // Visible label shortens for the rail; the ACCESSIBLE name does not, so
     // "New chat" remains what a screen reader and every by-name query hear.
     newButton.setAttribute('aria-label', 'New chat');
-    newButton.textContent = '+ New';
+    newButton.textContent = state.activeSessionId !== null && hasComposerDraft(null) ? '+ New · Draft' : '+ New';
     // New chat supersedes an open in flight rather than waiting behind it, so
     // the only thing that makes it unavailable is a history action holding the
     // list.
@@ -8678,6 +8762,13 @@ export const bootstrapChatRoute = (
               status.setAttribute(CHAT_ROUTE_SESSION_STATUS_ATTR, rowStatus.attr);
               status.textContent = rowStatus.copy;
               row.appendChild(status);
+            }
+            if (hasComposerDraft(session.id)) {
+              const draft = doc.createElement('span');
+              draft.className = 'chat-session-status';
+              draft.setAttribute('data-chat-session-draft', '');
+              draft.textContent = 'Draft';
+              row.appendChild(draft);
             }
             row.addEventListener('click', () => {
               if (historyActionInFlight()) {
@@ -9895,6 +9986,8 @@ export const bootstrapChatRoute = (
     && connectedSourcePoll !== null
     && connectedSourcePollAttempts < connectedSourcePollMaxAttempts
     && (connectedSourceStatus?.state === 'pending'
+      || connectedSourceStatus?.state === 'syncing'
+      || (connectedSourceStatus?.state === 'attention' && connectedSourceStatus.authState === 'degraded')
       || connectedSourceStatus?.state === 'missing'
       || connectedSourceStatus?.state === 'unknown');
 
@@ -9906,7 +9999,7 @@ export const bootstrapChatRoute = (
       if (disposed || !shouldPollConnectedSource()) return;
       connectedSourcePollAttempts += 1;
       void refreshConnectedSourceStatus(true);
-    }, connectedSourcePollIntervalMs);
+    }, connectedSourcePollAttempts < 24 ? connectedSourcePollIntervalMs : Math.max(connectedSourcePollIntervalMs, 15_000));
   };
 
   /** Re-read readiness from the authoritative lane list. Quiet polls neither
@@ -10200,6 +10293,7 @@ export const bootstrapChatRoute = (
     sessionId: string,
     returnMessageId: string | null = null,
     returnPlanId: string | null = null,
+    discardDraft = false,
   ): Promise<boolean> => {
     if (historyActionInFlight()) {
       focusHistoryActionOwner();
@@ -10208,33 +10302,15 @@ export const bootstrapChatRoute = (
     if (workInvestigationDraft !== undefined && sessionId !== workInvestigationDraft.sessionId) {
       initialWorkSubmission = undefined;
     }
-    if (hasPendingInitialDraft() && sessionId !== initialDraftSessionId) {
-      pendingInitialFiles = []; pendingRecoveryDraft = null;
-      initialSessionIdOnLoad = null;
-    }
     const previousLanding = { requestedMessageId, requestedPlanId, landingTargetReady };
-    if (
-      dataVerificationLanding !== null
-      && (
-        dataVerificationLanding.address.sessionId !== sessionId
-        || dataVerificationLanding.address.planId !== returnPlanId
-      )
-    ) {
-      dataVerificationLanding = null;
-    }
     requestedMessageId = returnMessageId;
     requestedPlanId = returnPlanId;
     landingTargetReady = false;
     planTargetChecking = false;
     planTargetUnverified = false;
     reconcileLandingTarget();
-    // What the composer held when the switch was ASKED for. Anything else in
-    // there when hydration lands was typed DURING the load, and is the
-    // person's unsent words — see the clear below.
     filePickerAbort?.abort();
-    const draftAtSwitch = composerDraft;
     conversationFiles?.close();
-    const attachmentsAtSwitch = composerAttachments.rows().map(row => row.id);
     const snapshotGeneration = beginThreadSnapshotLoad(
       sessionId,
       'navigation',
@@ -10257,37 +10333,25 @@ export const bootstrapChatRoute = (
       );
       if (disposed || bufferedEvents === null) return false;
       if (snapshot.messages.length > 0) hasCompletedChat = true;
-      // Switching threads abandons any typed-but-unsent draft.
+      // Commit composer ownership only after the winning read succeeds. Save
+      // the latest input, including words typed while this read was pending.
+      const switchingDraft = state.activeSessionId !== sessionId;
+      if (switchingDraft) parkComposerDraft(discardDraft);
+      if (hasPendingInitialDraft() && sessionId !== initialDraftSessionId) {
+        pendingInitialFiles = []; pendingRecoveryDraft = null;
+        initialSessionIdOnLoad = null;
+      }
       historyLandingActive = false;
       pendingDraftGuard = null;
       sessionAction = null;
       retireConnectedSourceHandoff(false);
       resetConnectedSourceTurns();
-      resetPlanContinuations();
-      connectedSourceFollowupDraft = null;
+      if (switchingDraft) resetPlanContinuations();
+      if (switchingDraft) connectedSourceFollowupDraft = null;
       pendingConnectedSourceAnswer = null;
       pendingConnectedSourceProvisionalTurnId = null;
       completedMessageIdsByTurn.clear();
-      // ⛔ CLEAR ONLY WHAT WE CAME IN WITH. This used to be unconditional, and
-      // the composer stays live through the whole load: click a chat, type
-      // while it opens, and hydration silently swallowed what you typed. The
-      // draft guard cannot catch it either — that runs once, at click time,
-      // before those words existed.
-      //
-      // Same discipline as the `chat.send` ack ("clear the draft, but ONLY if
-      // it is still the text we sent"), and the same direction of failure as
-      // everything else here: carrying a stray sentence into the next chat is
-      // visible and one keystroke to undo; eating it is neither. It keeps its
-      // protected flag, so the NEXT switch guards it properly.
-      if (state.activeSessionId !== sessionId && composerDraft === draftAtSwitch) {
-        composerDraft = '';
-        composerDraftProtected = false;
-        if (workInvestigationDraft?.sessionId !== sessionId) workInvestigationDraft = undefined;
-      }
-      if (state.activeSessionId !== sessionId) {
-        composerReply = null;
-        for (const id of attachmentsAtSwitch) composerAttachments.remove(id);
-      }
+      if (switchingDraft) restoreComposerDraft(sessionId);
       let thread = hydrateThreadFromSnapshot(initialChatThreadState(), snapshot);
       for (const event of bufferedEvents) {
         thread = reduceChatThreadEvent(thread, event);
@@ -10311,8 +10375,8 @@ export const bootstrapChatRoute = (
         ...state,
         activeSessionId: sessionId,
         thread,
-        error: null,
-        sending: false,
+        error: sendError,
+        sending: sendDispatches.has(sessionId),
         pending_turn_id: null,
       });
       landingTargetReady = true;
@@ -10479,7 +10543,7 @@ export const bootstrapChatRoute = (
     }
     if (
       !discardProtectedDraft
-      && (hasPendingInitialDraft() || composerReply !== null || composerAttachments.rows().length > 0 || (composerDraftProtected && composerDraft.trim().length > 0))
+      && (hasPendingInitialDraft() || (voiceComposer !== null && voiceComposer.phase() !== 'idle'))
       && (hasPendingInitialDraft() ? initialDraftSessionId : state.activeSessionId) !== sessionId
     ) {
       pendingDraftGuard = { kind: 'open', sessionId, ...(messageId ? { messageId } : {}), ...(delivery ? { delivery: true } : {}) };
@@ -10533,7 +10597,7 @@ export const bootstrapChatRoute = (
     renderPreservingHandoffFocus();
     let opened = false;
     try {
-      opened = await openSession(sessionId, messageId ?? null);
+      opened = await openSession(sessionId, messageId ?? null, null, discardProtectedDraft);
       if (navigationRequest !== request) return;
       if (
         !disposed
@@ -10852,9 +10916,9 @@ export const bootstrapChatRoute = (
   // Shell-frame Step 3 — "New chat" enters the lazy DRAFT state (NO rpc); the
   // session is minted on the first send, so the history holds only real
   // sessions (fixes the eager-create junk). A no-op ONLY when already in a
-  // BLANK draft — "New chat while blank → no-op" (§D.L1); a draft with typed
-  // text asks before reset so switching from history cannot silently discard
-  // user work.
+  // BLANK draft — "New chat while blank → no-op" (§D.L1). Returning from
+  // a conversation restores the parked new-chat draft; resetting that draft
+  // itself still requires the explicit discard guard.
   const startNewChat = (
     discardProtectedDraft = false,
     addressMode?: 'push' | 'replace',
@@ -10865,7 +10929,9 @@ export const bootstrapChatRoute = (
     }
     if (
       !discardProtectedDraft
-      && (hasPendingInitialDraft() || composerReply !== null || composerAttachments.rows().length > 0 || (composerDraftProtected && composerDraft.trim().length > 0))
+      && (hasPendingInitialDraft() || (voiceComposer !== null && voiceComposer.phase() !== 'idle')
+        || (state.activeSessionId === null && (composerReply !== null || composerAttachments.rows().length > 0
+          || (composerDraftProtected && composerDraft.trim().length > 0))))
     ) {
       pendingDraftGuard = { kind: 'new' };
       render();
@@ -10903,7 +10969,8 @@ export const bootstrapChatRoute = (
     mobileHistoryOpen = false;
     pendingDraftGuard = null;
     sessionAction = null;
-    retireConnectedSourceHandoff(true);
+    parkComposerDraft(discardProtectedDraft || state.activeSessionId === null);
+    retireConnectedSourceHandoff(false);
     resetConnectedSourceTurns();
     resetPlanContinuations();
     dataVerificationLanding = null;
@@ -10923,23 +10990,17 @@ export const bootstrapChatRoute = (
     pendingConnectedSourceAnswer = null;
     pendingConnectedSourceProvisionalTurnId = null;
     completedMessageIdsByTurn.clear();
-    composerDraft = '';
-    composerDraftProtected = false;
-    pendingSubmission = null;
     initialWorkSubmission = undefined;
-    workInvestigationDraft = undefined;
-    composerReply = null;
+    restoreComposerDraft(null);
     filePickerAbort?.abort(); pendingInitialFiles = []; pendingRecoveryDraft = null;
     conversationFiles?.close();
     initialSessionIdOnLoad = null;
-    composerAttachments.clear();
-    draftCreationId = null;
     state = {
       ...state,
       activeSessionId: null,
       thread: initialChatThreadState(),
-      error: null,
-      sending: false,
+      error: sendError,
+      sending: sendDispatches.has(null),
       pending_turn_id: null,
     };
     render();
@@ -11007,6 +11068,10 @@ export const bootstrapChatRoute = (
       state = { ...state, sessions: remaining, error: null };
       historyMessageSearch.removeSession(session.id);
       turnsInFlightBySession.delete(session.id);
+      const deletedDraft = parkedComposerDrafts.get(session.id);
+      if (deletedDraft) deletedDraft.owner.discarded = true;
+      parkedComposerDrafts.delete(session.id);
+      composerAttachments.discardDraft(session.id);
       sessionAction = null;
       historyAnnouncement = `Deleted ${sessionTitle(session)}.`;
       if (state.activeSessionId === session.id) {
@@ -11157,13 +11222,17 @@ export const bootstrapChatRoute = (
     // is still null here, so `pickerSelectedSource` resolves the draft fallback
     // chain (explicit pick → global default → first configured source).
     const draftSource = pickerSelectedSource();
+    const navigationAtCreate = navigationRequest;
+    const snapshotAtCreate = threadSnapshotGeneration;
+    const stillOwnsDraft = (): boolean => !disposed && state.activeSessionId === null
+      && navigationRequest === navigationAtCreate && threadSnapshotGeneration === snapshotAtCreate;
     try {
       draftCreationId ??= crypto.randomUUID();
       const { session_id } = await opts.conn('chat.session.create', {
         creation_id: draftCreationId,
         title: deriveSessionTitle(firstMessage),
       });
-      if (disposed) return null;
+      if (!stillOwnsDraft()) return null;
       const snapshot = await opts.conn('chat.session.get', {
         session_id,
         // Windowed like every other conversation read, though this one is
@@ -11171,7 +11240,7 @@ export const bootstrapChatRoute = (
         // re-derive from "well, it was just created".
         limit: CHAT_HISTORY_WINDOW,
       });
-      if (disposed) return null;
+      if (!stillOwnsDraft()) return null;
       let thread = hydrateThreadFromSnapshot(initialChatThreadState(), snapshot);
       // Apply the SOURCE the draft picker displayed (layer + § A.14 slot hint)
       // so the new session routes to what the user saw; skip the rpc when it
@@ -11195,7 +11264,7 @@ export const bootstrapChatRoute = (
               source_id: draftSource.id,
             },
           });
-          if (disposed) return null;
+          if (!stillOwnsDraft()) return null;
           thread = {
             ...thread,
             session: {
@@ -11213,6 +11282,10 @@ export const bootstrapChatRoute = (
           };
         }
       }
+      composerAttachments.moveDraft(null, session_id);
+      composerDraftOwner.sessionId = session_id;
+      sendDispatches.delete(null);
+      sendDispatches.add(session_id);
       state = {
         ...state,
         activeSessionId: session_id,
@@ -11232,7 +11305,7 @@ export const bootstrapChatRoute = (
       void loadSessions(true);
       return thread.session;
     } catch (err) {
-      if (disposed) return null;
+      if (!stillOwnsDraft()) return null;
       state = { ...state, error: classifyRpcError(err) };
       renderPreservingHandoffFocus();
       return null;
@@ -11329,6 +11402,8 @@ export const bootstrapChatRoute = (
     // Lock the composer IMMEDIATELY — BEFORE the (awaited) lazy session
     // create — so a second click / Enter during create can't mint a second
     // session and dispatch a second turn (the draft Send is otherwise enabled).
+    let dispatchSessionId = state.activeSessionId;
+    sendDispatches.add(dispatchSessionId);
     state = { ...state, sending: true, error: null };
     renderPreservingHandoffFocus();
     // An explicit send (including a prepared investigation) follows the new
@@ -11352,13 +11427,15 @@ export const bootstrapChatRoute = (
         // Create/open failed (the error is surfaced) or disposed — release the
         // lock so the user can retry (`ensureSessionForDraft` PRESERVES the
         // lock on success, so the send path inherits it).
-        if (!disposed && state.sending) {
+        sendDispatches.delete(dispatchSessionId);
+        if (!disposed && state.activeSessionId === dispatchSessionId && state.sending) {
           state = { ...state, sending: false };
           renderPreservingHandoffFocus();
         }
         return;
       }
     }
+    dispatchSessionId = session.id;
     if (state.thread.session?.id === session.id
       && routeRoot.querySelector?.(`[${CHAT_ROUTE_MESSAGES_ATTR}]`) == null) {
       followFirstTranscriptFor = session.id;
@@ -11463,10 +11540,22 @@ export const bootstrapChatRoute = (
       }
       if (disposed || state.activeSessionId !== session.id) return;
       if (pendingSubmission?.key !== submissionKey) pendingSubmission = { key: submissionKey, id: crypto.randomUUID() };
-      const sendAck = await opts.conn('chat.send', { ...sendPayload, submission_id: pendingSubmission.id });
-      pendingSubmission = null;
-      workInvestigationDraft = undefined;
-      draftCreationId = null;
+      const submission = pendingSubmission;
+      const sendAck = await opts.conn('chat.send', { ...sendPayload, submission_id: submission.id });
+      if (pendingSubmission === submission) pendingSubmission = null;
+      const parked = parkedComposerDrafts.get(session.id);
+      if (parked?.submission === submission) parked.submission = null;
+      if (parked) {
+        parked.investigation = undefined;
+        if (parked.text === message && parked.reply === replyAtSend) {
+          parked.text = ''; parked.protected = false; parked.reply = null;
+          parked.followup = null; parked.continuation = null; parked.diagnosis = null;
+          parked.error = null;
+        }
+      }
+      if (state.activeSessionId === session.id) workInvestigationDraft = undefined;
+      if (state.activeSessionId === session.id) draftCreationId = null;
+      if (parked) parked.creationId = null;
       void queueView.refresh(session.id);
 
       const { turn_id } = sendAck;
@@ -11486,22 +11575,11 @@ export const bootstrapChatRoute = (
       for (const row of attachmentsAtSend) composerAttachments.remove(row.id);
       // Retire voice attribution for the submitted rows only.
       for (const row of attachmentsAtSend) voiceRowIds.delete(row.id);
-      pendingVoiceRowId = null;
+      if (state.activeSessionId === session.id) pendingVoiceRowId = null;
       if (disposed) return;
-      // ⛔ THE THREAD CAN HAVE MOVED WHILE `chat.send` WAS AWAITED. Every
-      // switch path refuses mid-send (`retainPendingSend`), but that check
-      // runs at ENTRY: a switch already awaiting its `chat.session.get` when
-      // the send starts resolves AFTER this ack, and `openSession` then drops
-      // the lock on purpose ("a pending turn belongs to the session being
-      // left"). Everything below reasons about the thread that was on screen
-      // when the send began, so re-check identity ONCE here rather than in
-      // each block. Without this, `beginInFlightTurn` painted THIS turn's
-      // "Preparing your answer…" bubble onto whichever session is now open,
-      // where its session-gated `chat.message_complete` can never land — a
-      // bubble that never resolves and a `pending_turn_id` nothing can settle.
-      // Dropping the client-side scaffold loses nothing: the turn is durable
-      // server-side and rehydrates when its own session is reopened. The
-      // render is for the cleared attachment chips above.
+      // The owner may have opened another conversation during admission.
+      // Track the accepted turn against its own session before deciding
+      // whether its scaffold belongs in the visible thread.
       // The turn is the server's now, and it outlives whatever this tab is
       // looking at — record it against ITS session before the identity fork
       // below, so a turn left behind by a switch is still tracked as running.
@@ -11637,11 +11715,25 @@ export const bootstrapChatRoute = (
       // metadata. An already-adopted broadcast remains visible; otherwise the
       // handoff and original draft stay available for a clean retry.
       if (followFirstTranscriptFor === session.id) followFirstTranscriptFor = null;
-      pendingConnectedSourceAnswer = null;
-      pendingConnectedSourceProvisionalTurnId = null;
-      sendError = classifyRpcError(err);
-      state = { ...state, sending: false, error: sendError };
-      renderPreservingHandoffFocus();
+      if (state.activeSessionId === session.id) {
+        pendingConnectedSourceAnswer = null;
+        pendingConnectedSourceProvisionalTurnId = null;
+      }
+      const error = classifyRpcError(err);
+      if (state.activeSessionId === session.id) {
+        sendError = error;
+        state = { ...state, sending: false, error };
+        renderPreservingHandoffFocus();
+      } else {
+        const draft = parkedComposerDrafts.get(session.id);
+        if (draft) draft.error = error;
+      }
+    } finally {
+      sendDispatches.delete(dispatchSessionId);
+      if (!disposed && state.activeSessionId === dispatchSessionId && state.sending) {
+        state = { ...state, sending: false };
+        renderPreservingHandoffFocus();
+      }
     }
   };
 
@@ -12171,7 +12263,8 @@ export const bootstrapChatRoute = (
       || createOverlay?.hasUnsavedChanges() === true
       || composerReply !== null
       || pendingInitialFiles.length > 0
-      || composerAttachments.rows().length > 0
+      || composerAttachments.hasDrafts()
+      || hasParkedComposerWork()
       || (composerDraftProtected && composerDraft.trim().length > 0)
       || (
         pendingRecoveryDraft?.replyTo !== undefined
@@ -12184,7 +12277,7 @@ export const bootstrapChatRoute = (
         : createOverlay?.hasUnsavedChanges() === true
           ? 'Throw away this unfinished item?'
           : null,
-    hasInFlightWork: () => state.sending
+    hasInFlightWork: () => sendDispatches.size > 0 || state.sending
       // A turn left running in another chat is still this tab's work.
       || turnsInFlightBySession.size > 0
       || pendingPlanActions.size > 0
@@ -12217,6 +12310,7 @@ export const bootstrapChatRoute = (
       // D-172 P2 — cancel any climbing upload with the route. Leaving an engine
       // running would keep a socket open against a surface nobody is watching.
       composerAttachments?.destroy();
+      parkedComposerDrafts.clear();
       // ⛔ Releases the microphone. A route torn down mid-recording that left
       // the track live would keep the browser's recording indicator lit with
       // nothing on screen to explain it.

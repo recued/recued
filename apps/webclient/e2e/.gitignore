@@ -16,3 +16,9 @@ harness/existing-files-harness.js
 harness/mail-work-harness.js
 harness/quote-signoff-harness.js
 harness/customer-jobs-harness.js
+harness/quote-completion-reminders-harness.js
+harness/quote-payment-reminders-harness.js
+harness/saved-oauth-apps-harness.js
+# D-318 step 7 — the Email chat panel's harness.
+harness/mail-chat-door-harness.js
+harness/mail-chat-door-harness.js.map

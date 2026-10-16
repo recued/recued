@@ -15,7 +15,7 @@
  *  Spec: D-153 § Execution Substrate / Commit substrate.
  */
 
-import { isDeclaredMessengerVendor } from './messenger-vendors.js';
+import { isMessengerSourceVendor } from './messenger-vendors.js';
 // Type-only: `ingredient-catalog`'s own import of this module is type-only too,
 // so no runtime cycle materialises.
 import type { TrustCeiling } from './ingredient-catalog.js';
@@ -309,7 +309,12 @@ export const isChannel = (value: unknown): value is Channel =>
  *  transport — the `work-entities.ts` `CommitmentMessageEvidence.vendor`
  *  comment names this exact bug), and hardcoding the transport set here in
  *  a second place drifted from the registry. A new transport is a registry
- *  entry + a leaf, never an edit to this union. */
+ *  entry + a leaf, never an edit to this union.
+ *
+ *  D-318 — the one exception is a chat DOOR: the email chat door's turns carry
+ *  `vendor: 'email'` (`MESSENGER_DOOR_VENDORS`, checked by
+ *  `isMessengerSourceVendor`). A door is not a transport and is never declared
+ *  as one; on a source it carries the same authority as Slack or Telegram. */
 
 /** Discriminated union over `(channel × actor)`. Each variant carries
  *  the channel-specific identifying fields the policy matrix uses to
@@ -376,16 +381,17 @@ export type ExecutionSource =
   | {
       channel: 'messenger';
       actor: 'user_self';
-      /** A declared chat-transport slug (`isDeclaredMessengerVendor`);
-       *  never `email` (a notification channel, not a transport). */
+      /** A declared chat-transport slug, or a chat door — `email`, D-318's
+       *  email chat door (`isMessengerSourceVendor`). Never the notification
+       *  channel `email`, which carries no turns. */
       vendor: string;
       from: string;
     }
   | {
       channel: 'messenger';
       actor: 'contracted_user';
-      /** A declared chat-transport slug (`isDeclaredMessengerVendor`);
-       *  never `email` (a notification channel, not a transport). */
+      /** As the `user_self` variant: a declared chat transport or a chat door
+       *  (`isMessengerSourceVendor`). */
       vendor: string;
       from: string;
       contract_id: string;
@@ -533,10 +539,10 @@ export const isExecutionSource = (value: unknown): value is ExecutionSource => {
         && isString(v.contract_id);
     case 'messenger':
       if (actor === 'user_self') {
-        return isDeclaredMessengerVendor(v.vendor) && isString(v.from);
+        return isMessengerSourceVendor(v.vendor) && isString(v.from);
       }
       if (actor === 'contracted_user') {
-        return isDeclaredMessengerVendor(v.vendor)
+        return isMessengerSourceVendor(v.vendor)
           && isString(v.from)
           && isString(v.contract_id);
       }
@@ -815,10 +821,10 @@ export const standingClosureAdmits = (
    *  shipped recipes name `core.work-entity.commitment.propose`, so this had
    *  never fired in production — it would have gone live the moment anyone
    *  bound a door recipe that proposes commitments. */
-  lift_reason: 'review_send' | 'review_commitment' | 'review_quote_signoff' | 'review_approval_workflow' | 'quality' | undefined,
+  lift_reason: 'review_send' | 'review_commitment' | 'review_quote_signoff' | 'review_approval_workflow' | 'review_customer_payment' | 'quality' | undefined,
 ): boolean => {
   if (snapshot === undefined || operation_id === undefined) return false;
-  if (lift_reason === 'review_commitment' || lift_reason === 'review_quote_signoff' || lift_reason === 'review_approval_workflow') return false;
+  if (lift_reason === 'review_commitment' || lift_reason === 'review_quote_signoff' || lift_reason === 'review_approval_workflow' || lift_reason === 'review_customer_payment') return false;
   const closure = snapshot.standing_closure_operation_ids;
   if (closure === undefined) return false;
   if (risk_tier === undefined || !STANDING_CLOSURE_RISK_TIERS.includes(risk_tier)) {

@@ -54,6 +54,73 @@ describe('D-172 P2 — media class hint', () => {
 });
 
 describe('D-172 P2 — composer attachments', () => {
+  it('keeps uploads with their own draft and suppresses background progress paint', async () => {
+    const { engines, restore } = await withFakeEngine();
+    try {
+      const onChange = vi.fn();
+      const attachments = createComposerAttachments({ callers: {} as never, connect: {} as never, onChange });
+      attachments.activateDraft('first');
+      const first = attachments.attach(file('First.pdf'))!;
+      attachments.activateDraft('second');
+      attachments.attach(file('Second.pdf'));
+      onChange.mockClear();
+      engines[0].listener?.({ sent: 10, total: 10, recordId: 'file:first' });
+      expect(onChange).not.toHaveBeenCalled();
+      expect(attachments.payload()).toEqual([]);
+      expect(attachments.hasInFlight()).toBe(true);
+      attachments.activateDraft('first');
+      expect(attachments.payload()).toEqual([{ file_id: 'file:first', filename: 'First.pdf', media_class: 'document' }]);
+      expect(attachments.hasInFlight()).toBe(false);
+      attachments.activateDraft('second');
+      // A late acknowledgement removes its submitted row, even off screen.
+      attachments.remove(first);
+      expect(attachments.rows()[0]?.filename).toBe('Second.pdf');
+      expect(attachments.hasDraft('first')).toBe(false);
+      attachments.clear();
+      expect(engines[1].destroyed).toBe(true);
+      expect(attachments.hasDrafts()).toBe(false);
+      attachments.destroy();
+    } finally { restore(); }
+  });
+
+  it('moves a new draft on lazy creation and clears only its own uploads', async () => {
+    const { engines, restore } = await withFakeEngine();
+    try {
+      const attachments = createComposerAttachments({ callers: {} as never, connect: {} as never, onChange: vi.fn() });
+      attachments.attach(file('New.pdf'));
+      attachments.moveDraft(null, 'created');
+      attachments.activateDraft('other');
+      attachments.attach(file('Other.pdf'));
+      attachments.clear();
+      expect(engines[0].destroyed).toBe(false);
+      expect(engines[1].destroyed).toBe(true);
+      attachments.activateDraft('created');
+      engines[0].listener?.({ sent: 10, total: 10, recordId: 'file:new' });
+      expect(attachments.payload()[0]?.file_id).toBe('file:new');
+      attachments.activateDraft(null);
+      expect(attachments.rows()).toEqual([]);
+      attachments.destroy();
+      expect(attachments.hasDrafts()).toBe(false);
+    } finally { restore(); }
+  });
+
+  it('cancels a deleted draft and retains a failed upload in another', async () => {
+    const { engines, restore } = await withFakeEngine();
+    try {
+      const attachments = createComposerAttachments({ callers: {} as never, connect: {} as never, onChange: vi.fn() });
+      attachments.activateDraft('deleted'); attachments.attach(file('Deleted.pdf'));
+      attachments.activateDraft('retained'); attachments.attach(file('Retry.pdf'));
+      engines[1].listener?.({ sent: 0, total: 10, error: 'Disconnected' });
+      attachments.discardDraft('deleted');
+      expect(engines[0].destroyed).toBe(true);
+      engines[0].listener?.({ sent: 10, total: 10, recordId: 'too-late' });
+      attachments.activateDraft('deleted'); expect(attachments.rows()).toEqual([]);
+      attachments.activateDraft('retained');
+      expect(attachments.rows()[0]).toMatchObject({ filename: 'Retry.pdf', phase: 'failed', error: 'Disconnected' });
+      attachments.destroy();
+    } finally { restore(); }
+  });
+
   it('restores finalized references without an upload transport and removes only the submitted rows', () => {
     const attachments = createComposerAttachments({ onChange: vi.fn() });
     const first = { file_id: 'file:first', media_class: 'image', filename: 'Photo.png', selection_revision: 'a'.repeat(64) };

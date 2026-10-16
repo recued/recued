@@ -34,6 +34,7 @@ import { createMailFactAnnouncer } from './announcer.js';
 import { createMailFactBackfill } from './backfill.js';
 import type { MailFactWriter } from './fact-writer.js';
 import type { MailFactMailAccess, MailFactRpcDeps } from './mail-fact-rpc-handler.js';
+import type { CollectionRecord } from '@recued/contracts';
 import { mailFactRunLinkOf } from './run-link.js';
 import { MAIL_TEMPLATE_DRAFT_MANIFEST } from './template-draft.js';
 
@@ -88,6 +89,14 @@ export interface MailFactScreensDeps {
   /** No AI call holding news waits on an email: a backfill that runs recipes
    *  waits for it after each email, so each is told as it came. */
   readonly aiSettled?: (email: MailFactEmailRef) => Promise<number>;
+  /** D-318 audit — the email chat door's chat mailbox, whose mail is the
+   *  conversation with Recued, not the owner's: no facts are read from it. */
+  readonly isChatMailbox?: (slug: string) => boolean;
+  /** D-318 audit — the conversation's mail in the owner's other mailboxes. */
+  readonly isConversationMail?: (fields: Readonly<Record<string, unknown>>) => boolean;
+  /** D-318 audit — Recued's own sends, by its send claims: the editor, the
+   *  senders list and a backfill leave out only what this names. */
+  readonly isOwnSend?: (reconciliation_id: string) => boolean;
   readonly now?: () => number;
 }
 
@@ -97,7 +106,8 @@ export const mailFactScreensRpcDeps = (deps: MailFactScreensDeps): MailFactRpcDe
   const mailboxes = (): MailCollection[] =>
     deps.mail === undefined
       ? []
-      : deps.mail.registry.list().filter((collection): collection is MailCollection => collection.platform === 'mail');
+      : deps.mail.registry.list().filter((collection): collection is MailCollection =>
+        collection.platform === 'mail' && deps.isChatMailbox?.(collection.slug) !== true);
   const progress = eventBus
     ? createMailFactAnnouncer((subkind) => { eventBus.emit({ kind: 'mail_fact', subkind }); }).announce
     : undefined;
@@ -113,6 +123,7 @@ export const mailFactScreensRpcDeps = (deps: MailFactScreensDeps): MailFactRpcDe
     // the mailbox, which reads every mail table (`mail-attachment-source-id.ts`).
     legacyAttachmentsAmbiguous: legacyAttachmentsAmbiguousIn(mail.registry),
     ...(mail.relationshipsOf ? { relationshipsOf: mail.relationshipsOf } : {}),
+    ...(deps.isOwnSend ? { isOwnSend: deps.isOwnSend } : {}),
   });
   return {
     store: deps.store,
@@ -148,6 +159,9 @@ export const mailFactScreensRpcDeps = (deps: MailFactScreensDeps): MailFactRpcDe
             store: deps.store,
             writer: deps.writer,
             mailboxes,
+            ...(deps.isConversationMail
+              ? { skip: (record: CollectionRecord) => deps.isConversationMail!(record.hot_fields) }
+              : {}),
             ...storedEmailOf(deps.mail),
             retentionDays: retentionDaysOf(deps.mail.instances),
             now,

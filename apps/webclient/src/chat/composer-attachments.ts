@@ -58,7 +58,14 @@ export interface ComposerAttachmentRow {
 }
 
 export interface ComposerAttachments {
-  attach(file: File): void;
+  attach(file: File, draftId?: string | null): number | undefined;
+  /** Change the visible draft without cancelling another draft's uploads. */
+  activateDraft(draftId: string | null): void;
+  /** Lazy session creation gives the current blank draft its durable id. */
+  moveDraft(from: string | null, to: string): void;
+  discardDraft(draftId: string | null): void;
+  hasDrafts(): boolean;
+  hasDraft(draftId: string | null): boolean;
   /** Reuse retained selections, recovered drafts or withdrawn attachments. */
   restore(files: readonly ChatMessageAttachment[]): void;
   /** Rows to render, in the order they were added. */
@@ -91,7 +98,10 @@ export const mediaClassForBrowserFile = (type: string): string => {
 export const createComposerAttachments = (
   deps: ComposerAttachmentsDeps,
 ): ComposerAttachments => {
-  const rows: ComposerAttachmentRow[] = [];
+  let activeDraftId: string | null = null;
+  const drafts = new Map<string | null, ComposerAttachmentRow[]>();
+  let rows: ComposerAttachmentRow[] = [];
+  drafts.set(activeDraftId, rows);
   // One engine per file: the engine models a single run, and a composer
   // legitimately climbs two files at once. Keyed by the row's stable id.
   const engines = new Map<number, Upload.UploadEngine>();
@@ -109,10 +119,34 @@ export const createComposerAttachments = (
   };
 
   return {
-    attach(file) {
+    activateDraft(draftId) {
+      if (rows.length === 0) drafts.delete(activeDraftId);
+      activeDraftId = draftId;
+      rows = drafts.get(draftId) ?? [];
+      drafts.set(draftId, rows);
+    },
+    moveDraft(from, to) {
+      const moved = drafts.get(from);
+      drafts.delete(from);
+      if (moved) drafts.set(to, moved);
+      if (activeDraftId === from) activeDraftId = to;
+    },
+    discardDraft(draftId) {
+      for (const row of drafts.get(draftId) ?? []) destroyEngine(row.id);
+      drafts.delete(draftId);
+      if (activeDraftId === draftId) {
+        rows = [];
+        drafts.set(draftId, rows);
+      }
+    },
+    hasDraft: draftId => (drafts.get(draftId)?.length ?? 0) > 0,
+    hasDrafts: () => [...drafts.values()].some(draft => draft.length > 0),
+    attach(file, draftId = activeDraftId) {
       if (!deps.callers || !deps.connect) return;
+      const attachedRows = drafts.get(draftId) ?? [];
+      drafts.set(draftId, attachedRows);
       const id = nextId++;
-      rows.push({
+      attachedRows.push({
         id,
         filename: file.name,
         media_class: mediaClassForBrowserFile(file.type),
@@ -125,7 +159,7 @@ export const createComposerAttachments = (
       });
       engines.set(id, engine);
       engine.on('progress', (p) => {
-        const row = rows.find((r) => r.id === id);
+        const row = attachedRows.find((r) => r.id === id);
         if (row === undefined) return; // removed mid-flight — drop the tick
 
         row.progress = p.total > 0 ? p.sent / p.total : 0;
@@ -142,10 +176,11 @@ export const createComposerAttachments = (
           row.progress = 1;
           destroyEngine(id);
         }
-        deps.onChange();
+        if (rows === attachedRows) deps.onChange();
       });
       engine.start(file);
-      deps.onChange();
+      if (rows === attachedRows) deps.onChange();
+      return id;
     },
     restore(files) {
       for (const file of files) {
@@ -167,20 +202,23 @@ export const createComposerAttachments = (
           ...(r.selection_revision !== undefined ? { selection_revision: r.selection_revision } : {}) })),
     hasInFlight: () => rows.some((r) => r.phase === 'uploading'),
     remove(id) {
-      const at = rows.findIndex((r) => r.id === id);
+      const owner = [...drafts.values()].find(draft => draft.some(row => row.id === id));
+      if (!owner) return;
+      const at = owner.findIndex((r) => r.id === id);
       if (at === -1) return;
       destroyEngine(id);
-      rows.splice(at, 1);
-      deps.onChange();
+      owner.splice(at, 1);
+      if (owner === rows) deps.onChange();
     },
     clear() {
-      for (const id of [...engines.keys()]) destroyEngine(id);
+      for (const row of rows) destroyEngine(row.id);
       rows.length = 0;
       deps.onChange();
     },
     destroy() {
       for (const id of [...engines.keys()]) destroyEngine(id);
       rows.length = 0;
+      drafts.clear();
     },
   };
 };

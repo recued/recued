@@ -46,9 +46,10 @@
  *  cached caps on every call for cheap gate enforcement.
  */
 
-import type {
-  CalendarCollectionCaps,
-  CanonicalEvent,
+import {
+  CalendarAdapterError,
+  type CalendarCollectionCaps,
+  type CanonicalEvent,
 } from '@recued/contracts';
 
 /** Calendar adapter kinds. `gcal` / `graph` / `caldav` (D-117) match the
@@ -224,6 +225,15 @@ export interface CalendarProvider {
    *  `CalendarCollection.close()` on drain. Idempotent. */
   close(): Promise<void>;
   health(): CalendarProviderHealth;
+  /** Tell `listener` each poll's outcome; returns its unsubscribe. The
+   *  collection advances the instance's `last_synced_at` and auth state
+   *  from it.
+   *
+   *  ⛔ Event delivery alone is no evidence of a sync: an empty or quiet
+   *  calendar delivers none, and was shown "First sync pending" forever
+   *  (live, 2026-10-15). Optional: a provider with no polling (local) has
+   *  nothing to report after its first import. */
+  onSyncOutcome?(listener: (outcome: CalendarSyncOutcome) => void): () => void;
 
   // ── Write-back mutations ──────────────────────────────────────────
   //
@@ -253,6 +263,23 @@ export interface CalendarProvider {
    *  lacks iTIP support. */
   rsvpEvent(input: RsvpEventInput): Promise<ProviderEventPayload>;
 }
+
+/** One poll's outcome (`CalendarProvider.onSyncOutcome`), as mail's
+ *  `MailSyncOutcome`. */
+export interface CalendarSyncOutcome {
+  /** True for a poll that read every calendar and delivered every change —
+   *  INCLUDING one that found nothing. */
+  ok: boolean;
+  /** Set iff `ok` is false: `auth` when the credential was rejected, else
+   *  `transient`. */
+  failure?: 'auth' | 'transient';
+  at: number;
+}
+
+/** A sync failure's kind: `auth` for a rejected credential (the adapters map
+ *  401 / 403 and a failed token refresh to `auth_expired`), else `transient`. */
+export const calendarSyncFailureOf = (err: unknown): 'auth' | 'transient' =>
+  err instanceof CalendarAdapterError && err.code === 'auth_expired' ? 'auth' : 'transient';
 
 /** Minimum shape every `probeCaps` implementation must return. The
  *  registry helper validates + normalises this into

@@ -14,6 +14,7 @@ import { answerMissed } from '../schedule-handler.js';
 const MISSED_RUNS_ASK_LINK = '#automation/schedules';
 
 import type { BackgroundServiceRegistry } from '../composition/bin/wire-background-services.js';
+import { wireReminderDelivery } from '../composition/bin/wire-reminders.js';
 import {
   composeServerHeartbeatEmitter,
   type ServerHealthSnapshot,
@@ -141,7 +142,9 @@ export type PostListenerRuntimeAppContext =
 
 export type PostListenerRuntimeCollectionContext =
   StartHousekeepingStartupOptions['collection']
-  & StartPostHousekeepingTailOptions['collection'];
+  & StartPostHousekeepingTailOptions['collection']
+  // D-324 — the reminders ring through the notification channels.
+  & Pick<CollectionContext, 'channelDispatchers'>;
 
 export interface StartPostListenerRuntimeOptions {
   readonly dbPath: string;
@@ -475,6 +478,24 @@ export const startPostListenerRuntime = async (
       stop: async () => {
         await supervisor.stop();
       },
+    });
+  }
+
+  // D-324 — reminders ring on the minute, built in: nothing to switch on. Through
+  // the same channel dispatchers `core.notification.send` uses, so a reminder
+  // reaches the owner where the D-193 notifier's did.
+  // D-324 §6 — it first moves D-193's reminder tasks into the reminders store.
+  if (options.storage.db && options.collection.channelDispatchers) {
+    const auditLog = options.storage.auditLog;
+    await wireReminderDelivery({
+      db: options.storage.db,
+      serverTimeZoneStore: options.storage.serverTimeZoneStore,
+      quietHoursStore: options.storage.quietHoursStore,
+      registry: options.backgroundServices,
+      notification: { dispatchers: options.collection.channelDispatchers },
+      isVaultUnlocked: options.app.isVaultUnlocked,
+      ...(options.storage.workEntityStoreRef ? { workEntityStore: options.storage.workEntityStoreRef } : {}),
+      ...(auditLog ? { logActivity: (entry) => auditLog.logActivity(entry) } : {}),
     });
   }
 

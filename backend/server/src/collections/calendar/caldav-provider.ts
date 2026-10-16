@@ -85,11 +85,13 @@ import {
   type IcsEditor,
   type IcsTimeForm,
 } from './caldav-ics.js';
+import { calendarSyncFailureOf } from './provider.js';
 import type {
   CalendarProvider,
   CalendarProviderHealth,
   CalendarSeriesSnapshot,
   CalendarSyncCallback,
+  CalendarSyncOutcome,
   CalendarSyncEvent,
   CreateEventInput,
   DeleteEventInput,
@@ -1173,6 +1175,17 @@ export const createCalDavProvider = (
   ]);
 
   let lastSuccessfulSyncAt = 0;
+  /** `onSyncOutcome` listeners: told of each poll's outcome. */
+  const outcomeListeners = new Set<(outcome: CalendarSyncOutcome) => void>();
+  const reportOutcome = (outcome: CalendarSyncOutcome): void => {
+    for (const listener of outcomeListeners) {
+      try { listener(outcome); } catch { /* a listener never breaks a sync */ }
+    }
+  };
+  const markSynced = (): void => {
+    lastSuccessfulSyncAt = nowOf();
+    reportOutcome({ ok: true, at: lastSuccessfulSyncAt });
+  };
   let errorCount24h = 0;
   let pendingQueueSize = 0;
   let pendingSeriesExpansions = 0;
@@ -1426,6 +1439,9 @@ export const createCalDavProvider = (
 
   // ── incremental sync tick ───────────────────────────────────
   const runSyncTick = async (cb: CalendarSyncCallback): Promise<void> => {
+    // Clean until a failure is swallowed: only a tick that read every calendar
+    // and delivered every change says the calendar is synced.
+    let clean = true;
     const calendars = await discoverCalendars();
     const window = expansionWindow();
     const reconcile = async (series: CalendarSeriesSnapshot): Promise<void> => {
@@ -1477,6 +1493,7 @@ export const createCalDavProvider = (
           );
         } catch (err) {
           markError(`caldav ingest failed href=${entry.href}`, err);
+          clean = false;
         } finally {
           pendingQueueSize = Math.max(0, pendingQueueSize - 1);
         }
@@ -1506,8 +1523,22 @@ export const createCalDavProvider = (
           await opts.etagStore.delete(k);
         } catch (err) {
           markError(`caldav delete-notify failed key=${k}`, err);
+          clean = false;
         }
       }
+    }
+    if (clean) markSynced();
+    else reportOutcome({ ok: false, failure: 'transient', at: nowOf() });
+  };
+
+  /** A poll tick that reports a thrown failure too: `auth` for a rejected
+   *  credential, else `transient`. Rethrows, so it is logged as before. */
+  const runReportedTick = async (cb: CalendarSyncCallback): Promise<void> => {
+    try {
+      await runSyncTick(cb);
+    } catch (err) {
+      reportOutcome({ ok: false, failure: calendarSyncFailureOf(err), at: nowOf() });
+      throw err;
     }
   };
 
@@ -2068,8 +2099,8 @@ export const createCalDavProvider = (
     async startSync(cb) {
       const scheduler = opts.scheduler ?? defaultScheduler;
       const intervalMs = Math.max(1, opts.config.poll_seconds) * 1000;
-      await runSyncTick(cb);
-      pollStop = scheduler(() => runSyncTick(cb), intervalMs);
+      await runReportedTick(cb);
+      pollStop = scheduler(() => runReportedTick(cb), intervalMs);
       return async () => {
         const stop = pollStop;
         pollStop = null;
@@ -2081,6 +2112,11 @@ export const createCalDavProvider = (
       const stop = pollStop;
       pollStop = null;
       await stop?.();
+    },
+
+    onSyncOutcome(listener) {
+      outcomeListeners.add(listener);
+      return () => { outcomeListeners.delete(listener); };
     },
 
     health(): CalendarProviderHealth {

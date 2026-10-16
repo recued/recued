@@ -20,8 +20,10 @@
  *  layer on top of. */
 
 import type Database from 'better-sqlite3';
+import { createHash } from 'node:crypto';
 import { initializePreapprovalConnections, mutatePreapprovalConnection } from './preapproval-connections.js';
 import {
+  RpcError,
   type ConnectionAuthType,
   type ConnectionCredentialRejectionResolution,
   type ConnectionCredentialRotationFailureReason,
@@ -33,6 +35,7 @@ import {
 } from '@recued/contracts';
 
 const CONNECTION_TABLE = 'connections';
+const credentialLeases = new WeakMap<Database.Database, Map<string, Promise<void>>>();
 const CREDENTIAL_ROTATION_ATTEMPT_TABLE =
   'connection_credential_rotation_attempts';
 
@@ -80,6 +83,14 @@ export const ensureConnectionSchema = (db: Database.Database): void => {
       ON ${CONNECTION_TABLE} (updated_at);
     CREATE INDEX IF NOT EXISTS idx_connections_kind
       ON ${CONNECTION_TABLE} (kind);
+
+    CREATE TABLE IF NOT EXISTS connection_auth_sources (
+      kind TEXT NOT NULL,
+      name TEXT NOT NULL,
+      auth_hash TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      PRIMARY KEY (kind, name)
+    );
 
     CREATE TABLE IF NOT EXISTS ${CREDENTIAL_ROTATION_ATTEMPT_TABLE} (
       attempt_id       TEXT PRIMARY KEY,
@@ -366,6 +377,12 @@ const dbRowToCredentialRotationAttempt = (
 };
 
 export interface ConnectionStoreSqlite {
+  permissionCleanupId?(name: string): string | undefined;
+  /** Host-only, atomic grant pause/replacement with the saved cleanup and native tokens. */
+  replacePermissionCleanupAuth?(updates: readonly { previous: ConnectionRow; auth_ciphertext: string; granted_scopes_json: string; updated_at: number }[],
+    jobId: string, phase: 'pause' | 'apply', commit: () => void): ConnectionRow[];
+  /** Hold through provider renewal and persistence, or a coordinated secret swap. */
+  withCredentialLease?<T>(names: readonly string[], run: () => Promise<T>): Promise<T>;
   /** Upsert by composite key. Fully replaces the row when present.
    *  LWW semantics live one layer up at the sync wire (P2.2); this
    *  store always honors the caller's `updated_at`. */
@@ -376,6 +393,12 @@ export interface ConnectionStoreSqlite {
    * material config read before refresh; no stale row replacement. */
   persistRefreshedAuth?(previous: ConnectionRow, auth_ciphertext: string, updated_at: number,
     configPatch?: { base_url: string }): boolean;
+  /** Same grant and Client ID, new app secret. Commit app/receipt changes with
+   * all selected copies, then notify observers only after the transaction. */
+  rotateOAuthAppSecrets?(updates: readonly { previous: ConnectionRow; auth_ciphertext: string; updated_at: number }[],
+    commit: () => void): void;
+  /** Opaque local source identity. Trusted refresh preserves it; credential replacement changes it. */
+  getAuthSourceId?(kind: ConnectionKind, name: string): string | undefined;
   /** Fetch by composite key or null when absent. */
   get(kind: ConnectionKind, name: string): ConnectionRow | null;
   /** List every row, optionally filtered by kind. Newest `updated_at`
@@ -509,6 +532,22 @@ export const createConnectionStore = (
 ): ConnectionStoreSqlite => {
   ensureConnectionSchema(db);
   initializePreapprovalConnections(db);
+  db.exec('CREATE TABLE IF NOT EXISTS connection_permission_cleanup_pauses (name TEXT PRIMARY KEY, job_id TEXT NOT NULL)');
+  const cleanupId = (name: string): string | undefined => db.prepare<[string], { job_id: string }>(
+    'SELECT job_id FROM connection_permission_cleanup_pauses WHERE name = ?').get(name)?.job_id;
+  const assertNotPaused = (kind: ConnectionKind, name: string): void => {
+    if (kind === 'api' && cleanupId(name)) throw new RpcError('conflict', 'Finish the saved permission cleanup before changing or deleting this API connection.');
+  };
+  const authHash = (row: ConnectionRow): string => createHash('sha256').update(JSON.stringify([
+    row.kind, row.name, row.enrolled_at, row.auth_ciphertext,
+  ])).digest('hex');
+  const authSource = (row: ConnectionRow): string => {
+    const hash = authHash(row);
+    const saved = db.prepare<[string, string], { auth_hash: string; source_id: string }>(
+      'SELECT auth_hash, source_id FROM connection_auth_sources WHERE kind = ? AND name = ?',
+    ).get(row.kind, row.name);
+    return saved?.auth_hash === hash && /^[a-f0-9]{64}$/.test(saved.source_id) ? saved.source_id : hash;
+  };
 
   // A live handler claims before provider I/O and closes the row in the same
   // process. Therefore a persisted pending row observed while constructing the
@@ -821,6 +860,8 @@ export const createConnectionStore = (
     const sameAttempt = readCredentialRotationAttempt(input.attempt_id);
     if (sameAttempt !== null) return { claimed: false, attempt: sameAttempt };
 
+    assertNotPaused(input.kind, input.name);
+
     const currentOwner = readPendingCredentialRotationAttempt(
       input.kind,
       input.name,
@@ -847,6 +888,7 @@ export const createConnectionStore = (
     connection: ConnectionUpsert;
     verification: ConnectionCredentialVerification;
   }): ConnectionRow => {
+    assertNotPaused(input.connection.kind, input.connection.name);
     const completed = completeCredentialRotationStmt.run({
       attempt_id: input.attempt_id,
       kind: input.connection.kind,
@@ -969,13 +1011,56 @@ export const createConnectionStore = (
     return row ? dbRowToConnectionRow(row) : null;
   };
   return {
+    permissionCleanupId: cleanupId,
+    replacePermissionCleanupAuth(updates, jobId, phase, commit) {
+      const changed = db.transaction(() => {
+        const snapshots = updates.map(update => {
+          const row = readConnection('api', update.previous.name);
+          if (!row || row.pk !== update.previous.pk || row.enrolled_at !== update.previous.enrolled_at
+            || row.auth_ciphertext !== update.previous.auth_ciphertext || row.config_json !== update.previous.config_json
+            || row.granted_scopes_json !== update.previous.granted_scopes_json
+            || readPendingCredentialRotationAttempt('api', row.name) !== null
+            || (phase === 'pause' ? cleanupId(row.name) !== undefined : cleanupId(row.name) !== jobId)) {
+            throw new RpcError('conflict', 'An API connection changed during permission cleanup. Refresh the saved review.');
+          }
+          return { update, row, sourceId: authSource(row) };
+        });
+        const changedRows = snapshots.map(({ update, row, sourceId }) => {
+          if (phase === 'pause') db.prepare('INSERT INTO connection_permission_cleanup_pauses VALUES (?, ?)').run(row.name, jobId);
+          else db.prepare('DELETE FROM connection_permission_cleanup_pauses WHERE name = ? AND job_id = ?').run(row.name, jobId);
+          mutatePreapprovalConnection(db, row.kind, row.name, () => readConnection(row.kind, row.name),
+            () => db.prepare('UPDATE connections SET auth_json = ?, granted_scopes_json = ?, updated_at = ? WHERE kind = ? AND name = ?')
+              .run(update.auth_ciphertext, update.granted_scopes_json, Math.max(update.updated_at, row.updated_at + 1), row.kind, row.name));
+          const next = readConnection(row.kind, row.name)!;
+          db.prepare('INSERT INTO connection_auth_sources (kind, name, auth_hash, source_id) VALUES (?, ?, ?, ?) '
+            + 'ON CONFLICT(kind, name) DO UPDATE SET auth_hash = excluded.auth_hash, source_id = excluded.source_id')
+            .run(row.kind, row.name, authHash(next), sourceId);
+          return next;
+        });
+        commit(); return changedRows;
+      }).immediate();
+      for (const row of changed) for (const handler of onUpsertHandlers) {
+        try { handler(row); } catch { /* Committed cleanup survives observer failures. */ }
+      }
+      return changed;
+    },
+    async withCredentialLease(names, run) {
+      let leases = credentialLeases.get(db); if (!leases) { leases = new Map(); credentialLeases.set(db, leases); }
+      const keys = [...new Set(names)]; const waiting = keys.flatMap(name => leases!.has(name) ? [leases!.get(name)!] : []);
+      let release!: () => void; const held = new Promise<void>(resolve => { release = resolve; });
+      keys.forEach(name => leases!.set(name, held));
+      try { await Promise.all(waiting); return await run(); }
+      finally { release(); for (const name of keys) if (leases.get(name) === held) leases.delete(name); }
+    },
     clearGrantedScopes(names) {
       const clear = db.prepare('UPDATE connections SET granted_scopes_json = NULL WHERE kind = ? AND name = ?');
       db.transaction(() => {
+        for (const name of names) assertNotPaused('api', name);
         for (const name of names) clear.run('api', name);
       }).immediate();
     },
     upsert(input) {
+      assertNotPaused(input.kind, input.name);
       mutatePreapprovalConnection(db, input.kind, input.name,
         () => readConnection(input.kind, input.name), () => upsertStmt.run(upsertParams(input)));
       const row = dbRowToConnectionRow(
@@ -989,9 +1074,11 @@ export const createConnectionStore = (
 
     persistRefreshedAuth(previous, auth_ciphertext, updated_at, configPatch) {
       return db.transaction(() => {
+        assertNotPaused(previous.kind, previous.name);
         const current = readConnection(previous.kind, previous.name);
         if (!current || current.auth_ciphertext !== previous.auth_ciphertext
           || current.config_json !== previous.config_json || current.enrolled_at !== previous.enrolled_at) return false;
+        const sourceId = authSource(current);
         let config_json = current.config_json;
         if (configPatch !== undefined) {
           const config: unknown = JSON.parse(config_json);
@@ -1002,6 +1089,9 @@ export const createConnectionStore = (
           () => db.prepare('UPDATE connections SET auth_json = ?, config_json = ?, updated_at = ? WHERE kind = ? AND name = ?')
             .run(auth_ciphertext, config_json, updated_at, current.kind, current.name), previous.auth_ciphertext);
         const row = readConnection(current.kind, current.name)!;
+        db.prepare('INSERT INTO connection_auth_sources (kind, name, auth_hash, source_id) VALUES (?, ?, ?, ?) '
+          + 'ON CONFLICT(kind, name) DO UPDATE SET auth_hash = excluded.auth_hash, source_id = excluded.source_id')
+          .run(row.kind, row.name, authHash(row), sourceId);
         for (const handler of onUpsertHandlers) {
           try { handler(row); } catch { /* best-effort */ }
         }
@@ -1009,6 +1099,38 @@ export const createConnectionStore = (
       }).immediate();
     },
 
+    getAuthSourceId(kind, name) {
+      const row = readConnection(kind, name);
+      return row ? authSource(row) : undefined;
+    },
+
+    rotateOAuthAppSecrets(updates, commit) {
+      const changed = db.transaction(() => {
+        const snapshots = updates.map(update => {
+          assertNotPaused(update.previous.kind, update.previous.name);
+          const row = readConnection(update.previous.kind, update.previous.name);
+          if (!row || row.kind !== 'api' || row.pk !== update.previous.pk || row.enrolled_at !== update.previous.enrolled_at
+            || row.auth_ciphertext !== update.previous.auth_ciphertext || row.config_json !== update.previous.config_json) {
+            throw new Error('oauth_app_rotation_changed');
+          }
+          return { update, row, sourceId: authSource(row) };
+        });
+        commit();
+        return snapshots.map(({ update, row, sourceId }) => {
+          mutatePreapprovalConnection(db, row.kind, row.name, () => readConnection(row.kind, row.name),
+            () => db.prepare('UPDATE connections SET auth_json = ?, updated_at = ? WHERE kind = ? AND name = ?')
+              .run(update.auth_ciphertext, Math.max(update.updated_at, row.updated_at + 1), row.kind, row.name), row.auth_ciphertext);
+          const next = readConnection(row.kind, row.name)!;
+          db.prepare('INSERT INTO connection_auth_sources (kind, name, auth_hash, source_id) VALUES (?, ?, ?, ?) '
+            + 'ON CONFLICT(kind, name) DO UPDATE SET auth_hash = excluded.auth_hash, source_id = excluded.source_id')
+            .run(row.kind, row.name, authHash(next), sourceId);
+          return next;
+        });
+      }).immediate();
+      for (const row of changed) for (const handler of onUpsertHandlers) {
+        try { handler(row); } catch { /* Committed results survive observer failures. */ }
+      }
+    },
     get(kind, name) {
       const row = getStmt.get(kind, name) as ConnectionDbRow | undefined;
       return row ? dbRowToConnectionRow(row) : null;
@@ -1029,9 +1151,11 @@ export const createConnectionStore = (
     },
 
     delete(kind, name) {
+      assertNotPaused(kind, name);
       const removed = mutatePreapprovalConnection(db, kind, name,
         () => readConnection(kind, name), () => deleteWithCriticalHooks(kind, name));
       if (removed) {
+        db.prepare('DELETE FROM connection_auth_sources WHERE kind = ? AND name = ?').run(kind, name);
         for (const handler of onDeleteHandlers) {
           try { handler(kind, name); } catch { /* best-effort */ }
         }

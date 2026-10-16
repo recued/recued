@@ -405,12 +405,15 @@ export type TransparencyMultiTurnTerminationReason =
    *  not READ. Mirrored here (this package cannot import the PB5 module) so a
    *  reader is never told a stalled turn is a finished one. Kept in lockstep
    *  by a set-equality test in the PB5 contracts suite. */
-  | 'output_unreadable';
+  | 'output_unreadable'
+  /** Repeated re-read results were lost again to context trimming. */
+  | 'context_trim_livelock';
 export const TRANSPARENCY_MULTI_TURN_TERMINATION_REASONS: ReadonlyArray<TransparencyMultiTurnTerminationReason> = [
   'completed',
   'max_rounds_exhausted',
   'aborted',
   'output_unreadable',
+  'context_trim_livelock',
 ];
 
 type TransparencyStandingInstructionAppliedActionKind =

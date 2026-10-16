@@ -8,6 +8,8 @@ import { describe, expect, it } from 'vitest';
 import {
   RECEPTION_DEFAULT_SECTION,
   RECEPTION_SECTIONS,
+  RECEPTION_NAV_GROUPS,
+  RECEPTION_CUSTOMER_SECTIONS,
   RECEPTION_ROUTE_CONTENT_ATTR,
   RECEPTION_ROUTE_HOST_ATTR,
   RECEPTION_ROUTE_TABS_ATTR,
@@ -16,26 +18,10 @@ import {
 } from '../reception/sections.js';
 
 describe('R19 — reception sections vocabulary', () => {
-  it('lists the sections in frequency order: inbox · records · abuse · endpoints', () => {
-    // D-210 §4c inserted `records` in SECOND place — beside the Inbox, whose gap it covers (a
-    // held row has no held op for the Inbox to show). The order is the surface's IA, so it is
-    // pinned here rather than left to whoever appends next.
-    expect(RECEPTION_SECTIONS.map((s) => s.id)).toEqual([
-      'inbox',
-      'jobs',
-      'records',
-      'signoffs',
-      'abuse',
-      'endpoints',
-    ]);
-    expect(RECEPTION_SECTIONS.map((s) => s.label)).toEqual([
-      'Inbox',
-      'Customer jobs',
-      'Records',
-      'Customer sign-offs',
-      'Abuse',
-      'Endpoints',
-    ]);
+  it('keeps customer work and setup in deliberate navigation groups', () => {
+    expect(RECEPTION_SECTIONS.map(s=>s.id)).toEqual(['inbox','jobs','records','signoffs','accounts','receivables','followups','abuse','endpoints']);
+    expect(RECEPTION_NAV_GROUPS.map(s=>s.label)).toEqual(['Inbox','Customer work','Records','Manage']);
+    expect(RECEPTION_CUSTOMER_SECTIONS).toEqual(['jobs','signoffs','accounts','receivables','followups']);
   });
 
   it('defaults to Inbox', () => {
@@ -77,11 +63,7 @@ describe('R19 — section nav styles', () => {
     expect(RECEPTION_SECTION_NAV_STYLES).toMatch(
       /\[data-recued-reception-route\]\s*\{[^}]*width:\s*100%[^}]*min-width:\s*0[^}]*overflow-wrap:\s*anywhere/s,
     );
-    expect(RECEPTION_SECTION_NAV_STYLES).toMatch(
-      /\.reception-route-tab\s*\{[^}]*flex:\s*1 1 0[^}]*overflow-wrap:\s*anywhere/s,
-    );
-    expect(RECEPTION_SECTION_NAV_STYLES).toContain(
-      'grid-template-columns: repeat(2, minmax(0, 1fr));',
-    );
+    expect(RECEPTION_SECTION_NAV_STYLES).toMatch(/\.reception-route-tab\s*\{[^}]*white-space:\s*nowrap[^}]*flex-shrink:\s*0/s);
+    expect(RECEPTION_SECTION_NAV_STYLES).toContain('overflow-x: auto');
   });
 });

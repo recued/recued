@@ -50,7 +50,7 @@ import {
 } from '@recued/contracts';
 import {
   isMailReconciliationId,
-  SIGNOFF_REMINDER_REFERENCE_PREFIX,
+  isGuardedCustomerMailReference,
   isMailSendClaimDelivered,
   isTempFileRef,
   type TempFileRef,
@@ -108,12 +108,19 @@ import type {
 import type {
   CanonicalMessage,
   MailMessageDirection,
+  MailProviderKind,
   MailSentReconciliationQuery,
   MailSentReconciliationResult,
   MailSyncFailureKind,
   OutgoingAttachment,
   ProviderSyncEvent,
 } from './provider.js';
+import type {
+  MailSentByMessageIdQuery,
+  MailSentByMessageIdResult,
+  MailSentRepliesQuery,
+  MailSentRepliesResult,
+} from '@recued/contracts';
 import {
   assertMailSentReconciliationQuery,
   detectMailAttachmentMimeType,
@@ -157,6 +164,16 @@ export interface MailUpsertAttachment {
   readonly file_id: string;
   readonly filename: string;
   readonly mime_type: string;
+  /** D-318 step 4 — what the email's chat door needs to tell a photo from a
+   *  signature's logo: inline or attached, the Content-ID the HTML names, and
+   *  the stored file's media class. */
+  readonly disposition?: 'attachment' | 'inline';
+  readonly content_id?: string;
+  readonly media_class?: string;
+  /** The stored file's SHA-256: the HTML of a Gmail or IMAP email shows an
+   *  inline image by its bytes (mailparser writes it in as a `data:` URI),
+   *  not by its Content-ID. */
+  readonly content_hash?: string;
 }
 
 /** D-315 — what the collection knows about one upsert, for a derivation hook
@@ -166,6 +183,9 @@ export interface MailUpsertContext {
   readonly record_id: string;
   /** The mailbox's own address, as the provider knows it; `''` when it does not. */
   readonly account_email: string;
+  /** D-318 — the mailbox's provider: whose stamp is on top of what lands in it
+   *  (`mail-chat-door/conversation-mail.ts`). */
+  readonly provider_kind?: MailProviderKind;
   /** No row had this `record_id` before: the message is seen for the first
    *  time. A restart's re-list and a flag change are not first sightings. */
   readonly first_seen: boolean;
@@ -191,6 +211,23 @@ export interface MailStoredContext {
   readonly backfill_complete: boolean;
   readonly backfill_days: number;
   readonly retention_days?: number;
+  /** D-318 step 6 — the provider found it by a recovery scan (its change
+   *  cursor had expired), not as it arrived (`ProviderSyncEvent.recovered`). */
+  readonly recovered?: true;
+  /** D-318 step 8 — the mailbox's provider: whose stamp is on top of what lands
+   *  in it (`mail-chat-door/enrolment.ts`). */
+  readonly provider_kind?: MailProviderKind;
+  /** D-318 — the mailbox's own address, as the provider knows it. */
+  readonly account_email?: string;
+}
+
+/** D-318 — the mailbox a message landed in, as the email chat door's checks
+ *  read it: its provider wrote the stamp on top of the message
+ *  (`authentication-results.ts`). */
+export interface MailReceiver {
+  readonly provider_kind: MailProviderKind;
+  /** Its own address, as the provider knows it; `''` when it does not. */
+  readonly account_email: string;
 }
 
 export interface CreateMailCollectionOptions {
@@ -224,6 +261,11 @@ export interface CreateMailCollectionOptions {
    *  lands (before the attachments' awaits, which a stop can interrupt).
    *  Errors are swallowed via `bumpError`. */
   onMessageStored?: (msg: CanonicalMessage, ctx: MailStoredContext) => void;
+  /** D-318 audit — is this message the email chat door's conversation? Asked
+   *  as each message is stored, with the provider's own record in hand and the
+   *  mailbox it landed in: a yes marks the row (`MAIL_CHAT_CONVERSATION_FIELD`).
+   *  A throw marks nothing. */
+  isChatConversation?: (msg: CanonicalMessage, receiver: MailReceiver) => boolean;
   /** D-315 — rows a delete path removed: a provider-side delete, the
    *  collection's `delete`, or retention (age or storage pressure). Called
    *  once the rows are gone; what was derived from them goes too (a mail
@@ -383,12 +425,28 @@ export const mailFtsText = (record: CollectionRecord): string => {
   return parts.join('\n');
 };
 
+/** D-318 audit — the hot field marking a message as the email chat door's
+ *  conversation in one of the owner's mailboxes (Recued's answer in the inbox,
+ *  the owner's Sent copy of a request), set as the message is stored
+ *  (`isChatConversation`), from what a sender cannot write: the provider's own
+ *  Sent record, Recued's own send claims, and the receiving provider's own
+ *  stamp on an answer from the chat mailbox. Every reader of the owner's mail
+ *  leaves marked rows out (`conversation-mail.ts`). Absent on every other row. */
+export const MAIL_CHAT_CONVERSATION_FIELD = 'mail_chat';
+
+/** Hot fields that classify a message rather than describe it: their first
+ *  appearance on a message stored before them is not an update, or every
+ *  re-listed message would wake every `updated` trigger once. */
+const CLASSIFYING_HOT_FIELDS: ReadonlySet<string> = new Set([MAIL_CHAT_CONVERSATION_FIELD]);
+
 /** D-124 — what changed between a message's stored row and the row it
  *  becomes: its hot fields by name, and `body` and `received_at`. Nothing,
  *  for a message listed again as it was — a restart's scan reads every stored
  *  message again, and that is no update. */
 export const mailChangedFields = (prev: CollectionRecord, next: CollectionRecord): string[] => {
-  const keys = [...new Set([...Object.keys(prev.hot_fields), ...Object.keys(next.hot_fields)])].sort();
+  const keys = [...new Set([...Object.keys(prev.hot_fields), ...Object.keys(next.hot_fields)])]
+    .filter((key) => !CLASSIFYING_HOT_FIELDS.has(key))
+    .sort();
   const changed = keys.filter((key) => !isDeepStrictEqual(prev.hot_fields[key], next.hot_fields[key]));
   if ((prev.body_inline ?? null) !== (next.body_inline ?? null) || (prev.blob_hash ?? null) !== (next.blob_hash ?? null)) {
     changed.push('body');
@@ -459,6 +517,13 @@ export interface MailSendInput {
   references?: string[];
   reply_to?: string;
   reconciliation_id?: string;
+  /** D-318 step 5 — the sending mailbox's thread (Gmail's `threadId`), so a
+   *  reply joins it there; other providers ignore it. Server-internal today: the
+   *  kernel `mail-send` op does not take it. */
+  thread_id?: string;
+  /** D-318 step 5 — mark the message as an automatic reply
+   *  (`MAIL_AUTOMATIC_REPLY_HEADERS`). Server-internal, as `thread_id` is. */
+  automatic?: boolean;
   /** D-172 P2 (Attachments-v2) — the attachments to send.
    *
    *  ⛔⛔ TWO SHAPES, AND THE SHAPE IS THE LIFECYCLE. A `data.file` record-id
@@ -565,6 +630,9 @@ type ResolvedAttachment = OutgoingAttachment & { blob_hash: string; run_scoped?:
  *  underlying provider's fields so the picker / sender-resolution
  *  paths can read them without reaching through the provider. */
 export interface MailCollection extends Collection {
+  /** A mailbox read succeeded in this live collection. Separate from the
+   * durable sync clock: fetching a page does not refresh stored mail. */
+  readonly mailboxAccessVerified: boolean;
   /** Records adjacent in time to an anchor — the reply direction (`next`) or
    *  the context direction (`prev`).
    *
@@ -621,6 +689,14 @@ export interface MailCollection extends Collection {
   lookupSentByReconciliationId(
     query: MailSentReconciliationQuery,
   ): Promise<MailSentReconciliationResult>;
+  /** D-318 step 2 — proof (a) for the email chat door: the Sent messages that
+   *  carry one Message-ID, asked of the provider. Server-internal, like the
+   *  D-200 lookup above; never on the collection rpc surface. */
+  lookupSentByMessageId(query: MailSentByMessageIdQuery): Promise<MailSentByMessageIdResult>;
+  /** D-318 — the Sent messages that reply to one Message-ID, asked of the
+   *  provider: has the chat mailbox already answered this request? Server-
+   *  internal like the lookups above. */
+  lookupSentReplies(query: MailSentRepliesQuery): Promise<MailSentRepliesResult>;
   /** D-164 P7 — precise count of mail records whose SENDER (`from`) is
    *  `email`, compared case-insensitively. Backs the prompt-cache "how many
    *  emails from `<Name>`?" short-circuit (the gate's mail-count lookup sums
@@ -747,6 +823,7 @@ export const createMailCollection = (
   /** The provider's word on its last failed attempt: `'auth'` when the
    *  credential was refused. */
   let lastProviderFailure: MailSyncFailureKind | undefined;
+  let mailboxAccessVerified = false;
   let scanRetryMs = opts.firstScanRetryMs ?? MAIL_FIRST_SCAN_RETRY_MS;
   const clearScanRetry = (): void => {
     if (scanRetry !== null) {
@@ -815,6 +892,7 @@ export const createMailCollection = (
    *  provider can tell an IMAP `AUTHENTICATIONFAILED` from a socket reset, or a
    *  token-endpoint 400 (`invalid_grant`) from an API 400 (bad request). */
   const classifySyncFailure = (err: unknown): CollectionAuthState => {
+    if (lastProviderFailure !== undefined) return lastProviderFailure === 'auth' ? 'expired' : 'degraded';
     if (!(err instanceof OAuthError)) return 'degraded';
     // No stored refresh token — there is no credential to retry with.
     if (err.code === 'missing_refresh_token') return 'expired';
@@ -842,7 +920,7 @@ export const createMailCollection = (
       touchSyncClock(outcome.at);
       return;
     }
-    lastProviderFailure = outcome.failure;
+    lastProviderFailure = outcome.failure ?? 'transient';
     // A failure is reported immediately, un-throttled: the throttle exists to
     // bound redundant SUCCESS writes, and delaying bad news is the opposite of
     // the point. `reportSyncOutcome` is idempotent on an unchanged row.
@@ -975,7 +1053,17 @@ export const createMailCollection = (
           },
           deps.attachDeps,
         );
-        materialized.push({ file_id: fileRecord.record_id, filename: part.filename, mime_type: mimeType });
+        materialized.push({
+          file_id: fileRecord.record_id,
+          filename: part.filename,
+          mime_type: mimeType,
+          ...(part.disposition !== undefined ? { disposition: part.disposition } : {}),
+          ...(part.content_id !== undefined ? { content_id: part.content_id } : {}),
+          // Read for the chat door only: an attachment is stored whether or not
+          // its record says these.
+          ...(fileRecord.hot_fields?.media_class !== undefined ? { media_class: fileRecord.hot_fields.media_class } : {}),
+          ...(fileRecord.hot_fields?.content_hash !== undefined ? { content_hash: fileRecord.hot_fields.content_hash } : {}),
+        });
         // The mailbox's own file now stands for this part: the legacy link
         // goes, the legacy FILE stays — other stores may still name it.
         if (!keepLegacy && legacyLinks.length > 0) {
@@ -1013,8 +1101,16 @@ export const createMailCollection = (
   const upsertMessage = async (
     msg: CanonicalMessage,
     shouldContinue: () => boolean,
+    recovered = false,
   ): Promise<void> => {
     const { record, bodyBytes } = buildRecord(msg, nowOf, provider.accountEmail);
+    try {
+      if (opts.isChatConversation?.(msg, { provider_kind: provider.kind, account_email: provider.accountEmail }) === true) {
+        record.hot_fields[MAIL_CHAT_CONVERSATION_FIELD] = true;
+      }
+    } catch (err) {
+      bumpError(`mail chat conversation check failed for ${msg.source_id}`, err);
+    }
     const assertActive = (): void => {
       if (!shouldContinue()) {
         throw new Error('mail sync generation is no longer active');
@@ -1053,6 +1149,9 @@ export const createMailCollection = (
               backfill_complete: backfillComplete(),
               backfill_days: opts.config().backfill_days,
               retention_days: opts.config().retention_days,
+              ...(recovered ? { recovered: true as const } : {}),
+              provider_kind: opts.provider.kind,
+              account_email: provider.accountEmail,
             });
           } catch (err) { bumpError(`mail onMessageStored hook failed for ${msg.source_id}`, err); }
         }
@@ -1085,6 +1184,7 @@ export const createMailCollection = (
               slug,
               record_id: recordId,
               account_email: provider.accountEmail,
+              provider_kind: opts.provider.kind,
               first_seen: firstSeen,
               // Only a first sighting asks: nothing reads it otherwise.
               backfill_complete: firstSeen ? backfillComplete() : true,
@@ -1129,7 +1229,7 @@ export const createMailCollection = (
       bumpError(`sync event ${event.kind} missing message`, null);
       throw new Error(`mail sync event '${event.source_id}' is missing its message payload`);
     }
-    await upsertMessage(event.message, shouldContinue);
+    await upsertMessage(event.message, shouldContinue, event.recovered === true);
   };
 
   /** D-239 — reflect a provider-VERIFIED mutation into the warehouse row.
@@ -1250,6 +1350,7 @@ export const createMailCollection = (
   const runSyncStart = async (generation: number): Promise<void> => {
     const shouldContinue = (): boolean => isCurrentGeneration(generation);
     state = 'syncing';
+    lastProviderFailure = undefined;
     // Subscribe BEFORE connect so the first attempt is observed. Drop any prior
     // subscription so a stop→start cycle never multiplies reporting writes.
     if (stopOutcomes) {
@@ -1293,6 +1394,11 @@ export const createMailCollection = (
     try {
       await provider.initialScan({
         backfill_days: opts.config().backfill_days,
+        onAccessVerified: () => {
+          if (!shouldContinue()) return;
+          mailboxAccessVerified = true;
+          reportSyncOutcome('healthy');
+        },
         onMessage: async (msg) => {
           if (!shouldContinue()) return false;
           try {
@@ -1307,6 +1413,7 @@ export const createMailCollection = (
         },
       });
       if (!shouldContinue()) return;
+      if (lastProviderFailure !== undefined) throw new Error('mail initial scan reported a failed attempt');
       // The provider cursor is now stable; this write is idempotent on restart.
       try { opts.instances?.markBackfillComplete('mail', slug); }
       catch (err) { bumpError('mail markBackfillComplete failed', err); }
@@ -1317,7 +1424,11 @@ export const createMailCollection = (
       bumpError('mail initialScan failed', err);
       await backfillRecorder.finish('failed');
       reportSyncOutcome(classifySyncFailure(err));
-      if (!backfillComplete() && !credentialRefused(err)) retryFirstScan(generation);
+      if (credentialRefused(err)) {
+        state = 'error';
+        return;
+      }
+      if (!backfillComplete()) retryFirstScan(generation);
     }
     if (!shouldContinue()) return;
 
@@ -1535,11 +1646,11 @@ export const createMailCollection = (
   const send = async (args: MailSendInput): Promise<MailSendResult> => {
     const reviewed = currentPreapprovalIo();
     reviewed?.validateMail(slug, args);
-    // The prefix identifies mail tied to a live customer offer. Every path
+    // The prefix identifies mail tied to a live customer request. Every path
     // through the collection must carry the host guard, including direct calls.
-    if (args.reconciliation_id?.startsWith(SIGNOFF_REMINDER_REFERENCE_PREFIX)
+    if (isGuardedCustomerMailReference(args.reconciliation_id)
       && typeof args.before_dispatch !== 'function') {
-      throw new IngredientError('BAD_INPUT', 'Sign-off reminder mail requires the live offer guard. Review it in Customer sign-offs.', { slug });
+      throw new IngredientError('BAD_INPUT', 'Customer email requires the live receipt or request guard. Review it in Reception.', { slug });
     }
     const totalRecipients = args.to.length
       + (args.cc?.length ?? 0)
@@ -1637,6 +1748,17 @@ export const createMailCollection = (
       await emitAudit(buildDetail(false, '', {
         error: { code: err.code, message: err.message },
       }));
+      throw err;
+    }
+    // Printable, no space: a Gmail thread id is hex, another provider's (which
+    // ignores it) may be a Message-ID or base64.
+    if (args.thread_id !== undefined && !/^[\x21-\x7e]{1,512}$/.test(args.thread_id)) {
+      const err = new IngredientError(
+        'BAD_INPUT',
+        'mail-send: thread_id must be a provider thread id',
+        { kind: provider.kind, slug },
+      );
+      await emitAudit(buildDetail(false, '', { error: { code: err.code, message: err.message } }));
       throw err;
     }
 
@@ -1987,6 +2109,8 @@ export const createMailCollection = (
         references: args.references,
         reply_to: args.reply_to,
         reconciliation_id: args.reconciliation_id,
+        ...(args.thread_id !== undefined ? { thread_id: args.thread_id } : {}),
+        ...(args.automatic === true ? { automatic: true } : {}),
         // `blob_hash` is stripped: it belongs to the CLAIM, not to the wire. The
         // provider has no use for a content hash, and a field that need not leave
         // the server should not.
@@ -2090,11 +2214,40 @@ export const createMailCollection = (
     }
   };
 
+  const lookupSentByMessageId = async (
+    query: MailSentByMessageIdQuery,
+  ): Promise<MailSentByMessageIdResult> => {
+    if (typeof provider.lookupSentByMessageId !== 'function') {
+      return { status: 'unavailable', reason: 'unsupported' };
+    }
+    try {
+      return await provider.lookupSentByMessageId(query);
+    } catch (err) {
+      bumpError('mail sent lookup by message id failed', err);
+      return { status: 'unavailable', reason: 'provider_error' };
+    }
+  };
+
+  const lookupSentReplies = async (
+    query: MailSentRepliesQuery,
+  ): Promise<MailSentRepliesResult> => {
+    if (typeof provider.lookupSentReplies !== 'function') {
+      return { status: 'unavailable', reason: 'unsupported' };
+    }
+    try {
+      return await provider.lookupSentReplies(query);
+    } catch (err) {
+      bumpError('mail sent replies lookup failed', err);
+      return { status: 'unavailable', reason: 'provider_error' };
+    }
+  };
+
   return {
     platform: 'mail',
     slug,
     gate,
     sync,
+    get mailboxAccessVerified() { return mailboxAccessVerified; },
     sendCapable: provider.sendCapable,
     // D-239 — a getter, because IMAP's `mutationCapable` is itself a lazy
     // getter on the provider. Reading it eagerly here would force that
@@ -2133,6 +2286,8 @@ export const createMailCollection = (
     send,
     saveDraft,
     lookupSentByReconciliationId,
+    lookupSentByMessageId,
+    lookupSentReplies,
     async close() {
       closed = true;
       await sync.stop();

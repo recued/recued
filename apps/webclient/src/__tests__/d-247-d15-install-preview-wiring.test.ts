@@ -14,13 +14,14 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   PACKS_DIALOG_ATTR,
   PACKS_DIALOG_INSTALL_BTN_ATTR,
   mountPacksPanel,
   type PacksInstallPreviewCaller,
+  type PacksInstallCaller,
   type PacksListCaller,
 } from '../settings/packs-panel.js';
 import {
@@ -44,6 +45,8 @@ import {
   INSTALL_GRANT_PICKER_ATTR,
 } from '../settings/install-grant-picker.js';
 import type { BulkPackManifest, PackListEntry } from '@recued/contracts';
+import { PACK_VENDOR_PERMISSION_CONSENT_ATTR, PACK_VENDOR_PERMISSION_REVIEW_ATTR, PACK_VENDOR_PERMISSION_REFRESH_ATTR, PACK_VENDOR_PERMISSION_RECONNECT_ATTR, renderPackVendorPermissions } from '../settings/pack-vendor-permissions.js';
+import { createPackPermissionRepairContinuity, type PackPermissionRepairRequest } from '../settings/pack-permission-repair.js';
 
 // ──────────────────────────────────────────────────────────────────
 // Fake DOM (same shape as the sibling packs-panel suites)
@@ -208,11 +211,14 @@ interface Harness {
 
 const setup = (
   runInstallPreview: PacksInstallPreviewCaller | undefined,
+  runInstall?: PacksInstallCaller,
+  repairOptions: Pick<import('../settings/packs-panel.js').MountPacksPanelOptions, 'onPermissionRepair' | 'initialPermissionRepairReturn'> = {},
+  listedEntry: PackListEntry = entry,
 ): Harness => {
   const host = makeFakeElement('div');
   const doc = makeFakeDocument();
   const calls: unknown[] = [];
-  const runList: PacksListCaller = async () => ({ packs: [entry] });
+  const runList: PacksListCaller = async () => ({ packs: [listedEntry] });
   const wrapped: PacksInstallPreviewCaller | undefined =
     runInstallPreview === undefined
       ? undefined
@@ -225,8 +231,10 @@ const setup = (
     document: doc as unknown as Document,
     runList,
     initialSlug: entry.slug,
-    runInstall: async () => ({ result: { ok: true } as never }),
+    runInstall: runInstall ?? (async () => ({ result: { ok: true } as never })),
     ...(wrapped !== undefined ? { runInstallPreview: wrapped } : {}),
+    ...(repairOptions.onPermissionRepair ? { onPermissionRepair: repairOptions.onPermissionRepair } : {}),
+    ...(repairOptions.initialPermissionRepairReturn ? { initialPermissionRepairReturn: repairOptions.initialPermissionRepairReturn } : {}),
   });
   return { host, mount, calls };
 };
@@ -239,6 +247,136 @@ const openDialog = async (h: Harness): Promise<void> => {
   // the panel's own `render()` re-entry rides on.
   for (let i = 0; i < 6; i += 1) await Promise.resolve();
 };
+
+describe('vendor permission review is reached before installation', () => {
+  const vendorPreview = (fingerprint = 'a'.repeat(64)): InstallPreview => ({ ...preview, vendor_permissions: {
+    fingerprint, resolved: true, changes: [{ pack_slug: entry.slug, pack_name: entry.name, slot: 'graph',
+      previous_scopes: ['Mail.Read'], required_scopes: ['Mail.Read', 'Mail.Send'], added_scopes: ['Mail.Send'], removed_scopes: [],
+      current_connections: ['native'], connections: [{ name: 'native', display_name: 'Work account', authentication: 'direct_oauth',
+        coverage: 'missing', granted_scopes: ['Mail.Read'], missing_scopes: ['Mail.Send'] }] }],
+  } });
+  const consent = (host: FakeElement): FakeElement => findByAttr(host, PACK_VENDOR_PERMISSION_CONSENT_ATTR)!;
+  const check = (input: FakeElement): void => { input.checked = true; for (const listener of input.listeners.get('change') ?? []) listener({ target: input }); };
+  it('reconnects without installing, and restores exact owner choices with a fresh unconfirmed review', async () => {
+    const requests: PackPermissionRepairRequest[] = []; const installs = vi.fn(async () => ({ result: { ok: true } as never }));
+    const h = setup(async () => ({ ...vendorPreview(), dependency_requires: [{ permission: 'dependency-action', needed_by: ['Foundation'] }] }), installs,
+      { onPermissionRepair: request => { requests.push(request); } });
+    await openDialog(h); h.mount.togglePermission('dependency-action');
+    findByAttr(h.host, PACK_VENDOR_PERMISSION_RECONNECT_ATTR)!.click();
+    expect(requests).toHaveLength(1); expect(installs).not.toHaveBeenCalled();
+    expect(requests[0]!.resume.permissions).not.toContain('dependency-action');
+    const continuity = createPackPermissionRepairContinuity({ id: () => 'ppr-' + 'a'.repeat(32) });
+    const repair = continuity.begin(requests[0]!); continuity.complete(repair.id); h.mount.dispose();
+    const returned = setup(async () => ({ ...vendorPreview('b'.repeat(64)), dependency_requires: [{ permission: 'dependency-action', needed_by: ['Foundation'] }] }), installs,
+      { initialPermissionRepairReturn: continuity.takeReturn(entry.slug) });
+    await returned.mount.whenLoaded(); await vi.waitFor(() => expect(consent(returned.host)).not.toBeNull());
+    expect(returned.mount.getDialogPermissions()).not.toContain('dependency-action');
+    expect(consent(returned.host).checked).toBe(false); expect(findByAttr(returned.host, PACKS_DIALOG_INSTALL_BTN_ATTR)!.disabled).toBe(true);
+    expect(installs).not.toHaveBeenCalled(); returned.mount.dispose();
+  });
+  it('permits a fresh reconnect after cancel and reopening', async () => {
+    const sent: PackPermissionRepairRequest[] = [];
+    const initial = setup(async () => vendorPreview(), undefined, { onPermissionRepair: request => sent.push(request) });
+    await openDialog(initial); findByAttr(initial.host, PACK_VENDOR_PERMISSION_RECONNECT_ATTR)!.click();
+    initial.mount.clickCancelDialog(); initial.mount.clickInstall(entry.slug);
+    findByAttr(initial.host, PACK_VENDOR_PERMISSION_RECONNECT_ATTR)!.click(); expect(sent).toHaveLength(2); initial.mount.dispose();
+  });
+  it('clears verified-return copy after cancel and reopening', async () => {
+    const sent: PackPermissionRepairRequest[] = [];
+    const initial = setup(async () => vendorPreview(), undefined, { onPermissionRepair: request => sent.push(request) });
+    await openDialog(initial); findByAttr(initial.host, PACK_VENDOR_PERMISSION_RECONNECT_ATTR)!.click(); initial.mount.dispose();
+    const continuity = createPackPermissionRepairContinuity({ id: () => 'ppr-' + 'b'.repeat(32) });
+    const repair = continuity.begin(sent[0]!); continuity.complete(repair.id);
+    const returned = setup(async () => vendorPreview(), undefined, { initialPermissionRepairReturn: continuity.takeReturn(entry.slug) });
+    await returned.mount.whenLoaded(); await vi.waitFor(() => expect(findByAttr(returned.host, 'data-pack-permission-repair-return')).not.toBeNull());
+    returned.mount.clickCancelDialog(); returned.mount.clickInstall(entry.slug);
+    expect(findByAttr(returned.host, 'data-pack-permission-repair-return')).toBeNull(); returned.mount.dispose();
+  });
+  it('returns to an update of an installed pack, keeping the incoming version and current account', async () => {
+    const update: PackListEntry = { ...entry, version: 2, installed_any_version: true, current_connection: 'native',
+      manifest: { ...entry.manifest!, version: 2 } };
+    const sent: PackPermissionRepairRequest[] = [];
+    const initial = setup(async () => vendorPreview(), undefined, { onPermissionRepair: request => sent.push(request) }, update);
+    await openDialog(initial); findByAttr(initial.host, PACK_VENDOR_PERMISSION_RECONNECT_ATTR)!.click(); initial.mount.dispose();
+    expect(sent[0]!.resume).toMatchObject({ also_connections: [], pack: { version: 2, installed_any_version: true, current_connection: 'native' } });
+    const continuity = createPackPermissionRepairContinuity({ id: () => 'ppr-' + 'c'.repeat(32) });
+    const repair = continuity.begin(sent[0]!);
+    const returned = setup(async () => vendorPreview(), undefined, { initialPermissionRepairReturn: continuity.takeReturn(entry.slug) }, update);
+    await returned.mount.whenLoaded(); await vi.waitFor(() => expect(findByAttr(returned.host, PACKS_DIALOG_ATTR)).not.toBeNull());
+    expect(consent(returned.host).checked).toBe(false); expect(returned.calls).toContainEqual(expect.objectContaining({ manifest: expect.objectContaining({ version: 2 }) }));
+    returned.mount.dispose();
+  });
+  it('shows vendor scope changes and requires explicit reconnect-later consent in the real panel', async () => {
+    const installs: unknown[] = []; const h = setup(async () => vendorPreview(), async args => {
+      installs.push(args); return { result: { ok: true } as never };
+    });
+    await openDialog(h); expect(findByAttr(h.host, PACK_VENDOR_PERMISSION_REVIEW_ATTR)).not.toBeNull();
+    expect(findByAttr(h.host, PACKS_DIALOG_INSTALL_BTN_ATTR)!.disabled).toBe(true);
+    await h.mount.clickConfirmInstall(); expect(installs).toHaveLength(0);
+    check(consent(h.host)); expect(findByAttr(h.host, PACKS_DIALOG_INSTALL_BTN_ATTR)!.disabled).toBe(false);
+    await h.mount.clickConfirmInstall(); expect(installs).toEqual([expect.objectContaining({
+      vendor_permission_consent: { fingerprint: 'a'.repeat(64), reconnect_later: true },
+    })]); h.mount.dispose();
+  });
+  it('refreshes recorded permissions and requires a fresh choice after the review changes', async () => {
+    let revision = 'a'; const h = setup(async () => vendorPreview(revision.repeat(64)));
+    await openDialog(h); check(consent(h.host)); expect(consent(h.host).checked).toBe(true);
+    revision = 'b'; findByAttr(h.host, PACK_VENDOR_PERMISSION_REFRESH_ATTR)!.click();
+    await vi.waitFor(() => expect(h.calls).toHaveLength(2));
+    await vi.waitFor(() => { expect(consent(h.host).checked).toBe(false); expect(findByAttr(h.host, PACKS_DIALOG_INSTALL_BTN_ATTR)!.disabled).toBe(true); });
+    h.mount.dispose();
+  });
+  it('holds malformed new-server review data while preserving compatibility with older servers', async () => {
+    const h = setup(async () => vendorPreview('')); await openDialog(h);
+    expect(findByAttr(h.host, PACKS_DIALOG_INSTALL_BTN_ATTR)!.disabled).toBe(true); expect(consent(h.host)).toBeNull(); h.mount.dispose();
+    const old = setup(async () => preview); await openDialog(old);
+    expect(findByAttr(old.host, PACK_VENDOR_PERMISSION_REVIEW_ATTR)).toBeNull(); expect(findByAttr(old.host, PACKS_DIALOG_INSTALL_BTN_ATTR)!.disabled).toBe(false); old.mount.dispose();
+  });
+  it('waits for the preview even when the root manifest has no declared vendor scopes', async () => {
+    let answer!: (result: InstallPreview) => void; const installs = vi.fn(async () => ({ result: { ok: true } as never }));
+    const h = setup(() => new Promise(resolve => { answer = resolve; }), installs);
+    await openDialog(h); expect(findByAttr(h.host, PACKS_DIALOG_INSTALL_BTN_ATTR)!.disabled).toBe(true);
+    await h.mount.clickConfirmInstall(); expect(installs).not.toHaveBeenCalled();
+    answer(vendorPreview()); await vi.waitFor(() => expect(consent(h.host)).not.toBeNull());
+    expect(findByAttr(h.host, PACKS_DIALOG_INSTALL_BTN_ATTR)!.disabled).toBe(true); h.mount.dispose();
+  });
+  it('holds a transport failure and offers a refresh rather than treating it as an older server', async () => {
+    let fail = true; const installs = vi.fn(async () => ({ result: { ok: true } as never }));
+    const h = setup(async () => { if (fail) throw new Error('network lost'); return vendorPreview(); }, installs);
+    await openDialog(h); expect(findByAttr(h.host, PACKS_DIALOG_INSTALL_BTN_ATTR)!.disabled).toBe(true);
+    expect(consent(h.host)).toBeNull(); await h.mount.clickConfirmInstall(); expect(installs).not.toHaveBeenCalled();
+    fail = false; findByAttr(h.host, PACK_VENDOR_PERMISSION_REFRESH_ATTR)!.click();
+    await vi.waitFor(() => expect(consent(h.host)).not.toBeNull()); check(consent(h.host));
+    await h.mount.clickConfirmInstall(); expect(installs).toHaveBeenCalledOnce(); h.mount.dispose();
+  });
+  it('rejects a contradictory claim that recorded grants cover missing scopes', async () => {
+    const malformed = vendorPreview(); malformed.vendor_permissions!.changes[0]!.connections[0]!.coverage = 'covered';
+    const h = setup(async () => malformed); await openDialog(h);
+    expect(findByAttr(h.host, PACKS_DIALOG_INSTALL_BTN_ATTR)!.disabled).toBe(true);
+    expect(consent(h.host)).toBeNull(); h.mount.dispose();
+  });
+  it('holds malformed enum data and unresolved reviews that claim known grant coverage', async () => {
+    for (const error of ['enum', 'unresolved']) {
+      const malformed = vendorPreview();
+      if (error === 'enum') malformed.vendor_permissions!.changes[0]!.connections[0]!.authentication = ['broker'] as never;
+      else malformed.vendor_permissions!.resolved = false;
+      const h = setup(async () => malformed); await openDialog(h);
+      expect(findByAttr(h.host, PACKS_DIALOG_INSTALL_BTN_ATTR)!.disabled).toBe(true);
+      expect(consent(h.host)).toBeNull(); h.mount.dispose();
+    }
+  });
+  it('labels inherited selected accounts separately from existing accounts without forwarding root-only shared choices', () => {
+    const p = vendorPreview(); p.vendor_permissions!.changes[0]!.pack_slug = 'dependency';
+    p.vendor_permissions!.changes[0]!.uses_selected_connection = true;
+    const section = renderPackVendorPermissions({ document: makeFakeDocument() as unknown as Document, preview: p,
+      packSlug: entry.slug, chosen: 'selected-broker', also: ['root-shared'], reviewed: false, disabled: false,
+      onReview: () => {}, onRefresh: () => {} }) as unknown as FakeElement;
+    const textOf = (node: FakeElement): string => node.textContent + node.children.map(textOf).join(' ');
+    const text = textOf(section);
+    expect(text).toContain('Selected account: selected-broker'); expect(text).toContain('Existing account: Work account');
+    expect(text).not.toContain('root-shared');
+  });
+});
 
 // ──────────────────────────────────────────────────────────────────
 // Tests

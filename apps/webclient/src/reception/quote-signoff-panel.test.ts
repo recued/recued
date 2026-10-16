@@ -18,7 +18,8 @@ class Node {
   constructor(readonly tag: string) {}
   querySelectorAll(selector: string): Node[] { return this.children.flatMap(child => [
     ...(selector === '[data-completion-action]' && child.attrs.has('data-completion-action') ? [child] : []),...child.querySelectorAll(selector)]); }
-  appendChild(node: Node) { node.parent = this; this.children.push(node); return node; }
+  appendChild(node: Node) { node.remove();node.parent = this;this.children.push(node);return node; }
+  insertBefore(node: Node,reference: Node | null) { node.remove();const index=reference===null ? this.children.length : this.children.indexOf(reference);if(index<0)throw new Error('Reference is not a child');node.parent=this;this.children.splice(index,0,node);return node; }
   replaceChildren() { this.children.forEach(n => { n.parent = null; }); this.children = []; }
   setAttribute(key: string, value: string) { this.attrs.set(key, value); }
   addEventListener(event: string, listener: (event: { preventDefault: () => void }) => void) {
@@ -26,7 +27,7 @@ class Node {
   }
   fire(event: string) { this.listeners.get(event)?.forEach(listener => listener({ preventDefault: () => {} })); }
   click() { if (!this.disabled) this.fire('click'); }
-  remove() { if (this.parent) this.parent.children = this.parent.children.filter(n => n !== this); }
+  remove() { if (this.parent) this.parent.children = this.parent.children.filter(n => n !== this);this.parent=null; }
 }
 const nodes = (root: Node): Node[] => [root, ...root.children.flatMap(nodes)];
 const content = (root: Node) => nodes(root).map(n => n.textContent).join('\n');
@@ -98,7 +99,7 @@ describe('sign-off panel — owner follow-up', () => {
       expect(content(h.host)).toContain('99.8766 GBP outstanding · overdue. Due 2026-10-01.');
       expect(content(h.host)).toContain('Recorded paid: 20.1234 GBP.');
       expect(nodes(h.host).find(n => n.textContent === 'Open task')?.attrs.get('href')).toBe('#data/task/quote_signoff_agreement-1');
-      expect(nodes(h.host).find(n => n.textContent === 'Browse Records')?.attrs.get('href')).toBe('#data/records');
+      expect(nodes(h.host).find(n => n.textContent === 'Browse Records')?.attrs.get('href')).toBe('#data/records/recued-core/invoice-book/invoice/quote_signoff_agreement-1');
       expect(nodes(h.host).some(n => n.textContent === 'Add work')).toBe(true);
       h.set({ ...initial, task: { availability: 'current', title: 'Drawings delivered', done: true },
         invoice: { availability: 'current', status: 'settled', amount_paid: '120.0000', outstanding: '0.0000', due_on: '2026-10-01', overdue: false } });

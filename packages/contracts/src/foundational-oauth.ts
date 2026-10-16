@@ -75,6 +75,15 @@ export const GCAL_SCOPE = 'https://www.googleapis.com/auth/calendar';
 export const GRAPH_MAIL_READ_SCOPE = 'Mail.Read';
 /** Microsoft Graph mail send — opt-in outbound. Mirrors `GRAPH_SEND_SCOPE`. */
 export const GRAPH_MAIL_SEND_SCOPE = 'Mail.Send';
+/** Microsoft Graph mail read/WRITE — requested WITH send, never alone.
+ *
+ *  ⛔ SENDING NEEDS IT. Recued sends through Outlook in two steps, a draft and
+ *  then `/send` (D-127 P1.4: the one-shot `sendMail` returns no message to
+ *  thread on), and creating the draft is Graph's "create message", which needs
+ *  `Mail.ReadWrite`. With `Mail.Send` alone every send was refused 403 while the
+ *  connection said it could send — found live 2026-10-15, when no answer of the
+ *  email chat mailbox ever went out. Mirrors `GRAPH_MODIFY_SCOPE`. */
+export const GRAPH_MAIL_READWRITE_SCOPE = 'Mail.ReadWrite';
 /** Microsoft Graph calendar read/write. */
 export const GRAPH_CALENDAR_SCOPE = 'Calendars.ReadWrite';
 /** Microsoft refresh-token scope (Google uses `access_type=offline`). */
@@ -135,7 +144,8 @@ export const graphMailScopes = (
   GRAPH_MAIL_READ_SCOPE,
   GRAPH_OFFLINE_SCOPE,
   GRAPH_USER_READ_SCOPE,
-  ...(sendEnabled ? [GRAPH_MAIL_SEND_SCOPE] : []),
+  // Send is the two scopes together: the draft, then the send.
+  ...(sendEnabled ? [GRAPH_MAIL_SEND_SCOPE, GRAPH_MAIL_READWRITE_SCOPE] : []),
   ...(calendarEnabled ? [GRAPH_CALENDAR_SCOPE] : []),
 ];
 
@@ -604,11 +614,9 @@ export interface OpenerRelayMessage {
 // credential path — a UI surface where the owner enters the credentials,
 // stored encrypted server-side (AES-256-GCM, per-row AAD).
 
-/** The two OAuth app issuers a server can hold BYO credentials for. ONE Google
- *  Cloud OAuth app (`google`) covers BOTH Gmail and Google Calendar (same
- *  project, same client); ONE Microsoft Entra app (`microsoft`) covers Outlook
- *  mail AND calendar (Graph). Per-issuer is the natural unit — one app to
- *  create, not one per mailbox-vs-calendar. */
+/** Each issuer supports several saved app profiles. A Google profile can serve
+ * both Gmail and Google Calendar; a Microsoft profile can serve Graph Mail and
+ * Calendar. Existing accounts retain their default profile unless selected anew. */
 export type OAuthAppIssuer = 'google' | 'microsoft';
 
 /** ⚠ NO `: readonly OAuthAppIssuer[]` annotation — it would WIDEN the
@@ -640,7 +648,99 @@ export interface OAuthAppConfigStatus {
   client_id: string | null;
   has_secret: boolean;
   source: 'stored' | null;
+  /** Named profiles, including the legacy default. Absent on older servers. */
+  apps?: SavedOAuthApp[];
 }
+
+export const OAUTH_APP_ID = /^(?:default|app-[a-f0-9]{32})$/;
+/** Date recorded by the owner, not proof of the vendor's credential state. */
+export const isOAuthAppSecretExpiryDate = (value: unknown): value is string => {
+  if (typeof value !== 'string' || !/^(?!0000)\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const time = Date.parse(value + 'T00:00:00.000Z');
+  return Number.isFinite(time) && new Date(time).toISOString().slice(0, 10) === value;
+};
+export const OAUTH_APP_EXPIRY_WARNING_DAYS = 30;
+export type OAuthAppSecretExpiryStatus = { status: 'unknown' } | {
+  status: 'scheduled' | 'due_soon' | 'due_today' | 'past_due'; date: string; days_remaining: number;
+};
+/** Calendar-day comparisons use the viewer's local date. UTC midnights are
+ * used only for arithmetic, so daylight-saving changes do not shift a day. */
+export const oauthAppSecretExpiry = (app: Pick<SavedOAuthApp, 'secret_expires_on'>, now = Date.now()): OAuthAppSecretExpiryStatus => {
+  if (!isOAuthAppSecretExpiryDate(app.secret_expires_on) || !Number.isFinite(now)) return { status: 'unknown' };
+  const local = new Date(now);
+  if (!Number.isFinite(local.getTime())) return { status: 'unknown' };
+  const today = String(local.getFullYear()).padStart(4, '0') + '-' + String(local.getMonth() + 1).padStart(2, '0') + '-' + String(local.getDate()).padStart(2, '0');
+  if (!isOAuthAppSecretExpiryDate(today)) return { status: 'unknown' };
+  const days = (Date.parse(app.secret_expires_on + 'T00:00:00.000Z') - Date.parse(today + 'T00:00:00.000Z')) / 86_400_000;
+  return { status: days < 0 ? 'past_due' : days === 0 ? 'due_today' : days <= OAUTH_APP_EXPIRY_WARNING_DAYS ? 'due_soon' : 'scheduled',
+    date: app.secret_expires_on, days_remaining: days };
+};
+export interface SavedOAuthApp {
+  id: string;
+  issuer: OAuthAppIssuer;
+  label: string;
+  client_id: string;
+  has_secret: boolean;
+  revision: number;
+  /** Optional owner-recorded date for the current secret; absence means unknown. */
+  secret_expires_on?: string;
+  uses?: Array<{ lane: 'mail' | 'calendar'; slug: string }>;
+}
+export type OAuthAppsRequest = { action: 'list' }
+  | { action: 'save'; issuer: OAuthAppIssuer; id?: string; label: string; client_id: string;
+      client_secret?: string; expected_revision?: number; secret_expires_on?: string | null }
+  | { action: 'delete'; issuer: OAuthAppIssuer; id: string; expected_revision: number }
+  | import('./oauth-app-usage.js').OAuthAppUsageRequest
+  | import('./oauth-permission-consolidation.js').OAuthPermissionRequest
+  | import('./oauth-permission-cleanup.js').OAuthPermissionCleanupRequest;
+export interface OAuthAppsResponse {
+  action: OAuthAppsRequest['action'];
+  apps: SavedOAuthApp[];
+  saved_id?: string;
+  /** Absent on older servers, which cannot safely persist expiry edits. */
+  secret_expiry_supported?: boolean;
+  permission_inventory?: import('./oauth-permission-consolidation.js').OAuthPermissionInventory;
+  permission_cleanup?: import('./oauth-permission-consolidation.js').OAuthPermissionCleanupPreview;
+  permission_cleanup_available?: boolean;
+  permission_cleanup_jobs?: readonly import('./oauth-permission-cleanup.js').OAuthPermissionCleanupJob[];
+  permission_cleanup_job?: import('./oauth-permission-cleanup.js').OAuthPermissionCleanupJob;
+  permission_cleanup_authorization?: import('./oauth-permission-cleanup.js').OAuthPermissionCleanupAuthorization;
+  usage?: import('./oauth-app-usage.js').OAuthAppUsageReview;
+  rotation_outcome?: import('./oauth-app-usage.js').OAuthAppSecretRotationOutcome | null;
+}
+export const isSavedOAuthApp = (value: unknown): value is SavedOAuthApp => {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Partial<SavedOAuthApp>;
+  return typeof v.id === 'string' && OAUTH_APP_ID.test(v.id) && OAUTH_APP_ISSUERS.includes(v.issuer!)
+    && typeof v.label === 'string' && v.label.length > 0 && v.label.length <= 80
+    && typeof v.client_id === 'string' && v.client_id.length > 0 && v.client_id.length <= 1024
+    && typeof v.has_secret === 'boolean' && Number.isSafeInteger(v.revision) && Number(v.revision) >= 1
+    && (v.secret_expires_on === undefined || isOAuthAppSecretExpiryDate(v.secret_expires_on))
+    && (v.uses === undefined || Array.isArray(v.uses) && v.uses.every(use => !!use && typeof use === 'object'
+      && ['mail', 'calendar'].includes(use.lane) && typeof use.slug === 'string' && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(use.slug)));
+};
+export const isOAuthAppsResponse = (value: unknown): value is OAuthAppsResponse => {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Partial<OAuthAppsResponse>;
+  return typeof v.action === 'string' && ['list', 'save', 'delete', 'usage', 'retire_usage', 'rotate_secret', 'rotation_status', 'permission_inventory', 'preview_permission_cleanup',
+    'prepare_permission_cleanup', 'pause_permission_cleanup', 'authorize_permission_cleanup', 'review_permission_cleanup', 'apply_permission_cleanup',
+    'refresh_permission_cleanup', 'restore_permission_cleanup', 'reset_permission_cleanup', 'cancel_permission_cleanup', 'restart_permission_cleanup', 'permission_cleanup_status'].includes(v.action)
+    && Array.isArray(v.apps) && v.apps.length <= 100 && v.apps.every(isSavedOAuthApp)
+    && (v.secret_expiry_supported === undefined || typeof v.secret_expiry_supported === 'boolean')
+    && (v.saved_id === undefined || typeof v.saved_id === 'string' && OAUTH_APP_ID.test(v.saved_id));
+};
+/** Old-server snapshots still expose their one app as the default profile. */
+export const savedOAuthAppsForIssuer = (config: OAuthAppConfigSnapshot | undefined | null, issuer: OAuthAppIssuer): SavedOAuthApp[] => {
+  const status = config?.[issuer];
+  if (status?.apps !== undefined) return Array.isArray(status.apps) && status.apps.every(app => isSavedOAuthApp(app) && app.issuer === issuer) ? status.apps : [];
+  return status?.client_id ? [{ id: 'default', issuer, label: `Default ${issuer === 'google' ? 'Google' : 'Microsoft'} app`,
+    client_id: status.client_id, has_secret: status.has_secret, revision: 1 }] : [];
+};
+export const oauthAppStatusForSelection = (config: OAuthAppConfigSnapshot | null | undefined, issuer: OAuthAppIssuer, id?: string): OAuthAppConfigStatus | null => {
+  if (id === undefined) return config?.[issuer] ?? null;
+  const app = savedOAuthAppsForIssuer(config, issuer).find(app => app.id === id);
+  return app ? { client_id: app.client_id, has_secret: app.has_secret, source: 'stored' } : { client_id: null, has_secret: false, source: null };
+};
 
 /** Full snapshot — one status per issuer. */
 export type OAuthAppConfigSnapshot = Record<OAuthAppIssuer, OAuthAppConfigStatus>;

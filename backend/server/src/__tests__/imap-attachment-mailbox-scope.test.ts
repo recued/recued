@@ -30,6 +30,7 @@ import type {
   ProviderSyncEvent,
 } from '../collections/mail/provider.js';
 import { createCollectionRegistry } from '../collections/registry.js';
+import { collectionTableName, setCollectionReaderExclusion } from '../collections/table.js';
 import { createMailAttachmentReader } from '../mail-attachment-evidence.js';
 import { storedAttachmentsOf } from '../mail-facts/stored-email.js';
 import { createAnnotationStore } from '../storage/annotation-store.js';
@@ -215,6 +216,23 @@ describe('two IMAP mailboxes holding an email under one id', () => {
     expect(await w.bytesOf(scopedFile('work', id))).toBe('%PDF-1.4 work invoice');
     // Not deleted: a chat attachment or a mail fact may name it.
     expect(w.files.get(legacy)).not.toBeNull();
+  });
+
+  it('D-318 — counts the email chat door’s chat mailbox, which the owner’s mail readers leave out', async () => {
+    const w = world();
+    const work = w.mailbox('work', [email([], { has_attachments: true })]);
+    const chat = w.mailbox('recued-chat', [email([], { has_attachments: true })]);
+    setCollectionReaderExclusion(w.db, {
+      tables: (platform, table) => platform === 'mail' && table === collectionTableName('mail', 'recued-chat'),
+      rows: { mail: "json_extract(hot_fields, '$.mail_chat') IS NULL" },
+    });
+    await work.collection.sync.start();
+    const id = work.row().record_id;
+    await w.legacyAttachment(id, '%PDF-1.4 work invoice');
+    await chat.collection.sync.start();
+
+    await work.push({ kind: 'updated', source_id: UID, message: email([part('%PDF-1.4 work invoice')], { is_read: true }) });
+    expect(await w.linked(id)).toEqual([scopedFile('work', id)]);
   });
 
   it('still hands the upsert hook the attachment when the legacy link cannot be removed', async () => {

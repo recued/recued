@@ -22,7 +22,12 @@ import type { ContactStore } from '../../storage/contact-store.js';
 import type { MailFactWriter } from '../../mail-facts/fact-writer.js';
 import { createMailFactIngest } from '../../mail-facts/mail-ingest.js';
 import type { FileReadDeps } from '../../collections/file/file-read-handler.js';
-import type { MailInboundAttachmentDeps, MailUpsertContext } from '../../collections/mail/mail-collection.js';
+import type {
+  MailInboundAttachmentDeps,
+  MailReceiver,
+  MailStoredContext,
+  MailUpsertContext,
+} from '../../collections/mail/mail-collection.js';
 import type { CanonicalMessage } from '../../collections/mail/provider.js';
 import type { OAuthProviderConfig } from '../../collections/mail/oauth.js';
 import { deriveContactsFromMail } from '../../warehouse/contact-derive.js';
@@ -77,7 +82,7 @@ export interface ComposeMailStackBootDeps {
   /** Per-USE credential resolver (store-then-env, no boot binding). Called at
    *  enroll AND on every token refresh — `null` ⇒ not configured (enroll
    *  surfaces `not_configured`; refresh throws `oauth_app_not_configured`). */
-  resolveOAuthConfig: (provider: 'gmail' | 'graph') => OAuthProviderConfig | null;
+  resolveOAuthConfig: (provider: 'gmail' | 'graph', appId?: string) => OAuthProviderConfig | null;
   /** D-172 P2 — lazy provider of the `file.read` deps used to resolve
    *  outbound mail `attachments` refs into bytes at
    *  `MailCollection.send`. Lazy because the collection registry is
@@ -97,14 +102,45 @@ export interface ComposeMailStackBootDeps {
    *  the provider's own record of the message is in hand. The listeners bind
    *  it late (`createLateEmailAnswerHook`); absent ⇒ no mail answers an ask. */
   emailAnswerHook?: (msg: CanonicalMessage, ctx: MailUpsertContext) => void;
+  /** D-318 step 1 — is this mailbox the email chat door's chat mailbox? Its
+   *  mail is the conversation, not the owner's mail: it makes no contacts and
+   *  no mail facts. Read per message, so naming or clearing it applies to the
+   *  next one. Absent ⇒ no mailbox is the chat mailbox. */
+  isChatMailbox?: (slug: string) => boolean;
+  /** D-318 step 5 — is this message, in one of the owner's OTHER mailboxes,
+   *  the conversation with the chat mailbox: an answer in the inbox, or the Sent
+   *  copy of a request (`conversation-mail.ts`)? It makes no contacts and no mail
+   *  facts either. `receiver` is the mailbox it landed in, when known. Absent ⇒
+   *  none is. */
+  isChatConversationMail?: (msg: CanonicalMessage, receiver?: MailReceiver) => boolean;
+  /** D-318 step 2 — told of every message the moment its row first lands, in
+   *  any mailbox: one in the chat mailbox is recorded to be checked against the
+   *  owner's Sent record. At the landing, not the upsert hook after the
+   *  attachments: a stop in between makes a replay see the row as old, and the
+   *  request would be lost. Absent ⇒ no message is checked. */
+  chatRequestHook?: (msg: CanonicalMessage, ctx: MailStoredContext) => void;
+  /** D-318 step 4 — told of every message once its attachments are stored, in
+   *  any mailbox: a request in the chat mailbox records its files (the signature's
+   *  images left out), and its hand-over to chat may go on. Absent ⇒ requests
+   *  are handed over without files once the wait for them has passed. */
+  chatFilesHook?: (msg: CanonicalMessage, ctx: MailUpsertContext) => void;
+  /** D-318 audit — a mailbox was deleted: the door forgets it. */
+  onMailboxDeleted?: (slug: string) => void;
+  /** D-318 audit — did Recued send mail under this reconciliation id (its send
+   *  claims)? Only then is a message carrying one Recued's own, which the mail
+   *  facts leave out: the header alone is anyone's to write. Absent ⇒ none is. */
+  isOwnSend?: (reconciliation_id: string) => boolean;
 }
 
 type UpsertHook = NonNullable<MailStackStorageDeps['onMessageUpserted']>;
+type StoredHook = NonNullable<MailStackStorageDeps['onMessageStored']>;
 
 /** Run every hook, each on its own: a contact write that throws must not keep
  *  the message from being read for facts, nor the other way round. The first
  *  error is rethrown once all have run, so the collection still records it. */
-const runEachUpsertHook = (hooks: readonly UpsertHook[]): UpsertHook => (msg, ctx) => {
+const runEach = <C>(
+  hooks: readonly ((msg: CanonicalMessage, ctx: C) => void)[],
+): ((msg: CanonicalMessage, ctx: C) => void) => (msg, ctx) => {
   let first: { error: unknown } | undefined;
   for (const hook of hooks) {
     try {
@@ -136,12 +172,22 @@ export const composeMailBoot = (
   } = deps;
 
   if (!db || !cacheBlobs) return undefined;
+  const isChatMailbox = deps.isChatMailbox ?? (() => false);
+  const isChatConversationMail = deps.isChatConversationMail ?? (() => false);
+  /** The chat mailbox's mail, or the conversation's mail in another mailbox:
+   *  the one the hook's context names, read as the collection read it when it
+   *  marked the row. */
+  const isConversation = (msg: CanonicalMessage, ctx: MailUpsertContext | MailStoredContext): boolean =>
+    isChatMailbox(ctx.slug) || isChatConversationMail(msg, ctx.provider_kind !== undefined
+      ? { provider_kind: ctx.provider_kind, account_email: ctx.account_email ?? '' }
+      : undefined);
 
   // D-315 — every upsert is read for facts through the composition's writer.
   const factIngest = mailFactWriter
     ? createMailFactIngest({
         writer: mailFactWriter,
         now: () => Date.now(),
+        ...(deps.isOwnSend ? { isOwnSend: deps.isOwnSend } : {}),
         ...(contactStore
           ? { relationshipsOf: (address: string) => contactStore.get(address)?.network_domain ?? [] }
           : {}),
@@ -151,7 +197,10 @@ export const composeMailBoot = (
   // Contacts first: a new sender's contact row exists before its mail is read.
   const upsertHooks: UpsertHook[] = [];
   if (contactStore) {
-    upsertHooks.push((msg) => {
+    upsertHooks.push((msg, ctx) => {
+      // D-318 — the chat mailbox's mail is the conversation with Recued, and so
+      // are its answers and requests in the owner's other mailboxes.
+      if (isConversation(msg, ctx)) return;
       // D-121 Phase 1 — derive contacts from From/To/CC.
       // Errors swallowed inside the collection's try/catch so
       // a bad row never rolls back ingest.
@@ -161,11 +210,23 @@ export const composeMailBoot = (
   }
   if (factIngest) {
     upsertHooks.push((msg, ctx) => {
+      if (isConversation(msg, ctx)) return;
       factIngest.onMessageUpserted(msg, ctx);
     });
   }
-  const { emailAnswerHook } = deps;
+  const { emailAnswerHook, chatRequestHook, chatFilesHook } = deps;
   if (emailAnswerHook) upsertHooks.push(emailAnswerHook);
+  if (chatFilesHook) upsertHooks.push(chatFilesHook);
+
+  // A row's first landing: news for the facts, a request for the chat door.
+  // Each runs on its own, as the upsert hooks do.
+  const storedHooks: StoredHook[] = [];
+  if (factIngest) {
+    storedHooks.push((msg, ctx) => {
+      if (!isConversation(msg, ctx)) factIngest.onMessageStored(msg, ctx);
+    });
+  }
+  if (chatRequestHook) storedHooks.push(chatRequestHook);
 
   return composeMailStack(
     db,
@@ -175,10 +236,14 @@ export const composeMailBoot = (
       ...(auditLog ? { auditLog } : {}),
       ...(fileReadDeps ? { fileReadDeps } : {}),
       ...(inboundAttachmentDeps ? { inboundAttachmentDeps } : {}),
-      ...(upsertHooks.length > 0 ? { onMessageUpserted: runEachUpsertHook(upsertHooks) } : {}),
+      ...(upsertHooks.length > 0 ? { onMessageUpserted: runEach(upsertHooks) } : {}),
+      ...(storedHooks.length > 0 ? { onMessageStored: runEach(storedHooks) } : {}),
+      ...(deps.onMailboxDeleted ? { onMailboxDeleted: deps.onMailboxDeleted } : {}),
+      // The conversation's mail in the owner's mailboxes is marked as it is
+      // stored, so every reader of their stored mail can leave it out.
+      ...(deps.isChatConversationMail ? { isChatConversation: deps.isChatConversationMail } : {}),
       ...(factIngest
         ? {
-            onMessageStored: (msg, ctx) => factIngest.onMessageStored(msg, ctx),
             onRecordsRemoved: (slug: string, recordIds: readonly string[]) =>
               factIngest.onRecordsRemoved(slug, recordIds),
             onRecordRekeyed: (slug: string, from: string, to: string) =>
@@ -213,6 +278,7 @@ export const composeMailBoot = (
       ...(accountStore
         ? {
             accountStore: {
+              ...(accountStore.transactionalWrite ? { transactionalWrite: accountStore.transactionalWrite } : {}),
               get: (k) => accountStore.get(k),
               set: (k, v) => accountStore.set(k, v),
               delete: (k) => accountStore.delete(k),
@@ -222,7 +288,7 @@ export const composeMailBoot = (
         : {}),
       // Per-use credential fetch for the initial code-exchange (enroll). The
       // adapter's refresh path resolves the same way via `buildProvider`.
-      oauthConfig: (provider) => resolveOAuthConfig(provider),
+      oauthConfig: (provider, appId) => resolveOAuthConfig(provider, appId),
       ...(isVaultUnlocked ? { isVaultUnlocked } : {}),
     },
     {

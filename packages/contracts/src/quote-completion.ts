@@ -42,7 +42,7 @@ export interface QuoteCompletionPrepareResult {
   preview_hash: string;
   customer_preview: string;
 }
-export interface QuoteCompletionPublishInput { completion_id: string; preview_hash: string }
+export interface QuoteCompletionPublishInput { completion_id: string;preview_hash: string;remember_link_for_reminders?: boolean }
 export interface QuoteCompletionPublishResult { completion: QuoteCompletionSummary; share_url: string }
 export interface QuoteCompletionCancelInput { completion_id: string }
 export interface QuoteCompletionListInput {

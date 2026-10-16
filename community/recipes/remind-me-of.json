@@ -1,42 +1,30 @@
 {
   "recipe_id": "remind-me-of",
   "chat_exposed": true,
-  "version": 1,
+  "version": 2,
   "ttl": 60,
   "metadata": {
     "name": "Remind me",
-    "description": "Use “Remind me” in Recued. Capture a one-shot personal reminder as a Recued task. Resolve the requested time against the current date/time in your context, in the user's timezone, and pass remindat as an absolute ISO 8601 timestamp with an explicit offset.",
+    "description": "Use “Remind me” in Recued. Set a one-time reminder: Recued tells you at that time, once, on every channel you set up. Work out the time from the current date and time in your context, on the user's clock. Pass it with its offset, and tell the user the time the answer gives.",
     "author": "recued-core",
     "supported_platforms": [],
-    "tags": ["reminder", "task", "notify", "personal-organizer", "pack:personal-organizer"],
+    "tags": ["reminder", "notify", "personal-organizer", "pack:personal-organizer"],
     "budget_ms": 10000
   },
   "variables": {
     "reminder_text": {
       "label": "Reminder text",
       "type": "string",
-      "help": "Bare reminder text to show when the reminder fires."
+      "help": "What the reminder says when it rings, in the user's words."
     },
     "remind_at": {
       "label": "Remind at",
       "type": "datetime",
-      "help": "When the reminder should fire, as an absolute ISO 8601 / RFC 3339 date-time WITH a timezone offset (e.g. 2026-07-04T15:00:00-07:00 or 2026-07-04T22:00:00Z). Resolve the user's requested time against the current date/time in your context, in the user's timezone — do NOT assume UTC; if the timezone is unknown, ask before guessing. An offset-less value is rejected."
-    },
-    "container_names": {
-      "label": "Destination container",
-      "type": "object",
-      "optional": true,
-      "default": {},
-      "help": "Optional. File the reminder in a named vendor container, keyed by its dependency ref: { 'project': 'Roadmap' } (Asana) or { 'team': 'Core' } (Linear). Leave empty to use the Source's default destination."
+      "help": "When the reminder should ring, as an absolute ISO 8601 / RFC 3339 date-time WITH a timezone offset (e.g. 2026-07-04T15:00:00-07:00 or 2026-07-04T22:00:00Z). Resolve the user's requested time against the current date/time in your context, in the user's timezone — do NOT assume UTC; if the timezone is unknown, ask before guessing. An offset-less value is rejected, and so is a time that has passed."
     }
   },
-  "requires": [],
+  "requires": ["notification_send"],
   "steps": [
-    {
-      "id": "text",
-      "transform": "trim",
-      "input": "{{config.reminder_text}}"
-    },
     {
       "id": "due_at_ms",
       "transform": "date_parse",
@@ -45,26 +33,19 @@
       "fail_on": "{{step.due_at_ms}} is_null"
     },
     {
-      "id": "create",
-      "op": "core.work-entity.task.create",
+      "id": "set",
+      "op": "core.reminder.create",
       "args": {
-        "title": "Reminder: {{step.text}}",
-        "body": "{{step.text}}",
-        "due_at": "{{step.due_at_ms}}",
-        "state": "reminder_pending",
-        "source_extension_blob": {
-          "kind": "recued_reminder"
-        },
-        "container_names": "{{config.container_names}}"
+        "text": "{{config.reminder_text}}",
+        "at": "{{step.due_at_ms}}"
       }
     },
     {
       "id": "card",
       "transform": "to_summary",
       "fields": [
-        { "label": "Reminder", "value": "{{step.text}}" },
-        { "label": "Due at", "value": "{{config.remind_at}}" },
-        { "label": "Task ID", "value": "{{step.create.task._id}}" }
+        { "label": "Reminder", "value": "{{step.set.reminder.text}}" },
+        { "label": "When", "value": "{{step.set.confirmation}}" }
       ]
     }
   ],

@@ -62,7 +62,7 @@ export const mailRecordIdHeldByAnotherMailbox = (
   ownTable: string,
   record_id: string,
 ): boolean =>
-  listCollectionDataTables(db, 'mail').some((table) => table !== ownTable
+  listCollectionDataTables(db, 'mail', { all: true }).some((table) => table !== ownTable
     && db.prepare(`SELECT 1 FROM ${table} WHERE record_id = ?`).get(record_id) !== undefined);
 
 /** `MailCollection.legacyAttachmentsAmbiguous` for the mailbox a slug names.

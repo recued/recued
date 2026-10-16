@@ -188,6 +188,7 @@ describe('createContractStore — seedSchema', () => {
       // D-320 — a pack's default connection per slot.
       ['composite_keys', 'pack_connection_default'],
       ['composite_keys', 'pack_connection_holder'],
+      ['composite_keys', 'pack_reconnect_review'],
       ['composite_keys', 'policy_resolution'],
       // ⛔ The primitive-grandfather watermark — one row per non-owner contract,
       // recording that the D-228 slice-5 migration already covered it. A SEPARATE

@@ -7,6 +7,110 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.10.16 — 2026-10-16
+
+You can now chat with Recued by email: write from your own mailbox to a mailbox
+Recued reads, and the answer comes back in the same thread. Your server now
+rings reminders at their time. Reception keeps a customer's payments, credits
+and refunds, with corrections, statements and customer accounts. A connection
+can change how it signs in, or what it may do, and keep its name, data and
+sync.
+
+⚠ Update Recued before you update the Invoice Book pack. Then update Personal
+Organizer Foundation in Packs: until you do, a reminder you set rings only after
+the server next restarts.
+
+⚠ An Outlook mailbox that was allowed to send but has no Mail.ReadWrite
+permission now shows that it cannot send. Its emails were already being
+refused. Reconnect it, or change its permissions in Manage authentication.
+
+### Added
+
+- **Chat by email.** In Settings → Email chat, choose a connected mailbox for
+  chat and the mailboxes you send from, then choose Check and turn on. Email the
+  chat mailbox with a subject that starts with "ask:" (you can change or turn
+  off this prefix). Recued runs your request as a chat, as you, and replies in
+  the same thread. It acts only on an email it can show you sent: your sent copy
+  is in a mailbox Recued reads, or the email comes from an address you confirmed
+  with a code. It reads only what you wrote, not the quoted history, signatures
+  or forwarded mail, and the email's attachments come with it. A request that
+  arrives too late gets a one-line reply instead of being run. A burst of
+  requests pauses email chat until you resume it. A server restored from a
+  backup, or a second copy of it, does not answer a request again.
+- **Save an attachment to a folder.** Ask chat to put a file in a folder, such
+  as "put this in my Receipts folder", by email or in the web app. Recued finds
+  the folder by its name and never replaces a file already there. When the name
+  fits more than one folder, it asks you which.
+- **Reminders that ring.** Ask chat to remind you, and your server rings the
+  reminder at its time through your notification channels, holding it during
+  quiet hours. Data → Reminders lists your reminders, with Change time and
+  Cancel. Reminders you set before this release are moved over when the server
+  starts.
+- **Customer payments.** A job's Billing shows each invoice's payment history,
+  with receipts you can print, download, or email after you review them. Correct
+  a recorded payment, or void a duplicate, through a preview you approve. Set a
+  payment follow-up for each invoice, and share a payment statement for the
+  whole job.
+- **Credits and refunds.** Credit an unpaid invoice, credit money already paid,
+  record a refund you completed, and fix a credit or a refund. Each change keeps
+  the original entries and needs your fresh approval.
+- **Customer accounts.** Group a customer's jobs into an account. It has one
+  statement, takes one payment split across its invoices, and has its own
+  corrections, payment reminders and saved contact details for its emails.
+- **Close out a job.** Closeout checks the work, completion, balances, refunds
+  and follow-ups before you archive a job, and you can restore it later. Each
+  job also has a timeline, and Receivables shows what is owed and for how long.
+- **Manage authentication.** For an API connection, mailbox, calendar or file
+  source, you can sign in again, switch to another saved app, or move between
+  Recued's direct sign-in and a broker, one at a time or in bulk. Recued checks
+  that it is the same account and that it can still read before it saves, and
+  keeps the name, your choices, stored data and sync. You can also turn sending,
+  mail organization or event editing on or off for an existing account.
+- **Saved OAuth apps.** Save several Google and Microsoft apps by name and reuse
+  them for new connections. Before you replace an app's secret, Recued shows
+  everything that uses it and updates the copies you choose together. Note when
+  a secret expires, and Recued reminds you.
+- **Permissions and cleanup.** Connections → Apps & APIs → Permissions and
+  cleanup lists every saved sign-in, what each permission is used for and what
+  is no longer needed, and previews a cleanup. A direct Google sign-in can be
+  reduced to the permissions it still needs, step by step, and you can pause and
+  resume the cleanup.
+- **One repair list.** The status bar in Connections gathers failed sign-ins,
+  pack permission reminders and app secret expiry dates, with a link to fix
+  each. Guided troubleshooting checks a failing sign-in and copies a private
+  summary for support. A mailbox or calendar that uses a password takes a new
+  one through Update credentials, checked before it is saved.
+- **Pack permission review.** Installing or updating a pack shows which
+  permissions change and which accounts cover them, with Reconnect now or a list
+  to reconnect later.
+- **Chat drafts.** Each chat keeps its unsent text, reply choice and files while
+  Chat is open.
+
+### Changed
+
+- **Reception → Customer work** replaces Customer jobs, with Jobs, Accounts,
+  Receivables, Follow-ups and Sign-offs. A job opens on Overview, Activity,
+  Billing, Follow-ups and Closeout.
+
+### Fixed
+
+- **Outlook sending.** Recued now asks Microsoft for Mail.ReadWrite along with
+  Mail.Send, which Outlook needs to send. A reply goes as Outlook's own reply to
+  the email it answers. Files go in separate requests, so large attachments no
+  longer fail as a bad recipient, and a refused send leaves no draft behind.
+- **Throttled sends.** A provider's "too many requests" no longer reads as a
+  wrong address or a broken sign-in, and no longer switches an automation off.
+  Recued tries again later.
+- **Calendar sync.** An empty or quiet calendar no longer shows "First sync
+  pending" for good, and a calendar's sign-in status now follows its syncs.
+- **Mail setup.** A new Google or Microsoft mailbox is confirmed before its
+  history finishes importing. Connections shows when the sign-in is saved, when
+  the mailbox is syncing, and when the first sync is complete.
+- **Chat** stops and says why when a conversation has grown too long to keep an
+  answer it needs, instead of fetching that answer again and again.
+- **Housekeeping settings** keep keyboard focus and their open sections while
+  they save and refresh.
+
 ## 26.10.14 — 2026-10-14
 
 A customer can now confirm that your work is done, or ask for fixes, from a

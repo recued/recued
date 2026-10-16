@@ -162,6 +162,9 @@ const expectedBundleKeys = [
   // deliberate ratchet on the bundle's surface: a new field is a decision, not
   // a diff to wave through.
   'runSettledSink',
+  // D-318 step 5 — others told of the same settled runs: the email door writes
+  // the follow-up of a run its turn left waiting for an approval.
+  'onRunSettled',
   // D-219 — the capture-only argument buffer, surfaced ONLY so the retention
   // pruner can bound it. ⛔ No read path consumes it.
   'executionCaseArgumentStore',
@@ -373,6 +376,23 @@ describe('composeChatOrchestrator', () => {
     expect(
       bundle.chatDeps.catalogProvider?.().map((entry) => entry.name) ?? [],
     ).not.toContain(RECALL_SEARCH_TOOL_NAME);
+  });
+
+  it('D-318 step 5 — tells each listener of a settled run, with chat’s own sink, until it stops', async () => {
+    const { bundle } = composeHarness();
+    const heard: string[] = [];
+    const stop = bundle.onRunSettled((settled) => { heard.push(settled.run_id); });
+    // A listener that throws keeps neither chat's sink nor another listener from it.
+    bundle.onRunSettled(() => { throw new Error('listener failed'); });
+    const settled = {
+      execution_source: { channel: 'messenger', actor: 'user_self', vendor: 'email', from: 'me@owner.example' },
+      run_id: 'run-1', tool_name: 'recipe.run', result: { success: true }, ts: 1,
+    };
+    await bundle.runSettledSink(settled);
+    expect(heard).toEqual(['run-1']);
+    stop();
+    await bundle.runSettledSink({ ...settled, run_id: 'run-2' });
+    expect(heard).toEqual(['run-1']);
   });
 
   it('creates every chat SQLite table when composed against an empty in-memory db', () => {

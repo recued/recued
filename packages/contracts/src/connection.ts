@@ -341,6 +341,14 @@ export type ConnectionAuth =
   | { type: 'query';  param_name: string;  value: string }
   | { type: 'oauth2_refresh';
       refresh_token: string;
+      /** Local permission needs preserved across broker-to-native migration; never grant evidence. */
+      required_scopes?: readonly string[];
+      /** Server-issued native grant family; shared renewal does not switch accounts. */
+      native_credential_id?: string;
+      /** Host-issued pause. A saved cleanup owns this grant until verified recovery. */
+      permission_cleanup_pending?: string;
+      /** Server-recorded origin of this independent encrypted app credential copy. */
+      saved_oauth_app?: { issuer: import('./foundational-oauth.js').OAuthAppIssuer; id: string };
       client_id: string;
       client_secret?: string;
       token_endpoint: string;
@@ -489,6 +497,7 @@ export const isValidOAuthEndpointUrl = (value: unknown): value is string => {
  *  authenticates by bearer, e.g. the HubSpot reconcilers) or a fallthrough.
  *  Pure; no I/O. */
 export const resolveBearerAccessToken = (auth: ConnectionAuth): string | undefined => {
+  if (auth.type === 'oauth2_refresh' && auth.permission_cleanup_pending) return undefined;
   const token =
     auth.type === 'bearer'
       ? auth.token

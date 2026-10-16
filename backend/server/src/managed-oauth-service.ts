@@ -13,6 +13,7 @@ import { createNangoOAuthAdapter, managedOAuthServerUrl } from './managed-oauth-
 import { IngredientError } from '@recued/ingredients';
 import { managedOAuthConnectionUsage } from './managed-oauth-account-usage.js';
 import { readManagedOAuthAccountIdentity } from './managed-oauth-account-preview.js';
+import { createFileSourceAuthentication, type FileSourceAuthenticationDeps } from './file-source-authentication.js';
 import { managedOAuthImpact, managedOAuthImpactSignature } from './managed-oauth-impact.js';
 
 interface Flow {
@@ -43,12 +44,21 @@ export interface ManagedOAuthService {
     auth: ManagedOAuthAuth; granted_scopes?: readonly string[]; consume(): void;
   };
   verifySwitchAccount(auth: ManagedOAuthAuth): Promise<void>;
+  verifyFileSourceSwitch?(name: string, auth: ConnectionAuth): Promise<import('@recued/contracts').ConnectionHealth | undefined>;
+  assertFileSourceSwitchCurrent?(name: string): void;
+  isFileSourceSwitch?(name: string): boolean;
   verifyImpact?(auth: ManagedOAuthAuth, fingerprint: string): Promise<void>;
+  /** Current declared permissions only; no broker or vendor request. */
+  reauthorizationScopes?(name: string): readonly string[];
   migrationCandidates?(names?: readonly string[]): Promise<ManagedOAuthMigrationCandidate[]>;
   migrationSignature?(names: readonly string[]): string;
   claimMigration?(auth: ManagedOAuthAuth, names: readonly string[]): Promise<ManagedOAuthMigrationAuthority>;
+  directMigrationSignature?(names: readonly string[]): string;
+  previewDirectImpact?(name: string, auth: import('@recued/contracts').DirectOAuthAuth,
+    members?: readonly string[]): Promise<ManagedOAuthImpactPreview>;
   /** D-322 §24 — read-only diagnostic fences, independent of consent receipts. */
   diagnosticProfileSignature?(): string;
+  collectionProfileSignature?(id: string): string;
   inspectAccount?(auth: ManagedOAuthAuth): Promise<{ identity?: string; profile_revision: number; auth_error: boolean }>;
   fetch(auth: ManagedOAuthAuth, target: string, init: RequestInit): Promise<Response>;
 }
@@ -69,6 +79,7 @@ export interface ManagedOAuthServiceDeps {
   requiredScopes?(vendor: string, baseUrl: string): readonly string[];
   requiredScopeSources?(vendor: string, baseUrl: string): readonly { slug: string; name: string; scopes: readonly string[] }[];
   connectionUses?(name: string): { uses: readonly ManagedOAuthConnectionUse[]; complete: boolean };
+  fileSources?: Omit<FileSourceAuthenticationDeps, 'rows' | 'unlock' | 'managedFetch' | 'fetch' | 'now'>;
   fetchImpl?: typeof fetch;
   now?: () => number;
 }
@@ -113,7 +124,7 @@ const recordedGrants = (row: ConnectionRow): string[] | undefined => {
   try { return scopeList(JSON.parse(row.granted_scopes_json)); }
   catch { return undefined; }
 };
-const covers = (target: string, tracked: readonly string[], required: readonly string[]): boolean => {
+export const oauthScopesCover = (target: string, tracked: readonly string[], required: readonly string[]): boolean => {
   const host = new URL(target).hostname;
   const canonical = (scope: string): string => {
     if (host === 'graph.microsoft.com') return scope.replace(/^https:\/\/graph\.microsoft\.com\//, '');
@@ -121,10 +132,19 @@ const covers = (target: string, tracked: readonly string[], required: readonly s
     if (host.endsWith('.googleapis.com') && scope === 'https://www.googleapis.com/auth/userinfo.profile') return 'profile';
     return scope;
   };
-  return required.every(scope => tracked.some(prior => canonical(prior) === canonical(scope))
-    || (host === 'sheets.googleapis.com' && scope === 'https://www.googleapis.com/auth/spreadsheets.readonly'
-      && tracked.includes('https://www.googleapis.com/auth/spreadsheets')));
+  const implies = (prior: string, wanted: string): boolean => {
+    if (host === 'graph.microsoft.com') return prior === 'Mail.ReadWrite' && wanted === 'Mail.Read'
+      || prior === 'Calendars.ReadWrite' && wanted === 'Calendars.Read';
+    if (!host.endsWith('.googleapis.com')) return false;
+    const prefix = 'https://www.googleapis.com/auth/';
+    return prior === prefix + 'calendar' && [prefix + 'calendar.readonly', prefix + 'calendar.events'].includes(wanted)
+      || (prior === 'https://mail.google.com/' || prior === prefix + 'gmail.modify')
+        && ['gmail.readonly', 'gmail.modify', 'gmail.send'].some(s => wanted === prefix + s)
+      || host === 'sheets.googleapis.com' && prior === prefix + 'spreadsheets' && wanted === prefix + 'spreadsheets.readonly';
+  };
+  return required.every(scope => tracked.some(prior => canonical(prior) === canonical(scope) || implies(canonical(prior), canonical(scope))));
 };
+const covers = oauthScopesCover;
 const missingPublicIdentity = (error: unknown): boolean => error instanceof RpcError
   && error.message === 'Nango did not expose a stable identity for this saved account.';
 
@@ -185,6 +205,11 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
     return { authentication: 'broker', ...(saved ? { broker: publicProfile(saved) } : {}),
       integration_id: auth.integration_id, connection_id: auth.connection_id, identity };
   };
+  const fileSources = deps.fileSources ? createFileSourceAuthentication({ ...deps.fileSources, rows: deps.listConnections,
+    brokerSignature: id => { const saved = deps.profiles.list().find(p=>p.id===id);
+      return saved ? JSON.stringify([saved.id,saved.revision,saved.base_url]) : undefined; },
+    unlock: deps.decodeAuth, managedFetch: (auth, url, init) => adapter.fetch(profile(auth.broker_profile_id), auth, url, init),
+    ...(deps.fetchImpl ? { fetch: deps.fetchImpl } : {}), now }) : undefined;
   const impactFor = async (input: {
     phase: ManagedOAuthImpactPreview['phase']; mode: ManagedOAuthImpactPreview['mode']; consent: 'reuse' | 'request';
     row?: ConnectionRow; old?: ConnectionAuth; profile: ManagedOAuthProfile; integration: string; id?: string;
@@ -198,7 +223,11 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
     const target = identical && current ? current : await accountPreview(input.targetAuth, input.baseUrl,
       { profile: input.profile, integration: input.integration, id: input.id });
     if (before !== managedOAuthImpactSignature(names, deps.connectionUses)) throw new RpcError('conflict', 'Local usage changed. Refresh the account and impact preview.');
-    return managedOAuthImpact({ ...input, current, target, read: deps.connectionUses });
+    const fileSource = input.mode === 'switch' && input.row ? await fileSources?.preview(input.row, input.targetAuth) : undefined;
+    return managedOAuthImpact({ ...input,
+      ...(fileSource ? { file_source: fileSource } : {}),
+      current: current && fileSource ? { ...current, identity: fileSource.current } : current,
+      target: fileSource?.target ? { ...target, identity: fileSource.target } : target, read: deps.connectionUses });
   };
   const accountScopes = async (saved: ManagedOAuthProfile, integration: string, id: string, selected?: { identity?: string }) => {
     const snapshot = scopeSnapshot();
@@ -327,6 +356,9 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
     const initialSnapshot = scopeSnapshot();
     const requested = scopeList(a.scopes);
     if (a.switch_authentication !== undefined && a.switch_authentication !== true) throw new RpcError('bad_request', 'Choose a valid authentication switch.');
+    if (a.reauthorize_current !== undefined && (a.reauthorize_current !== true || !a.switch_authentication)) {
+      throw new RpcError('bad_request', 'Permission repair requires a verified reauthorization.');
+    }
     if (a.force_reauthorization !== undefined && typeof a.force_reauthorization !== 'boolean') throw new RpcError('bad_request', 'Choose a valid reauthorization option.');
     if (a.include_account_impact !== undefined && a.include_account_impact !== true) throw new RpcError('bad_request', 'Choose a valid account and impact preview.');
     const saved = profile(a.profile_id);
@@ -350,8 +382,12 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
     if (old !== undefined && !a.switch_authentication && (old.type !== 'managed_oauth' || old.broker_profile_id !== saved.id || old.integration_id !== integration.id || old.target_origin !== target)) {
       throw new RpcError('bad_request', 'Reauthorization must keep the saved broker, integration and vendor. Create another connection to change them.');
     }
-    const previous = !a.switch_authentication && old?.type === 'managed_oauth' ? old : undefined;
-    if (a.switch_authentication && old?.type === 'managed_oauth' && old.broker_profile_id === saved.id
+    const previous = (!a.switch_authentication || a.reauthorize_current) && old?.type === 'managed_oauth' ? old : undefined;
+    if (a.reauthorize_current && (old?.type !== 'managed_oauth' || old.broker_profile_id !== saved.id
+      || old.integration_id !== integration.id || old.connection_id !== a.connection_id)) {
+      throw new RpcError('bad_request', 'Permission repair keeps the saved broker, integration and Nango account.');
+    }
+    if (a.switch_authentication && !a.reauthorize_current && old?.type === 'managed_oauth' && old.broker_profile_id === saved.id
       && old.integration_id === integration.id && old.connection_id === a.connection_id) {
       throw new RpcError('bad_request', 'Choose another broker account, or use the current connection’s reauthorization flow.');
     }
@@ -686,7 +722,8 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
         candidates.push({ name: row.name, display_name: row.display_name || row.name, updated_at: row.updated_at,
           base_url: base, ...(config.vendor ? { vendor: config.vendor } : {}),
           authentication: auth.type === 'managed_oauth' ? 'broker' : auth.type === 'oauth2_refresh' ? 'direct_oauth' : 'token',
-          required_scopes: managedOAuthScopeUnion(requirements(row), auth.type === 'managed_oauth' ? auth.required_scopes ?? auth.requested_scopes : []),
+          required_scopes: managedOAuthScopeUnion(requirements(row), auth.type === 'managed_oauth' ? auth.required_scopes ?? auth.requested_scopes
+            : auth.type === 'oauth2_refresh' ? auth.required_scopes ?? [] : []),
           verification_url: managedOAuthDefaultVerificationUrl(base),
           ...(names ? { current: await accountPreview(auth, base) } : {}) });
       } catch { /* Invalid or unsupported saved credentials cannot join a migration. */ }
@@ -699,6 +736,27 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
       return [name, row ? requirements(row) : null];
     }).sort(), deps.profiles.scopeHistorySignature(), deps.profiles.list().map(p => [p.id, p.revision]).sort(),
   ])).digest('hex');
+  const directMigrationSignature = (names: readonly string[]): string => createHash('sha256').update(JSON.stringify([
+    managedOAuthImpactSignature(names, deps.connectionUses), names.map(name => {
+      const row = deps.listConnections().find(r => r.kind === 'api' && r.name === name);
+      return [name, row ? requirements(row) : null];
+    }).sort(),
+  ])).digest('hex');
+  const previewDirectImpact: NonNullable<ManagedOAuthService['previewDirectImpact']> = async (name, auth, members = []) => {
+    const row = deps.listConnections().find(r => r.kind === 'api' && r.name === name);
+    if (!row) throw new RpcError('conflict', 'The connection changed. Review it again.');
+    const base = String(JSON.parse(row.config_json).base_url ?? '');
+    const names = [...new Set([name, ...members])];
+    const signature = directMigrationSignature(names);
+    const current = await accountPreview(await deps.decodeAuth(row), base);
+    const target = await accountPreview(auth, base);
+    if (signature !== directMigrationSignature(names)) throw new RpcError('conflict', 'Local usage changed. Review the impact again.');
+    const fileSource = await fileSources?.preview(row, auth);
+    return managedOAuthImpact({ phase: 'before_save', mode: 'switch', consent: 'reuse', row,
+      current: fileSource ? { ...current, identity: fileSource.current } : current,
+      target: fileSource?.target ? { ...target, identity: fileSource.target } : target, ...(fileSource ? { file_source: fileSource } : {}),
+      members: deps.listConnections().filter(r => r.kind === 'api' && members.includes(r.name)), read: deps.connectionUses });
+  };
   const claimMigration: NonNullable<ManagedOAuthService['claimMigration']> = async (auth, names) => {
     const receipt = auth.authorization_receipt ? receipts.get(auth.authorization_receipt) : undefined;
     const source = receipt?.flow;
@@ -762,6 +820,20 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
     if (a.action !== 'preview' && a.action !== 'account_usage') prune();
     switch (a.action) {
       case 'account_usage': return accountUsage(a);
+      case 'file_authentication_files': {
+        if (!fileSources) throw new RpcError('not_configured','File-source authentication migration is unavailable on this server.');
+        return {action:a.action,choices:await fileSources.files(text(a.name,'Saved file connection'),a.expected_updated_at,a.query,a.after)};
+      }
+      case 'file_authentication_prepare': {
+        const name = text(a.name, 'Saved file connection');
+        const row = deps.listConnections().find(r => r.kind === 'api' && r.name === name);
+        if (!row || row.updated_at !== a.expected_updated_at) throw new RpcError('conflict', 'The saved file connection changed. Refresh and retry.');
+        if (!fileSources) throw new RpcError('not_configured', 'File-source authentication migration is unavailable on this server.');
+        const file_source = await fileSources.prepare(name, a.expected_updated_at, a.verification_file_id);
+        const current = deps.listConnections().find(r => r.kind === 'api' && r.name === name);
+        if (!current) throw new RpcError('conflict', 'The saved file connection was removed.');
+        return { action: a.action, name, updated_at: current.updated_at, file_source };
+      }
       case 'preview': return start(a);
       case 'profiles': return { action: 'profiles', profiles: deps.profiles.list() };
       case 'account_impact': {
@@ -896,6 +968,20 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
 
   return {
     handle, authorizeForSave, verifySwitchAccount, migrationCandidates, migrationSignature, claimMigration,
+    isFileSourceSwitch: name => fileSources?.supported(name) ?? false,
+    assertFileSourceSwitchCurrent: name => { fileSources?.assertCurrent(name); },
+    verifyFileSourceSwitch: async (name, auth) => {
+      const row = deps.listConnections().find(r => r.kind === 'api' && r.name === name);
+      if (!row) throw new RpcError('conflict', 'The saved connection was removed.');
+      const checked = await fileSources?.preview(row, auth);
+      return checked?.status === 'verified' ? { status: 'ok', last_probed_at: now() } : undefined;
+    },
+    directMigrationSignature, previewDirectImpact,
+    reauthorizationScopes: name => {
+      const row = deps.listConnections().find(row => row.kind === 'api' && row.name === name);
+      if (!row) throw new RpcError('not_found', 'The connection to reauthorize no longer exists.');
+      return requirements(row);
+    },
     verifyImpact: async (auth, fingerprint) => {
       if (typeof fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(fingerprint)) throw new RpcError('bad_request', 'Review the account and impact before saving.');
       const receipt = auth.authorization_receipt ? receipts.get(auth.authorization_receipt) : undefined;
@@ -907,6 +993,8 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
       flow.impactNames = impact.connections.map(c => c.name);
       flow.impactSnapshot = managedOAuthImpactSignature(flow.impactNames, deps.connectionUses);
     },
+    collectionProfileSignature: id => { const p = profile(id);
+      return createHash('sha256').update(JSON.stringify([p.id, p.broker, p.base_url])).digest('hex'); },
     diagnosticProfileSignature: () => JSON.stringify(deps.profiles.list().map(p => [p.id, p.revision]).sort()),
     inspectAccount: async (auth) => {
       const saved = profile(auth.broker_profile_id);

@@ -293,6 +293,29 @@ describe('the stored hook (§5)', () => {
     }
   });
 
+  it('D-318 step 6 — tells a message a recovery scan found apart from one that arrived', async () => {
+    const h = await start([]);
+    try {
+      await h.push({ kind: 'created', source_id: 'live', message: message('live') });
+      await h.push({ kind: 'updated', source_id: 'found', message: message('found'), recovered: true });
+      // Known already, it is no first sighting, whatever found it.
+      await h.push({ kind: 'updated', source_id: 'live', message: message('live', { is_read: true }), recovered: true });
+      expect(h.stored.map(({ msg, ctx }) => [msg.source_id, ctx.recovered])).toEqual([['live', undefined], ['found', true]]);
+    } finally {
+      await h.collection.sync.stop();
+    }
+  });
+
+  it('D-318 step 8 — names the mailbox’s provider: whose stamp is on top of what lands in it', async () => {
+    const h = await start([]);
+    try {
+      await h.push({ kind: 'created', source_id: 'm1', message: message('m1') });
+      expect(h.stored.map(({ ctx }) => ctx.provider_kind)).toEqual(['imap']);
+    } finally {
+      await h.collection.sync.stop();
+    }
+  });
+
   it('is news to the fact writer only when it is news: past the first backfill, in the window, not a draft', () => {
     const markNews = vi.fn();
     const write = vi.fn((_input: { email_at: number }) => ({ facts: 0, events: 0 }));

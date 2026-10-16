@@ -206,7 +206,12 @@ describe('Preview (§6.2)', () => {
       message('m1', { direction: 'draft' }),
       message('m2', { reconciliation_id: 'rcd_0123456789abcdef0123456789abcdef' }),
     ]);
-    expect((await previewTemplate(deps(box), ups(), shipment, undefined, 10)).recent).toEqual([]);
+    // Recued sent it: its send claims hold the id.
+    const isOwnSend = (id: string) => id === 'rcd_0123456789abcdef0123456789abcdef';
+    expect((await previewTemplate({ ...deps(box), isOwnSend }, ups(), shipment, undefined, 10)).recent).toEqual([]);
+    // D-318 audit — the same header, with no claim behind it, is read.
+    const recent = (await previewTemplate(deps(box), ups(), shipment, undefined, 10)).recent;
+    expect(recent.map((row) => row.email?.record_id)).toEqual([recordIdOf(box, 'm2')]);
   });
 
   it('passes over security notices, and refuses one as the email it is made from (§9)', async () => {

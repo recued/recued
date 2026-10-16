@@ -74,14 +74,7 @@ export const requiredScopesByConnection = (
       acc.set(slot, set);
     }
   }
-  const out: Record<string, string[]> = {};
-  for (const [slot, set] of acc) {
-    // Only emit a slot that ended up with >=1 real scope — a slot whose ops
-    // carried only whitespace scopes would otherwise surface as `{slot: []}`
-    // and read as a scope-bearing connection with nothing needed.
-    if (set.size > 0) out[slot] = [...set].sort();
-  }
-  return out;
+  return Object.fromEntries([...acc].filter(([, set]) => set.size > 0).map(([slot, set]) => [slot, [...set].sort()]));
 };
 
 /** EVERY connection slot a pack's compositions bind — a superset of
@@ -123,9 +116,7 @@ export const declaredConnectionSlots = (
       acc.set(slot, set);
     }
   }
-  const out: Record<string, string[]> = {};
-  for (const [slot, set] of acc) out[slot] = [...set].sort();
-  return out;
+  return Object.fromEntries([...acc].map(([slot, set]) => [slot, [...set].sort()]));
 };
 
 /** Fork 1 — the union of `required_scopes` a set of packs need on ONE connection

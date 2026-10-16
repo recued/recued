@@ -74,6 +74,14 @@ const manifestOf = (
   }) as unknown as BulkPackManifest;
 
 describe('requiredScopesByConnection', () => {
+  it('retains prototype-like slot names as ordinary data properties', () => {
+    const manifest = manifestOf({ ingredients: [httpIngredient('a', '__proto__'), httpIngredient('b', 'constructor')],
+      operations: [op('a.read', 'a', ['read-a']), op('b.read', 'b', ['read-b'])] });
+    const required = requiredScopesByConnection(manifest); const slots = declaredConnectionSlots(manifest);
+    expect(Object.hasOwn(required, '__proto__')).toBe(true); expect(required['__proto__']).toEqual(['read-a']);
+    expect(Object.hasOwn(slots, '__proto__')).toBe(true); expect(slots['constructor']).toEqual(['read-b']);
+    expect(Object.getPrototypeOf(required)).toBe(Object.prototype);
+  });
   it('unions per-op required_scopes per connection slot (sorted, de-duped)', () => {
     const manifest = manifestOf({
       ingredients: [httpIngredient('hs', 'hubspot')],

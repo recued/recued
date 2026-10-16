@@ -1,0 +1,55 @@
+{
+ "recipe_id": "list-folders",
+ "chat_exposed": true,
+ "version": 1,
+ "ttl": 60,
+ "metadata": {
+  "name": "My folders",
+  "description": "Use “My folders” in Recued. See the folders a file can be saved into: each connected folder, whether Recued can save into it now, and the folders inside it that hold files. Save a file to a folder takes these names.",
+  "author": "recued-core",
+  "supported_platforms": [],
+  "tags": [
+   "file",
+   "folder",
+   "personal-organizer",
+   "pack:personal-organizer"
+  ],
+  "budget_ms": 10000
+ },
+ "variables": {},
+ "requires": [],
+ "steps": [
+  {
+   "id": "list",
+   "op": "core.storage.file.folders",
+   "args": {}
+  },
+  {
+   "id": "table",
+   "transform": "to_table",
+   "array": "{{step.list.folders}}",
+   "columns": [
+    {
+     "field": "folder",
+     "label": "Folder"
+    },
+    {
+     "field": "writable",
+     "label": "Can save into"
+    },
+    {
+     "field": "inside",
+     "label": "Folders inside"
+    }
+   ]
+  }
+ ],
+ "output": {
+  "render": [
+   {
+    "type": "table",
+    "source": "step.table"
+   }
+  ]
+ }
+}

@@ -86,6 +86,12 @@ export interface ComposeEventTriggersInput {
   /** R21.1 — live vault-unlocked predicate. The dispatcher drops the
    *  reactive fan-out while sealed. Absent → un-gated. */
   isVaultUnlocked?: () => boolean;
+  /** D-318 step 1 — is this mailbox the email chat door's chat mailbox? A mail
+   *  event from it starts no recipe. Absent ⇒ none is. */
+  isChatMailbox?: (slug: string) => boolean;
+  /** D-318 step 5 — is this stored message the conversation with the chat
+   *  mailbox, in another mailbox? It starts no recipe either. Absent ⇒ none is. */
+  isChatConversationRecord?: (slug: string, record_id: string) => boolean;
   /** D-268 — deliver one owner notice about a failed fire. Absent ⇒ failures
    *  reach the trigger row and nobody else. */
   onAutomationFailure?: EventTriggerDispatcherDeps['onAutomationFailure'];
@@ -137,7 +143,7 @@ export const composeEventTriggers = (
 ): EventTriggersBundle | undefined => {
   const {
     db, warehouseBus, executeDeps, auditLog, eventBus, localManifestStore, isVaultUnlocked,
-    onAutomationFailure, onFired,
+    isChatMailbox, isChatConversationRecord, onAutomationFailure, onFired,
   } = input;
   if (!db) return undefined;
 
@@ -253,6 +259,8 @@ export const composeEventTriggers = (
     ...(eventBus ? { eventBus } : {}),
     backfillState,
     ...(isVaultUnlocked ? { isVaultUnlocked } : {}),
+    ...(isChatMailbox ? { isChatMailbox } : {}),
+    ...(isChatConversationRecord ? { isChatConversationRecord } : {}),
     ...(onAutomationFailure ? { onAutomationFailure } : {}),
     ...(onFired ? { onFired } : {}),
   });

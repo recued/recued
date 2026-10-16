@@ -288,8 +288,9 @@ const describeApprovalOutcome = (
       return opt ? opt.label : outcome.option_id;
     }
     case 'approve':
-      return 'Approved';
+      return config.on_action.on_approve_action === 'quote_signoff' ? 'Quote accepted' : config.on_action.on_approve_action === 'quote_completion' ? 'Completion accepted' : 'Approved';
     case 'reject':
+      if (config.on_action.on_approve_action === 'quote_signoff') return 'Quote declined'+(outcome.comment ? ': '+outcome.comment : '');
       return outcome.comment !== undefined && outcome.comment.length > 0
         ? `Changes suggested: ${outcome.comment}`
         : 'Changes suggested';
@@ -396,6 +397,7 @@ export const createApprovalLinkPacketHandler = (
       action_kind: config.action_kind,
       prompt: config.prompt,
       completion: config.on_action.on_approve_action === 'quote_completion',
+      quote: config.on_action.on_approve_action === 'quote_signoff',
       context_summary: config.context_raw.summary,
       visitor_field_constraints: config.visitor_field_constraints,
       expiry_display: source.expiry_display,
@@ -691,7 +693,18 @@ export const createApprovalLinkConsumeHandler = (
       /* audit failure must not block the success page */
     }
 
-    const successMessage = config.success_message ?? APPROVAL_LINK_DEFAULT_SUCCESS_MESSAGE;
+    const customerQuote = config.on_action.on_approve_action === 'quote_signoff';
+    const customerCompletion = config.on_action.on_approve_action === 'quote_completion';
+    const successMessage = customerQuote ? built.kind === 'approve'
+      ? 'The business will review your acceptance before releasing the work and invoice.'
+      : 'Ask the business for a revised quote if you would like to continue.'
+      : customerCompletion ? 'The business will review your response before closing or reopening the work.'
+      : config.success_message ?? APPROVAL_LINK_DEFAULT_SUCCESS_MESSAGE;
+    const responseSummary = customerQuote || customerCompletion ? {
+      reference: config.context_raw.summary.split('\n').find(line=>line.trim())?.slice(0,400) ?? display_name,
+      decision: customerQuote ? built.kind === 'approve' ? 'Quote accepted' : 'Quote declined'
+        : built.kind === 'approve' ? 'Completion accepted' : 'Corrections requested',
+    } : undefined;
 
     // D-149 § A.20.3 — Visitor Receipt. Echoes the visitor's
     // self-identification fields (verbatim) + a human-readable form of
@@ -717,6 +730,7 @@ export const createApprovalLinkConsumeHandler = (
       renderApprovalLinkSuccessHtml({
         display_name,
         success_message: successMessage,
+        ...(responseSummary ? {response_summary: responseSummary} : {}),
         receipt,
       }),
       200,

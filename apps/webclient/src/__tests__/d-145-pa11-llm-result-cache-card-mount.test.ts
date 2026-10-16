@@ -351,9 +351,7 @@ describe('mountLlmResultCacheCard — Clear two-stage confirm', () => {
     fakeHost.clickAction('housekeeping-cache-clear-confirm');
     expect(mount.getState().clearing).toBe(true);
 
-    // Synthetic cancel click mid-clear: the renderer disables the
-    // button so a real user couldn't click, but the fake-DOM has no
-    // disabled tracking. The mount's own state-machine guard refuses.
+    // Busy controls stay focusable; the mount must refuse activation.
     fakeHost.clickAction('housekeeping-cache-clear-cancel');
     expect(mount.getState().confirmingClear).toBe(true);
     expect(mount.getState().clearing).toBe(true);
@@ -362,6 +360,110 @@ describe('mountLlmResultCacheCard — Clear two-stage confirm', () => {
     resolveClear({ ok: true, rows_deleted: 12 });
     await flush();
     await flush();
+    mount.dispose();
+  });
+
+  it('requires an open confirmation with entries before accepting Confirm', async () => {
+    const fakeHost = makeFakeHost();
+    let stats = populatedStats();
+    const runClear = vi.fn(async () => ({ ok: true as const, rows_deleted: 12 }));
+    const mount = mountLlmResultCacheCard({
+      host: fakeHost.host, runStats: async () => stats, runClear,
+    });
+    await mount.whenLoaded();
+    fakeHost.clickAction('housekeeping-cache-clear-confirm');
+    expect(runClear).not.toHaveBeenCalled();
+    fakeHost.clickAction('housekeeping-cache-clear');
+    fakeHost.clickAction('housekeeping-cache-clear-cancel');
+    fakeHost.clickAction('housekeeping-cache-clear-confirm');
+    expect(runClear).not.toHaveBeenCalled();
+    fakeHost.clickAction('housekeeping-cache-clear');
+    stats = { ...populatedStats(), total_entries: 0, total_hits: 0, per_topic: [] };
+    await mount.refresh();
+    expect(mount.getState().confirmingClear).toBe(false);
+    fakeHost.clickAction('housekeeping-cache-clear');
+    fakeHost.clickAction('housekeeping-cache-clear-confirm');
+    expect(runClear).not.toHaveBeenCalled();
+    mount.dispose();
+  });
+
+  it('fences repeated activations through the post-clear read, while only guarding navigation during the write', async () => {
+    const fakeHost = makeFakeHost();
+    let resolveClear!: (value: { ok: true; rows_deleted: number }) => void;
+    let resolveStats!: (value: ReturnType<typeof emptyStats>) => void;
+    const runClear = vi.fn(() => new Promise<{ ok: true; rows_deleted: number }>((resolve) => { resolveClear = resolve; }));
+    const runStats = vi.fn()
+      .mockResolvedValueOnce(populatedStats())
+      .mockImplementationOnce(() => new Promise<ReturnType<typeof emptyStats>>((resolve) => { resolveStats = resolve; }));
+    const mount = mountLlmResultCacheCard({ host: fakeHost.host, runStats, runClear });
+    await mount.whenLoaded();
+    fakeHost.clickAction('housekeeping-cache-clear');
+    fakeHost.clickAction('housekeeping-cache-clear-confirm');
+    expect(mount.hasInFlightWork()).toBe(true);
+    for (const action of ['housekeeping-cache-clear-confirm', 'housekeeping-cache-clear-cancel', 'housekeeping-cache-clear']) {
+      fakeHost.clickAction(action);
+    }
+    expect(runClear).toHaveBeenCalledTimes(1);
+    expect(mount.getState().confirmingClear).toBe(true);
+    resolveClear({ ok: true, rows_deleted: 12 });
+    await flush();
+    expect(runStats).toHaveBeenCalledTimes(2);
+    expect(mount.hasInFlightWork()).toBe(false);
+    expect(mount.getState().clearing).toBe(true);
+    for (const action of ['housekeeping-cache-clear-confirm', 'housekeeping-cache-clear-cancel', 'housekeeping-cache-clear']) {
+      fakeHost.clickAction(action);
+    }
+    expect(runClear).toHaveBeenCalledTimes(1);
+    expect(mount.getState().confirmingClear).toBe(true);
+    resolveStats(emptyStats());
+    await mount.whenClearSettled();
+    expect(mount.getState().clearing).toBe(false);
+    expect(mount.getState().confirmingClear).toBe(false);
+    expect(mount.getState().stats?.total_entries).toBe(0);
+    mount.dispose();
+  });
+
+  it('does not start a refresh or repaint when a clear settles after disposal', async () => {
+    const fakeHost = makeFakeHost();
+    let resolveClear!: (value: { ok: true; rows_deleted: number }) => void;
+    const runClear = () => new Promise<{ ok: true; rows_deleted: number }>((resolve) => { resolveClear = resolve; });
+    const runStats = vi.fn(async () => populatedStats());
+    const mount = mountLlmResultCacheCard({ host: fakeHost.host, runStats, runClear });
+    await mount.whenLoaded();
+    fakeHost.clickAction('housekeeping-cache-clear');
+    fakeHost.clickAction('housekeeping-cache-clear-confirm');
+    mount.dispose();
+    resolveClear({ ok: true, rows_deleted: 12 });
+    await mount.whenClearSettled();
+    expect(mount.hasInFlightWork()).toBe(false);
+    expect(runStats).toHaveBeenCalledTimes(1);
+    expect(fakeHost.getHtml()).toBe('');
+  });
+
+  it('shows a failed clear on the empty summary if GC emptied the cache during the write', async () => {
+    const fakeHost = makeFakeHost();
+    let rejectClear!: (error: Error) => void;
+    const runClear = vi.fn(() => new Promise<{ ok: true; rows_deleted: number }>((_resolve, reject) => { rejectClear = reject; }));
+    const runStats = vi.fn()
+      .mockResolvedValueOnce(populatedStats())
+      .mockResolvedValueOnce(emptyStats());
+    const mount = mountLlmResultCacheCard({ host: fakeHost.host, runStats, runClear });
+    await mount.whenLoaded();
+    fakeHost.clickAction('housekeeping-cache-clear');
+    fakeHost.clickAction('housekeeping-cache-clear-confirm');
+    await mount.refresh();
+    expect(mount.getState().clearing).toBe(true);
+    expect(fakeHost.getHtml()).toContain('Clearing…');
+    expect(mount.hasInFlightWork()).toBe(true);
+    rejectClear(new Error('Cache clear unavailable.'));
+    await mount.whenClearSettled();
+    expect(mount.hasInFlightWork()).toBe(false);
+    expect(mount.getState().confirmingClear).toBe(false);
+    expect(fakeHost.getHtml()).toContain('Currently empty');
+    expect(fakeHost.getHtml()).toContain('Cache clear unavailable.');
+    expect(fakeHost.getHtml()).not.toContain('data-action="housekeeping-cache-clear-confirm"');
+    fakeHost.clickAction('housekeeping-cache-clear-confirm');
+    expect(runClear).toHaveBeenCalledTimes(1);
     mount.dispose();
   });
 });

@@ -138,6 +138,9 @@ import {
   type CliGrantDialogMount,
 } from '../settings/cli-grant-dialog.js';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
+import { createReconnectWorklistPanel, RECONNECT_WORKLIST_STYLES, type PackReconnectCaller } from '../settings/reconnect-worklist-panel.js';
+import type { PackReconnectGroup } from '@recued/contracts';
+import type { ReconnectWorklistReturn } from '../settings/reconnect-worklist-continuity.js';
 
 export const PACKS_ROUTE_STYLES_MARKER = 'data-recued-packs-route-styles';
 export const PACKS_ROUTE_HOST_ATTR = 'data-recued-packs-route';
@@ -218,6 +221,7 @@ const PACKS_ROUTE_CHROME_STYLES = `
 `;
 
 export const PACKS_ROUTE_STYLES = [
+  RECONNECT_WORKLIST_STYLES,
   PRIMITIVE_STYLES,
   PACKS_PANEL_STYLES,
   INSTALL_GRANT_PICKER_STYLES,
@@ -237,6 +241,10 @@ export const PACKS_ROUTE_STYLES = [
 ].join('\n');
 
 export interface BootstrapPacksRouteOptions {
+  authenticationRepairsCaller?: import('@recued/contracts').AuthenticationRepairCaller;
+  reconnectWorklistCaller?: PackReconnectCaller;
+  onWorklistReconnect?(group: PackReconnectGroup): void;
+  initialWorklistReturn?: ReconnectWorklistReturn;
   root: HTMLElement;
   document?: Document;
   packsListCaller?: PacksListCaller;
@@ -254,6 +262,8 @@ export interface BootstrapPacksRouteOptions {
    *  disclosure + the grant picker's per-recipe tier. Optional: absent ⇒ the
    *  dialog renders its pre-D-247 surface. */
   packsInstallPreviewCaller?: PacksInstallPreviewCaller;
+  onPermissionRepair?: import('../settings/packs-panel.js').MountPacksPanelOptions['onPermissionRepair'];
+  initialPermissionRepairReturn?: import('../settings/pack-permission-repair.js').PackPermissionRepair;
   /** D-304 — `packs.uninstall_preview`, feeding the Delete confirmation's "also
    *  removes …". Optional: absent ⇒ no line. */
   packsUninstallPreviewCaller?: PacksUninstallPreviewCaller;
@@ -536,6 +546,16 @@ export const bootstrapPacksRoute = (
 
   let packs: PacksPanelMount | null = null;
   let packsSurface: PacksSurfaceMount | null = null;
+  const worklist = opts.reconnectWorklistCaller || opts.authenticationRepairsCaller ? createReconnectWorklistPanel({ document: doc,
+    ...(opts.reconnectWorklistCaller ? { call: opts.reconnectWorklistCaller } : {}),
+    ...(opts.authenticationRepairsCaller ? { repairs: opts.authenticationRepairsCaller } : {}),
+    ...(opts.onWorklistReconnect ? { onReconnect: opts.onWorklistReconnect } : {}),
+    ...(opts.initialWorklistReturn ? { returned: opts.initialWorklistReturn } : {}) }) : null;
+  if (worklist) { const host = doc.createElement('div'); packsSection.appendChild(host); worklist.mount(host); }
+  const worklistUnsubs = opts.subscribe && worklist ? [
+    opts.subscribe('pack_installed', () => { void worklist.refresh(); }),
+    opts.subscribe('pack_uninstalled', () => { void worklist.refresh(); }),
+  ] : [];
   if (opts.packsListCaller !== undefined) {
     const packsListCaller = opts.packsListCaller;
     const packsHost = doc.createElement('div');
@@ -610,6 +630,8 @@ export const bootstrapPacksRoute = (
           document: doc,
           scrollRoot: opts.root,
           runList: packsListCaller,
+          ...(opts.onPermissionRepair ? { onPermissionRepair: opts.onPermissionRepair } : {}),
+          ...(opts.initialPermissionRepairReturn ? { initialPermissionRepairReturn: opts.initialPermissionRepairReturn } : {}),
           onSelectSlug,
           ...(opts.initialPackSlug !== undefined
             ? { initialSlug: opts.initialPackSlug }
@@ -791,8 +813,8 @@ export const bootstrapPacksRoute = (
     packsPanel: () => packs,
     cliGrantDialog: () => cliGrantDialog,
     whenLoaded: () => packs?.whenLoaded() ?? Promise.resolve(),
-    hasInFlightWork: () => packs?.hasInFlightWork() === true,
-    inFlightWorkPrompt: () => packs?.hasInFlightWork() === true
+    hasInFlightWork: () => packs?.hasInFlightWork() === true || worklist?.busy() === true,
+    inFlightWorkPrompt: () => packs?.hasInFlightWork() === true || worklist?.busy() === true
       ? 'A pack action is still in progress. Leave Packs anyway?'
       : null,
     hasUnsavedChanges: () => packs?.hasUnsavedChanges() === true,
@@ -814,6 +836,7 @@ export const bootstrapPacksRoute = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      worklist?.dispose(); for (const unsubscribe of worklistUnsubs) unsubscribe();
       // Reverse of construction: Packs surface → cli grant dialog. The surface
       // owns BOTH the browse list + the detail panel, so disposing it tears both
       // down (don't also dispose `packs` — double-dispose).

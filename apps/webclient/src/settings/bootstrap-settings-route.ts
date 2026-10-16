@@ -161,6 +161,12 @@ import {
   QUIET_HOURS_PANEL_STYLES,
 } from './quiet-hours-panel.js';
 import {
+  MAIL_CHAT_DOOR_PANEL_STYLES,
+  mountMailChatDoorPanel,
+  type MailChatDoorPanelMount,
+  type MountMailChatDoorPanelOptions,
+} from './mail-chat-door-panel.js';
+import {
   mountKindPolicyPanel,
   KIND_POLICY_PANEL_STYLES,
   type KindPolicyGetCaller,
@@ -639,6 +645,14 @@ export interface BootstrapSettingsRouteOptions {
   kindPolicySetCaller?: KindPolicySetCaller;
   quietHoursGetCaller?: QuietHoursGetCaller;
   quietHoursSetCaller?: QuietHoursSetCaller;
+  /** D-318 step 7 — Settings → Email chat: the email chat door's settings, its
+   *  checks before switching on, and the test round trip. All five or the
+   *  section does not render (a webclient against a server before step 7). */
+  mailChatDoorGetCaller?: MountMailChatDoorPanelOptions['runGet'];
+  mailChatDoorSetCaller?: MountMailChatDoorPanelOptions['runSet'];
+  mailChatDoorCheckCaller?: MountMailChatDoorPanelOptions['runCheck'];
+  mailChatDoorRecentCaller?: MountMailChatDoorPanelOptions['runRecent'];
+  mailChatDoorMailboxesCaller?: MountMailChatDoorPanelOptions['runListMailboxes'];
   serverTimeZoneGetCaller?: ServerTimeZoneGetCaller;
   serverTimeZoneSetCaller?: ServerTimeZoneSetCaller;
   notificationsDescribeCaller?: NotificationsDescribeCaller;
@@ -1330,6 +1344,9 @@ interface SettingsSubview {
   /** When true, the rail item carries a hidden badge dot the route toggles via
    *  `setSubviewBadge(id, on)` (D-178 — the "update available" indicator). */
   badgeable?: boolean;
+  /** Called each time the section is shown: a section whose panel reads the
+   *  server only when opened mounts it here (D-318 step 7, Email chat). */
+  onActivate?: () => void;
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -1441,6 +1458,9 @@ export const bootstrapSettingsRoute = (
       // each is inert when its callers are absent and the panel never mounts.
       KIND_POLICY_PANEL_STYLES,
       QUIET_HOURS_PANEL_STYLES,
+      // D-318 step 7 — Settings → Email chat. Scoped to its own panel
+      // attribute, so inert when its callers are absent.
+      MAIL_CHAT_DOOR_PANEL_STYLES,
       SERVER_TIMEZONE_PANEL_STYLES,
       CONNECT_DEVICE_PANEL_STYLES,
       NOTIFICATIONS_PANEL_STYLES,
@@ -1538,9 +1558,12 @@ export const bootstrapSettingsRoute = (
     id: string,
     label: string,
     section: HTMLElement,
-    subOpts?: { badgeable?: boolean },
+    subOpts?: { badgeable?: boolean; onActivate?: () => void },
   ): void => {
-    subviews.push({ id, label, section, badgeable: subOpts?.badgeable === true });
+    subviews.push({
+      id, label, section, badgeable: subOpts?.badgeable === true,
+      ...(subOpts?.onActivate !== undefined ? { onActivate: subOpts.onActivate } : {}),
+    });
     viewsHost.appendChild(section);
   };
 
@@ -2526,6 +2549,40 @@ export const bootstrapSettingsRoute = (
     registerSubview('notifications', 'Approval & notifications', notifSection);
   }
 
+  // ── Email chat section (D-318 step 7) ─────────────────────────────
+  // Beside notifications: another way the owner and Recued reach each other.
+  // Gated on all five callers: the panel reads the settings and the mailboxes,
+  // checks before it saves, and watches the test round trip.
+  // ⚠ MOUNTED WHEN FIRST OPENED, not with Settings: listing the mailboxes asks
+  // each whether it can send, and opening Settings must not read the mail
+  // stack (D-196 §4.7 pins that for Seller).
+  let mailChatDoor: MailChatDoorPanelMount | null = null;
+  if (opts.mailChatDoorGetCaller !== undefined && opts.mailChatDoorSetCaller !== undefined
+    && opts.mailChatDoorCheckCaller !== undefined && opts.mailChatDoorRecentCaller !== undefined
+    && opts.mailChatDoorMailboxesCaller !== undefined) {
+    const mailChatSection = doc.createElement('section');
+    mailChatSection.setAttribute(SETTINGS_ROUTE_SECTION_ATTR, 'email-chat');
+    const mailChatHeading = doc.createElement('h2');
+    mailChatHeading.textContent = 'Email chat';
+    mailChatSection.appendChild(mailChatHeading);
+    const mailChatHost = doc.createElement('div');
+    mailChatSection.appendChild(mailChatHost);
+    const callers = {
+      runGet: opts.mailChatDoorGetCaller,
+      runSet: opts.mailChatDoorSetCaller,
+      runCheck: opts.mailChatDoorCheckCaller,
+      runRecent: opts.mailChatDoorRecentCaller,
+      runListMailboxes: opts.mailChatDoorMailboxesCaller,
+    };
+    registerSubview('email-chat', 'Email chat', mailChatSection, {
+      // Shown again, it reads afresh: a pause, a test email, may have come since.
+      onActivate: () => {
+        if (mailChatDoor === null) mailChatDoor = mountMailChatDoorPanel({ host: mailChatHost, document: doc, ...callers });
+        else void mailChatDoor.refresh();
+      },
+    });
+  }
+
   // R31 (delta D) — the one-way `notify` history feed was RETIRED here (not
   // graduated into `#logs`): a `notify` is ephemeral (the live toast covers
   // the moment) and an `ask` is the actionable "pending" (→ `#approvals`), so a
@@ -3220,6 +3277,7 @@ export const bootstrapSettingsRoute = (
     // no-op when it is already visible and avoids disturbing page position.
     const activeNavItem = navItems.find((item) => item.id === id)?.el;
     activeNavItem?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    subviews.find((sv) => sv.id === id)?.onActivate?.();
     if (behaviour.scroll) {
       const target = subviews.find((sv) => sv.id === id)?.section;
       if (target !== undefined) {
@@ -3370,6 +3428,7 @@ export const bootstrapSettingsRoute = (
       if (notifications !== null) notifications.dispose();
       if (serverTimeZone !== null) serverTimeZone.dispose();
       if (quietHours !== null) quietHours.dispose();
+      if (mailChatDoor !== null) mailChatDoor.dispose();
       if (kindPolicy !== null) kindPolicy.dispose();
       // D-187 §6 follow-on — Packs / Local tools / cli grant dialog dispose
       // moved to the `#packs` route.

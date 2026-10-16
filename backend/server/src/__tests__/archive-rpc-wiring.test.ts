@@ -42,6 +42,7 @@ const FAKES: Pick<
   | 'serverTimeZoneDeps'
   | 'notificationKindPolicyDeps'
   | 'quietHoursDeps'
+  | 'reminderDeps'
 > = {
   archiveDeps: {
     runtime: {} as never,
@@ -77,6 +78,9 @@ const FAKES: Pick<
     store: { read: () => null, write: () => null } as never,
     timezoneStore: { read: () => null, write: () => null } as never,
   },
+  // D-324 — the Data → Reminders list. Its webclient-only gate answers before
+  // the dispatchers are touched.
+  reminderDeps: { dispatchers: {} as never },
 };
 
 const connectWs = (port: number): Promise<WebSocket> =>
@@ -187,6 +191,17 @@ describe('rpc-dep forwarding into the ws-server (server.ts)', () => {
       const ws = await connectWs(server.port);
       try {
         const r = await callRpc(ws, 'notification.quiet_hours.get', {});
+        expect(r.error?.code).not.toBe('not_configured');
+        expect(r.error?.code).toBe('unauthorized');
+      } finally {
+        ws.close();
+      }
+    });
+
+    it('reminder.list is wired (D-324 — not not_configured)', async () => {
+      const ws = await connectWs(server.port);
+      try {
+        const r = await callRpc(ws, 'reminder.list', {});
         expect(r.error?.code).not.toBe('not_configured');
         expect(r.error?.code).toBe('unauthorized');
       } finally {

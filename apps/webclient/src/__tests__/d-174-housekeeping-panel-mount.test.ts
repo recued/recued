@@ -97,6 +97,13 @@ const coverageEntry = (): RegistryDescribeTopicEntry => ({
 const flush = (): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, 0));
 
+const deferred = <T>() => {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+};
+
 // ── Fake host (mirror of the cache-card mount test, + change synth) ──
 const makeFakeHost = () => {
   let html = '';
@@ -169,6 +176,9 @@ const makeFakeHost = () => {
         closest: (s: string) =>
           s === '[data-topic]' && opts?.topic ? topicHolder(opts.topic) : null,
       });
+    },
+    inputAction: (action: string, value: string): void => {
+      fire('input', { value, getAttribute: (name: string) => name === 'data-action' ? action : null });
     },
     // Click variant carrying a `data-source-topic` (drift banner) or
     // `data-topic` (promotion banner / reset open) directly on the
@@ -403,6 +413,93 @@ describe('mountHousekeepingPanel — trust-core slice', () => {
     mount.dispose();
   });
 
+  for (const control of [
+    { action: 'housekeeping-trust-state-pick', value: 'manual', patch: { trust_state: 'manual' as const } },
+    { action: 'housekeeping-pool-policy-pick', value: 'free_only', patch: { pool_policy: 'free_only' as const } },
+  ]) {
+    it(`serializes same-topic changes while ${control.action} is pending`, async () => {
+      const fakeHost = makeFakeHost();
+      const deps = makeDeps();
+      const saved = trustRow('auto');
+      deps.runTrustRead.mockResolvedValue({ rows: [saved] });
+      const ack = deferred<{ ok: true; effective: EnrichmentTrustRow }>();
+      deps.runTrustWrite.mockImplementationOnce(() => ack.promise);
+      const mount = mountHousekeepingPanel({ host: fakeHost.host, now: () => NOW, ...deps });
+      await mount.whenLoaded();
+      fakeHost.changeAction(control.action, { topic: 'summary', value: control.value });
+      fakeHost.changeAction('housekeeping-trust-state-pick', { topic: 'summary', value: 'off' });
+      fakeHost.changeAction('housekeeping-pool-policy-pick', { topic: 'summary', value: 'byok_only' });
+      deps.fireCycle();
+      await flush();
+      expect(deps.runTrustWrite).toHaveBeenCalledTimes(1);
+      expect(deps.runTrustWrite).toHaveBeenCalledWith({ topic: 'summary', ...control.patch });
+      expect(mount.getState().trustRows.summary).toEqual(saved);
+      expect(mount.getState().trustWriting.summary).toBe(true);
+      const effective = { ...saved, ...control.patch };
+      ack.resolve({ ok: true, effective });
+      await flush();
+      expect(mount.getState().trustRows.summary).toEqual(effective);
+      expect(mount.getState().trustWriting.summary).toBeUndefined();
+      mount.dispose();
+    });
+
+    it(`keeps the saved choice after ${control.action} fails and accepts an explicit retry`, async () => {
+      const fakeHost = makeFakeHost();
+      const deps = makeDeps();
+      const saved = trustRow('auto');
+      const effective = { ...saved, ...control.patch };
+      deps.runTrustRead.mockResolvedValue({ rows: [saved] });
+      const ack = deferred<{ ok: true; effective: EnrichmentTrustRow }>();
+      deps.runTrustWrite.mockImplementationOnce(() => ack.promise)
+        .mockResolvedValueOnce({ ok: true, effective });
+      const mount = mountHousekeepingPanel({ host: fakeHost.host, now: () => NOW, ...deps });
+      await mount.whenLoaded();
+      fakeHost.changeAction(control.action, { topic: 'summary', value: control.value });
+      fakeHost.changeAction(control.action, { topic: 'summary', value: control.value });
+      expect(deps.runTrustWrite).toHaveBeenCalledTimes(1);
+      ack.reject(new Error('write unavailable'));
+      await flush();
+      expect(mount.getState().trustRows.summary).toEqual(saved);
+      expect(mount.getState().trustWriteError.summary).toBe('write unavailable');
+      expect(mount.getState().trustWriting.summary).toBeUndefined();
+      fakeHost.changeAction(control.action, { topic: 'summary', value: control.value });
+      await flush();
+      expect(deps.runTrustWrite).toHaveBeenCalledTimes(2);
+      expect(mount.getState().trustRows.summary).toEqual(effective);
+      expect(mount.getState().trustWriteError.summary).toBeUndefined();
+      mount.dispose();
+    });
+  }
+
+  it('allows another topic to write without clearing the first topic\'s pending change', async () => {
+    const fakeHost = makeFakeHost();
+    const deps = makeDeps();
+    const saved = trustRow('auto');
+    const other = { ...saved, topic: 'thread_signals' };
+    deps.runTrustRead.mockResolvedValue({ rows: [saved, other] });
+    deps.runStatusRead.mockResolvedValue({ tasks: [aiTask(), {
+      ...aiTask(), meta: { ...aiTask().meta, id: 'enrichment.thread_signals' },
+    }] });
+    const first = deferred<{ ok: true; effective: EnrichmentTrustRow }>();
+    const second = deferred<{ ok: true; effective: EnrichmentTrustRow }>();
+    deps.runTrustWrite.mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise);
+    const mount = mountHousekeepingPanel({ host: fakeHost.host, now: () => NOW, ...deps });
+    await mount.whenLoaded();
+    fakeHost.changeAction('housekeeping-trust-state-pick', { topic: 'summary', value: 'manual' });
+    fakeHost.changeAction('housekeeping-pool-policy-pick', { topic: 'thread_signals', value: 'free_only' });
+    expect(deps.runTrustWrite).toHaveBeenCalledTimes(2);
+    second.resolve({ ok: true, effective: { ...other, pool_policy: 'free_only' } });
+    await flush();
+    expect(mount.getState().trustWriting.summary).toBe(true);
+    expect(mount.getState().trustWriting.thread_signals).toBeUndefined();
+    first.resolve({ ok: true, effective: { ...saved, trust_state: 'manual' } });
+    await flush();
+    expect(mount.getState().trustRows.summary?.trust_state).toBe('manual');
+    expect(mount.getState().trustRows.thread_signals?.pool_policy).toBe('free_only');
+    mount.dispose();
+  });
+
   it('saves a preset change through housekeeping.config.write', async () => {
     const fakeHost = makeFakeHost();
     const deps = makeDeps();
@@ -416,6 +513,125 @@ describe('mountHousekeepingPanel — trust-core slice', () => {
     expect(mount.getState().config?.preset).toBe('light');
     expect(mount.getState().draftPreset).toBeNull();
     mount.dispose();
+  });
+
+  it('blocks unchanged and repeated schedule writes while keeping Save focusable', async () => {
+    const fakeHost = makeFakeHost();
+    const deps = makeDeps();
+    let resolve!: (value: { ok: true; effective: HousekeepingConfigRow }) => void;
+    deps.runConfigWrite.mockImplementationOnce(() => new Promise((r) => { resolve = r; }));
+    const mount = mountHousekeepingPanel({ host: fakeHost.host, ...deps });
+    await mount.whenLoaded();
+    fakeHost.clickAction('housekeeping-save');
+    expect(deps.runConfigWrite).not.toHaveBeenCalled();
+    fakeHost.changeAction('housekeeping-preset-pick', { value: 'light' });
+    fakeHost.clickAction('housekeeping-save');
+    expect(mount.getState().saving).toBe(true);
+    expect(fakeHost.getHtml()).toMatch(/data-action="housekeeping-save"[^>]*aria-disabled="true"[^>]*aria-busy="true"/);
+    expect(fakeHost.getHtml()).not.toMatch(/<button[^>]*data-action="housekeeping-save"[^>]*\sdisabled(?:\s|>)/);
+    fakeHost.changeAction('housekeeping-preset-pick', { value: 'aggressive' });
+    fakeHost.changeAction('housekeeping-custom-budget', { value: '99000' });
+    fakeHost.inputAction('housekeeping-custom-interval', '90');
+    fakeHost.clickAction('housekeeping-save');
+    expect(deps.runConfigWrite).toHaveBeenCalledTimes(1);
+    expect(mount.getState().draftPreset).toBe('light');
+    expect(mount.getState().customDraft).toEqual({});
+    resolve({ ok: true, effective: makeConfig('light') });
+    await flush();
+    fakeHost.clickAction('housekeeping-save');
+    expect(deps.runConfigWrite).toHaveBeenCalledTimes(1);
+    mount.dispose();
+  });
+
+  it('retains unblurred number text and empty edits through passive updates and failed saves', async () => {
+    const fakeHost = makeFakeHost();
+    const deps = makeDeps();
+    deps.runConfigWrite.mockRejectedValueOnce(new Error('Schedule save unavailable.'));
+    const mount = mountHousekeepingPanel({ host: fakeHost.host, ...deps });
+    await mount.whenLoaded();
+    fakeHost.changeAction('housekeeping-preset-pick', { value: 'custom' });
+    fakeHost.inputAction('housekeeping-custom-budget', '065000');
+    fakeHost.inputAction('housekeeping-custom-interval', '');
+    deps.fireCycle();
+    await flush();
+    expect(fakeHost.getHtml()).toMatch(/id="housekeeping-custom-budget"[^>]*value="065000"/);
+    expect(fakeHost.getHtml()).toMatch(/id="housekeeping-custom-interval"[^>]*value=""/);
+    fakeHost.clickAction('housekeeping-save');
+    expect(deps.runConfigWrite).not.toHaveBeenCalled();
+    expect(fakeHost.getHtml()).toContain('Enter a cycle budget and interval');
+    fakeHost.inputAction('housekeeping-custom-interval', '27');
+    fakeHost.changeAction('housekeeping-custom-start', { value: '8' });
+    fakeHost.changeAction('housekeeping-custom-end', { value: '19' });
+    fakeHost.clickAction('housekeeping-save');
+    await flush();
+    expect(deps.runConfigWrite).toHaveBeenCalledWith({
+      preset: 'custom', cycle_budget_ms: 65_000, cycle_interval_minutes: 27,
+      custom_window_start_hour: 8, custom_window_end_hour: 19,
+    });
+    expect(fakeHost.getHtml()).toContain('Schedule save unavailable.');
+    expect(fakeHost.getHtml()).toMatch(/id="housekeeping-custom-budget"[^>]*value="065000"/);
+    expect(fakeHost.getHtml()).toMatch(/id="housekeeping-custom-interval"[^>]*value="27"/);
+    mount.dispose();
+  });
+
+  for (const timing of ['before', 'during'] as const) {
+    for (const result of ['snapshot', 'error'] as const) {
+      it(`keeps the accepted schedule when a ${timing}-save refresh later returns a stale ${result}`, async () => {
+        const fakeHost = makeFakeHost();
+        const deps = makeDeps();
+        const mount = mountHousekeepingPanel({ host: fakeHost.host, ...deps });
+        await mount.whenLoaded();
+        let resolveRead!: (value: HousekeepingConfigRow) => void;
+        let rejectRead!: (error: Error) => void;
+        let resolveWrite!: (value: { ok: true; effective: HousekeepingConfigRow }) => void;
+        deps.runConfigRead.mockImplementationOnce(() => new Promise((r, j) => { resolveRead = r; rejectRead = j; }));
+        deps.runConfigWrite.mockImplementationOnce(() => new Promise((r) => { resolveWrite = r; }));
+        fakeHost.changeAction('housekeeping-preset-pick', { value: 'light' });
+        const read = timing === 'before' ? mount.refresh() : null;
+        fakeHost.clickAction('housekeeping-save');
+        const duringRead = timing === 'during' ? mount.refresh() : null;
+        resolveWrite({ ok: true, effective: makeConfig('light') });
+        await flush();
+        if (result === 'snapshot') resolveRead(makeConfig('balanced'));
+        else rejectRead(new Error('Old read unavailable.'));
+        await (read ?? duringRead);
+        expect(mount.getState().config?.preset).toBe('light');
+        expect(mount.getState().error).toBeNull();
+        expect(fakeHost.getHtml()).toContain('Currently light');
+        mount.dispose();
+      });
+    }
+  }
+
+  it('keeps the schedule and drafts visible when a full refresh fails', async () => {
+    const fakeHost = makeFakeHost();
+    const deps = makeDeps();
+    const mount = mountHousekeepingPanel({ host: fakeHost.host, ...deps });
+    await mount.whenLoaded();
+    fakeHost.changeAction('housekeeping-preset-pick', { value: 'custom' });
+    fakeHost.inputAction('housekeeping-custom-budget', '72000');
+    deps.runConfigRead.mockRejectedValueOnce(new Error('Housekeeping read unavailable.'));
+    await mount.refresh();
+    expect(fakeHost.getHtml()).toContain('Housekeeping read unavailable.');
+    expect(fakeHost.getHtml()).toContain('housekeeping-custom-fields');
+    expect(fakeHost.getHtml()).toMatch(/id="housekeeping-custom-budget"[^>]*value="72000"/);
+    mount.dispose();
+  });
+
+  it('does not repaint or start another read after disposal during a schedule save', async () => {
+    const fakeHost = makeFakeHost();
+    const deps = makeDeps();
+    let resolve!: (value: { ok: true; effective: HousekeepingConfigRow }) => void;
+    deps.runConfigWrite.mockImplementationOnce(() => new Promise((r) => { resolve = r; }));
+    const mount = mountHousekeepingPanel({ host: fakeHost.host, ...deps });
+    await mount.whenLoaded();
+    fakeHost.changeAction('housekeeping-preset-pick', { value: 'light' });
+    fakeHost.clickAction('housekeeping-save');
+    mount.dispose();
+    resolve({ ok: true, effective: makeConfig('light') });
+    await flush();
+    expect(fakeHost.getHtml()).toBe('');
+    expect(deps.runConfigRead).toHaveBeenCalledTimes(1);
   });
 
   it('opens + confirms Run-now through housekeeping.task.run_now', async () => {
@@ -549,7 +765,148 @@ describe('mountHousekeepingPanel — trust-core slice', () => {
     // Dismiss stamps dismissed_at → banner collapses (client-side).
     fakeHost.clickActionAttrs('housekeeping-drift-dismiss', { 'data-source-topic': 'summary' });
     expect(mount.getState().driftSignals.summary?.dismissed_at).toBe(NOW);
+    await flush();
     expect(fakeHost.getHtml()).not.toContain('housekeeping-drift-banner');
+    mount.dispose();
+  });
+
+  it.each(['promote', 'dismiss'] as const)('blocks repeated promotion %s and leaves a failed banner retryable', async (kind) => {
+    const fakeHost = makeFakeHost();
+    const deps = makeDeps();
+    const pending = deferred<{ ok: true; effective: EnrichmentTrustRow }>();
+    const caller = kind === 'promote' ? deps.runTrustWrite : deps.runDismissPromotion;
+    caller.mockImplementationOnce(() => pending.promise);
+    const mount = mountHousekeepingPanel({ host: fakeHost.host, now: () => NOW, ...deps });
+    await mount.whenLoaded();
+    deps.fire('enrichment_promotion_suggested', {
+      kind: 'enrichment_promotion_suggested', topic: 'summary', manual_run_count: 3,
+      estimated_idle_cycle_cost_tokens: 1200, cursor: 1,
+    });
+    const activate = (choice = kind) => fakeHost.clickActionAttrs(`housekeeping-promotion-${choice}`, { 'data-topic': 'summary' });
+    activate();
+    activate();
+    activate(kind === 'promote' ? 'dismiss' : 'promote');
+    expect(caller).toHaveBeenCalledTimes(1);
+    expect(kind === 'promote' ? deps.runDismissPromotion : deps.runTrustWrite).not.toHaveBeenCalled();
+    expect(mount.getState().promotionWriting.summary).toBe(true);
+    expect(fakeHost.getHtml()).toContain('housekeeping-promotion-banner');
+    pending.reject(new Error('banner save failed'));
+    await flush();
+    expect(mount.getState().promotionWriting.summary).toBeUndefined();
+    expect(fakeHost.getHtml()).toContain('banner save failed');
+    activate();
+    await flush();
+    expect(caller).toHaveBeenCalledTimes(2);
+    expect(mount.getState().promotionSuggestions.summary).toBeUndefined();
+    expect(mount.getState().promotionWriteError.summary).toBeUndefined();
+    mount.dispose();
+  });
+
+  it('keeps a pending drift dismissal visible, blocks repeats and Review, and accepts an explicit retry', async () => {
+    const fakeHost = makeFakeHost();
+    const deps = makeDeps();
+    const pending = deferred<{ ok: true; effective: ConfidenceDriftSignal }>();
+    deps.runDriftRead.mockResolvedValue({ rows: [storedSignal()] });
+    deps.runDriftDismiss.mockImplementationOnce(() => pending.promise);
+    const mount = mountHousekeepingPanel({ host: fakeHost.host, now: () => NOW, ...deps });
+    await mount.whenLoaded();
+    await flush();
+    const dismiss = () => fakeHost.clickActionAttrs('housekeeping-drift-dismiss', { 'data-source-topic': 'summary' });
+    dismiss();
+    dismiss();
+    fakeHost.clickActionAttrs('housekeeping-drift-review', { 'data-source-topic': 'summary' });
+    expect(deps.runDriftDismiss).toHaveBeenCalledTimes(1);
+    expect(mount.getState().expandedTopic).toBeNull();
+    expect(mount.getState().driftWriting.summary).toBe(true);
+    expect(fakeHost.getHtml()).toContain('Dismissing…');
+    pending.reject(new Error('dismissal failed'));
+    await flush();
+    expect(mount.getState().driftSignals.summary?.dismissed_at).toBeUndefined();
+    expect(fakeHost.getHtml()).toContain('dismissal failed');
+    dismiss();
+    await flush();
+    expect(deps.runDriftDismiss).toHaveBeenCalledTimes(2);
+    expect(fakeHost.getHtml()).not.toContain('housekeeping-drift-banner');
+    expect(mount.getState().driftWriteError.summary).toBeUndefined();
+    mount.dispose();
+  });
+
+  const trustActions = ['run-policy', 'model-pool', 'promote', 'dismiss'] as const;
+  type TrustAction = typeof trustActions[number];
+  const activateTrustAction = (fakeHost: ReturnType<typeof makeFakeHost>, action: TrustAction, topic = 'summary') => {
+    if (action === 'run-policy' || action === 'model-pool') {
+      fakeHost.changeAction(action === 'run-policy' ? 'housekeeping-trust-state-pick' : 'housekeeping-pool-policy-pick', {
+        topic, value: action === 'run-policy' ? 'off' : 'free_only',
+      });
+    } else fakeHost.clickActionAttrs(`housekeeping-promotion-${action}`, { 'data-topic': topic });
+  };
+  const effectiveAfter = (saved: EnrichmentTrustRow, action: TrustAction): EnrichmentTrustRow => ({
+    ...saved,
+    ...(action === 'run-policy' ? { trust_state: 'off' as const }
+      : action === 'model-pool' ? { pool_policy: 'free_only' as const }
+        : action === 'promote' ? { trust_state: 'auto' as const }
+          : { promotion_dismissed_at: NOW }),
+  });
+
+  for (const outcome of ['success', 'failure']) {
+    it.each(trustActions)(`shares the topic lock during %s ${outcome} and does not queue blocked actions`, async (action) => {
+      const fakeHost = makeFakeHost();
+      const deps = makeDeps();
+      const saved = { ...trustRow('manual'), manual_run_count: 3, promotion_suggested_at: NOW };
+      deps.runTrustRead.mockResolvedValue({ rows: [saved] });
+      const pending = deferred<{ ok: true; effective: EnrichmentTrustRow }>();
+      const caller = action === 'dismiss' ? deps.runDismissPromotion : deps.runTrustWrite;
+      caller.mockImplementationOnce(() => pending.promise);
+      const mount = mountHousekeepingPanel({ host: fakeHost.host, now: () => NOW, ...deps });
+      await mount.whenLoaded();
+      activateTrustAction(fakeHost, action);
+      for (const blocked of trustActions) activateTrustAction(fakeHost, blocked);
+      expect(deps.runTrustWrite).toHaveBeenCalledTimes(action === 'dismiss' ? 0 : 1);
+      expect(deps.runDismissPromotion).toHaveBeenCalledTimes(action === 'dismiss' ? 1 : 0);
+      expect(mount.getState().trustRows.summary).toEqual(saved);
+      expect(mount.getState().trustWriting.summary).toBe(true);
+      const expected = outcome === 'success' ? effectiveAfter(saved, action) : saved;
+      if (outcome === 'success') pending.resolve({ ok: true, effective: expected });
+      else pending.reject(new Error('trust row save failed'));
+      await flush();
+      expect(mount.getState().trustRows.summary).toEqual(expected);
+      expect(mount.getState().trustWriting.summary).toBeUndefined();
+      expect(mount.getState().promotionWriting.summary).toBeUndefined();
+      expect(caller).toHaveBeenCalledTimes(1);
+      const followup = { ...expected, pool_policy: 'byok_only' as const };
+      deps.runTrustWrite.mockResolvedValueOnce({ ok: true, effective: followup });
+      fakeHost.changeAction('housekeeping-pool-policy-pick', { topic: 'summary', value: 'byok_only' });
+      await flush();
+      expect(mount.getState().trustRows.summary).toEqual(followup);
+      expect(deps.runTrustWrite).toHaveBeenCalledTimes(action === 'dismiss' ? 1 : 2);
+      mount.dispose();
+    });
+  }
+
+  it.each(['promote', 'dismiss'] as const)('a pending %s leaves another topic writable and keeps its newer row', async (action) => {
+    const fakeHost = makeFakeHost();
+    const deps = makeDeps();
+    const saved = { ...trustRow('manual'), manual_run_count: 3, promotion_suggested_at: NOW };
+    const other = { ...saved, topic: 'thread_signals' };
+    deps.runTrustRead.mockResolvedValue({ rows: [saved, other] });
+    deps.runStatusRead.mockResolvedValue({ tasks: [aiTask(), { ...aiTask(), meta: { ...aiTask().meta, id: 'enrichment.thread_signals' } }] });
+    const pending = deferred<{ ok: true; effective: EnrichmentTrustRow }>();
+    const caller = action === 'dismiss' ? deps.runDismissPromotion : deps.runTrustWrite;
+    caller.mockImplementationOnce(() => pending.promise);
+    const changedOther = { ...other, pool_policy: 'free_only' as const };
+    deps.runTrustWrite.mockResolvedValueOnce({ ok: true, effective: changedOther });
+    const mount = mountHousekeepingPanel({ host: fakeHost.host, now: () => NOW, ...deps });
+    await mount.whenLoaded();
+    activateTrustAction(fakeHost, action);
+    activateTrustAction(fakeHost, 'model-pool', 'thread_signals');
+    await flush();
+    expect(mount.getState().trustRows.thread_signals).toEqual(changedOther);
+    expect(mount.getState().trustWriting.summary).toBe(true);
+    expect(mount.getState().trustWriting.thread_signals).toBeUndefined();
+    pending.resolve({ ok: true, effective: effectiveAfter(saved, action) });
+    await flush();
+    expect(mount.getState().trustRows.thread_signals).toEqual(changedOther);
+    expect(mount.getState().trustRows.summary).toEqual(effectiveAfter(saved, action));
     mount.dispose();
   });
 
@@ -669,6 +1026,121 @@ describe('mountHousekeepingPanel — trust-core slice', () => {
     mount.dispose();
   });
 
+  for (const outcome of ['success', 'failure']) {
+    it(`ignores an old reset ${outcome} while a reopened preview is still pending`, async () => {
+      const fakeHost = makeFakeHost();
+      const deps = makeDeps();
+      const old = deferred<ReturnType<typeof resetResult>>();
+      const current = deferred<ReturnType<typeof resetResult>>();
+      deps.runTopicReset.mockImplementationOnce(() => old.promise)
+        .mockImplementationOnce(() => current.promise);
+      const mount = mountHousekeepingPanel({ host: fakeHost.host, now: () => NOW, ...deps });
+      await mount.whenLoaded();
+      fakeHost.clickActionAttrs('housekeeping-reset-open', { 'data-topic': 'summary' });
+      fakeHost.clickAction('housekeeping-reset-cancel');
+      fakeHost.clickActionAttrs('housekeeping-reset-open', { 'data-topic': 'summary' });
+      const before = structuredClone(mount.getState().reset);
+      if (outcome === 'success') old.resolve(resetResult(false, { confirmation_token: 'obsolete' }));
+      else old.reject(new Error('obsolete preview failure'));
+      await flush();
+      expect(mount.getState().reset).toEqual(before);
+      expect(mount.getState().reset.phase).toBe('previewing');
+      fakeHost.clickAction('housekeeping-reset-confirm');
+      expect(deps.runTopicReset).toHaveBeenCalledTimes(2);
+      current.resolve(resetResult(false, { confirmation_token: 'current' }));
+      await flush();
+      expect(mount.getState().reset.confirmation_token).toBe('current');
+      mount.dispose();
+    });
+
+    for (const phase of ['preview', 'confirming', 'applied']) {
+      it(`keeps the newer reset ${phase} and confirmation choice after an old ${outcome}`, async () => {
+        const fakeHost = makeFakeHost();
+        const deps = makeDeps();
+        const old = deferred<ReturnType<typeof resetResult>>();
+        const confirm = deferred<ReturnType<typeof resetResult>>();
+        deps.runTopicReset.mockImplementationOnce(() => old.promise)
+          .mockResolvedValueOnce(resetResult(false, {
+            confirmation_token: 'current-token', reset_psi_baselines: false,
+          }))
+          .mockImplementationOnce(() => confirm.promise);
+        const mount = mountHousekeepingPanel({ host: fakeHost.host, now: () => NOW, ...deps });
+        await mount.whenLoaded();
+        fakeHost.clickActionAttrs('housekeeping-reset-open', { 'data-topic': 'summary' });
+        fakeHost.clickAction('housekeeping-reset-cancel');
+        fakeHost.clickActionAttrs('housekeeping-reset-open', { 'data-topic': 'summary' });
+        await flush();
+        if (phase !== 'preview') fakeHost.clickAction('housekeeping-reset-confirm');
+        if (phase === 'applied') {
+          confirm.resolve(resetResult(true, { reset_psi_baselines: false }));
+          await flush();
+        }
+        expect(mount.getState().reset.phase).toBe(phase);
+        const before = structuredClone(mount.getState().reset);
+        if (outcome === 'success') old.resolve(resetResult(false, {
+          confirmation_token: 'obsolete-token', reset_psi_baselines: true,
+        }));
+        else old.reject(new Error('obsolete preview failure'));
+        await flush();
+        expect(mount.getState().reset).toEqual(before);
+        if (phase === 'preview') fakeHost.clickAction('housekeeping-reset-confirm');
+        expect(deps.runTopicReset).toHaveBeenNthCalledWith(3, {
+          topic: 'summary', confirmation_token: 'current-token', reset_psi_baselines: false,
+        });
+        expect(deps.runTopicReset).toHaveBeenCalledTimes(3);
+        if (phase !== 'applied') {
+          confirm.resolve(resetResult(true, { reset_psi_baselines: false }));
+          await flush();
+        }
+        expect(mount.getState().reset.phase).toBe('applied');
+        expect(mount.getState().reset.confirmation_token).toBeNull();
+        mount.dispose();
+      });
+    }
+  }
+
+  it('keeps a newer preview failure and mints a fresh token on explicit retry', async () => {
+    const fakeHost = makeFakeHost();
+    const deps = makeDeps();
+    const old = deferred<ReturnType<typeof resetResult>>();
+    deps.runTopicReset.mockImplementationOnce(() => old.promise)
+      .mockRejectedValueOnce(new Error('current preview failure'))
+      .mockResolvedValueOnce(resetResult(false, { confirmation_token: 'retry-token' }));
+    const mount = mountHousekeepingPanel({ host: fakeHost.host, now: () => NOW, ...deps });
+    await mount.whenLoaded();
+    fakeHost.clickActionAttrs('housekeeping-reset-open', { 'data-topic': 'summary' });
+    fakeHost.clickAction('housekeeping-reset-cancel');
+    fakeHost.clickActionAttrs('housekeeping-reset-open', { 'data-topic': 'summary' });
+    await flush();
+    old.resolve(resetResult(false, { confirmation_token: 'obsolete-token' }));
+    await flush();
+    expect(mount.getState().reset.phase).toBe('error');
+    expect(mount.getState().reset.error).toBe('current preview failure');
+    expect(mount.getState().reset.confirmation_token).toBeNull();
+    fakeHost.clickAction('housekeeping-reset-confirm');
+    expect(deps.runTopicReset).toHaveBeenCalledTimes(2);
+    fakeHost.clickAction('housekeeping-reset-retry');
+    await flush();
+    expect(mount.getState().reset.phase).toBe('preview');
+    expect(mount.getState().reset.confirmation_token).toBe('retry-token');
+    mount.dispose();
+  });
+
+  it('ignores a reset preview arriving after disposal', async () => {
+    const fakeHost = makeFakeHost();
+    const deps = makeDeps();
+    const reply = deferred<ReturnType<typeof resetResult>>();
+    deps.runTopicReset.mockImplementationOnce(() => reply.promise);
+    const mount = mountHousekeepingPanel({ host: fakeHost.host, now: () => NOW, ...deps });
+    await mount.whenLoaded();
+    fakeHost.clickActionAttrs('housekeeping-reset-open', { 'data-topic': 'summary' });
+    mount.dispose();
+    reply.resolve(resetResult(false));
+    await flush();
+    expect(fakeHost.getHtml()).toBe('');
+    expect(mount.getState().reset.phase).toBe('previewing');
+  });
+
   it('omits the reset drawer section when runTopicReset is not wired', async () => {
     const fakeHost = makeFakeHost();
     const deps = makeDeps();
@@ -726,7 +1198,185 @@ const storedSignal = (over: Partial<ConfidenceDriftSignal> = {}): ConfidenceDrif
   ...over,
 });
 
+describe('drift event continuity', () => {
+  for (const age of ['same', 'older'] as const) {
+    for (const dismissal of ['visible', 'persisted', 'local'] as const) {
+      for (const readOutcome of ['success', 'failure'] as const) {
+        it(`keeps the ${dismissal} stored result during a ${age} event and follow-up read ${readOutcome}`, async () => {
+          const fakeHost = makeFakeHost();
+          const deps = makeDeps();
+          const original = storedSignal({ low_confidence_delta: 0.17,
+            ...(dismissal === 'persisted' ? { dismissed_at: NOW + 5 } : {}) });
+          const other = storedSignal({ source_topic: 'thread_signals' });
+          deps.runDriftRead.mockResolvedValueOnce({ rows: [original, other] });
+          const mount = mountHousekeepingPanel({ host: fakeHost.host, now: () => NOW + 10, ...deps,
+            ...(dismissal === 'local' ? { runDriftDismiss: undefined } : {}) });
+          await mount.whenLoaded();
+          await flush();
+          if (dismissal === 'local') fakeHost.clickActionAttrs('housekeeping-drift-dismiss', { 'data-source-topic': 'summary' });
+          const before = mount.getState().driftSignals.summary;
+          const read = deferred<{ rows: ConfidenceDriftSignal[] }>();
+          deps.runDriftRead.mockImplementationOnce(() => read.promise);
+          deps.fire('enrichment_drift_detected', {
+            kind: 'enrichment_drift_detected', source_topic: 'summary',
+            computed_at: age === 'same' ? NOW : NOW - 1,
+            severity: age === 'same' ? 'significant' : 'moderate',
+            psi: age === 'same' ? 0.31 : 0.18,
+            low_confidence_delta: age === 'same' ? 0.17 : 0.09, cursor: 100,
+          });
+          expect(deps.runDriftRead).toHaveBeenCalledTimes(2);
+          expect(mount.getState().driftSignals.summary).toEqual(before);
+          expect(mount.getState().driftSignals.thread_signals).toEqual(other);
+          if (readOutcome === 'success') read.resolve({ rows: [original, other] });
+          else read.reject(new Error('Drift read unavailable.'));
+          await flush();
+          expect(mount.getState().driftSignals.summary).toEqual(before);
+          expect(mount.getState().driftSignals.thread_signals).toEqual(other);
+          expect(mount.getState().error).toBeNull();
+          mount.dispose();
+        });
+      }
+    }
+  }
+
+  for (const dismissed of [false, true]) {
+    for (const readOutcome of ['success', 'failure'] as const) {
+      it(`paints a genuinely newer event over a ${dismissed ? 'dismissed' : 'visible'} result before read ${readOutcome}`, async () => {
+        const fakeHost = makeFakeHost();
+        const deps = makeDeps();
+        deps.runDriftRead.mockResolvedValueOnce({ rows: [storedSignal(dismissed ? { dismissed_at: NOW } : {})] });
+        const mount = mountHousekeepingPanel({ host: fakeHost.host, now: () => NOW, ...deps });
+        await mount.whenLoaded();
+        await flush();
+        const read = deferred<{ rows: ConfidenceDriftSignal[] }>();
+        deps.runDriftRead.mockImplementationOnce(() => read.promise);
+        const next = storedSignal({ computed_at: NOW + 1, severity: 'moderate', psi: 0.18, low_confidence_delta: 0.12 });
+        deps.fire('enrichment_drift_detected', {
+          kind: 'enrichment_drift_detected', source_topic: next.source_topic,
+          computed_at: next.computed_at, severity: next.severity, psi: next.psi,
+          low_confidence_delta: next.low_confidence_delta, cursor: 100,
+        });
+        const placeholder = mount.getState().driftSignals.summary;
+        expect(placeholder).toMatchObject({ computed_at: NOW + 1, severity: 'moderate', low_confidence_delta: 0.12 });
+        expect(placeholder.dismissed_at).toBeUndefined();
+        expect(placeholder.baseline_distribution).toEqual([]);
+        expect(placeholder.recent_distribution).toEqual([]);
+        expect(placeholder.shift).toBeUndefined();
+        expect(fakeHost.getHtml()).toContain('housekeeping-drift-banner');
+        if (readOutcome === 'success') read.resolve({ rows: [next] });
+        else read.reject(new Error('Drift read unavailable.'));
+        await flush();
+        expect(mount.getState().driftSignals.summary).toEqual(readOutcome === 'success' ? next : placeholder);
+        mount.dispose();
+      });
+    }
+  }
+
+  it.each(['same', 'older'] as const)('keeps a bus-only dismissal after a %s event and re-arms on a newer one', async (age) => {
+    const fakeHost = makeFakeHost();
+    const deps = makeDeps();
+    const mount = mountHousekeepingPanel({ host: fakeHost.host, now: () => NOW, ...deps,
+      runDriftRead: undefined, runDriftDismiss: undefined });
+    await mount.whenLoaded();
+    const event = { kind: 'enrichment_drift_detected', source_topic: 'summary',
+      computed_at: NOW, severity: 'significant', psi: 0.31, cursor: 100 };
+    deps.fire('enrichment_drift_detected', event);
+    fakeHost.clickActionAttrs('housekeeping-drift-dismiss', { 'data-source-topic': 'summary' });
+    deps.fire('enrichment_drift_detected', { ...event, computed_at: age === 'same' ? NOW : NOW - 1, cursor: 101 });
+    expect(mount.getState().driftSignals.summary.dismissed_at).toBe(NOW);
+    expect(fakeHost.getHtml()).not.toContain('housekeeping-drift-banner');
+    deps.fire('enrichment_drift_detected', { ...event, computed_at: NOW + 1, cursor: 102 });
+    expect(mount.getState().driftSignals.summary.dismissed_at).toBeUndefined();
+    expect(fakeHost.getHtml()).toContain('housekeeping-drift-banner');
+    expect(deps.runDriftRead).not.toHaveBeenCalled();
+    expect(deps.runDriftDismiss).not.toHaveBeenCalled();
+    mount.dispose();
+  });
+});
+
 describe('D-285 — drift survives a reload', () => {
+  for (const delivery of ['broadcast', 'read']) {
+    for (const outcome of ['success', 'failure']) {
+      for (const alreadyDismissed of [false, true]) {
+        it(`keeps a newer ${delivery} verdict ${alreadyDismissed ? 'dismissed' : 'visible'} after an older dismissal ${outcome}`, async () => {
+          const fakeHost = makeFakeHost();
+          const deps = makeDeps();
+          const original = storedSignal();
+          deps.runDriftRead.mockResolvedValue({ rows: [original] });
+          const pending = deferred<{ ok: true; effective: ConfidenceDriftSignal }>();
+          deps.runDriftDismiss.mockImplementationOnce(() => pending.promise);
+          const mount = mountHousekeepingPanel({ host: fakeHost.host, now: () => NOW, ...deps });
+          await mount.whenLoaded();
+          await flush();
+          fakeHost.clickActionAttrs('housekeeping-drift-dismiss', { 'data-source-topic': 'summary' });
+          const next = storedSignal({ computed_at: NOW + 1, severity: 'moderate', psi: 0.18,
+            ...(alreadyDismissed ? { dismissed_at: NOW + 2 } : {}) });
+          deps.runDriftRead.mockResolvedValue({ rows: [next] });
+          if (delivery === 'broadcast') {
+            deps.fire('enrichment_drift_detected', {
+              kind: 'enrichment_drift_detected', source_topic: 'summary', psi: next.psi,
+              severity: next.severity, computed_at: next.computed_at, cursor: 100,
+            });
+          } else await mount.refresh();
+          await flush();
+          expect(mount.getState().driftSignals.summary).toEqual(next);
+          if (outcome === 'success') pending.resolve({ ok: true, effective: { ...original, dismissed_at: NOW } });
+          else pending.reject(new Error('old dismissal failed'));
+          await flush();
+          expect(mount.getState().driftSignals.summary).toEqual(next);
+          expect(mount.getState().driftWriting.summary).toBeUndefined();
+          expect(mount.getState().driftWriteError.summary).toBeUndefined();
+          expect(fakeHost.getHtml().includes('housekeeping-drift-banner')).toBe(!alreadyDismissed);
+          if (!alreadyDismissed) {
+            deps.runDriftDismiss.mockResolvedValueOnce({ ok: true, effective: { ...next, dismissed_at: NOW + 3 } });
+            fakeHost.clickActionAttrs('housekeeping-drift-dismiss', { 'data-source-topic': 'summary' });
+            await flush();
+            expect(deps.runDriftDismiss).toHaveBeenCalledTimes(2);
+            expect(mount.getState().driftSignals.summary?.computed_at).toBe(next.computed_at);
+            expect(mount.getState().driftSignals.summary?.dismissed_at).toBe(NOW + 3);
+            expect(fakeHost.getHtml()).not.toContain('housekeeping-drift-banner');
+          }
+          mount.dispose();
+        });
+      }
+    }
+  }
+
+  it('keeps the server’s first dismissal timestamp within the same computation', async () => {
+    const fakeHost = makeFakeHost();
+    const deps = makeDeps();
+    const original = storedSignal();
+    const pending = deferred<{ ok: true; effective: ConfidenceDriftSignal }>();
+    deps.runDriftRead.mockResolvedValue({ rows: [original] });
+    deps.runDriftDismiss.mockImplementationOnce(() => pending.promise);
+    const mount = mountHousekeepingPanel({ host: fakeHost.host, now: () => NOW + 50, ...deps });
+    await mount.whenLoaded();
+    await flush();
+    fakeHost.clickActionAttrs('housekeeping-drift-dismiss', { 'data-source-topic': 'summary' });
+    expect(mount.getState().driftSignals.summary?.dismissed_at).toBe(NOW + 50);
+    pending.resolve({ ok: true, effective: { ...original, dismissed_at: NOW + 10 } });
+    await flush();
+    expect(mount.getState().driftSignals.summary?.dismissed_at).toBe(NOW + 10);
+    mount.dispose();
+  });
+
+  it('accepts a newer computation actually acknowledged by the server', async () => {
+    const fakeHost = makeFakeHost();
+    const deps = makeDeps();
+    deps.runDriftRead.mockResolvedValue({ rows: [storedSignal()] });
+    const next = storedSignal({ computed_at: NOW + 1, dismissed_at: NOW + 2 });
+    deps.runDriftDismiss.mockResolvedValueOnce({ ok: true, effective: next });
+    const mount = mountHousekeepingPanel({ host: fakeHost.host, now: () => NOW, ...deps });
+    await mount.whenLoaded();
+    await flush();
+    fakeHost.clickActionAttrs('housekeeping-drift-dismiss', { 'data-source-topic': 'summary' });
+    await flush();
+    expect(mount.getState().driftSignals.summary).toEqual(next);
+    expect(mount.getState().driftWriting.summary).toBeUndefined();
+    expect(fakeHost.getHtml()).not.toContain('housekeeping-drift-banner');
+    mount.dispose();
+  });
+
   it('raises the banner from the STORED row, with no broadcast at all', async () => {
     const fakeHost = makeFakeHost();
     const deps = makeDeps();
@@ -888,6 +1538,7 @@ describe('D-285 — drift survives a reload', () => {
     await flush();
     await flush();
     fakeHost.clickActionAttrs('housekeeping-drift-dismiss', { 'data-source-topic': 'summary' });
+    await flush();
     expect(fakeHost.getHtml()).not.toContain('housekeeping-drift-banner');
 
     await mount.refresh();
@@ -908,6 +1559,7 @@ describe('D-285 — drift survives a reload', () => {
     await flush();
     await flush();
     fakeHost.clickActionAttrs('housekeeping-drift-dismiss', { 'data-source-topic': 'summary' });
+    await flush();
     expect(fakeHost.getHtml()).not.toContain('housekeeping-drift-banner');
 
     deps.runDriftRead.mockResolvedValue({ rows: [storedSignal({ computed_at: NOW + 1 })] });
@@ -1021,6 +1673,470 @@ describe('promotion banner survives a reload', () => {
     expect(mount.getState().promotionSuggestions.summary?.estimated_idle_cycle_cost_tokens)
       .toBe(30_000);
     expect(fakeHost.getHtml()).toContain('30,000 tokens');
+    mount.dispose();
+  });
+});
+
+const firePromotion = (deps: ReturnType<typeof makeDeps>, topic = 'summary', cost = 30_000): void => {
+  deps.fire('enrichment_promotion_suggested', {
+    kind: 'enrichment_promotion_suggested', topic, manual_run_count: 3,
+    estimated_idle_cycle_cost_tokens: cost, cursor: 9,
+  });
+};
+
+describe('promotion continuity', () => {
+  it.each(['restored', 'live'] as const)('removes a %s suggestion only after inline Auto succeeds', async (origin) => {
+    const { fakeHost, deps, mount } = await mountWith([
+      suggestedRow(), suggestedRow({ topic: 'thread_signals' }),
+    ]);
+    if (origin === 'live') firePromotion(deps);
+    const before = mount.getState().promotionSuggestions.summary;
+    const other = mount.getState().promotionSuggestions.thread_signals;
+    const ack = deferred<{ ok: true; effective: EnrichmentTrustRow }>();
+    deps.runTrustWrite.mockImplementationOnce(() => ack.promise);
+    fakeHost.changeAction('housekeeping-trust-state-pick', { topic: 'summary', value: 'auto' });
+    expect(mount.getState().promotionSuggestions.summary).toEqual(before);
+    expect(mount.getState().trustRows.summary.trust_state).toBe('manual');
+    ack.resolve({ ok: true, effective: suggestedRow({ trust_state: 'auto' }) });
+    await flush();
+    expect(mount.getState().trustRows.summary.trust_state).toBe('auto');
+    expect(mount.getState().promotionSuggestions.summary).toBeUndefined();
+    expect(mount.getState().promotionSuggestions.thread_signals).toEqual(other);
+    expect(mount.getState().trustWriting.summary).toBeUndefined();
+    mount.dispose();
+  });
+
+  it.each(['restored', 'live'] as const)('keeps a %s suggestion after failed Auto and removes it after explicit retry', async (origin) => {
+    const { fakeHost, deps, mount } = await mountWith([suggestedRow()]);
+    if (origin === 'live') firePromotion(deps);
+    const before = mount.getState().promotionSuggestions.summary;
+    const ack = deferred<{ ok: true; effective: EnrichmentTrustRow }>();
+    deps.runTrustWrite.mockImplementationOnce(() => ack.promise)
+      .mockResolvedValueOnce({ ok: true, effective: suggestedRow({ trust_state: 'auto' }) });
+    const pick = () => fakeHost.changeAction('housekeeping-trust-state-pick', { topic: 'summary', value: 'auto' });
+    pick();
+    ack.reject(new Error('Auto save unavailable.'));
+    await flush();
+    expect(mount.getState().promotionSuggestions.summary).toEqual(before);
+    expect(mount.getState().trustRows.summary.trust_state).toBe('manual');
+    expect(mount.getState().trustWriting.summary).toBeUndefined();
+    expect(mount.getState().trustWriteError.summary).toBe('Auto save unavailable.');
+    expect(deps.runTrustWrite).toHaveBeenCalledTimes(1);
+    pick();
+    await flush();
+    expect(deps.runTrustWrite).toHaveBeenCalledTimes(2);
+    expect(mount.getState().promotionSuggestions.summary).toBeUndefined();
+    expect(mount.getState().trustWriteError.summary).toBeUndefined();
+    mount.dispose();
+  });
+
+  it.each([
+    { name: 'Manual', action: 'housekeeping-trust-state-pick', value: 'manual', effective: suggestedRow() },
+    { name: 'Off', action: 'housekeeping-trust-state-pick', value: 'off', effective: suggestedRow({ trust_state: 'off' }) },
+    { name: 'Model pool', action: 'housekeeping-pool-policy-pick', value: 'free_only', effective: suggestedRow({ pool_policy: 'free_only' }) },
+  ])('retains a live cost estimate after a $name save', async ({ action, value, effective }) => {
+    const { fakeHost, deps, mount } = await mountWith([suggestedRow()]);
+    firePromotion(deps);
+    const before = mount.getState().promotionSuggestions.summary;
+    deps.runTrustWrite.mockResolvedValueOnce({ ok: true, effective });
+    fakeHost.changeAction(action, { topic: 'summary', value });
+    await flush();
+    expect(mount.getState().promotionSuggestions.summary).toEqual(before);
+    expect(mount.getState().trustRows.summary).toEqual(effective);
+    mount.dispose();
+  });
+
+  it.each([
+    { name: 'Auto', effective: suggestedRow({ trust_state: 'auto' }) },
+    { name: 'dismissed', effective: suggestedRow({ promotion_dismissed_at: NOW }) },
+  ])('honors the effective $name row even when only Model pool was requested', async ({ effective }) => {
+    const { fakeHost, deps, mount } = await mountWith([suggestedRow()]);
+    firePromotion(deps);
+    deps.runTrustWrite.mockResolvedValueOnce({ ok: true, effective });
+    fakeHost.changeAction('housekeeping-pool-policy-pick', { topic: 'summary', value: 'free_only' });
+    await flush();
+    expect(mount.getState().promotionSuggestions.summary).toBeUndefined();
+    expect(mount.getState().trustRows.summary).toEqual(effective);
+    mount.dispose();
+  });
+
+  it.each([
+    { name: 'Auto', effective: suggestedRow({ trust_state: 'auto' }) },
+    { name: 'dismissed', effective: suggestedRow({ promotion_dismissed_at: NOW }) },
+  ])('removes a live suggestion when refresh reads an $name row without clearing another topic', async ({ effective }) => {
+    const other = suggestedRow({ topic: 'thread_signals' });
+    const { deps, mount } = await mountWith([suggestedRow(), other]);
+    firePromotion(deps);
+    firePromotion(deps, other.topic, 12_000);
+    const otherSuggestion = mount.getState().promotionSuggestions.thread_signals;
+    deps.runTrustRead.mockResolvedValueOnce({ rows: [effective, other] });
+    await mount.refresh();
+    expect(mount.getState().promotionSuggestions.summary).toBeUndefined();
+    expect(mount.getState().promotionSuggestions.thread_signals).toEqual(otherSuggestion);
+    mount.dispose();
+  });
+
+  it('keeps the live estimate on refresh and restores a newly suggested topic', async () => {
+    const { deps, mount } = await mountWith([suggestedRow()]);
+    firePromotion(deps);
+    const before = mount.getState().promotionSuggestions.summary;
+    deps.runTrustRead.mockResolvedValueOnce({ rows: [suggestedRow(), suggestedRow({ topic: 'thread_signals' })] });
+    await mount.refresh();
+    expect(mount.getState().promotionSuggestions.summary).toEqual(before);
+    expect(mount.getState().promotionSuggestions.thread_signals).toEqual({
+      topic: 'thread_signals', manual_run_count: 3, estimated_idle_cycle_cost_tokens: 0,
+    });
+    mount.dispose();
+  });
+
+  it('keeps a new topic broadcast that arrives during an older trust read', async () => {
+    const { deps, mount } = await mountWith([suggestedRow()]);
+    const read = deferred<{ rows: EnrichmentTrustRow[] }>();
+    deps.runTrustRead.mockImplementationOnce(() => read.promise);
+    const refresh = mount.refresh();
+    firePromotion(deps, 'thread_signals', 12_000);
+    read.resolve({ rows: [suggestedRow()] });
+    await refresh;
+    expect(mount.getState().promotionSuggestions.thread_signals?.estimated_idle_cycle_cost_tokens).toBe(12_000);
+    mount.dispose();
+  });
+
+  it('leaves live suggestions intact when the trust refresh fails', async () => {
+    const { deps, mount } = await mountWith([suggestedRow()]);
+    firePromotion(deps);
+    const before = mount.getState().promotionSuggestions;
+    deps.runTrustRead.mockRejectedValueOnce(new Error('Trust read unavailable.'));
+    await mount.refresh();
+    expect(mount.getState().promotionSuggestions).toEqual(before);
+    expect(mount.getState().error).toBe('Trust read unavailable.');
+    mount.dispose();
+  });
+});
+
+const settledPromotionRow = (choice: 'auto' | 'dismissed'): EnrichmentTrustRow => suggestedRow(
+  choice === 'auto' ? { trust_state: 'auto' } : { promotion_dismissed_at: NOW },
+);
+
+describe('promotion hints during trust saves', () => {
+  it.each([
+    { name: 'Manual', action: 'housekeeping-trust-state-pick', value: 'manual', effective: suggestedRow() },
+    { name: 'Off', action: 'housekeeping-trust-state-pick', value: 'off', effective: suggestedRow({ trust_state: 'off' }) },
+    { name: 'Model pool', action: 'housekeeping-pool-policy-pick', value: 'free_only', effective: suggestedRow({ pool_policy: 'free_only' }) },
+  ])('retains the latest pending estimate when a $name reply confirms eligibility', async ({ action, value, effective }) => {
+    const other = suggestedRow({ topic: 'thread_signals' });
+    const { fakeHost, deps, mount } = await mountWith([settledPromotionRow('auto'), other]);
+    const beforeOther = mount.getState().promotionSuggestions.thread_signals;
+    const write = deferred<{ ok: true; effective: EnrichmentTrustRow }>();
+    deps.runTrustWrite.mockImplementationOnce(() => write.promise);
+    fakeHost.changeAction(action, { topic: 'summary', value });
+    firePromotion(deps, 'summary', 30_000);
+    firePromotion(deps, 'summary', 60_000);
+    expect(mount.getState().promotionSuggestions.summary).toBeUndefined();
+    expect(mount.getState().trustRows.summary.trust_state).toBe('auto');
+    expect(deps.runTrustRead).toHaveBeenCalledTimes(1);
+    write.resolve({ ok: true, effective });
+    await flush();
+    expect(mount.getState().trustRows.summary).toEqual(effective);
+    expect(mount.getState().promotionSuggestions.summary?.estimated_idle_cycle_cost_tokens).toBe(60_000);
+    expect(fakeHost.getHtml()).toContain('60,000 tokens');
+    expect(mount.getState().promotionSuggestions.thread_signals).toEqual(beforeOther);
+    expect(deps.runTrustWrite).toHaveBeenCalledTimes(1);
+    expect(deps.runTrustRead).toHaveBeenCalledTimes(1);
+    mount.dispose();
+  });
+
+  it.each([
+    { name: 'Auto', effective: settledPromotionRow('auto') },
+    { name: 'dismissed', effective: settledPromotionRow('dismissed') },
+    { name: 'unarmed', effective: suggestedRow({ promotion_suggested_at: null }) },
+  ])('discards the pending hint after an effective $name reply', async ({ effective }) => {
+    const { fakeHost, deps, mount } = await mountWith([settledPromotionRow('auto')]);
+    const write = deferred<{ ok: true; effective: EnrichmentTrustRow }>();
+    deps.runTrustWrite.mockImplementationOnce(() => write.promise);
+    fakeHost.changeAction('housekeeping-trust-state-pick', { topic: 'summary', value: 'manual' });
+    firePromotion(deps);
+    write.resolve({ ok: true, effective });
+    await flush();
+    expect(mount.getState().promotionSuggestions.summary).toBeUndefined();
+    expect(mount.getState().trustRows.summary).toEqual(effective);
+    deps.runTrustWrite.mockResolvedValueOnce({ ok: true, effective: suggestedRow() });
+    fakeHost.changeAction('housekeeping-trust-state-pick', { topic: 'summary', value: 'manual' });
+    await flush();
+    expect(mount.getState().promotionSuggestions.summary?.estimated_idle_cycle_cost_tokens).toBe(0);
+    expect(deps.runTrustRead).toHaveBeenCalledTimes(1);
+    mount.dispose();
+  });
+
+  it.each(['auto', 'dismissed'] as const)('discards a pending hint after failure and keeps the saved %s choice', async (choice) => {
+    const saved = settledPromotionRow(choice);
+    const { fakeHost, deps, mount } = await mountWith([saved]);
+    const write = deferred<{ ok: true; effective: EnrichmentTrustRow }>();
+    deps.runTrustWrite.mockImplementationOnce(() => write.promise);
+    fakeHost.changeAction('housekeeping-trust-state-pick', { topic: 'summary', value: 'manual' });
+    firePromotion(deps);
+    write.reject(new Error('Manual save unavailable.'));
+    await flush();
+    expect(mount.getState().trustRows.summary).toEqual(saved);
+    expect(mount.getState().promotionSuggestions.summary).toBeUndefined();
+    expect(mount.getState().trustWriteError.summary).toBe('Manual save unavailable.');
+    expect(deps.runTrustWrite).toHaveBeenCalledTimes(1);
+    deps.runTrustWrite.mockResolvedValueOnce({ ok: true, effective: suggestedRow() });
+    fakeHost.changeAction('housekeeping-trust-state-pick', { topic: 'summary', value: 'manual' });
+    await flush();
+    expect(mount.getState().promotionSuggestions.summary?.estimated_idle_cycle_cost_tokens).toBe(0);
+    expect(mount.getState().trustWriteError.summary).toBeUndefined();
+    expect(deps.runTrustRead).toHaveBeenCalledTimes(1);
+    mount.dispose();
+  });
+
+  it('keeps pending hints isolated when two topics finish in the opposite order', async () => {
+    const other = suggestedRow({ topic: 'thread_signals' });
+    const { fakeHost, deps, mount } = await mountWith([
+      settledPromotionRow('auto'), { ...other, trust_state: 'auto' },
+    ]);
+    const summaryWrite = deferred<{ ok: true; effective: EnrichmentTrustRow }>();
+    const otherWrite = deferred<{ ok: true; effective: EnrichmentTrustRow }>();
+    deps.runTrustWrite.mockImplementationOnce(() => summaryWrite.promise).mockImplementationOnce(() => otherWrite.promise);
+    for (const topic of ['summary', other.topic]) {
+      fakeHost.changeAction('housekeeping-trust-state-pick', { topic, value: 'manual' });
+      firePromotion(deps, topic, topic === 'summary' ? 30_000 : 12_000);
+    }
+    otherWrite.resolve({ ok: true, effective: other });
+    await flush();
+    expect(mount.getState().promotionSuggestions.thread_signals?.estimated_idle_cycle_cost_tokens).toBe(12_000);
+    expect(mount.getState().promotionSuggestions.summary).toBeUndefined();
+    summaryWrite.resolve({ ok: true, effective: suggestedRow() });
+    await flush();
+    expect(mount.getState().promotionSuggestions.summary?.estimated_idle_cycle_cost_tokens).toBe(30_000);
+    expect(mount.getState().promotionSuggestions.thread_signals?.estimated_idle_cycle_cost_tokens).toBe(12_000);
+    expect(deps.runTrustRead).toHaveBeenCalledTimes(1);
+    mount.dispose();
+  });
+
+  it('keeps the pending hint when an older event read completes after the save', async () => {
+    const { fakeHost, deps, mount } = await mountWith([settledPromotionRow('auto')]);
+    const read = deferred<{ rows: EnrichmentTrustRow[] }>();
+    const write = deferred<{ ok: true; effective: EnrichmentTrustRow }>();
+    deps.runTrustRead.mockImplementationOnce(() => read.promise);
+    firePromotion(deps, 'summary', 12_000);
+    deps.runTrustWrite.mockImplementationOnce(() => write.promise);
+    fakeHost.changeAction('housekeeping-trust-state-pick', { topic: 'summary', value: 'manual' });
+    firePromotion(deps, 'summary', 60_000);
+    write.resolve({ ok: true, effective: suggestedRow() });
+    await flush();
+    read.resolve({ rows: [settledPromotionRow('auto')] });
+    await flush();
+    expect(mount.getState().trustRows.summary.trust_state).toBe('manual');
+    expect(mount.getState().promotionSuggestions.summary?.estimated_idle_cycle_cost_tokens).toBe(60_000);
+    expect(deps.runTrustRead).toHaveBeenCalledTimes(2);
+    mount.dispose();
+  });
+
+  it('does not restore a pending hint after disposal', async () => {
+    const { fakeHost, deps, mount } = await mountWith([settledPromotionRow('auto')]);
+    const write = deferred<{ ok: true; effective: EnrichmentTrustRow }>();
+    deps.runTrustWrite.mockImplementationOnce(() => write.promise);
+    fakeHost.changeAction('housekeeping-trust-state-pick', { topic: 'summary', value: 'manual' });
+    firePromotion(deps);
+    mount.dispose();
+    write.resolve({ ok: true, effective: suggestedRow() });
+    await flush();
+    expect(fakeHost.getHtml()).toBe('');
+    expect(mount.getState().promotionSuggestions.summary).toBeUndefined();
+  });
+});
+
+describe('promotion event reconciliation', () => {
+  for (const choice of ['auto', 'dismissed'] as const) {
+    for (const outcome of ['success', 'failure', 'absent'] as const) {
+      it(`keeps a known ${choice} suggestion hidden through read ${outcome}`, async () => {
+        const saved = settledPromotionRow(choice);
+        const other = suggestedRow({ topic: 'thread_signals' });
+        const { deps, mount } = await mountWith([saved, other]);
+        const otherSuggestion = mount.getState().promotionSuggestions.thread_signals;
+        const read = deferred<{ rows: EnrichmentTrustRow[] }>();
+        deps.runTrustRead.mockImplementationOnce(() => read.promise);
+        firePromotion(deps);
+        expect(mount.getState().promotionSuggestions.summary).toBeUndefined();
+        expect(deps.runTrustRead).toHaveBeenCalledTimes(2);
+        if (outcome === 'failure') read.reject(new Error('Trust unavailable.'));
+        else read.resolve({ rows: outcome === 'absent' ? [] : [saved, other] });
+        await flush();
+        expect(mount.getState().promotionSuggestions.summary).toBeUndefined();
+        expect(mount.getState().promotionSuggestions.thread_signals).toEqual(otherSuggestion);
+        expect(mount.getState().trustRows.summary).toEqual(saved);
+        expect(mount.getState().error).toBeNull();
+        expect(deps.runTrustRead).toHaveBeenCalledTimes(2);
+        mount.dispose();
+      });
+    }
+
+    it(`allows a genuinely eligible server row after known ${choice} with its live estimate`, async () => {
+      const { deps, mount } = await mountWith([settledPromotionRow(choice)]);
+      const read = deferred<{ rows: EnrichmentTrustRow[] }>();
+      deps.runTrustRead.mockImplementationOnce(() => read.promise);
+      firePromotion(deps);
+      expect(mount.getState().promotionSuggestions.summary).toBeUndefined();
+      const eligible = suggestedRow({ promotion_suggested_at: NOW + 1, updated_at: NOW + 2 });
+      read.resolve({ rows: [eligible] });
+      await flush();
+      expect(mount.getState().trustRows.summary).toEqual(eligible);
+      expect(mount.getState().promotionSuggestions.summary?.estimated_idle_cycle_cost_tokens).toBe(30_000);
+      mount.dispose();
+    });
+  }
+
+  for (const initial of ['eligible', 'unknown'] as const) {
+    for (const current of ['auto', 'dismissed', 'unarmed'] as const) {
+      it(`withdraws an ${initial} event hint when the server confirms ${current}`, async () => {
+        const { deps, mount } = await mountWith(initial === 'eligible' ? [suggestedRow()] : []);
+        const read = deferred<{ rows: EnrichmentTrustRow[] }>();
+        deps.runTrustRead.mockImplementationOnce(() => read.promise);
+        firePromotion(deps);
+        expect(mount.getState().promotionSuggestions.summary?.estimated_idle_cycle_cost_tokens).toBe(30_000);
+        const row = current === 'unarmed' ? suggestedRow({ promotion_suggested_at: null }) : settledPromotionRow(current);
+        read.resolve({ rows: [row] });
+        await flush();
+        expect(mount.getState().promotionSuggestions.summary).toBeUndefined();
+        expect(mount.getState().trustRows.summary).toEqual(row);
+        mount.dispose();
+      });
+    }
+  }
+
+  it.each(['auto', 'eligible'] as const)('keeps the latest event read when its %s reply arrives first', async (latest) => {
+    const { deps, mount } = await mountWith([settledPromotionRow('auto')]);
+    const older = deferred<{ rows: EnrichmentTrustRow[] }>();
+    const newer = deferred<{ rows: EnrichmentTrustRow[] }>();
+    deps.runTrustRead.mockImplementationOnce(() => older.promise).mockImplementationOnce(() => newer.promise);
+    firePromotion(deps, 'summary', 30_000);
+    firePromotion(deps, 'summary', 60_000);
+    const current = latest === 'auto' ? settledPromotionRow('auto') : suggestedRow({ updated_at: NOW + 2 });
+    newer.resolve({ rows: [current] });
+    await flush();
+    older.resolve({ rows: [latest === 'auto' ? suggestedRow() : settledPromotionRow('auto')] });
+    await flush();
+    expect(mount.getState().trustRows.summary).toEqual(current);
+    if (latest === 'auto') expect(mount.getState().promotionSuggestions.summary).toBeUndefined();
+    else expect(mount.getState().promotionSuggestions.summary?.estimated_idle_cycle_cost_tokens).toBe(60_000);
+    mount.dispose();
+  });
+
+  for (const action of ['inline-auto', 'pool', 'promote', 'dismiss'] as const) {
+    for (const outcome of ['success', 'failure'] as const) {
+      it(`ignores a stale event read after ${action} ${outcome}`, async () => {
+        const saved = suggestedRow();
+        const { fakeHost, deps, mount } = await mountWith([saved]);
+        const read = deferred<{ rows: EnrichmentTrustRow[] }>();
+        const write = deferred<{ ok: true; effective: EnrichmentTrustRow }>();
+        deps.runTrustRead.mockImplementationOnce(() => read.promise);
+        firePromotion(deps);
+        const caller = action === 'dismiss' ? deps.runDismissPromotion : deps.runTrustWrite;
+        caller.mockImplementationOnce(() => write.promise);
+        if (action === 'inline-auto' || action === 'pool') {
+          fakeHost.changeAction(action === 'pool' ? 'housekeeping-pool-policy-pick' : 'housekeeping-trust-state-pick', {
+            topic: 'summary', value: action === 'pool' ? 'free_only' : 'auto',
+          });
+        } else fakeHost.clickActionAttrs(`housekeeping-promotion-${action}`, { 'data-topic': 'summary' });
+        const effective = action === 'pool' ? suggestedRow({ pool_policy: 'free_only' })
+          : settledPromotionRow(action === 'dismiss' ? 'dismissed' : 'auto');
+        if (outcome === 'success') write.resolve({ ok: true, effective });
+        else write.reject(new Error('Save unavailable.'));
+        await flush();
+        const current = mount.getState().trustRows.summary;
+        const suggestion = mount.getState().promotionSuggestions.summary;
+        read.resolve({ rows: [outcome === 'success' && action !== 'pool' ? saved : settledPromotionRow('auto')] });
+        await flush();
+        expect(mount.getState().trustRows.summary).toEqual(current);
+        expect(mount.getState().promotionSuggestions.summary).toEqual(suggestion);
+        expect(caller).toHaveBeenCalledTimes(1);
+        mount.dispose();
+      });
+    }
+  }
+
+  it('keeps a newer promotion read when an older full refresh completes', async () => {
+    const { deps, mount } = await mountWith([suggestedRow()]);
+    const full = deferred<{ rows: EnrichmentTrustRow[] }>();
+    const event = deferred<{ rows: EnrichmentTrustRow[] }>();
+    deps.runTrustRead.mockImplementationOnce(() => full.promise).mockImplementationOnce(() => event.promise);
+    const refresh = mount.refresh();
+    firePromotion(deps);
+    const accepted = settledPromotionRow('auto');
+    event.resolve({ rows: [accepted] });
+    await flush();
+    full.resolve({ rows: [suggestedRow()] });
+    await refresh;
+    expect(mount.getState().trustRows.summary).toEqual(accepted);
+    expect(mount.getState().promotionSuggestions.summary).toBeUndefined();
+    mount.dispose();
+  });
+
+  it('isolates topics when an unrelated save overlaps the promotion read', async () => {
+    const other = suggestedRow({ topic: 'thread_signals' });
+    const { fakeHost, deps, mount } = await mountWith([settledPromotionRow('auto'), other]);
+    const read = deferred<{ rows: EnrichmentTrustRow[] }>();
+    deps.runTrustRead.mockImplementationOnce(() => read.promise);
+    firePromotion(deps);
+    const changed = { ...other, pool_policy: 'free_only' as const };
+    deps.runTrustWrite.mockResolvedValueOnce({ ok: true, effective: changed });
+    fakeHost.changeAction('housekeeping-pool-policy-pick', { topic: other.topic, value: 'free_only' });
+    await flush();
+    read.resolve({ rows: [suggestedRow(), other] });
+    await flush();
+    expect(mount.getState().trustRows.thread_signals).toEqual(changed);
+    expect(mount.getState().trustRows.summary.trust_state).toBe('manual');
+    expect(mount.getState().promotionSuggestions.summary?.estimated_idle_cycle_cost_tokens).toBe(30_000);
+    mount.dispose();
+  });
+
+  it('keeps an unknown-topic live hint when an older server omits its row', async () => {
+    const { deps, mount } = await mountWith([]);
+    firePromotion(deps);
+    await flush();
+    expect(mount.getState().promotionSuggestions.summary?.estimated_idle_cycle_cost_tokens).toBe(30_000);
+    mount.dispose();
+  });
+
+  it('ignores an event read after disposal', async () => {
+    const { fakeHost, deps, mount } = await mountWith([settledPromotionRow('auto')]);
+    const read = deferred<{ rows: EnrichmentTrustRow[] }>();
+    deps.runTrustRead.mockImplementationOnce(() => read.promise);
+    firePromotion(deps);
+    mount.dispose();
+    read.resolve({ rows: [suggestedRow()] });
+    await flush();
+    expect(fakeHost.getHtml()).toBe('');
+    expect(mount.getState().trustRows.summary.trust_state).toBe('auto');
+  });
+
+  it('lets a newer full refresh supersede an event read', async () => {
+    const { deps, mount } = await mountWith([settledPromotionRow('auto')]);
+    const read = deferred<{ rows: EnrichmentTrustRow[] }>();
+    deps.runTrustRead.mockImplementationOnce(() => read.promise);
+    firePromotion(deps);
+    deps.runTrustRead.mockResolvedValueOnce({ rows: [settledPromotionRow('dismissed')] });
+    await mount.refresh();
+    read.resolve({ rows: [suggestedRow()] });
+    await flush();
+    expect(mount.getState().trustRows.summary.promotion_dismissed_at).toBe(NOW);
+    expect(mount.getState().promotionSuggestions.summary).toBeUndefined();
+    mount.dispose();
+  });
+
+  it.each(['success', 'failure'] as const)('leaves a pending Auto save to settle an event through %s', async (outcome) => {
+    const { fakeHost, deps, mount } = await mountWith([suggestedRow()]);
+    const write = deferred<{ ok: true; effective: EnrichmentTrustRow }>();
+    deps.runTrustWrite.mockImplementationOnce(() => write.promise);
+    fakeHost.changeAction('housekeeping-trust-state-pick', { topic: 'summary', value: 'auto' });
+    firePromotion(deps);
+    expect(deps.runTrustRead).toHaveBeenCalledTimes(1);
+    if (outcome === 'success') write.resolve({ ok: true, effective: settledPromotionRow('auto') });
+    else write.reject(new Error('Save unavailable.'));
+    await flush();
+    if (outcome === 'success') expect(mount.getState().promotionSuggestions.summary).toBeUndefined();
+    else expect(mount.getState().promotionSuggestions.summary?.estimated_idle_cycle_cost_tokens).toBe(30_000);
+    expect(deps.runTrustWrite).toHaveBeenCalledTimes(1);
     mount.dispose();
   });
 });

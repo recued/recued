@@ -174,3 +174,37 @@ describe('the answer to a turn whose recipe needed a pack not installed', () => 
       .toMatchObject({ status: 'error', detail: refusal });
   });
 });
+
+describe('the answer to a messenger turn that searched', () => {
+  /** D-318 step 5 — a messenger turn's answer carried no offers, so the lines
+   *  the bridge (and the email door) sends were never written for one. */
+  const messengerTurn = async (results: ChatDispatchResult[], queries: string[]) => {
+    let n = 0;
+    const orchestrator = createChatOrchestrator({
+      chatStore: store,
+      registry: registry(results),
+      broadcast: { emit: (event) => events.push(event) },
+      selfSignature: signature,
+      mintId: () => `id-${String(++n)}`,
+      executeAiCall: model(queries),
+    });
+    const source = { channel: 'messenger' as const, actor: 'user_self' as const, vendor: 'slack', from: 'U1' };
+    await orchestrator.runMessengerTurn({
+      channel: { surface: 'messenger-slack', onInbound: () => undefined, deliver: async () => undefined },
+      sessionStore: orchestrator.sessionStore,
+      inbound: {
+        session_id: 'messenger:slack:U1', surface: 'messenger-slack', text: 'collect the rent', from: 'U1',
+        source, dispatch_depth: 0, ts: 1_000,
+      },
+    });
+    return (await store.listMessages('messenger:slack:U1')).find((message) => message.role === 'assistant');
+  };
+
+  it('carries the offers its search made, as a web app turn’s answer does', async () => {
+    expect((await messengerTurn([noMatch([OFFER])], ['rent collection']))?.install_offers).toEqual([OFFER]);
+  });
+
+  it('carries none when its search offered none', async () => {
+    expect(await messengerTurn([noMatch()], ['quantum blockchain'])).not.toHaveProperty('install_offers');
+  });
+});

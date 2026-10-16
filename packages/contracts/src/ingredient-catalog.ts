@@ -82,7 +82,7 @@ export interface AuthorizationProvenance {
    *  is why D-234 § 234.4o's peer-ask lift did NOT earn a fourth member: it is
    *  an outbound send and reports `review_send`, with `ingredient_slug` already
    *  distinguishing it precisely. */
-  readonly lift_reason?: 'review_send' | 'review_commitment' | 'review_quote_signoff' | 'review_approval_workflow' | 'quality';
+  readonly lift_reason?: 'review_send' | 'review_commitment' | 'review_quote_signoff' | 'review_approval_workflow' | 'review_customer_payment' | 'quality';
 }
 
 /** D-201 Slice 6B3 — the complete portable declaration for provider resource

@@ -28,8 +28,10 @@ import type { ChatMessageAttachment, ExecutionSource } from '@recued/contracts';
  *  `createMessengerChannel`, and the `<vendor>` is validated at runtime
  *  against the messenger-vendor registry (`isDeclaredMessengerVendor`,
  *  `@recued/contracts`) by the consumers that dispatch on it. `chat` stays
- *  a distinct literal so `surface === 'chat'` still narrows. `email` is a
- *  D-158 discrete channel, never a messenger surface. */
+ *  a distinct literal so `surface === 'chat'` still narrows. The D-158
+ *  notification channel `email` is never a surface; `messenger-email` is
+ *  D-318's email chat door, a door rather than a transport
+ *  (`isMessengerSourceVendor`). */
 export type SurfaceTag = 'chat' | `messenger-${string}`;
 
 /** Extract the vendor slug from a `messenger-<vendor>` surface tag, or

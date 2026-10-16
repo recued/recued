@@ -23,6 +23,8 @@ import type {
 import { FILE_VENDOR_DECLARATIONS, WORK_ENTITY_KINDS } from '@recued/contracts';
 import { bootstrapSavedDataRoute } from '../data/saved-data-route.js';
 import { MAIL_FACTS_FILTER_ATTR } from '../data/mail-facts-surface.js';
+import { REMINDERS_FIELD_ATTR } from '../data/reminders-surface.js';
+import type { ReminderView } from '@recued/contracts';
 import { MAIL_FACTS_FIELD_ATTR } from '../data/mail-fact-templates.js';
 import { reconcileRecoveryContext } from '../shell/recovery-return-reconciliation.js';
 import {
@@ -628,6 +630,7 @@ const mountRoute = (overrides: {
   initialEntityId?: string;
   initialDetailId?: string;
   mailFactCallers?: BootstrapDataRouteOptions['mailFactCallers'];
+  reminderCallers?: BootstrapDataRouteOptions['reminderCallers'];
   chatReturn?: BootstrapDataRouteOptions['chatReturn'];
   logsReturn?: BootstrapDataRouteOptions['logsReturn'];
   verificationRelationship?:
@@ -893,6 +896,9 @@ const mountRoute = (overrides: {
       : {}),
     ...(overrides.mailFactCallers !== undefined
       ? { mailFactCallers: overrides.mailFactCallers }
+      : {}),
+    ...(overrides.reminderCallers !== undefined
+      ? { reminderCallers: overrides.reminderCallers }
       : {}),
     ...(overrides.chatReturn !== undefined
       ? { chatReturn: overrides.chatReturn }
@@ -6017,6 +6023,8 @@ describe('R18 — Data live-update (warehouse / memory broadcasts)', () => {
       'memory',
       'merge_candidate',
       'merge_scan_progress',
+      // D-324 — a reminder ringing: the Reminders tab reads its list again.
+      'notification.notify',
       'warehouse',
     ]);
 
@@ -7071,7 +7079,7 @@ describe('Data → Files — a cloud search submitted while the list loads', () 
         sessions: async () => ({ sessions: [] }),
         cloud: {
           sources: async () => ({
-            sources: [{ source_id: SOURCE_ID, label: 'Work drive', provider: 'google', last_synced_at: NOW, stale: false }],
+            sources: [{ source_id: SOURCE_ID, label: 'Work drive', provider: 'google', last_synced_at: NOW, stale: false, authentication_connection: 'work-drive' }],
           }),
           list,
           get: unused,
@@ -7118,6 +7126,12 @@ describe('Data → Files — a cloud search submitted while the list loads', () 
   };
   const queries = (fake: ReturnType<typeof fakeCloud>): string[] => fake.calls.map((c) => c.query ?? '');
 
+  it('links a selected cloud source to its existing connection authentication review', async () => {
+    const rig = mountFiles(fakeCloud()); await rig.route.whenLoaded(); const host = rig.root.children[0]!;
+    emitClick(host, COLLECTION_SELECT_INSTANCE_ACTION, { [COLLECTION_INSTANCE_SLUG_ATTR]: SLUG }); await settle();
+    expect(host.innerHTML).toContain('href="#connections/others/switch-file-authentication/api/work-drive"');
+    expect(host.innerHTML).toContain('Manage authentication'); rig.route.dispose();
+  });
   it('⛔ Enter while the source is still loading searches, and Load more pages THAT search', async () => {
     const fake = fakeCloud();
     const rig = mountFiles(fake);
@@ -8186,6 +8200,106 @@ describe('D-315 — Data → Received → Mail facts', () => {
     emitClick(rig.root.children[0]!, 'mail-facts-load-more');
     await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith({ limit: 50, type: 'bill', before: cursor }));
     await vi.waitFor(() => expect(rig.root.children[0]?.innerHTML ?? '').toContain('data-recued-mail-fact-row="mfact_2"'));
+    rig.route.dispose();
+  });
+});
+
+describe('D-324 — Data → Owned → Reminders', () => {
+  /** Friday 16 October 2026, 15:00 in New York. */
+  const AT = Date.UTC(2026, 9, 16, 19, 0);
+  const view = (over: Partial<ReminderView> = {}): ReminderView => ({
+    reminder_id: 'rem_1', text: 'Call the dentist', at: AT, when: 'Friday 16 October at 3:00 PM',
+    state: 'pending', delivered_at: null, time_zone: 'America/New_York', ...over,
+  });
+  const listed = (reminders: ReminderView[], delivered: ReminderView[] = []) =>
+    vi.fn(async () => ({ reminders, count: reminders.length, delivered }));
+
+  it('sits last in the Owned cluster, before the Received cluster', async () => {
+    const rig = mountRoute();
+    await rig.route.whenLoaded();
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    const reminders = html.indexOf(`${DATA_ROUTE_TAB_ATTR}="reminder"`);
+    const lastOwned = Math.max(...WORK_ENTITY_KINDS.map((kind) => html.indexOf(`${DATA_ROUTE_TAB_ATTR}="${kind}"`)));
+    const received = html.indexOf(`${DATA_ROUTE_TAB_ATTR}="form_response"`);
+    expect(reminders).toBeGreaterThan(lastOwned);
+    expect(reminders).toBeLessThan(received);
+    expect(html).toMatch(/data-data-tab="reminder"[\s\S]*?>Reminders<\/button>/);
+    rig.route.dispose();
+  });
+
+  it('lists the waiting ones and the rung ones through its caller', async () => {
+    const list = listed([view()], [view({ reminder_id: 'rem_0', text: 'Stretch', state: 'delivered', delivered_at: AT - 1 })]);
+    const rig = mountRoute({ reminderCallers: { list } });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('reminder');
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    expect(list).toHaveBeenCalledWith({ include_delivered: true });
+    expect(html).toContain('Friday 16 October at 3:00 PM');
+    expect(html).toContain('Call the dentist');
+    expect(html).toContain('Rung or cancelled in the last 30 days (1)');
+    expect(html).toContain('Stretch');
+    rig.route.dispose();
+  });
+
+  it('cancels one only after asking, and reads the list again', async () => {
+    const list = listed([view()]);
+    const cancel = vi.fn(async () => ({ cancelled: true, message: 'Cancelled: it will not ring.' }));
+    const rig = mountRoute({ reminderCallers: { list, cancel } });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('reminder');
+    const host = rig.root.children[0]!;
+    emitClick(host, 'reminders-cancel', { 'data-reminder-id': 'rem_1' });
+    expect(host.innerHTML).toContain('Cancel this reminder? It will not ring.');
+    expect(cancel).not.toHaveBeenCalled();
+    emitClick(host, 'reminders-cancel-keep', { 'data-reminder-id': 'rem_1' });
+    expect(host.innerHTML).not.toContain('Cancel this reminder?');
+    emitClick(host, 'reminders-cancel', { 'data-reminder-id': 'rem_1' });
+    emitClick(host, 'reminders-cancel-confirm', { 'data-reminder-id': 'rem_1' });
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledWith({ reminder_id: 'rem_1' }));
+    await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(host.innerHTML).toContain('Cancelled: it will not ring.'));
+    rig.route.dispose();
+  });
+
+  it('moves one to a new time read on the reminder’s own clock, not the browser’s', async () => {
+    const list = listed([view()]);
+    const update = vi.fn(async () => ({ updated: true, message: 'Changed: Friday 16 October at 4:30 PM.' }));
+    const rig = mountRoute({ reminderCallers: { list, update } });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('reminder');
+    const host = rig.root.children[0]!;
+    emitClick(host, 'reminders-edit', { 'data-reminder-id': 'rem_1' });
+    // The field starts at the reminder's own wall clock: 15:00 in New York.
+    expect(host.innerHTML).toContain('value="2026-10-16T15:00"');
+    emitChange(host, {
+      value: '2026-10-16T16:30',
+      getAttribute: (k) => (k === REMINDERS_FIELD_ATTR ? 'at' : k === 'data-reminder-id' ? 'rem_1' : null),
+    });
+    emitClick(host, 'reminders-save', { 'data-reminder-id': 'rem_1' });
+    await vi.waitFor(() => expect(update).toHaveBeenCalledWith({ reminder_id: 'rem_1', at: Date.UTC(2026, 9, 16, 20, 30) }));
+    await vi.waitFor(() => expect(host.innerHTML).toContain('Changed: Friday 16 October at 4:30 PM.'));
+    rig.route.dispose();
+  });
+
+  it('re-reads when a reminder rings, and only on its own tab', async () => {
+    const { subscribe, listeners } = makeSubscribe();
+    const list = listed([view()]);
+    const rig = mountRoute({ subscribe, liveRefreshDebounceMs: 0, reminderCallers: { list } });
+    await rig.route.whenLoaded();
+    const rang = () => listeners.get('notification.notify')!({
+      kind: 'notification.notify', title: 'Reminder', text: 'Call the dentist', link_url: '#data/reminder', cursor: 1,
+    });
+    rang();
+    await rig.route.whenLoaded();
+    expect(list).not.toHaveBeenCalled();
+    await rig.route.selectTab('reminder');
+    expect(list).toHaveBeenCalledTimes(1);
+    rang();
+    await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+    // Another notification is not a reminder ringing.
+    listeners.get('notification.notify')!({ kind: 'notification.notify', text: 'Something else', cursor: 2 });
+    await rig.route.whenLoaded();
+    expect(list).toHaveBeenCalledTimes(2);
     rig.route.dispose();
   });
 });

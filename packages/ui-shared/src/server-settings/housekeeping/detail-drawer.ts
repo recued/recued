@@ -88,8 +88,8 @@ export interface HousekeepingDetailDrawerProps {
    *  computed PSI for it. Null/undefined → drift section hidden
    *  (no row yet — sparse / new producer). */
   driftSignal?: ConfidenceDriftSignal | null;
-  /** Model-pool-write rpc in flight for this topic. Disables the
-   *  Model-pool radios while true. */
+  /** Model-pool-write rpc in flight for this topic. Marks the radios
+   *  aria-disabled while keeping them focusable; the host blocks changes. */
   writing: boolean;
   /** Last write error for this topic, cleared on next write. */
   writeError: string | null;
@@ -257,9 +257,9 @@ const renderRadios = <T extends string>(
   labels: Record<T, { label: string; description: string }>,
   action: string,
   dataField: string,
-  disabled: boolean,
+  writing: boolean,
 ): string => `
-  <fieldset class="housekeeping-drawer-radios" data-group="${e(group)}" data-topic="${e(topic)}">
+  <fieldset class="housekeeping-drawer-radios" data-group="${e(group)}" data-topic="${e(topic)}" ${writing ? 'aria-busy="true"' : ''}>
     ${options.map((value) => `
       <label class="housekeeping-drawer-radio">
         <input
@@ -270,7 +270,7 @@ const renderRadios = <T extends string>(
           data-topic="${e(topic)}"
           data-${e(dataField)}="${e(value)}"
           ${selected === value ? 'checked' : ''}
-          ${disabled ? 'disabled' : ''}
+          ${writing ? 'aria-disabled="true"' : ''}
         />
         <span class="housekeeping-drawer-radio-label">${e(labels[value].label)}</span>
         <span class="housekeeping-drawer-radio-desc">${e(labels[value].description)}</span>
@@ -367,7 +367,7 @@ const renderCoveragePanel = (
       </dl>
       ${entry.prompt_bias_hints.length > 0 ? `
         <details class="housekeeping-drawer-coverage-bias">
-          <summary>Prompt bias hints (${entry.prompt_bias_hints.length})</summary>
+          <summary data-action="housekeeping-prompt-bias-toggle">Prompt bias hints (${entry.prompt_bias_hints.length})</summary>
           <ul>
             ${entry.prompt_bias_hints.map((h) => `<li><code>${e(h)}</code></li>`).join('')}
           </ul>
@@ -390,12 +390,13 @@ const renderCoveragePanel = (
 // links out to Contracts rather than exposing a global override here. The
 // anchor uses the app-wide `#contracts` hash route (the shell's hash
 // router picks it up); ui-shared stays decoupled from the webclient's
-// route-attr constants.
+// route-attr constants. The action identity lets the mount restore focus
+// within the same topic drawer; navigation still follows the native href.
 const renderReadAccessSection = (): string => `
   <p class="housekeeping-drawer-read-access-note">
     Which AI agents can read this topic over MCP is granted per contract.
   </p>
-  <a class="housekeeping-drawer-read-access-link" href="#contracts">Manage read access in Contracts →</a>
+  <a class="housekeeping-drawer-read-access-link" data-action="housekeeping-read-access" href="#contracts">Manage read access in Contracts →</a>
 `;
 
 // ──────────────────────────────────────────────────────────────────

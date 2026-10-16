@@ -38,6 +38,7 @@ import { IngredientError, type ResolvedCall } from './types.js';
 import type { Adapter } from './dispatch.js';
 import type { StepMeta } from '@recued/contracts';
 import type { QuoteSignoffReleaseInput, QuoteSignoffReleaseResult } from '@recued/contracts';
+import type { ReminderView } from '@recued/contracts';
 import {
   parsePreparePreapproval,
   parseMailDraftCreate, parseMailDraftGet, parseMailDraftUpdate, parseMailDraftDelete,
@@ -677,7 +678,14 @@ export interface KernelCustomerAccessCloseInput extends KernelCustomerAccessTarg
 }
 
 export interface KernelDispatchers {
+  customerRefundCorrect?: (input: import('@recued/contracts').CustomerRefundCorrectionApplyInput,meta?: StepMeta) => Promise<import('@recued/contracts').CustomerRefundCorrectionApplyResult>;
+  customerRefundApply?: (input: import('@recued/contracts').CustomerRefundApplyInput,meta?: StepMeta) => Promise<import('@recued/contracts').CustomerRefundApplyResult>;
   approvalWorkflowContinue?: (input: import('@recued/contracts').ApprovalWorkflowContinueInput) => Promise<import('@recued/contracts').ApprovalWorkflowContinueResult>;
+  customerInvoiceCredit?: (input: import('@recued/contracts').CustomerInvoiceCreditApplyInput,meta?: StepMeta) => Promise<import('@recued/contracts').CustomerInvoiceCreditApplyResult>;
+  customerCreditCorrect?: (input: import('@recued/contracts').CustomerCreditCorrectionApplyInput,meta?: StepMeta) => Promise<import('@recued/contracts').CustomerCreditCorrectionApplyResult>;
+  customerAccountPaymentCorrect?: (input: import('@recued/contracts').CustomerAccountPaymentCorrectionApplyInput,meta?: StepMeta) => Promise<import('@recued/contracts').CustomerAccountPaymentCorrectionApplyResult>;
+  customerAccountPaymentApply?: (input: import('@recued/contracts').CustomerAccountPaymentApplyInput,meta?: StepMeta) => Promise<import('@recued/contracts').CustomerAccountPaymentApplyResult>;
+  customerPaymentCorrect?: (input: import('@recued/contracts').CustomerPaymentCorrectionApplyInput,meta?: StepMeta) => Promise<import('@recued/contracts').CustomerPaymentCorrectionApplyResult>;
   quoteCompletionReview?: (input: import('@recued/contracts').QuoteCompletionReviewInput) => Promise<import('@recued/contracts').QuoteCompletionReviewResult>;
   quoteSignoffRelease?: (input: QuoteSignoffReleaseInput) => Promise<QuoteSignoffReleaseResult>;
   /** D-234 § 234.4 — the asking half. Returns the recorded `PeerAnswer` when the
@@ -920,6 +928,16 @@ export interface KernelDispatchers {
     run_id?: string;
     mime?: string;
   }) => Promise<{ ok: true; bytes_written: number; slug: string; path: string }>;
+  /** D-318 follow-up 11 — backs `file-folders`: the owner's connected folders,
+   *  each with whether a file can be saved into it now and the folders inside
+   *  it that hold files. */
+  fileFolders?: () => Promise<{ folders: readonly unknown[] }>;
+  /** D-318 follow-up 11 — backs `file-save-to-folder`: one stored file (an
+   *  emailed attachment, by its record id) saved into the folder the owner
+   *  named, never over another file. */
+  fileSaveToFolder?: (input: { file_id: string; folder: string; name?: string }) => Promise<{
+    ok: true; folder: string; path: string; name: string; renamed: boolean; bytes_written: number; message: string;
+  }>;
   /** D-244 — backs `csv-stats`: per-column summary of one stored CSV, as a
    *  VALUE. Deliberately not the `csvstat` CLI on the stdout-capture arm — that
    *  would hand back a FILE, costing three steps to read a small result — and it
@@ -1494,6 +1512,42 @@ export interface KernelDispatchers {
     failed: Array<NotificationDeliveryChannel>;
   }>;
 
+  /** D-324 — backs `core.reminder.create`: one reminder, rung once by the
+   *  server at `at`. `origin` is stamped by the adapter from `stepMeta`, never
+   *  from the step's own args. */
+  reminderCreate?: (input: {
+    text: string;
+    at: number;
+    origin?: { channel?: string; vendor?: string; recipe_id?: string };
+  }) => Promise<{
+    reminder: ReminderView;
+    when: string;
+    quiet_hours_note?: string;
+    confirmation: string;
+  }>;
+  /** D-324 — backs `core.reminder.list`: the waiting ones, soonest first. */
+  reminderList?: (input: { include_delivered?: boolean; limit?: number }) => Promise<{
+    reminders: ReminderView[];
+    count: number;
+    delivered?: ReminderView[];
+  }>;
+  /** D-324 — backs `core.reminder.update`: a waiting reminder's words or time. */
+  reminderUpdate?: (input: { reminder_id: string; text?: string; at?: number }) => Promise<{
+    updated: boolean;
+    reason?: 'not_found' | 'not_pending';
+    reminder?: ReminderView;
+    when?: string;
+    quiet_hours_note?: string;
+    message: string;
+  }>;
+  /** D-324 — backs `core.reminder.cancel`: withdraws a waiting reminder. */
+  reminderCancel?: (input: { reminder_id: string }) => Promise<{
+    cancelled: boolean;
+    reason?: 'not_found' | 'not_pending';
+    reminder?: ReminderView;
+    message: string;
+  }>;
+
   /** Backs `core.notification.recipe-callback`. Queues a bounded pointer for
    * active MCP tokens bound to the selected contract and explicitly granted the
    * named query recipe. The callback is only a hint; its arguments are replayed
@@ -1795,6 +1849,15 @@ export interface KernelDispatchers {
     done?: boolean;
     completed_at?: number;
   }) => Promise<{ task: Task }>;
+  /** D-315 slice 7 — a Recued reminder was delivered (`task-mark-reminder-fired`). */
+  taskMarkReminderFired?: (input: {
+    id: string;
+  }) => Promise<{
+    marked: boolean;
+    /** Why it was not marked: no longer due, or a vendor's task. */
+    reason: 'marked' | 'not_due' | 'vendor_task';
+    task: Task;
+  }>;
 
   noteCreate?: (input: {
     body: string;
@@ -2021,6 +2084,80 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
           throw new IngredientError('BAD_INPUT', 'Workflow approval input is invalid.', { slug });
         }
         return dispatchers.approvalWorkflowContinue({ endpoint_id, intent_id, expected_plan_hash, summary });
+      }
+      case 'customer-invoice-credit': {
+        if (!dispatchers.customerInvoiceCredit) throw new IngredientError('SERVER_NOT_REACHABLE','Customer invoice credit is unavailable.',{ slug });
+        const input = call.input as Record<string,unknown>;
+        assertOnlyKernelInputFields(input,['credit_id','expected_plan_hash','summary'],slug);
+        const credit_id = requireKernelString(input.credit_id,'credit_id',slug);
+        const expected_plan_hash = requireKernelString(input.expected_plan_hash,'expected_plan_hash',slug);
+        const summary = requireKernelString(input.summary,'summary',slug);
+        if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(credit_id) || !/^[a-f0-9]{64}$/.test(expected_plan_hash) || summary.length > 10_000) {
+          throw new IngredientError('BAD_INPUT','Customer invoice credit input is invalid.',{ slug });
+        }
+        return dispatchers.customerInvoiceCredit({ credit_id,expected_plan_hash,summary },call.stepMeta);
+      }
+      case 'customer-refund-correct': {
+        if (!dispatchers.customerRefundCorrect) throw new IngredientError('SERVER_NOT_REACHABLE','Customer refund corrections are unavailable.',{ slug });
+        const input=call.input as Record<string,unknown>;assertOnlyKernelInputFields(input,['correction_id','expected_plan_hash','summary'],slug);
+        const correction_id=requireKernelString(input.correction_id,'correction_id',slug);const expected_plan_hash=requireKernelString(input.expected_plan_hash,'expected_plan_hash',slug);const summary=requireKernelString(input.summary,'summary',slug);
+        if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(correction_id) || !/^[a-f0-9]{64}$/.test(expected_plan_hash) || summary.length>10_000) throw new IngredientError('BAD_INPUT','Customer refund correction review input is invalid.',{ slug });
+        return dispatchers.customerRefundCorrect({ correction_id,expected_plan_hash,summary },call.stepMeta);
+      }
+      case 'customer-refund-apply': {
+        if (!dispatchers.customerRefundApply) throw new IngredientError('SERVER_NOT_REACHABLE','Customer refunds are unavailable.',{ slug });
+        const input=call.input as Record<string,unknown>;assertOnlyKernelInputFields(input,['action_id','expected_plan_hash','summary'],slug);
+        const action_id=requireKernelString(input.action_id,'action_id',slug);const expected_plan_hash=requireKernelString(input.expected_plan_hash,'expected_plan_hash',slug);const summary=requireKernelString(input.summary,'summary',slug);
+        if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(action_id) || !/^[a-f0-9]{64}$/.test(expected_plan_hash) || summary.length>10_000) throw new IngredientError('BAD_INPUT','Customer refund review input is invalid.',{ slug });
+        return dispatchers.customerRefundApply({ action_id,expected_plan_hash,summary },call.stepMeta);
+      }
+      case 'customer-invoice-credit-correct': {
+        if (!dispatchers.customerCreditCorrect) throw new IngredientError('SERVER_NOT_REACHABLE','Customer credit correction is unavailable.',{ slug });
+        const input = call.input as Record<string,unknown>;
+        assertOnlyKernelInputFields(input,['correction_id','expected_plan_hash','summary'],slug);
+        const correction_id = requireKernelString(input.correction_id,'correction_id',slug);
+        const expected_plan_hash = requireKernelString(input.expected_plan_hash,'expected_plan_hash',slug);
+        const summary = requireKernelString(input.summary,'summary',slug);
+        if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(correction_id) || !/^[a-f0-9]{64}$/.test(expected_plan_hash) || summary.length > 10_000) {
+          throw new IngredientError('BAD_INPUT','Customer credit correction input is invalid.',{ slug });
+        }
+        return dispatchers.customerCreditCorrect({ correction_id,expected_plan_hash,summary },call.stepMeta);
+      }
+      case 'customer-account-payment-correct': {
+        if (!dispatchers.customerAccountPaymentCorrect) throw new IngredientError('SERVER_NOT_REACHABLE','Customer account payments are unavailable.',{ slug });
+        const input = call.input as Record<string,unknown>;
+        assertOnlyKernelInputFields(input,['correction_id','expected_plan_hash','summary'],slug);
+        const correction_id = requireKernelString(input.correction_id,'correction_id',slug);
+        const expected_plan_hash = requireKernelString(input.expected_plan_hash,'expected_plan_hash',slug);
+        const summary = requireKernelString(input.summary,'summary',slug);
+        if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(correction_id) || !/^[a-f0-9]{64}$/.test(expected_plan_hash) || summary.length > 60_000) {
+          throw new IngredientError('BAD_INPUT','Customer account payment correction input is invalid.',{ slug });
+        }
+        return dispatchers.customerAccountPaymentCorrect({ correction_id,expected_plan_hash,summary },call.stepMeta);
+      }
+      case 'customer-account-payment-apply': {
+        if (!dispatchers.customerAccountPaymentApply) throw new IngredientError('SERVER_NOT_REACHABLE','Customer account payments are unavailable.',{ slug });
+        const input = call.input as Record<string,unknown>;
+        assertOnlyKernelInputFields(input,['account_payment_id','expected_plan_hash','summary'],slug);
+        const account_payment_id = requireKernelString(input.account_payment_id,'account_payment_id',slug);
+        const expected_plan_hash = requireKernelString(input.expected_plan_hash,'expected_plan_hash',slug);
+        const summary = requireKernelString(input.summary,'summary',slug);
+        if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(account_payment_id) || !/^[a-f0-9]{64}$/.test(expected_plan_hash) || summary.length > 60_000) {
+          throw new IngredientError('BAD_INPUT','Customer account payment input is invalid.',{ slug });
+        }
+        return dispatchers.customerAccountPaymentApply({ account_payment_id,expected_plan_hash,summary },call.stepMeta);
+      }
+      case 'customer-payment-correct': {
+        if (!dispatchers.customerPaymentCorrect) throw new IngredientError('SERVER_NOT_REACHABLE','Customer payment correction is unavailable.',{ slug });
+        const input = call.input as Record<string,unknown>;
+        assertOnlyKernelInputFields(input,['correction_id','expected_plan_hash','summary'],slug);
+        const correction_id = requireKernelString(input.correction_id,'correction_id',slug);
+        const expected_plan_hash = requireKernelString(input.expected_plan_hash,'expected_plan_hash',slug);
+        const summary = requireKernelString(input.summary,'summary',slug);
+        if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(correction_id) || !/^[a-f0-9]{64}$/.test(expected_plan_hash) || summary.length > 10_000) {
+          throw new IngredientError('BAD_INPUT','Customer payment correction input is invalid.',{ slug });
+        }
+        return dispatchers.customerPaymentCorrect({ correction_id,expected_plan_hash,summary },call.stepMeta);
       }
       case 'quote-completion-review': {
         if (!dispatchers.quoteCompletionReview) throw new IngredientError('SERVER_NOT_REACHABLE', 'Customer completion review is unavailable.', { slug });
@@ -2786,6 +2923,37 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
           ref: input.ref as never,
           ...(typeof input.mime === 'string' ? { mime: input.mime } : {}),
           ...(call.stepMeta?.run_id ? { run_id: call.stepMeta.run_id } : {}),
+        });
+      }
+      case 'file-folders': {
+        if (!dispatchers.fileFolders) {
+          throw new IngredientError(
+            'SERVER_NOT_REACHABLE',
+            'file-folders unavailable — no paired server or file stack',
+            { slug },
+          );
+        }
+        return dispatchers.fileFolders();
+      }
+      case 'file-save-to-folder': {
+        if (!dispatchers.fileSaveToFolder) {
+          throw new IngredientError(
+            'SERVER_NOT_REACHABLE',
+            'file-save-to-folder unavailable — no paired server or file stack',
+            { slug },
+          );
+        }
+        const input = call.input as { file_id?: unknown; folder?: unknown; name?: unknown };
+        for (const key of ['file_id', 'folder'] as const) {
+          const v = input[key];
+          if (typeof v !== 'string' || v.trim().length === 0) {
+            throw new IngredientError('BAD_INPUT', `file-save-to-folder: '${key}' is required`, { slug });
+          }
+        }
+        return dispatchers.fileSaveToFolder({
+          file_id: input.file_id as string,
+          folder: input.folder as string,
+          ...(typeof input.name === 'string' && input.name.trim().length > 0 ? { name: input.name } : {}),
         });
       }
       case 'csv-stats': {
@@ -4131,6 +4299,83 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
         return dispatchers.notificationSend(dispatchInput);
       }
 
+      case 'reminder-create': {
+        if (!dispatchers.reminderCreate) {
+          throw new IngredientError(
+            'SERVER_NOT_REACHABLE',
+            'reminder-create unavailable — no paired server or reminder dispatcher',
+            { slug },
+          );
+        }
+        const input = call.input as { text?: unknown; at?: unknown };
+        if (typeof input.text !== 'string' || input.text.trim().length === 0) {
+          throw new IngredientError('BAD_INPUT', 'reminder-create: text is required', { slug });
+        }
+        // ⛔ FROM `stepMeta`, NOT FROM `input`, for `notification-send`'s reason:
+        // where a reminder was set is engine-stamped, so a recipe cannot claim to
+        // have set it somewhere it did not.
+        const source = call.stepMeta?.execution_source;
+        const origin: { channel?: string; vendor?: string; recipe_id?: string } = {};
+        if (source !== undefined) origin.channel = source.channel;
+        if (source !== undefined && 'vendor' in source && typeof source.vendor === 'string') origin.vendor = source.vendor;
+        if (typeof call.stepMeta?.recipe_id === 'string' && call.stepMeta.recipe_id.length > 0) {
+          origin.recipe_id = call.stepMeta.recipe_id;
+        }
+        return dispatchers.reminderCreate({ text: input.text, at: readReminderAt(input.at, slug, 'at'), origin });
+      }
+
+      case 'reminder-list': {
+        if (!dispatchers.reminderList) {
+          throw new IngredientError(
+            'SERVER_NOT_REACHABLE',
+            'reminder-list unavailable — no paired server or reminder dispatcher',
+            { slug },
+          );
+        }
+        const input = call.input as { include_delivered?: unknown; limit?: unknown };
+        const args: Parameters<NonNullable<KernelDispatchers['reminderList']>>[0] = {};
+        if (input.include_delivered === true || input.include_delivered === 'true') args.include_delivered = true;
+        if (typeof input.limit === 'number' && Number.isFinite(input.limit)) args.limit = input.limit;
+        return dispatchers.reminderList(args);
+      }
+
+      case 'reminder-update': {
+        if (!dispatchers.reminderUpdate) {
+          throw new IngredientError(
+            'SERVER_NOT_REACHABLE',
+            'reminder-update unavailable — no paired server or reminder dispatcher',
+            { slug },
+          );
+        }
+        const input = call.input as { reminder_id?: unknown; text?: unknown; at?: unknown };
+        if (typeof input.reminder_id !== 'string' || input.reminder_id.length === 0) {
+          throw new IngredientError('BAD_INPUT', 'reminder-update: reminder_id is required', { slug });
+        }
+        const args: Parameters<NonNullable<KernelDispatchers['reminderUpdate']>>[0] = { reminder_id: input.reminder_id };
+        // An empty value is no change: a form leaves the field it did not use blank.
+        if (typeof input.text === 'string' && input.text.trim().length > 0) args.text = input.text;
+        if (input.at !== undefined && input.at !== null && input.at !== '') args.at = readReminderAt(input.at, slug, 'at');
+        if (args.text === undefined && args.at === undefined) {
+          throw new IngredientError('BAD_INPUT', 'reminder-update: give a new text, a new time, or both', { slug });
+        }
+        return dispatchers.reminderUpdate(args);
+      }
+
+      case 'reminder-cancel': {
+        if (!dispatchers.reminderCancel) {
+          throw new IngredientError(
+            'SERVER_NOT_REACHABLE',
+            'reminder-cancel unavailable — no paired server or reminder dispatcher',
+            { slug },
+          );
+        }
+        const input = call.input as { reminder_id?: unknown };
+        if (typeof input.reminder_id !== 'string' || input.reminder_id.length === 0) {
+          throw new IngredientError('BAD_INPUT', 'reminder-cancel: reminder_id is required', { slug });
+        }
+        return dispatchers.reminderCancel({ reminder_id: input.reminder_id });
+      }
+
       case 'notification-recipe-callback': {
         if (!dispatchers.notificationRecipeCallback) {
           throw new IngredientError(
@@ -5454,6 +5699,26 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
         return { task: stampOne(out.task as unknown as Record<string, unknown>, 'task', out.task.id) };
       }
 
+      case 'task-mark-reminder-fired': {
+        if (!dispatchers.taskMarkReminderFired) {
+          throw new IngredientError(
+            'SERVER_NOT_REACHABLE',
+            `task-mark-reminder-fired unavailable — no paired server or work-entity dispatcher`,
+            { slug },
+          );
+        }
+        const input = call.input as Parameters<NonNullable<KernelDispatchers['taskMarkReminderFired']>>[0];
+        if (typeof input.id !== 'string' || input.id.length === 0) {
+          throw new IngredientError('BAD_INPUT', 'task-mark-reminder-fired: id is required', { slug });
+        }
+        const out = await dispatchers.taskMarkReminderFired({ id: input.id });
+        return {
+          marked: out.marked,
+          reason: out.reason,
+          task: stampOne(out.task as unknown as Record<string, unknown>, 'task', out.task.id),
+        };
+      }
+
       case 'note-create': {
         if (!dispatchers.noteCreate) {
           throw new IngredientError(
@@ -5976,6 +6241,28 @@ const requireMailTarget = (
     throw new IngredientError('BAD_INPUT', `${op}: record_id is required`, { slug });
   }
   return { slug: input.slug, record_id: input.record_id };
+};
+
+/** D-324 — a reminder's time: epoch ms, or an ISO 8601 date-time WITH its offset.
+ *
+ *  ⛔ AN OFFSET-LESS TIME IS REFUSED, as `remind-me-of`'s `remind_at` refuses it
+ *  (D-193): "15:00" with no zone is read on the server process's clock, which is
+ *  UTC on a VPS, and the reminder rings hours off with nothing saying why. */
+const readReminderAt = (raw: unknown, slug: string, field: string): number => {
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+  if (typeof raw === 'string') {
+    const text = raw.trim();
+    if (/^\d{10,16}$/u.test(text)) return Number(text);
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})$/iu.test(text)) {
+      const ms = Date.parse(text);
+      if (Number.isFinite(ms)) return ms;
+    }
+  }
+  throw new IngredientError(
+    'BAD_INPUT',
+    `${slug}: ${field} is a date-time with its offset (2026-10-16T15:00:00-04:00) or epoch milliseconds`,
+    { slug },
+  );
 };
 
 /** D-127 P2.1 — duck-type the rpc-layer "slug not registered" error.

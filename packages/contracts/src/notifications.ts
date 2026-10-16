@@ -100,8 +100,9 @@ export const CHANNEL_ROLES: Record<NotificationChannelName, ChannelRoles> = {
   // ride the separate D-169 roster path, not this one.)
   bridge: { notification: true, approval: false, messenger: false },
   // A façade over a warehouse mail instance. It notifies, and its ask goes to a
-  // landing page (`capability: 'landing-page'`) — but you do not chat with Recued by
-  // email.
+  // landing page (`capability: 'landing-page'`) — but you do not chat with Recued
+  // through it. Chatting by email is D-318's chat door, a separate vendor with its
+  // own chat mailbox (`MAIL_CHAT_DOOR_VENDOR`), not this channel.
   email: { notification: true, approval: true, messenger: false },
   // Every declared chat transport states its own roles. NOTE `discord` and `email`
   // land on the SAME triple by completely different routes, which is the clearest

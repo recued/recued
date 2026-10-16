@@ -1358,6 +1358,15 @@ export interface MessengerTurnInput {
     model_hint?: ChatModelHint;
     source_id?: ChatModelSourceId;
   };
+  /** D-318 step 4 — a line for the MODEL's copy of the message only, after the
+   *  attachment marker; never stored, never shown. The email door uses it to
+   *  point at mail the owner forwarded, which must be read as mail (through
+   *  the mail tool and the privacy layer), not taken as the owner's words. */
+  model_note?: string;
+  /** D-318 step 6 — the turn's answer, given without the model: the message is
+   *  stored and answered with this, and nothing runs. The email door answers a
+   *  request it reached too late so (§4.8). */
+  fixed_answer?: string;
 }
 
 /** D-153 P2.C — local-owner identifier baked into every chat
@@ -4507,7 +4516,8 @@ export const createChatOrchestrator = (
     let userText = inbound.text;
     let effectiveInbound = userAttachments ? { ...inbound, media: userAttachments } : inbound;
     let voiceTranscribed = false;
-    if (userText.trim().length === 0 && userAttachments && isVoiceOnlyMedia(userAttachments)) {
+    if (input.fixed_answer === undefined && userText.trim().length === 0 && userAttachments
+      && isVoiceOnlyMedia(userAttachments)) {
       const transcript = await transcribeMessengerVoiceOnly(
         deps.voiceTranscription,
         userAttachments,
@@ -4556,6 +4566,14 @@ export const createChatOrchestrator = (
         execution_source: inbound.source, turn_id, ts: Math.max(now(), inbound.ts + 1),
         ...(result?.tool_calls ? { tool_calls: result.tool_calls } : {}),
         ...(result?.provenance ? { provenance: result.provenance } : {}),
+        // D-323 — the offers the turn's calls came back with, as a web app
+        // turn's answer carries them; the messenger bridge and the email door
+        // send them as plain lines. (A messenger answer carried none until
+        // D-318 step 5, so Slack and Telegram turns never showed them.)
+        ...((): { install_offers?: InstallOffer[] } => {
+          const offers = installOffersFromToolResults(result?.tool_results);
+          return offers.length > 0 ? { install_offers: offers } : {};
+        })(),
       });
       await Promise.resolve(deps.planApprovalStore?.linkTurnToMessage?.(session_id, turn_id, message.id)).catch(() => {});
       safeBroadcast(deps.broadcast, { kind: 'chat.message_complete', session_id, turn_id, final: message });
@@ -4571,6 +4589,13 @@ export const createChatOrchestrator = (
         attachment_count: userAttachments?.length ?? 0,
       }),
     );
+
+    // D-318 step 6 — answered as given: no model, nothing run.
+    if (input.fixed_answer !== undefined) {
+      await persistAssistant(input.fixed_answer);
+      await input.channel.deliver({ kind: 'message', session_id, turn_id, text: input.fixed_answer });
+      return { turn_id };
+    }
 
     if (!voiceTranscribed && userText.trim().length === 0 && userAttachments && userAttachments.length > 0) {
       const text = mediaOnlyAffordance(userAttachments,
@@ -4619,13 +4644,13 @@ export const createChatOrchestrator = (
         //
         // ⚠ Applied to the MODEL's copy only. `userText` is what was appended
         // to the store above, and it stays exactly what the person sent.
-        user_message: userAttachments && userAttachments.length > 0
+        user_message: `${userAttachments && userAttachments.length > 0
           ? `${modelMessage}${renderAttachmentMarker(
             userAttachments,
             deps.resolveFileNames?.(userAttachments.map((a) => a.file_id))
               ?? new Map<string, string>(),
           )}`
-          : modelMessage,
+          : modelMessage}${input.model_note ?? ''}`,
         chat_tail: builtChatTail.messages,
       }),
       // ⛔ D-213 WAS CHAT-ONLY, AND THAT WAS A GAP, NOT A SCOPE DECISION. The

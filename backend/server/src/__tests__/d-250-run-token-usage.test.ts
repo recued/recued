@@ -425,6 +425,7 @@ describe('D-250 § D — execute RPC projects the persisted Run facts receipt', 
     }, 'target');
 
     await expect(executeTesting.withRecipeRunFacts(response, log)).resolves.toMatchObject({
+      run_id: 'target',
       run_facts: {
         steps_run: 34,
         items_total: 1_249,
@@ -464,7 +465,10 @@ describe('D-250 § D — execute RPC projects the persisted Run facts receipt', 
 
     await expect(executeTesting.withRecipeRunFacts(response, {
       get: async () => { throw new Error('audit unavailable'); },
-    })).resolves.toBe(response);
+    })).resolves.toEqual({...response,run_id:'no-ai'});
+    await expect(executeTesting.withRecipeRunFacts(response,undefined)).resolves.toEqual({...response,run_id:'no-ai'});
+    const unaudited={...response};
+    await expect(executeTesting.withRecipeRunFacts(unaudited,undefined)).resolves.toBe(unaudited);
   });
 });
 

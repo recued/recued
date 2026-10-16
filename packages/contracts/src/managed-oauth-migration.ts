@@ -1,5 +1,5 @@
 /** D-322 §26 — owner-reviewed, per-connection bulk switches. Never contains credentials. */
-import type { ManagedOAuthAccountPreview, ManagedOAuthAuth, ManagedOAuthImpactPreview } from './managed-oauth.js';
+import type { ManagedOAuthAccountPreview, AuthenticationSwitchAuthorization, ManagedOAuthImpactPreview } from './managed-oauth.js';
 import { isManagedOAuthImpactPreview } from './managed-oauth.js';
 
 export const MANAGED_OAUTH_MIGRATION_LIMIT = 20;
@@ -33,7 +33,7 @@ export interface ManagedOAuthMigrationView {
 export type ManagedOAuthMigrationRequest =
   | { action: 'migration_candidates'; names?: readonly string[] }
   | { action: 'migration_prepare'; id: string; selections: readonly ManagedOAuthMigrationSelection[];
-      auth: ManagedOAuthAuth; impact_fingerprint: string }
+      auth: AuthenticationSwitchAuthorization; impact_fingerprint: string }
   | { action: 'migration_apply'; id: string; fingerprint: string }
   | { action: 'migration_status'; id?: string }
   | { action: 'migration_stop'; id: string };

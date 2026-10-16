@@ -1,3 +1,6 @@
+import { withCollectionAuthenticationLock } from '../../collection-authentication-locks.js';
+import { purgeBorrowedOAuthCursors } from '../oauth-cursor-cleanup.js';
+import { collectionOAuthBinding, collectionOAuthSourceName } from '../../collection-oauth-sources.js';
 /** D-127 wire-up — `collection.mail.*` enroll rpc handlers.
  *
  *  Three methods wire into `collection-handler.ts`:
@@ -37,6 +40,7 @@
 import {
   GMAIL_SEND_SCOPE,
   GRAPH_CALENDAR_SCOPE,
+  GRAPH_MAIL_READWRITE_SCOPE,
   GRAPH_MAIL_SEND_SCOPE,
   RpcError,
 } from '@recued/contracts';
@@ -48,6 +52,9 @@ import type {
 import type { CollectionInstanceStore } from '../instance-store.js';
 import {
   defaultHttpFetcher,
+  readOAuthAppId,
+  assertOAuthProviderConfigCurrent,
+  assertNoPermissionCleanup,
   describeGraphGrantIdentity,
   grantedScopesInclude,
   exchangeCodeForTokens,
@@ -106,6 +113,9 @@ const imapPasswordKey = (slug: string): string => `imap.${slug}.password`;
 const imapSmtpPasswordKey = (slug: string): string => `imap.${slug}.smtp_password`;
 
 export interface MailEnrollDeps {
+  /** Read/login-only credential verification seam. Production uses IMAP EXAMINE and SMTP VERIFY. */
+  verifyPasswords?: (config: Record<string, unknown>, passwords: { password?: string; smtp_password?: string }) => Promise<void>;
+  authenticationChange?: import('../../collection-authentication-service.js').CollectionAuthenticationLifecycle;
   managedOAuth?: import('../../managed-oauth-consumers.js').ManagedOAuthConsumers;
   instances: CollectionInstanceStore;
   /** Account-namespace reader / writer. Used to persist OAuth tokens
@@ -115,14 +125,15 @@ export interface MailEnrollDeps {
   /** OAuth client config per provider. Returning `null` for a
    *  provider surfaces `not_configured` on the rpc. Absent → every
    *  OAuth enroll surfaces `not_configured`. */
-  oauthConfig?: (provider: 'gmail' | 'graph') => OAuthProviderConfig | null;
+  oauthConfig?: (provider: 'gmail' | 'graph', appId?: string) => OAuthProviderConfig | null;
   /** Injected HTTP fetcher for OAuth exchange + post-OAuth profile
    *  fetches. Tests mock; production uses the default inside
    *  `oauth.ts`. */
   fetcher?: HttpFetcher;
-  /** Called after a successful enroll so the composition root can
-   *  spin up a live `MailCollection` against the new row. Optional so
-   *  unit tests don't need live wiring. */
+  /** Called after a successful enroll so the composition root can register a
+   *  live `MailCollection` against the new row and begin syncing. Resolves
+   *  after registration, without waiting for the first mailbox scan. Optional
+   *  so unit tests don't need live wiring. */
   onEnrolled?: (row: CollectionInstanceRow) => Promise<void> | void;
   /** Called before a row is deleted so the composition root can stop
    *  the adapter cleanly. Optional. */
@@ -139,6 +150,9 @@ export interface MailEnrollDeps {
    *  says. Unwired or not-running ⇒ `false`: a mailbox we cannot ask is a
    *  mailbox we do not advertise. */
   draftCapable?: (slug: string) => boolean | undefined;
+  /** First successful mailbox read in the running mirror. Durable sync
+   * activity also verifies access when no live mirror is available. */
+  mailboxAccessVerified?: (slug: string) => boolean | undefined;
   now?: () => number;
 }
 
@@ -433,6 +447,8 @@ export const handleMailEnrollImap = async (
 // ────────────────────────────────────────────────────────────────
 
 export interface EnrollOAuthInput {
+  oauth_app_id?: unknown;
+  oauth_client_id?: unknown;
   adapter?: unknown;
   account_slug?: unknown;
   code?: unknown;
@@ -499,7 +515,8 @@ export const handleMailEnrollOAuth = async (
       503,
     );
   }
-  const providerConfig = deps.oauthConfig(adapter);
+  const appId = readOAuthAppId(args.oauth_app_id);
+  const providerConfig = deps.oauthConfig(adapter, appId);
   if (!providerConfig || !providerConfig.clientId) {
     throw new RpcError(
       'not_configured',
@@ -507,6 +524,11 @@ export const handleMailEnrollOAuth = async (
       503,
     );
   }
+
+  if (args.oauth_client_id !== undefined && args.oauth_client_id !== providerConfig.clientId) {
+    throw new RpcError('conflict', 'The saved OAuth app changed. Refresh its settings and authorize again.');
+  }
+  const assertApp = () => assertOAuthProviderConfigCurrent(() => deps.oauthConfig!(adapter, appId), providerConfig);
 
   // One normalized fetcher for every identity/profile read in this flow. Keep
   // it available before the token exchange: a legacy shared grant may need its
@@ -530,7 +552,10 @@ export const handleMailEnrollOAuth = async (
   const sharesGrantWithCalendar =
     adapter === 'graph'
     && deps.instances.get('calendar', slug)?.adapter_type === 'graph'
-    && deps.instances.get('calendar', slug)?.config.managed_oauth === undefined;
+    && collectionOAuthBinding(deps.instances.get('calendar', slug)?.config ?? {}) === undefined;
+  if (sharesGrantWithCalendar && (deps.instances.get('calendar', slug)?.config.oauth_app_id ?? 'default') !== (appId ?? 'default')) {
+    throw new RpcError('conflict', 'This Calendar shares the Microsoft sign-in from a different OAuth app. Use the same saved app or another account name.');
+  }
   const snapshot: GraphGrantSnapshot | null = sharesGrantWithCalendar
     ? await snapshotGraphGrant(deps.accountStore, slug)
     : null;
@@ -569,6 +594,7 @@ export const handleMailEnrollOAuth = async (
       code,
       redirectUri,
       providerConfig,
+      beforePersist: assertApp,
       accountStore: deps.accountStore,
       ...(deps.fetcher ? { fetcher: deps.fetcher } : {}),
       ...(deps.now ? { now: deps.now } : {}),
@@ -661,6 +687,7 @@ export const handleMailEnrollOAuth = async (
   const config: Record<string, unknown> = {
     account_slug: slug,
     account_email: accountEmail,
+    ...(appId ? { oauth_app_id: appId } : {}),
   };
   const backfill = optionalPositiveInt(args.backfill_days, 'backfill_days');
   if (backfill !== undefined) config.backfill_days = backfill;
@@ -677,6 +704,7 @@ export const handleMailEnrollOAuth = async (
     config.folder_filter = args.folder_filter.filter((x) => typeof x === 'string');
   }
 
+  assertApp();
   const stored = deps.instances.upsert({
     platform: 'mail',
     slug,
@@ -713,10 +741,12 @@ export const handleMailEnrollOAuth = async (
   // hand-typed strings here could drift from the ones the providers compare, so
   // the rpc's `send_capable` and the provider's `sendCapable` could disagree
   // about the same account.
+  // ⚠ Outlook sends a draft and then `/send`, so it needs `Mail.ReadWrite` too
+  // (`GRAPH_MAIL_READWRITE_SCOPE`), as the provider's own `sendCapable` does.
   const sendCapable = grantedScopesInclude(
     exchange.granted_scopes,
     adapter === 'gmail' ? GMAIL_SEND_SCOPE : GRAPH_MAIL_SEND_SCOPE,
-  );
+  ) && (adapter === 'gmail' || grantedScopesInclude(exchange.granted_scopes, GRAPH_MAIL_READWRITE_SCOPE));
 
   return {
     slug,
@@ -734,6 +764,7 @@ export const handleMailEnrollOAuth = async (
  *  resolver needs `send_capable` + `account_email` surfaced
  *  side-by-side without a second rpc round trip. */
 export interface MailInstanceRow extends CollectionInstanceRow {
+  sync_status: import('@recued/contracts').MailSyncStatus;
   managed_connection_name?: string;
   permission_state?: 'unknown';
   /** True iff the underlying provider is configured to send. For direct OAuth
@@ -762,19 +793,24 @@ const computeSendCapable = async (
   slug: string,
   config: Record<string, unknown>,
 ): Promise<boolean> => {
-  if (config.managed_oauth !== undefined) return config.managed_send_enabled === true;
+  if (collectionOAuthBinding(config) !== undefined) return config.managed_send_enabled === true;
   if (adapter === 'imap') {
     return Boolean(config.smtp);
   }
   if (adapter === 'gmail' || adapter === 'graph') {
-    const sendScope = adapter === 'gmail'
-      ? 'https://www.googleapis.com/auth/gmail.send'
-      : 'Mail.Send';
+    if (config.native_send_enabled === false) return false;
+    // Outlook sends a draft and then `/send`: both scopes (see the provider).
+    // Tolerant match against the constants, as the enroll answer and the
+    // providers compare: Microsoft may answer `https://graph.microsoft.com/Mail.Send`.
+    const sendScopes = adapter === 'gmail'
+      ? [GMAIL_SEND_SCOPE]
+      : [GRAPH_MAIL_SEND_SCOPE, GRAPH_MAIL_READWRITE_SCOPE];
     const raw = await deps.accountStore.get(
       `${oauthKeyPrefix(adapter as OAuthProvider, slug)}.granted_scopes`,
     );
     if (!raw) return false;
-    return raw.split(/[\s,]+/).filter((s) => s.length > 0).includes(sendScope);
+    const granted = raw.split(/[\s,]+/).filter((s) => s.length > 0);
+    return sendScopes.every((scope) => grantedScopesInclude(granted, scope));
   }
   return false;
 };
@@ -801,6 +837,7 @@ export const handleMailList = async (
   for (const r of rows) {
     const adapter = r.adapter_type as MailAdapterType;
     const send_capable = await computeSendCapable(deps, adapter, r.slug, r.config);
+    const accessVerified = deps.mailboxAccessVerified?.(r.slug) === true || r.last_synced_at !== null;
     out.push({
       slug: r.slug,
       platform: 'mail',
@@ -808,11 +845,16 @@ export const handleMailList = async (
       caps: r.caps,
       auth_state: r.auth_state,
       last_synced_at: r.last_synced_at,
+      sync_status: {
+        access_verified: accessVerified,
+        initial_sync_complete: r.backfill_complete && accessVerified,
+      },
       send_capable,
       draft_capable: deps.draftCapable?.(r.slug) ?? false,
       account_email: accountEmailFromConfig(r.config),
-      ...(r.config.managed_oauth !== undefined ? {
-        managed_connection_name: (r.config.managed_oauth as { connection_name: string }).connection_name,
+      ...(collectionOAuthBinding(r.config) !== undefined ? {
+        managed_connection_name: collectionOAuthSourceName(r.config),
+        source_authentication: (collectionOAuthBinding(r.config) as { type?: string }).type === 'direct_oauth' ? 'direct_oauth' as const : 'broker' as const,
         permission_state: 'unknown' as const,
       } : {}),
     });
@@ -829,6 +871,10 @@ export const handleMailDelete = async (
   args: { slug?: unknown },
 ): Promise<{ ok: true }> => {
   const slug = requireSlug(args.slug);
+  return withCollectionAuthenticationLock(deps.instances.authenticationLocks, 'mail:' + slug, () => deleteMail(deps, slug));
+};
+
+const deleteMail = async (deps: MailEnrollDeps, slug: string): Promise<{ ok: true }> => {
   const existing = deps.instances.get('mail', slug);
   if (!existing) {
     throw new RpcError(
@@ -836,6 +882,10 @@ export const handleMailDelete = async (
       `collection.mail.delete: instance '${slug}' not found`,
       404,
     );
+  }
+  if (collectionOAuthBinding(existing.config) === undefined && ['gmail', 'graph'].includes(existing.adapter_type)) {
+    await assertNoPermissionCleanup({ provider: existing.adapter_type as 'gmail' | 'graph',
+      slug: typeof existing.config.account_slug === 'string' ? existing.config.account_slug : slug, accountStore: deps.accountStore });
   }
   await deps.onDeleted?.(slug);
   // Also wipe credentials so a future enroll under the same slug
@@ -851,14 +901,8 @@ export const handleMailDelete = async (
       await deps.accountStore.delete(imapPasswordKey(slug));
       await deps.accountStore.delete(imapSmtpPasswordKey(slug));
     }
-  } else if (existing.config.managed_oauth !== undefined) {
-    // Only this lane's sync cursors are local. The saved API account and the other lane survive removal.
-    const prefix = `${existing.adapter_type}.managed-mail:${slug}.`;
-    if (deps.accountStore.getAll) {
-      for (const key of Object.keys(await deps.accountStore.getAll())) {
-        if (key.startsWith(prefix)) await deps.accountStore.delete(key);
-      }
-    }
+  } else if (collectionOAuthBinding(existing.config) !== undefined) {
+    await purgeBorrowedOAuthCursors(existing, deps.accountStore);
   } else if (existing.adapter_type === 'gmail' || existing.adapter_type === 'graph') {
     // ⚠ A `graph` grant is SHARED with the calendar lane at the same slug —
     // Microsoft's mail and calendar adapters are both named `graph`, so both
@@ -874,13 +918,14 @@ export const handleMailDelete = async (
     const sharedWithCalendar =
       existing.adapter_type === 'graph'
       && deps.instances.get('calendar', slug)?.adapter_type === 'graph'
-      && deps.instances.get('calendar', slug)?.config.managed_oauth === undefined;
+      && collectionOAuthBinding(deps.instances.get('calendar', slug)?.config ?? {}) === undefined;
     if (!sharedWithCalendar) {
       const prefix = oauthKeyPrefix(existing.adapter_type as OAuthProvider, slug);
       await deps.accountStore.delete(`${prefix}.access_token`);
       await deps.accountStore.delete(`${prefix}.refresh_token`);
       await deps.accountStore.delete(`${prefix}.expires_at`);
       await deps.accountStore.delete(`${prefix}.granted_scopes`);
+      await deps.accountStore.delete(`${prefix}.grant_generation`);
     }
   }
   deps.instances.delete('mail', slug);

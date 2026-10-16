@@ -1,3 +1,7 @@
+import {focusCustomerWorkspace} from './customer-workspace-focus.js';
+import { customerInvoiceRecordAddress } from '../data/records-navigation.js';
+import { receptionInboxTargetAddress } from './navigation.js';
+import { customerRefundBalanceLines } from '@recued/contracts';
 import { QUOTE_SIGNOFF_SEARCH_MAX, QUOTE_SIGNOFF_STATES,
   type Conn, type ServerRpcRegistry, type QuoteSignoffPrepareResult,
   type QuoteSignoffState, type QuoteSignoffSummary } from '@recued/contracts';
@@ -5,14 +9,24 @@ import { canRecordSignoffPayment, createQuoteSignoffPayment,
   type QuoteSignoffPaymentOptions } from './quote-signoff-payment.js';
 import { mountQuoteSignoffReminders, type QuoteSignoffReminderOptions } from './quote-signoff-reminders.js';
 import { mountQuoteCompletionPanel } from './quote-completion-panel.js';
+import { mountCustomerPaymentHistory } from './customer-payment-history.js';
 import { mountQuoteSignoffReceipt } from './quote-signoff-receipt.js';
 
 export type QuoteSignoffConn = Conn<Pick<ServerRpcRegistry,
   'reception.signoff.quotes' | 'reception.signoff.prepare' | 'reception.signoff.publish'
   | 'reception.signoff.prepare_addition' | 'reception.signoff.list' | 'reception.signoff.cancel'
   | 'reception.signoff.receipt'
+  | 'reception.signoff.payment.history' | 'reception.signoff.payment.receipt' | 'reception.signoff.payment.receipt.draft' | 'reception.signoff.refund.correction.prepare' | 'reception.signoff.refund.correction.history' | 'reception.signoff.refund.prepare' | 'reception.signoff.refund.history' | 'reception.signoff.refund.copy' | 'reception.signoff.refund.receipt.draft' | 'reception.signoff.invoice.credit.correction.prepare' | 'reception.signoff.invoice.credit.correction.history' | 'reception.signoff.invoice.credit.prepare' | 'reception.signoff.invoice.credit.history' | 'reception.signoff.invoice.credit.copy' | 'reception.signoff.payment.correction.prepare' | 'reception.signoff.payment.correction.history'
   | 'reception.signoff.completion.prepare' | 'reception.signoff.completion.publish'
   | 'reception.signoff.completion.list' | 'reception.signoff.completion.cancel'
+  | 'reception.signoff.payment.reminders.get'
+  | 'reception.signoff.completion.reminders.get'
+  | 'reception.signoff.payment.reminders.set'
+  | 'reception.signoff.completion.reminders.set'
+  | 'reception.signoff.payment.reminders.list'
+  | 'reception.signoff.completion.reminders.list'
+  | 'reception.signoff.payment.reminders.draft'
+  | 'reception.signoff.completion.reminders.draft'
   | 'reception.signoff.reminders.get' | 'reception.signoff.reminders.set'
   | 'reception.signoff.reminders.list' | 'reception.signoff.reminders.draft'>>;
 
@@ -20,6 +34,7 @@ export type QuoteSignoffConn = Conn<Pick<ServerRpcRegistry,
  * and destinations come from the prepared server snapshot, never the DOM. */
 export const mountQuoteSignoffPanel = (opts: {
   host: HTMLElement; conn: QuoteSignoffConn; document: Document;
+  initialSignoffId?: string;startNew?: boolean;
   payment?: QuoteSignoffPaymentOptions;
   reminders?: QuoteSignoffReminderOptions;
 }) => {
@@ -37,6 +52,10 @@ export const mountQuoteSignoffPanel = (opts: {
     [data-recued-quote-signoffs] [data-signoff-receipt],
     [data-recued-quote-signoffs] [data-signoff-receipt-requests] { display:grid; gap:12px; }
     [data-recued-quote-signoffs] h2, [data-recued-quote-signoffs] h3, [data-recued-quote-signoffs] p { margin:0; }
+    [data-recued-quote-signoffs] [data-signoff-create]>summary{cursor:pointer;font-weight:650;padding:12px;border:1px solid var(--border);border-radius:8px;color:var(--accent)}
+    [data-recued-quote-signoffs] [data-signoff-create][open]>summary{margin-bottom:16px}
+    [data-recued-quote-signoffs] .signoff-billing-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;border:1px solid var(--border);border-radius:10px;padding:14px}
+    @media(max-width:640px){[data-recued-quote-signoffs] .signoff-billing-fields{grid-template-columns:1fr}}
     [data-recued-quote-signoffs] form { display:grid; gap:12px; }
     [data-recued-quote-signoffs] label { display:grid; gap:5px; font-size:14px; }
     [data-recued-quote-signoffs] input, [data-recued-quote-signoffs] select,
@@ -59,9 +78,11 @@ export const mountQuoteSignoffPanel = (opts: {
   };
   add('h2', 'Customer sign-offs');
   add('p', 'Offer an exact quote and scope to your customer. After they accept, review the task and invoice in Reception Inbox before releasing work.');
-  add('p', 'Install Quote Pipeline and Invoice Book from Packs to get started. This creates a local invoice with the quoted total; sending it and collecting payment are separate steps.');
+  const setupHelp = add('p', 'Install Quote Pipeline and Invoice Book from Packs to get started. This creates a local invoice with the quoted total; sending it and collecting payment are separate steps.');
   const message = add('p', 'Loading quotes…'); message.setAttribute('role', 'status'); message.setAttribute('aria-live', 'polite');
-  const form = doc.createElement('form'); root.appendChild(form);
+  const creation = doc.createElement('details');creation.setAttribute('data-signoff-create','');creation.open = opts.startNew === true;root.appendChild(creation);
+  add('summary','New customer sign-off',creation);
+  const form = doc.createElement('form');creation.appendChild(form);
   const additionDescription = add('p', '', form); additionDescription.hidden = true;
   const newQuote = doc.createElement('button'); newQuote.type = 'button'; newQuote.textContent = 'Start a new quote sign-off';
   newQuote.hidden = true; form.appendChild(newQuote);
@@ -93,9 +114,10 @@ export const mountQuoteSignoffPanel = (opts: {
   const expiry = field('expiry_days', 'Link lifetime in days', 'number') as HTMLInputElement;
   expiry.min = '1'; expiry.max = '30'; expiry.step = '1'; expiry.value = '7';
   const prepare = doc.createElement('button'); prepare.type = 'submit'; prepare.textContent = 'Preview customer sign-off'; form.appendChild(prepare);
-  const previewHost = doc.createElement('div'); previewHost.setAttribute('data-signoff-preview', ''); root.appendChild(previewHost);
-  const shareHost = doc.createElement('div'); shareHost.setAttribute('data-signoff-share', ''); root.appendChild(shareHost);
-  const reminders = opts.reminders ? mountQuoteSignoffReminders({ ...opts.reminders, host: root, document: doc, conn }) : null;
+  const previewHost = doc.createElement('div'); previewHost.setAttribute('data-signoff-preview', ''); creation.appendChild(previewHost);
+  const shareHost = doc.createElement('div'); shareHost.setAttribute('data-signoff-share', ''); creation.appendChild(shareHost);
+  const reminders = opts.reminders ? mountQuoteSignoffReminders({ ...opts.reminders,autoLoad: false,editorOnly: true, host: root, document: doc, conn,
+    canReviewEmail: (): boolean => !paymentHistory.hasOpenEmail() && !paymentHistory.hasInFlightWork() }) : null;
   const historyHead = doc.createElement('div'); historyHead.className = 'signoff-actions'; root.appendChild(historyHead);
   add('h3', 'Requests and responses', historyHead);
   const refresh = doc.createElement('button'); refresh.type = 'button'; refresh.textContent = 'Refresh'; historyHead.appendChild(refresh);
@@ -117,6 +139,9 @@ export const mountQuoteSignoffPanel = (opts: {
   const pages = doc.createElement('div'); pages.className = 'signoff-actions'; root.appendChild(pages);
   const newer = doc.createElement('button'); newer.type = 'button'; newer.textContent = 'Newer requests'; pages.appendChild(newer);
   const older = doc.createElement('button'); older.type = 'button'; older.textContent = 'Older requests'; pages.appendChild(older);
+  const paymentHistory = mountCustomerPaymentHistory({ host: root,document: doc,conn,mail: opts.reminders?.mail,
+    payment: opts.payment,onCorrected: () => { void load();reminders?.update(); },
+    canReviewEmail: (): boolean => !reminders?.hasOpenEmail() && !reminders?.hasInFlightWork() });
   const receipts = mountQuoteSignoffReceipt({ document: doc, host: root,
     read: signoff_id => conn('reception.signoff.receipt', { signoff_id }),
     returnFocus: id => {
@@ -126,10 +151,11 @@ export const mountQuoteSignoffPanel = (opts: {
     },
   });
 
-  const completions = mountQuoteCompletionPanel({ document: doc,host: root,conn,
+  const completions = mountQuoteCompletionPanel({ document: doc,host: root,conn,reminders: !!opts.reminders,
     onChanged: () => { if (!disposed) void load(); } });
-  let disposed = false; let busy = false; let generation = 0;
+  let disposed = false; let busy = false; let generation = 0;let focusInitial=true;
   let historyLoading = false;
+  let selectedSignoff = opts.initialSignoffId;let firstLoad = true;
   let currentSearch = ''; let currentState: QuoteSignoffState | undefined;
   let pageCursor: string | undefined; let nextCursor: string | undefined;
   let previousCursors: Array<string | undefined> = [];
@@ -164,6 +190,7 @@ export const mountQuoteSignoffPanel = (opts: {
     fieldHosts.vat_amount!.firstChild!.textContent = base ? 'VAT included in the added amount (blank means zero)' : 'VAT included in the quoted total (blank means zero)';
     prepare.textContent = base ? 'Preview added work' : 'Preview customer sign-off';
     if (base) {
+      creation.open = true;
       const amount = base.addition?.total_amount ?? base.amount;
       additionDescription.textContent = `Add work to ${base.quote_label} for ${base.customer}. Already agreed: ${amount} ${base.currency}. Your approval will append the added scope to the existing task and create a separate invoice for the added amount.`;
       for (const name of ['scope', 'amount', 'invoice_ref', 'vat_amount', 'issued_on', 'due_on']) fields[name]!.value = '';
@@ -175,6 +202,9 @@ export const mountQuoteSignoffPanel = (opts: {
     onChanged: () => { if (!disposed) void load(); },
     onMessage: text => { if (!disposed) message.textContent = text; },
   }) : null;
+  const billingFields = add('fieldset','',form);add('legend','Invoice details',billingFields);billingFields.className='signoff-billing-fields';
+  for (const name of ['invoice_ref','vat_amount','issued_on','due_on','expiry_days']) billingFields.appendChild(fieldHosts[name]!);
+  form.insertBefore(billingFields,prepare);
   newQuote.addEventListener('click', () => { if (!busy && !disposed) selectAgreement(null); });
   form.addEventListener('input', invalidate); form.addEventListener('change', invalidate);
   const load = async (page: HistoryPage = pendingPage ?? { cursor: pageCursor, previous: [...previousCursors] }) => {
@@ -182,7 +212,7 @@ export const mountQuoteSignoffPanel = (opts: {
     pendingPage = page;
     historyLoading = true; historyControls(); historyStatus.textContent = 'Loading requests…';
     try {
-      const [offers, open] = await Promise.all([conn('reception.signoff.list', { limit: 50,
+      const [offers, open] = await Promise.all([conn('reception.signoff.list', { limit: 50,...(selectedSignoff ? {signoff_id:selectedSignoff} : {}),
         ...(currentSearch ? { search: currentSearch } : {}), ...(currentState ? { state: currentState } : {}),
         ...(page.cursor ? { cursor: page.cursor } : {}) }), conn('reception.signoff.quotes').then(
         value => ({ ok: true as const, value }), (error: unknown) => ({ ok: false as const, error }))]);
@@ -193,6 +223,9 @@ export const mountQuoteSignoffPanel = (opts: {
       quoteStatus.hidden = open.ok;
       quoteStatus.textContent = open.ok ? '' : `Could not load open quotes. ${errorMessage(open.error)}`;
       const openQuotes = open.ok ? open.value.quotes : [];
+      setupHelp.hidden = openQuotes.length > 0 || offers.signoffs.length > 0;
+      if (firstLoad && !offers.signoffs.length && !selectedSignoff) creation.open = true;firstLoad = false;
+      pages.hidden = !previousCursors.length && !nextCursor;
       openQuotes.forEach((q) => { const option = doc.createElement('option'); option.value = q.id;
         option.textContent = `${q.label} — ${q.customer} — ${q.amount} ${q.currency} (revision ${q.revision})`; quote.appendChild(option); });
       quote.value = openQuotes.some((q) => q.id === selected) ? selected : '';
@@ -209,17 +242,17 @@ export const mountQuoteSignoffPanel = (opts: {
         add('p', `Task: ${offer.task_title}. Invoice ${offer.invoice_ref}, due ${offer.due_on}.`, card);
         const details = doc.createElement('details'); card.appendChild(details); add('summary', 'Offered scope', details);
         add('pre', offer.scope, details);
-        const receipt = doc.createElement('button'); receipt.type = 'button'; receipt.textContent = 'View receipt';
+        const receipt = doc.createElement('button'); receipt.type = 'button'; receipt.textContent = 'View sign-off receipt';
         receipt.setAttribute('data-signoff-receipt-open', offer.signoff_id); card.appendChild(receipt); historyButtons.push(receipt);
         receipt.addEventListener('click', () => { if (!busy && !disposed) void receipts.open(offer.signoff_id); });
         if (offer.state === 'accepted' && offer.availability === 'current' && offer.release_review === 'waiting') {
-          const inbox = add('a', 'Review release in Reception Inbox', card); inbox.setAttribute('href', '#reception/inbox');
+          const inbox = add('a', 'Review release in Reception Inbox', card); inbox.setAttribute('href', receptionInboxTargetAddress(offer.signoff_id));
         }
         if (offer.state === 'accepted' && offer.release_review === 'not_queued') add('p', 'The response is recorded. Its release is waiting to be queued for owner review.', card);
         if (offer.state === 'accepted' && offer.release_review === 'running') add('p', 'The reviewed release is running.', card);
         if (offer.state === 'accepted' && offer.release_review === 'closed') {
           add('p', 'Owner review closed without releasing work. Review the run, or cancel this request and prepare a new one.', card);
-          const runs = add('a', 'Review in Runs', card); runs.setAttribute('href', '#runs');
+          const runs = add('a', 'Review in Runs', card); runs.setAttribute('href', '#logs');
         }
         if (offer.state === 'waiting' && offer.endpoint_id) {
           const manage = add('a', 'Manage share link', card); manage.setAttribute('href', `#reception/endpoints/${encodeURIComponent(offer.endpoint_id)}`);
@@ -252,9 +285,11 @@ export const mountQuoteSignoffPanel = (opts: {
                 : 'Task status is unavailable. Refresh to try again.', card);
             if (follow.invoice.availability === 'current') {
               const invoice = follow.invoice;
-              add('p', `Invoice ${offer.invoice_ref}: ` + (invoice.status === 'settled' ? 'recorded paid in full.'
+              add('p', `Invoice ${offer.invoice_ref}: ` + (invoice.refund_due && invoice.refund_due !== '0.0000' ? 'refund owed to customer.' : invoice.amount_refunded && invoice.amount_refunded !== '0.0000' && invoice.outstanding === '0.0000' ? 'balance settled after recorded refund.' : invoice.status === 'credited' ? 'balance cleared with invoice credits.' : invoice.status === 'settled' ? 'recorded paid in full.'
                 : invoice.status === 'carried_forward' ? `balance carried to ${invoice.carried_to}. Follow that invoice in Records.`
                   : `${invoice.outstanding} ${offer.currency} outstanding${invoice.overdue ? ' · overdue' : ''}. Due ${invoice.due_on}.`), card);
+              if (invoice.amount_refund_credited!==undefined) add('p',`Customer still owes: ${invoice.outstanding} ${offer.currency}`,card);
+              customerRefundBalanceLines(invoice,offer.currency).forEach(line=>add('p',line,card));
               add('p', `Recorded paid: ${invoice.amount_paid} ${offer.currency}.`, card);
               if (payment && canRecordSignoffPayment(offer)) {
                 const recordPayment = doc.createElement('button'); recordPayment.type = 'button';
@@ -266,7 +301,15 @@ export const mountQuoteSignoffPanel = (opts: {
               : follow.invoice.availability === 'changed' ? 'terms or balance changed. Review it in Records.'
                 : 'status is unavailable. Refresh to try again.'), card);
           }
-          const records = add('a', 'Browse Records', card); records.setAttribute('href', '#data/records');
+          const paymentHistoryButton = doc.createElement('button');paymentHistoryButton.type = 'button';
+          paymentHistoryButton.textContent = `View payment history — ${offer.invoice_ref}`;paymentHistoryButton.disabled = busy;
+          paymentHistoryButton.setAttribute('data-signoff-payment-history',offer.signoff_id);card.appendChild(paymentHistoryButton);historyButtons.push(paymentHistoryButton);
+          paymentHistoryButton.addEventListener('click',() => { if (!busy && !disposed) void paymentHistory.open(offer.signoff_id,() => {
+            const replacement = [...history.querySelectorAll<HTMLButtonElement>('[data-signoff-payment-history]')]
+              .find(node => node.getAttribute('data-signoff-payment-history') === offer.signoff_id);
+            (replacement ?? search).focus();
+          }); });
+          const records = add('a', 'Browse Records', card); records.setAttribute('href',offer.invoice_id ? customerInvoiceRecordAddress(offer.invoice_id) : '#data/records');
           if ((offer.can_add_work ?? !amended.has(offer.signoff_id))
             && (!follow || follow.task.availability === 'current' && !follow.task.done)) {
             const extra = doc.createElement('button'); extra.type = 'button'; extra.textContent = 'Add work'; extra.disabled = busy;
@@ -298,14 +341,14 @@ export const mountQuoteSignoffPanel = (opts: {
     } catch (error) {
       if (!disposed && current === generation) historyStatus.textContent = `Could not load requests. ${errorMessage(error)}`;
     } finally {
-      if (!disposed && current === generation) { pendingPage = undefined; historyLoading = false; historyControls(); }
+      if (!disposed && current === generation) { pendingPage = undefined;historyLoading = false;historyControls();if(focusInitial){focusInitial=false;if(root.isConnected && doc.activeElement===doc.body)focusCustomerWorkspace(opts.startNew ? creation : root);} }
     }
   };
   const applySearch = () => {
     if (busy || disposed) return;
     const selected = QUOTE_SIGNOFF_STATES.find(value => value === state.value);
     if (state.value && !selected) return;
-    currentSearch = search.value.trim(); currentState = selected;
+    selectedSignoff = undefined;currentSearch = search.value.trim(); currentState = selected;
     pageCursor = undefined; previousCursors = []; nextCursor = undefined;
     history.replaceChildren(); historyButtons = []; void load({ previous: [] });
   };
@@ -365,7 +408,7 @@ export const mountQuoteSignoffPanel = (opts: {
   const interval = setInterval(() => { if (!busy && !disposed && !historyLoading) { void load(); reminders?.update(); } }, 20_000);
   completions.update(); void load();
   return { update: () => { if (!disposed) { void load(); reminders?.update(); } },
-    hasUnsavedChanges: () => reminders?.hasUnsavedChanges() === true || completions.hasUnsavedChanges(),
-    hasInFlightWork: () => busy || completions.hasInFlightWork() || payment?.hasInFlightWork() === true || reminders?.hasInFlightWork() === true,
-    dispose: () => { disposed = true; generation++; clearInterval(interval); payment?.dispose(); reminders?.dispose(); receipts.dispose(); completions.dispose(); root.remove(); } };
+    hasUnsavedChanges: () => paymentHistory.hasUnsavedChanges() || reminders?.hasUnsavedChanges() === true || completions.hasUnsavedChanges(),
+    hasInFlightWork: () => paymentHistory.hasInFlightWork() || busy || completions.hasInFlightWork() || payment?.hasInFlightWork() === true || reminders?.hasInFlightWork() === true,
+    dispose: () => { disposed = true; generation++; clearInterval(interval); paymentHistory.dispose(); payment?.dispose(); reminders?.dispose(); receipts.dispose(); completions.dispose(); root.remove(); } };
 };

@@ -148,6 +148,8 @@ export const ENVIRONMENT_RETRY_POLICY: Readonly<Record<string, 'retry' | 'stop'>
   MAIL_SEND_NETWORK_FAILED: 'retry',   // "Retryable on next run"
   MAIL_DRAFT_NETWORK_FAILED: 'retry',  // "Retryable; nothing about the message is wrong"
   MAIL_SEND_APPEND_FAILED: 'retry',
+  // "Refused the same way": the next run writes the same message.
+  MAIL_SEND_MESSAGE_REFUSED: 'stop',
   MAIL_DRAFT_PRIOR_NOT_REMOVED: 'retry',
   MAIL_DRAFT_FOLDER_NOT_FOUND: 'stop',
   MAIL_DRAFT_ATTACHMENTS_OMITTED: 'stop',

@@ -96,7 +96,7 @@ import {
   type ReceptionSettingsShellSlot,
 } from './settings-host.js';
 import {
-  RECEPTION_SECTIONS,
+  RECEPTION_SECTIONS,RECEPTION_NAV_GROUPS,receptionNavGroup,RECEPTION_CUSTOMER_SECTIONS,
   RECEPTION_ROUTE_CONTENT_ATTR,
   RECEPTION_ROUTE_HOST_ATTR,
   RECEPTION_ROUTE_TABS_ATTR,
@@ -121,12 +121,13 @@ import {
   mountReceptionRecordsSection,
 } from './records-section.js';
 import { mountQuoteSignoffPanel } from './quote-signoff-panel.js';
-import { mountCustomerJobsPanel } from './customer-jobs-panel.js';
+import { mountCustomerWorkPanel } from './customer-work-panel.js';
 import type { QuoteSignoffPaymentOptions } from './quote-signoff-payment.js';
 import type { QuoteSignoffReminderOptions } from './quote-signoff-reminders.js';
 import {
   mountReceptionInboxPanel,
 } from './inbox-panel.js';
+import { parseShellRoute } from '../shell/route.js';
 import { createHierarchicalHistory } from '../shell/hierarchical-navigation.js';
 
 // ════════════════════════════════════════════════════════════════
@@ -217,6 +218,7 @@ export interface BootstrapReceptionRouteOptions
 export interface BootstrapReceptionRoute {
   /** The active section this route instance mounted. */
   activeSection(): ReceptionSection;
+  navigateDeepLink?(hash: string): boolean;
   /** Forward a redraw to the active section's mount (no-op if the section
    *  has no `update`). */
   update(): void;
@@ -286,6 +288,7 @@ export const bootstrapReceptionRoute = (
   // ── Route chrome: host + header + tab bar + content ──
   const routeRoot = doc.createElement('div');
   routeRoot.setAttribute(RECEPTION_ROUTE_HOST_ATTR, '');
+  if (RECEPTION_CUSTOMER_SECTIONS.includes(section)) routeRoot.setAttribute('data-customer-route','');
 
   const header = doc.createElement('header');
   header.className = 'reception-route-header';
@@ -296,7 +299,7 @@ export const bootstrapReceptionRoute = (
   const subtitle = doc.createElement('p');
   subtitle.className = 'reception-route-subtitle';
   subtitle.textContent =
-    'Review incoming requests, protect public access, and manage every visitor-facing endpoint.';
+    'Review requests, manage customer work, and maintain your public endpoints.';
   header.appendChild(subtitle);
   routeRoot.appendChild(header);
 
@@ -305,18 +308,31 @@ export const bootstrapReceptionRoute = (
   const tabBar = doc.createElement('nav');
   tabBar.setAttribute(RECEPTION_ROUTE_TABS_ATTR, '');
   tabBar.setAttribute('aria-label', 'Reception sections');
-  for (const tab of RECEPTION_SECTIONS) {
+  for (const tab of RECEPTION_NAV_GROUPS) {
     const link = doc.createElement('a');
     link.className =
       'reception-route-tab'
-      + (tab.id === section ? ' reception-route-tab--active' : '');
-    link.setAttribute('href', receptionSectionAddress(tab.id).hash);
+      + (tab.section === receptionNavGroup(section) ? ' reception-route-tab--active' : '');
+    link.setAttribute('href', receptionSectionAddress(tab.section).hash);
     link.textContent = tab.label;
-    if (tab.id === section) link.setAttribute('aria-current', 'page');
+    if (tab.section === receptionNavGroup(section)) link.setAttribute('aria-current', 'page');
+    link.addEventListener('focus',()=>{if(!link.matches(':focus-visible'))return;tabBar.scrollLeft=Math.max(0,link.offsetLeft-tabBar.offsetLeft-(tabBar.clientWidth-link.clientWidth)/2);});
     tabBar.appendChild(link);
   }
   routeRoot.appendChild(tabBar);
+  if(doc.defaultView?.requestAnimationFrame)doc.defaultView.requestAnimationFrame(()=>{const active=tabBar.querySelector<HTMLElement>('[aria-current=page]');if(active)tabBar.scrollLeft=Math.max(0,active.offsetLeft-tabBar.offsetLeft-(tabBar.clientWidth-active.clientWidth)/2);});
 
+  const subnav = doc.createElement('nav');subnav.className = 'customer-work-tabs';
+  subnav.setAttribute('aria-label',RECEPTION_CUSTOMER_SECTIONS.includes(section) ? 'Customer work' : 'Manage Reception');
+  const subSections = RECEPTION_CUSTOMER_SECTIONS.includes(section) ? RECEPTION_CUSTOMER_SECTIONS : section === 'endpoints' || section === 'abuse' ? ['endpoints','abuse'] as const : [];
+  let currentSection=section;
+  const paintSubnav = (active: ReceptionSection) => {
+    currentSection=active;
+    subnav.replaceChildren();
+    for (const id of subSections) { const a=doc.createElement('a');a.href=receptionSectionAddress(id).hash;a.textContent=id === 'jobs' ? 'Jobs' : id === 'signoffs' ? 'Sign-offs' : RECEPTION_SECTIONS.find(s=>s.id===id)!.label;if(id===active)a.setAttribute('aria-current','page');a.addEventListener('focus',()=>{if(!a.matches(':focus-visible'))return;subnav.scrollLeft=Math.max(0,a.offsetLeft-subnav.offsetLeft-(subnav.clientWidth-a.clientWidth)/2);});subnav.appendChild(a); }
+    if(subSections.length && doc.defaultView?.requestAnimationFrame)doc.defaultView.requestAnimationFrame(()=>{const active=subnav.querySelector<HTMLElement>('[aria-current=page]');if(active)subnav.scrollLeft=Math.max(0,active.offsetLeft-subnav.offsetLeft-(subnav.clientWidth-active.clientWidth)/2);});
+  };
+  paintSubnav(section);if(subSections.length)routeRoot.appendChild(subnav);
   const content = doc.createElement('div');
   content.setAttribute(RECEPTION_ROUTE_CONTENT_ATTR, '');
   routeRoot.appendChild(content);
@@ -403,6 +419,7 @@ export const bootstrapReceptionRoute = (
     update?: () => void;
     hasInFlightWork?: () => boolean;
     hasUnsavedChanges?: () => boolean;
+    navigateDeepLink?: (hash: string) => boolean;
     dispose: () => void;
   };
 
@@ -548,11 +565,12 @@ export const bootstrapReceptionRoute = (
         ? { enablePendingAsks: opts.enablePendingAsks }
         : {}),
     }) satisfies ReceptionRoute;
-  } else if (section === 'jobs') {
-    mount = mountCustomerJobsPanel({ host: content,conn: opts.conn,document: doc,
-      ...(opts.signoffPayment ? { payment: opts.signoffPayment } : {}) });
+  } else if (['jobs','accounts','receivables','followups'].includes(section)) {
+    mount = mountCustomerWorkPanel({ host: content,conn: opts.conn,document: doc,initialAddress: mountedAddress,navigate,
+      ...(opts.signoffPayment ? { payment: opts.signoffPayment } : {}),
+      ...(opts.signoffReminders ? { reminders: opts.signoffReminders } : {}) });
   } else if (section === 'signoffs') {
-    mount = mountQuoteSignoffPanel({ host: content, conn: opts.conn, document: doc,
+    mount = mountQuoteSignoffPanel({ host: content, conn: opts.conn, document: doc,initialSignoffId: mountedAddress.kind === 'signoff' && mountedAddress.signoffId !== 'new' ? mountedAddress.signoffId : undefined,startNew: mountedAddress.kind === 'signoff' && mountedAddress.signoffId === 'new',
       ...(opts.signoffPayment ? { payment: opts.signoffPayment } : {}),
       ...(opts.signoffReminders ? { reminders: opts.signoffReminders } : {}),
     });
@@ -584,6 +602,7 @@ export const bootstrapReceptionRoute = (
       host: content,
       conn: opts.conn,
       headingLevel: 2,
+      initialTargetId: mountedAddress.kind === 'inbox-target' ? mountedAddress.targetId : undefined,
       ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
       ...(opts.document !== undefined ? { document: opts.document } : {}),
       ...(opts.now !== undefined ? { now: opts.now } : {}),
@@ -594,7 +613,8 @@ export const bootstrapReceptionRoute = (
 
   let disposed = false;
   return {
-    activeSection: () => section,
+    activeSection: () => currentSection,
+    navigateDeepLink: hash => { const handled = mount.navigateDeepLink?.(hash) ?? false;if (handled) { const next = parseReceptionAddress(parseShellRoute(hash));if(next) paintSubnav(receptionAddressSelection(next).section); }return handled; },
     update: () => {
       if (disposed) return;
       mount.update?.();

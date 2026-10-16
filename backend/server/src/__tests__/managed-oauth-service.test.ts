@@ -40,7 +40,7 @@ const setup = (knownScopes = true, requiredScopes = () => ['https://www.googleap
   const service = createManagedOAuthService({ profiles, listConnections: () => connections.list(), decodeAuth: decode, fetchImpl: fetch,
     clearGrantedScopes: names => connections.clearGrantedScopes(names),
     requiredScopes, ...(requiredScopeSources ? { requiredScopeSources } : {}), now: () => clock });
-  const handlers = makeConnectionHandlers({ store: connections, getEncryptionKey: key, managedOAuth: service, now: () => clock })!.handlers;
+  const handlers = makeConnectionHandlers({ store: connections, getEncryptionKey: key, managedOAuth: service, resolveFetch: fetch, now: () => clock })!.handlers;
   const rpc = (args: ManagedOAuthRequest): Promise<ManagedOAuthResponse> => handlers['collection.connection.managedOAuth'](args, undefined as never);
   const authorize = async () => {
     const saved = await rpc({ action: 'save_profile', label: 'Cloud', broker: 'nango', base_url: 'https://api.nango.dev', api_key: 'environment-key' });
@@ -65,6 +65,45 @@ const savedAccount = async (f: ReturnType<typeof setup>) => {
   return { saved, row: f.connections.get('api', 'sheets')! };
 };
 const fullSheets = 'https://www.googleapis.com/auth/spreadsheets';
+describe('verified repair of the saved Nango account', () => {
+  it('requests additional scopes by reconnecting the existing account and applies only after a protected read', async () => {
+    const f = setup(true, () => ['https://www.googleapis.com/auth/spreadsheets.readonly']);
+    const { saved, row } = await savedAccount(f);
+    const request = { profile_id: saved.profile.id, integration_id: 'sheets-production',
+      base_url: 'https://sheets.googleapis.com/v4', name: 'sheets', connection_id: 'remote-account',
+      scopes: [fullSheets], switch_authentication: true as const, reauthorize_current: true as const, expected_updated_at: row.updated_at };
+    const preview = await f.rpc({ action: 'preview', ...request });
+    if (preview.action !== 'preview') throw new Error('fixture preview');
+    expect(preview.preview).toMatchObject({ decision: 'reconnect', requested_scopes: expect.arrayContaining([fullSheets]) });
+    const started = await f.rpc({ action: 'start', ...request, preview_fingerprint: preview.preview.fingerprint });
+    if (started.action !== 'start') throw new Error('fixture start');
+    expect(f.fetch.mock.calls.some(([url]) => new URL(url.toString()).pathname === '/connect/sessions/reconnect')).toBe(true);
+    expect(f.sessions).toHaveLength(2); expect(f.sessions[1]).toMatchObject({ connection_id: 'remote-account' });
+    f.consent(); const completed = await f.rpc({ action: 'status', flow_id: started.flow_id, claim_secret: started.claim_secret });
+    if (completed.action !== 'status' || !completed.auth) throw new Error('fixture completed');
+    expect(completed.auth.connection_id).toBe('remote-account');
+    f.fetch.mockImplementationOnce(async () => Response.json({ connections: [{ connection_id: 'remote-account', provider_config_key: 'sheets-production', id: 101, created: '2026-10-01T00:00:00.000Z', errors: [] }] }));
+    // The real verifier reads through Nango and checks that the vendor rejects
+    // an anonymous request to the same resource; no API body is returned.
+    const original = f.fetch.getMockImplementation()!;
+    f.fetch.mockImplementation(async (url, init) => new URL(url.toString()).hostname === 'sheets.googleapis.com'
+      ? new Response('', { status: 401 }) : original(url, init));
+    const applied = await f.rpc({ action: 'apply_authentication_switch', name: 'sheets', expected_updated_at: row.updated_at,
+      attempt_id: 'repair-existing-account-001', auth: completed.auth,
+      verification_url: 'https://sheets.googleapis.com/v4/spreadsheets/disposable' });
+    expect(applied).toMatchObject({ action: 'apply_authentication_switch', connection: { name: 'sheets' }, verification: { status: 'verified' } });
+    expect((await f.decode(f.connections.get('api', 'sheets')!))).toMatchObject({ type: 'managed_oauth', connection_id: 'remote-account' });
+  });
+  it('rejects another account, a missing verification mode, and stale source revisions before starting consent', async () => {
+    const f = setup(); const { saved, row } = await savedAccount(f); const count = f.sessions.length;
+    const request = { profile_id: saved.profile.id, integration_id: 'sheets-production', base_url: 'https://sheets.googleapis.com/v4',
+      name: 'sheets', scopes: [fullSheets], switch_authentication: true as const, reauthorize_current: true as const, expected_updated_at: row.updated_at };
+    await expect(f.rpc({ action: 'preview', ...request, connection_id: 'different' })).rejects.toMatchObject({ code: 'bad_request' });
+    await expect(f.rpc({ action: 'preview', ...request, connection_id: 'remote-account', switch_authentication: undefined })).rejects.toMatchObject({ code: 'bad_request' });
+    await expect(f.rpc({ action: 'preview', ...request, connection_id: 'remote-account', expected_updated_at: row.updated_at + 1 })).rejects.toMatchObject({ code: 'conflict' });
+    expect(f.sessions).toHaveLength(count);
+  });
+});
 describe('D-322 pack access diagnostic account fences', () => {
   it('reads stable public account metadata without creating consent or changing scopes and connections', async () => {
     const f = setup(); const { saved, row } = await savedAccount(f);

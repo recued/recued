@@ -44,6 +44,7 @@ import { DOOR_TYPES, USAGE_CAP_PERIODS } from './contract-definition.js';
 export const DISPATCH_ROLES = [
   'ingredient_inventory',
   'pack_inventory',
+  'pack_reconnect_reviews',
   // D-170 gap #2 — connection → local-catalog binding inventory. An inventory-kind
   // role (returns the binding row, never policy-merged); read DIRECTLY by the
   // operation-profile seed + the grant gate, not via composeForRole. Kept ISOLATED
@@ -150,6 +151,7 @@ export const isDispatchRole = (v: unknown): v is DispatchRole =>
 export const INVENTORY_DISPATCH_ROLES = [
   'ingredient_inventory',
   'pack_inventory',
+  'pack_reconnect_reviews',
   // D-170 gap #2 — connection → local-catalog binding returns the binding row, not a
   // merged policy; its value_shape is therefore NOT policy-projected (exempted by the
   // projection-completeness ratchet, like the other inventory roles).
@@ -323,6 +325,12 @@ const VALUE_SHAPES: Readonly<Record<string, ValueShape>> = {
       source_pack_slug: 'string?',
     },
     required: ['ingredient_id', 'version', 'installed_at'],
+  },
+  /** Local reminder acknowledgement; carries no operation grant or scope evidence. */
+  pack_reconnect_review_info: {
+    fields: ['requirement_fingerprint', 'source_id', 'reviewed_at'],
+    types: { requirement_fingerprint: 'string', source_id: 'string', reviewed_at: 'datetime' },
+    required: ['requirement_fingerprint', 'source_id', 'reviewed_at'],
   },
   /** Inventory row for one installed pack. D-182 Slice 4 (Tier-P resolution) —
    *  `publisher` records the pack's publisher handle so the inventory is the
@@ -1024,6 +1032,15 @@ const COMPOSITE_KEYS: Readonly<Record<string, CompositeKeySchema>> = {
     required: ['ingredient_id'],
     value_shape: 'installed_ingredient_info',
     applies_to: ['ingredient_inventory'],
+    merge_precedence: 0,
+    merge_rule: 'override',
+    writeable_by: 'install_planner',
+  },
+  pack_reconnect_review: {
+    segments: ['pack_slug', 'slot', 'connection_name'],
+    required: ['pack_slug', 'slot', 'connection_name'],
+    value_shape: 'pack_reconnect_review_info',
+    applies_to: ['pack_reconnect_reviews'],
     merge_precedence: 0,
     merge_rule: 'override',
     writeable_by: 'install_planner',

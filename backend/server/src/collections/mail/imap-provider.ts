@@ -54,19 +54,30 @@ import { IngredientError } from '@recued/ingredients';
 import {
   isMailReconciliationId,
   MAIL_RECONCILIATION_ID_HEADER,
+  MAIL_SENT_BY_MESSAGE_ID_MAX_MATCHES,
+  MAIL_SENT_REPLIES_MAX_MATCHES,
   MailAdapterError,
+  type MailSentByMessageIdMatch,
+  type MailSentByMessageIdQuery,
+  type MailSentByMessageIdResult,
+  type MailSentRepliesQuery,
+  type MailSentRepliesResult,
+  type MailSentReplyMatch,
 } from '@recued/contracts';
 import {
   createMailSyncOutcomeReporter,
   assertMailSentReconciliationQuery,
   evaluateMailSentReconciliationCandidates,
+  MAIL_AUTOMATIC_REPLY_HEADERS,
   MAIL_SENT_RECONCILIATION_MAX_SCAN,
   MAIL_SENT_RECONCILIATION_MAX_SOURCE_BYTES,
   mailAttachmentPartFromBytes,
   mailParsedFromName,
   mailParsedHeaderMap,
+  mailPartDisposition,
   mailSentReconciliationAttachmentPartFromBytes,
   mimeFilenameParameter,
+  normalizeRfcMessageId,
   type CanonicalMessage,
   type InitialScanOptions,
   type MailSyncFailureKind,
@@ -376,6 +387,19 @@ export const IMAP_SENT_FOLDER_FALLBACK_CANDIDATES = [
   'Sent Items',
   'Sent Messages',
   'INBOX.Sent',
+  // D-318 audit — a server that advertises no `\\Sent` folder names it in the
+  // mailbox's own language.
+  'Gesendet',
+  'Gesendete Elemente',
+  'INBOX.Gesendet',
+  'Envoyés',
+  'Éléments envoyés',
+  'Enviados',
+  'Elementos enviados',
+  'Posta inviata',
+  'Verzonden items',
+  'Skickat',
+  'Sendt',
 ] as const;
 
 /** RFC 5322 Date header serialization. Mirrors the gmail-provider
@@ -477,6 +501,9 @@ export const buildImapRfc5322 = (
   if (msg.in_reply_to) headers.push(`In-Reply-To: ${msg.in_reply_to}`);
   if (msg.references && msg.references.length > 0) {
     headers.push(`References: ${msg.references.join(' ')}`);
+  }
+  if (msg.automatic === true) {
+    for (const [name, value] of MAIL_AUTOMATIC_REPLY_HEADERS) headers.push(`${name}: ${value}`);
   }
 
   const part = renderImapBodyPart(msg, rand);
@@ -655,7 +682,7 @@ const parsedAttachmentParts = (parsed: ParsedMail): InboundMailAttachmentPart[] 
       filename: attachment.filename ?? `attachment-${idx + 1}`,
       mime_type: attachment.contentType,
       source_part_id: `part-${idx}`,
-      disposition: attachment.contentDisposition === 'inline' ? 'inline' : 'attachment',
+      disposition: mailPartDisposition(attachment.contentDisposition, attachment.related === true),
       bytes,
     }));
   }
@@ -672,7 +699,7 @@ const parsedReconciliationAttachmentParts = (
     filename: attachment.filename,
     mime_type: attachment.contentType,
     source_part_id: `part-${idx}`,
-    disposition: attachment.contentDisposition === 'inline' ? 'inline' : 'attachment',
+    disposition: mailPartDisposition(attachment.contentDisposition, attachment.related === true),
     bytes,
   });
 });
@@ -704,6 +731,12 @@ export const canonicalizeImap = async (
         ? Date.parse(opts.internalDate)
         : Date.now();
   const flags = opts.flags ?? new Set<string>();
+  // D-318 step 1 — the server's own INTERNALDATE, kept beside the Date line.
+  const providerReceivedAt = opts.internalDate instanceof Date
+    ? opts.internalDate.getTime()
+    : typeof opts.internalDate === 'string'
+      ? Date.parse(opts.internalDate)
+      : Number.NaN;
   return {
     source_id: sourceIdFor(opts.uid, opts.folder),
     rfc_message_id: parsed.messageId ?? undefined,
@@ -723,6 +756,7 @@ export const canonicalizeImap = async (
     is_flagged: flags.has('\\Flagged'),
     has_attachments: hasAttachments(parsed) || attachments.length > 0,
     received_at: Number.isFinite(receivedAt) ? receivedAt : Date.now(),
+    ...(Number.isFinite(providerReceivedAt) ? { provider_received_at: providerReceivedAt } : {}),
     body_text: bodyTextFor(parsed),
     body_html: typeof parsed.html === 'string' ? parsed.html : undefined,
     ...(attachments.length > 0 ? { attachments } : {}),
@@ -759,6 +793,16 @@ type ImapFetchAddressing = 'uid' | 'sequence';
 const DEFAULT_IDLE_MS = 28 * 60 * 1000;
 const DEFAULT_RECONNECT_CAP_MS = 60_000;
 const DEFAULT_RECONNECT_INITIAL_MS = 1_000;
+
+/** One header's value from a fetched header block (`fetch({ headers })`),
+ *  unfolded, or `null`. */
+const headerValueOf = (block: Buffer | string | undefined, name: string): string | null => {
+  if (block === undefined) return null;
+  const unfolded = String(block).replace(/\r?\n[ \t]+/g, ' ');
+  const line = unfolded.split(/\r?\n/).find((entry) => entry.toLowerCase().startsWith(`${name.toLowerCase()}:`));
+  const value = line?.slice(name.length + 1).trim();
+  return value ? value : null;
+};
 
 export const createImapProvider = (
   opts: CreateImapProviderOptions,
@@ -1787,6 +1831,102 @@ export const createImapProvider = (
     }
   };
 
+  /** D-318 step 2 — proof (a): the messages in this account's Sent folder that
+   *  carry one Message-ID, on a dedicated client like the D-200 lookup above.
+   *  `SEARCH HEADER` matches a substring, so each hit's envelope Message-ID is
+   *  compared exactly; the folder is the server's record that the account sent
+   *  it. Opened read-only: a lookup never touches `\Seen`. */
+  const lookupSentByMessageId = async (
+    query: MailSentByMessageIdQuery,
+  ): Promise<MailSentByMessageIdResult> => {
+    const client = makeClient('__sent_lookup__');
+    try {
+      await client.connect();
+      const sentFolder = await findSentFolder(client);
+      // No Sent folder to read: this mailbox cannot be asked, which is not an
+      // outage to wait out (the audit).
+      if (!sentFolder) return { status: 'unavailable', reason: 'unsupported' };
+      await client.mailboxOpen(sentFolder, { readOnly: true });
+      const uids = await client.search({ header: { 'message-id': query.rfc_message_id } }, { uid: true });
+      if (uids === false || uids.length === 0) return { status: 'not_found' };
+      const matches: MailSentByMessageIdMatch[] = [];
+      const iter = client.fetch(
+        uids.slice(0, MAIL_SENT_BY_MESSAGE_ID_MAX_MATCHES),
+        { uid: true, envelope: true, internalDate: true },
+        { uid: true },
+      );
+      for await (const message of iter) {
+        const envelope = message.envelope;
+        if (normalizeRfcMessageId(envelope?.messageId) !== query.rfc_message_id) continue;
+        const sentAt = message.internalDate instanceof Date
+          ? message.internalDate.getTime()
+          : typeof message.internalDate === 'string' ? Date.parse(message.internalDate) : Number.NaN;
+        matches.push({
+          to: (envelope?.to ?? []).flatMap((address) => (address.address ? [address.address] : [])),
+          subject: envelope?.subject ?? '',
+          sent_at: Number.isFinite(sentAt) ? sentAt : 0,
+        });
+      }
+      return matches.length > 0 ? { status: 'found', matches } : { status: 'not_found' };
+    } catch (err) {
+      markError('imap sent lookup by message id failed', err);
+      return { status: 'unavailable', reason: 'provider_error' };
+    } finally {
+      try {
+        if (client.usable) await client.logout();
+        else client.close();
+      } catch {
+        try { client.close(); } catch { /* best-effort dedicated client close */ }
+      }
+    }
+  };
+
+  /** D-318 — the replies this account SENT to one Message-ID: has the chat
+   *  mailbox answered this request? `SEARCH HEADER In-Reply-To` in the Sent
+   *  folder, on a dedicated read-only client like the proof's lookup above. The
+   *  search matches a substring, so each hit's envelope In-Reply-To is compared
+   *  exactly. */
+  const lookupSentReplies = async (
+    query: MailSentRepliesQuery,
+  ): Promise<MailSentRepliesResult> => {
+    const client = makeClient('__sent_replies__');
+    try {
+      await client.connect();
+      const sentFolder = await findSentFolder(client);
+      if (!sentFolder) return { status: 'unavailable', reason: 'unsupported' };
+      await client.mailboxOpen(sentFolder, { readOnly: true });
+      const uids = await client.search({ header: { 'in-reply-to': query.rfc_message_id } }, { uid: true });
+      if (uids === false || uids.length === 0) return { status: 'not_found' };
+      const matches: MailSentReplyMatch[] = [];
+      const iter = client.fetch(
+        uids.slice(0, MAIL_SENT_REPLIES_MAX_MATCHES),
+        { uid: true, envelope: true, internalDate: true, headers: [MAIL_RECONCILIATION_ID_HEADER] },
+        { uid: true },
+      );
+      for await (const message of iter) {
+        if (normalizeRfcMessageId(message.envelope?.inReplyTo) !== query.rfc_message_id) continue;
+        const sentAt = message.internalDate instanceof Date
+          ? message.internalDate.getTime()
+          : typeof message.internalDate === 'string' ? Date.parse(message.internalDate) : Number.NaN;
+        matches.push({
+          reconciliation_id: headerValueOf(message.headers, MAIL_RECONCILIATION_ID_HEADER),
+          sent_at: Number.isFinite(sentAt) ? sentAt : 0,
+        });
+      }
+      return matches.length > 0 ? { status: 'found', matches } : { status: 'not_found' };
+    } catch (err) {
+      markError('imap sent replies lookup failed', err);
+      return { status: 'unavailable', reason: 'provider_error' };
+    } finally {
+      try {
+        if (client.usable) await client.logout();
+        else client.close();
+      } catch {
+        try { client.close(); } catch { /* best-effort dedicated client close */ }
+      }
+    }
+  };
+
   // ── D-239 write-back ────────────────────────────────────────────
   //
   // IMAP is the adapter where the write-back is genuinely awkward, and the
@@ -2179,7 +2319,9 @@ export const createImapProvider = (
       pendingQueueSize++;
       try {
         const uids = await state.client.search({ since }, { uid: true });
-        if (uids === false || !Array.isArray(uids) || uids.length === 0) {
+        if (!Array.isArray(uids)) throw new Error(`imap initial scan could not search folder=${state.folder}`);
+        scanOpts.onAccessVerified?.();
+        if (uids.length === 0) {
           continue;
         }
         const iter = state.client.fetch(
@@ -2401,6 +2543,8 @@ export const createImapProvider = (
     },
 
     lookupSentByReconciliationId,
+    lookupSentByMessageId,
+    lookupSentReplies,
 
     ...(sendCapable ? { send: sendImpl } : {}),
     // D-264 — attached UNCONDITIONALLY, unlike `send`.

@@ -764,6 +764,17 @@ export type ActivityAction =
   | 'chat_rolling_brief_set'
   // D-323 — the owner's switch for chat's install offers.
   | 'chat_install_offers_set'
+  // D-318 step 1 — the owner named (or cleared) the email chat door's mailbox.
+  | 'mail_chat_door_set'
+  // D-318 step 8 — the email with an enrolling address's code arrived: confirmed
+  // (`detail.checked_by`, the checker later requests are held to) or failed
+  // (`detail.failure`). Never the code.
+  | 'mail_chat_door_enrolment'
+  // D-324 §6 — at server start, D-193's reminder tasks were moved to the reminders
+  // store (or closed, or found in a vendor's tasks and left). `target` =
+  // 'reminders'; `detail` carries the counts and names the ones left. Logged only
+  // when a start moved something.
+  | 'reminders_moved'
   | 'chat_session_brief_cleared'
   // D-137 W2.3 § A.1.1 + § A.10 — Mary saved a per-connection MCP tool
   // annotation. `target` = `<connection_name>`; `detail` carries

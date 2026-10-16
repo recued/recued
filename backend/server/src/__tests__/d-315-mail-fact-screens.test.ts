@@ -492,6 +492,20 @@ describe('the screens’ wiring', () => {
     expect(editor.storedFileType?.('file:gone')).toBeUndefined();
   });
 
+  it('D-318 audit — offers no email of the chat mailbox to read: its mail is the conversation with Recued', () => {
+    const work = { platform: 'mail', slug: 'work' };
+    const chat = { platform: 'mail', slug: 'recued-chat' };
+    const deps = mailFactScreensRpcDeps({
+      store,
+      recipeStore: { get: () => undefined } as never,
+      mail: { registry: { list: () => [work, chat], get: () => undefined } as never, instances: { get: () => null }, blobs: {} as never },
+      writer: createMailFactWriter({ store, emit: () => {}, now: () => 1 }),
+      isChatMailbox: (slug) => slug === 'recued-chat',
+    });
+    const editor = deps.editor as unknown as { mailboxes: () => ReadonlyArray<{ slug: string }> };
+    expect(editor.mailboxes().map((mailbox) => mailbox.slug)).toEqual(['work']);
+  });
+
   it('reads a moved email’s attachments by every id a move took it from — its files keep the first', () => {
     const deps = mailFactScreensRpcDeps({
       store,

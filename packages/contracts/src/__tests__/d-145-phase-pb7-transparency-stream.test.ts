@@ -381,6 +381,21 @@ describe('D-145 PB7 — validateTransparencyEvent', () => {
     expect(issues).toEqual([]);
   });
 
+  it('orchestration: loop_terminated accepts context-limit stops and rejects unknown reasons', () => {
+    const event = {
+      kind: 'recued.multi_turn.loop_terminated',
+      total_rounds: 3,
+      termination_reason: 'context_trim_livelock',
+    };
+    expect(validateTransparencyEvent(event)).toEqual([]);
+    expect(validateTransparencyEvent({
+      ...event,
+      termination_reason: 'unknown_stop',
+    })).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: 'termination_reason' }),
+    ]));
+  });
+
   it('orchestration: fixed_slot_drift validates closed-list violation_kind', () => {
     const issues = validateTransparencyEvent({
       kind: 'fixed_slot_drift',
@@ -648,6 +663,16 @@ describe('D-145 PB7 — § B.8.4 Recued voice templates', () => {
     });
     expect(completed).toBe('1 round ✓');
     expect(exhausted).toContain('budget reached');
+  });
+
+  it.each([1, 3])('explains context-limit stops after %i rounds', (rounds) => {
+    expect(renderTransparencyTemplate({
+      kind: 'recued.multi_turn.loop_terminated',
+      total_rounds: rounds,
+      termination_reason: 'context_trim_livelock',
+    })).toBe(
+      `stopped after ${rounds} round${rounds === 1 ? '' : 's'} — results were repeatedly removed to fit the context window`,
+    );
   });
 
   it('fixed_slot_drift renders with slot + alternative_index', () => {

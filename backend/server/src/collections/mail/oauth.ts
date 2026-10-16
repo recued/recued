@@ -25,6 +25,7 @@
  */
 
 import { ResponseBodyTooLargeError } from '@recued/ingredients';
+import { OAUTH_APP_ID, RpcError } from '@recued/contracts';
 import { makeBoundedOriginHttpFetcher } from '../../bounded-origin-http-fetcher.js';
 
 /** Prefix tag for the `account.<provider>.<slug>.*` namespace.
@@ -50,7 +51,7 @@ export interface OAuthProviderConfig {
  *  for a connection — at enroll and on every token refresh — so UI-entered (or
  *  env) credentials take effect immediately and decrypt at use time (vault
  *  unlocked). `null` = no credentials configured for this provider's issuer. */
-export type OAuthProviderConfigResolver = () => OAuthProviderConfig | null;
+export type OAuthProviderConfigResolver = (appId?: string) => OAuthProviderConfig | null;
 
 /** What a provider/adapter accepts for its OAuth config: EITHER the per-use
  *  resolver above (production) OR a static `OAuthProviderConfig` (sugar for
@@ -66,16 +67,34 @@ export type OAuthProviderConfigSource =
  *  refresh. A static config passes through; a resolver is invoked per call. */
 export const requireProviderConfig = (
   source: OAuthProviderConfigSource,
+  appId?: string,
 ): OAuthProviderConfig => {
-  const cfg = typeof source === 'function' ? source() : source;
+  const cfg = typeof source === 'function' ? source(appId) : source;
   if (!cfg) throw new Error('oauth_app_not_configured');
   return cfg;
+};
+
+export const readOAuthAppId = (value: unknown): string | undefined => {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || !OAUTH_APP_ID.test(value)) throw new RpcError('bad_request', 'Choose a valid saved OAuth app.');
+  return value;
+};
+export const bindOAuthProviderConfig = (source: OAuthProviderConfigSource, appId: unknown): OAuthProviderConfigSource => {
+  const id = readOAuthAppId(appId);
+  return () => requireProviderConfig(source, id);
+};
+export const assertOAuthProviderConfigCurrent = (resolve: () => OAuthProviderConfig | null, expected: OAuthProviderConfig): void => {
+  const current = resolve();
+  if (!current || current.clientId !== expected.clientId || current.clientSecret !== expected.clientSecret || current.tokenUrl !== expected.tokenUrl) {
+    throw new RpcError('conflict', 'The saved OAuth app changed or was removed. Refresh the apps and authorize again.');
+  }
 };
 
 /** Narrow account-store interface. Providers + the rpc handler call
  *  `get/set/delete` directly; we wrap the live `ServerAccountStore`
  *  at composition time so tests can inject an in-memory double. */
 export interface OAuthAccountStore {
+  transactionalWrite?(entries: readonly import('../../account-store.js').AccountStoreWrite[], commit?: () => void): void;
   get(key: string): Promise<string | null>;
   set(key: string, value: string): Promise<void>;
   delete(key: string): Promise<void>;
@@ -173,6 +192,13 @@ export const parseOAuthErrorField = (body: string): string | undefined => {
 
 export const keyPrefix = (provider: OAuthProvider, slug: string): string =>
   `${provider}.${slug}`;
+
+/** A saved cleanup survives process restarts and fences cached tokens too. */
+export const assertNoPermissionCleanup = async (opts: { provider: OAuthProvider; slug: string; accountStore: OAuthAccountStore }): Promise<void> => {
+  if (await opts.accountStore.get(keyPrefix(opts.provider, opts.slug) + '.permission_cleanup_pending')) {
+    throw new RpcError('conflict', 'This sign-in is paused for permission cleanup. Open Apps & APIs → Permissions and cleanup to finish it or restore access.');
+  }
+};
 
 const accessTokenKey = (provider: OAuthProvider, slug: string): string =>
   `${keyPrefix(provider, slug)}.access_token`;
@@ -520,6 +546,7 @@ export const parseGrantedScopes = (raw: string | undefined): string[] => {
 };
 
 export interface ExchangeCodeOptions {
+  beforePersist?(): void;
   provider: OAuthProvider;
   slug: string;
   code: string;
@@ -535,6 +562,9 @@ export const exchangeCodeForTokens = async (
 ): Promise<{ access_token: string; expires_at: number; granted_scopes: string[] }> => {
   const fetcher = opts.fetcher ?? defaultHttpFetcher;
   const nowMs = opts.now?.() ?? Date.now();
+  await assertNoPermissionCleanup(opts);
+  const generationKey = keyPrefix(opts.provider, opts.slug) + '.grant_generation';
+  const generation = await opts.accountStore.get(generationKey);
   const body = new URLSearchParams({
     code: opts.code,
     client_id: opts.providerConfig.clientId,
@@ -575,9 +605,6 @@ export const exchangeCodeForTokens = async (
     );
   }
   const expiresAt = nowMs + parsed.expires_in * 1000;
-  await opts.accountStore.set(refreshTokenKey(opts.provider, opts.slug), parsed.refresh_token);
-  await opts.accountStore.set(accessTokenKey(opts.provider, opts.slug), parsed.access_token);
-  await opts.accountStore.set(expiresAtKey(opts.provider, opts.slug), String(expiresAt));
   // D-127 P4.2 — persist the granted scope set so the provider's
   // `granted_scopes` config callback can read it back at construction
   // and `sendCapable` flips correctly. Stored as the raw RFC 6749
@@ -585,7 +612,21 @@ export const exchangeCodeForTokens = async (
   // on-disk shape stays trivial. When the provider omits `scope`
   // (rare — both Gmail + Graph populate it) we still write the empty
   // string so the read path returns `[]` instead of "key missing".
-  await opts.accountStore.set(grantedScopesKey(opts.provider, opts.slug), parsed.scope ?? '');
+  const writes: import('../../account-store.js').AccountStoreWrite[] = [
+    { key: generationKey, value: generation, expected: generation },
+    { key: keyPrefix(opts.provider, opts.slug) + '.permission_cleanup_pending', value: null, expected: null },
+    { key: refreshTokenKey(opts.provider, opts.slug), value: parsed.refresh_token },
+    { key: accessTokenKey(opts.provider, opts.slug), value: parsed.access_token },
+    { key: expiresAtKey(opts.provider, opts.slug), value: String(expiresAt) },
+    { key: grantedScopesKey(opts.provider, opts.slug), value: parsed.scope ?? '' },
+  ];
+  if (opts.accountStore.transactionalWrite) opts.accountStore.transactionalWrite(writes, opts.beforePersist);
+  else {
+    await assertNoPermissionCleanup(opts);
+    if (await opts.accountStore.get(generationKey) !== generation) throw new Error('oauth_grant_changed');
+    opts.beforePersist?.();
+    for (const entry of writes) if (entry.value !== null && entry.key !== generationKey) await opts.accountStore.set(entry.key, entry.value);
+  }
   return {
     access_token: parsed.access_token,
     expires_at: expiresAt,
@@ -611,6 +652,7 @@ export const refreshAccessToken = async (
 ): Promise<{ access_token: string; expires_at: number; granted_scopes: string[] }> => {
   const fetcher = opts.fetcher ?? defaultHttpFetcher;
   const nowMs = opts.now?.() ?? Date.now();
+  await assertNoPermissionCleanup(opts);
   const refreshToken = await opts.accountStore.get(
     refreshTokenKey(opts.provider, opts.slug),
   );
@@ -621,6 +663,8 @@ export const refreshAccessToken = async (
       `no refresh_token stored for ${opts.provider}:${opts.slug} — run enrollOAuth`,
     );
   }
+  const generationKey = keyPrefix(opts.provider, opts.slug) + '.grant_generation';
+  const generation = await opts.accountStore.get(generationKey);
   const body = new URLSearchParams({
     refresh_token: refreshToken,
     client_id: opts.providerConfig.clientId,
@@ -650,21 +694,26 @@ export const refreshAccessToken = async (
   }
   const parsed = await readTokenResponse(res, 'token endpoint');
   const expiresAt = nowMs + parsed.expires_in * 1000;
-  await opts.accountStore.set(accessTokenKey(opts.provider, opts.slug), parsed.access_token);
-  await opts.accountStore.set(expiresAtKey(opts.provider, opts.slug), String(expiresAt));
-  // Some providers rotate refresh tokens; persist a new one if given.
-  if (parsed.refresh_token) {
-    await opts.accountStore.set(refreshTokenKey(opts.provider, opts.slug), parsed.refresh_token);
-  }
-  // D-127 P4.2 — refresh responses can downgrade scopes (provider
-  // revoked send permission, user trimmed consent in their account
-  // settings, etc.) so we re-persist on every refresh. Skip the
-  // write only when the provider omits `scope` entirely; never
-  // overwrite a known-good value with empty when the field was
-  // simply not echoed back. (Both Gmail + Graph echo on refresh —
-  // this guard is defensive for OIDC-style providers that don't.)
-  if (parsed.scope !== undefined) {
-    await opts.accountStore.set(grantedScopesKey(opts.provider, opts.slug), parsed.scope);
+  // Fence a late refresh across an app/grant swap. Production stores compare
+  // the generation and refresh token in the same transaction as their writes.
+  // Missing scope metadata preserves the last reported grant list.
+  const writes: import('../../account-store.js').AccountStoreWrite[] = [
+    { key: keyPrefix(opts.provider, opts.slug) + '.permission_cleanup_pending', value: null, expected: null },
+    { key: generationKey, value: generation, expected: generation },
+    { key: refreshTokenKey(opts.provider, opts.slug), value: parsed.refresh_token ?? refreshToken, expected: refreshToken },
+    { key: accessTokenKey(opts.provider, opts.slug), value: parsed.access_token },
+    { key: expiresAtKey(opts.provider, opts.slug), value: String(expiresAt) },
+    ...(parsed.scope === undefined ? [] : [{ key: grantedScopesKey(opts.provider, opts.slug), value: parsed.scope }]),
+  ];
+  if (opts.accountStore.transactionalWrite) opts.accountStore.transactionalWrite(writes);
+  else {
+    await assertNoPermissionCleanup(opts);
+    if (await opts.accountStore.get(generationKey) !== generation
+      || await opts.accountStore.get(refreshTokenKey(opts.provider, opts.slug)) !== refreshToken) throw new Error('oauth_grant_changed');
+    for (const entry of writes) {
+      if (entry.key === generationKey) continue;
+      if (entry.value !== null) await opts.accountStore.set(entry.key, entry.value);
+    }
   }
   return {
     access_token: parsed.access_token,
@@ -710,6 +759,7 @@ export const getAccessToken = async (
   opts: GetAccessTokenOptions,
 ): Promise<string> => {
   const nowMs = opts.now?.() ?? Date.now();
+  await assertNoPermissionCleanup(opts);
   if (!opts.force) {
     const accessToken = await opts.accountStore.get(
       accessTokenKey(opts.provider, opts.slug),
@@ -720,6 +770,7 @@ export const getAccessToken = async (
     if (accessToken && expiresAtStr) {
       const expiresAt = Number(expiresAtStr);
       if (Number.isFinite(expiresAt) && expiresAt - nowMs > REFRESH_SKEW_MS) {
+        await assertNoPermissionCleanup(opts);
         return accessToken;
       }
     }

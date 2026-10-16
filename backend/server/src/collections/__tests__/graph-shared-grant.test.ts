@@ -519,6 +519,8 @@ describe('handleMailDelete shared-grant cleanup', () => {
     const h = makeHarness();
     putMail(h, 'work', 'graph');
     const grant = seedOAuthGrant(h.account, 'graph', 'work');
+    grant['graph.work.grant_generation'] = 'fixture-generation';
+    h.account.data.set('graph.work.grant_generation', 'fixture-generation');
 
     await handleMailDelete(h.mailDeps, { slug: 'work' });
 

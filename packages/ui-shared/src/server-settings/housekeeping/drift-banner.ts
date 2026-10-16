@@ -33,12 +33,11 @@ import type {
 
 export interface HousekeepingDriftBannerProps {
   /** Active drift signals keyed by source topic. The banner renders
-   *  one entry per signal whose severity is non-`'none'` AND whose
-   *  `dismissed_at` is unset. Topics absent / dismissed render
-   *  nothing. */
+   *  one entry per signal whose severity is non-`'none'` and whose
+   *  dismissal is unset or still pending. Settled dismissals render nothing. */
   signals: Record<string, ConfidenceDriftSignal>;
-  /** Per-source-topic in-flight flag — disables Review + Dismiss
-   *  while a dismissal rpc is pending. */
+  /** Per-source-topic in-flight flag — keeps the banner visible and
+   *  marks Review + Dismiss aria-disabled while retaining keyboard focus. */
   writing: Record<string, boolean>;
   /** Per-source-topic last write error. */
   writeError: Record<string, string>;
@@ -69,9 +68,9 @@ const SEVERITY_COPY: Record<Exclude<DriftSeverity, 'none'>, string> = {
   significant: 'has drifted significantly',
 };
 
-const isBannerEligible = (signal: ConfidenceDriftSignal): boolean => {
+const isBannerEligible = (signal: ConfidenceDriftSignal, writing: boolean): boolean => {
   if (signal.severity === 'none') return false;
-  if (signal.dismissed_at !== undefined) return false;
+  if (signal.dismissed_at !== undefined && !writing) return false;
   return true;
 };
 
@@ -99,12 +98,13 @@ const renderOne = (
       ${errorBlock}
       <div class="housekeeping-drift-banner-actions">
         ${button({
-          label: 'Dismiss',
+          label: writing ? 'Dismissing…' : 'Dismiss',
           variant: 'secondary',
           size: 'sm',
           action: 'housekeeping-drift-dismiss',
           data: { 'source-topic': signal.source_topic },
-          disabled: writing,
+          ariaDisabled: writing,
+          ariaBusy: writing,
         })}
         ${button({
           label: 'Review',
@@ -112,7 +112,8 @@ const renderOne = (
           size: 'sm',
           action: 'housekeeping-drift-review',
           data: { 'source-topic': signal.source_topic },
-          disabled: writing,
+          ariaDisabled: writing,
+          ariaBusy: writing,
         })}
       </div>
     </div>
@@ -122,7 +123,8 @@ const renderOne = (
 export const renderHousekeepingDriftBanner = (
   props: HousekeepingDriftBannerProps,
 ): string => {
-  const eligible = Object.values(props.signals).filter(isBannerEligible);
+  const eligible = Object.values(props.signals).filter((signal) =>
+    isBannerEligible(signal, props.writing[signal.source_topic] ?? false));
   if (eligible.length === 0) return '';
   return `
     <section class="housekeeping-drift-banners" aria-label="Drift alerts">

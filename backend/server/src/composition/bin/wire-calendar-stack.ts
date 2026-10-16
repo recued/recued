@@ -78,7 +78,7 @@ export interface ComposeCalendarStackBootDeps {
   /** Per-USE credential resolver (store-then-env, no boot binding). The
    *  gcal/graph factories always register; the resolver decides availability
    *  at enroll + on every token refresh (`null` ⇒ not configured). */
-  resolveOAuthConfig: (adapter: 'gcal' | 'graph') => OAuthProviderConfig | null;
+  resolveOAuthConfig: (adapter: 'gcal' | 'graph', appId?: string) => OAuthProviderConfig | null;
   /** Vault-lock predicate — forwarded into the calendar stack's bundle so a
    *  live collection's poll loop is deferred while the vault is LOCKED. Absent
    *  ⇒ sync always starts (dbless / harness). */
@@ -117,6 +117,7 @@ export const composeCalendarBoot = (
   // enroll rpc.
   const oauthAccountStoreDouble = accountStore
     ? {
+        ...(accountStore.transactionalWrite ? { transactionalWrite: accountStore.transactionalWrite } : {}),
         get: (k: string) => accountStore.get(k),
         set: (k: string, v: string) => accountStore.set(k, v),
         delete: (k: string) => accountStore.delete(k),
@@ -205,12 +206,12 @@ export const composeCalendarBoot = (
         createGcalAdapterFactory({
           ...(deps.managedOAuth ? { managedOAuth: deps.managedOAuth } : {}),
           accountStore: oauthAccountStoreDouble,
-          providerConfig: () => resolveOAuthConfig('gcal'),
+          providerConfig: appId => resolveOAuthConfig('gcal', appId),
         }),
         createGraphCalAdapterFactory({
           ...(deps.managedOAuth ? { managedOAuth: deps.managedOAuth } : {}),
           accountStore: oauthAccountStoreDouble,
-          providerConfig: () => resolveOAuthConfig('graph'),
+          providerConfig: appId => resolveOAuthConfig('graph', appId),
         }),
         // caldav needs an etag cache. The password resolves through the
         // adapter context's `getAccountValue('password')` →
@@ -244,10 +245,11 @@ export const composeCalendarBoot = (
               },
         }),
       ],
-      oauthConfig: (adapter) => resolveOAuthConfig(adapter),
+      oauthConfig: (adapter, appId) => resolveOAuthConfig(adapter, appId),
       ...(accountStore
         ? {
             accountStore: {
+              ...(accountStore.transactionalWrite ? { transactionalWrite: accountStore.transactionalWrite } : {}),
               get: (k) => accountStore.get(k),
               set: (k, v) => accountStore.set(k, v),
               delete: (k) => accountStore.delete(k),

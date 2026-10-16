@@ -78,6 +78,7 @@ import {
   type HierarchicalHistoryIntent,
 } from '../shell/hierarchical-navigation.js';
 import {
+  customerWorkReturnHash,
   serializeDataEntityVerificationAddress,
   serializeChatPlanAddress,
   serializeLogsRunAddress,
@@ -254,6 +255,7 @@ export interface BootstrapLogsRouteOptions {
   /** Originating reviewed Chat action for an exact-run drill-down. Bound to
    * `initialRunId`; selecting another run intentionally drops this context. */
   chatReturn?: ChatPlanAddress;
+  receptionReturn?: string;
   /** R24 follow-on — pre-select the Recipe filter from a `#logs/recipe/<recipe_id>`
    *  deep link (the recipe detail's "View runs in Logs" link), so the History
    *  view opens already scoped to that recipe's runs. Seeds `filters.recipe_id`;
@@ -1702,9 +1704,11 @@ const rowRisk = (row: RunFeedRow): 'blocked' | 'normal' =>
 const runHref = (
   run_id: string,
   returnToChat?: ChatPlanAddress,
+  returnToReception?: string,
 ): string => serializeLogsRunAddress({
   runId: run_id,
   ...(returnToChat !== undefined ? { returnToChat } : {}),
+  ...(returnToReception !== undefined ? { returnToReception } : {}),
 });
 
 const recipeHref = (recipe_id: string): string =>
@@ -1972,10 +1976,12 @@ export const projectRunAffectedItems = (
   links: ReadonlyArray<RunProvenanceLink>,
   run: Pick<RunFeedRow, 'run_id' | 'status'>,
   returnToChat?: ChatPlanAddress,
+  returnToReception?: string,
 ): ReadonlyArray<RunAffectedItem> => {
   const returnToRun: LogsRunAddress = {
     runId: run.run_id,
     ...(returnToChat !== undefined ? { returnToChat } : {}),
+    ...(returnToReception !== undefined ? { returnToReception } : {}),
   };
   const projected = new Map<string, RunAffectedItem & { readonly rank: number }>();
   for (const link of links) {
@@ -2031,6 +2037,7 @@ const renderRunLinks = (
   row: Pick<RunFeedRow, 'run_id' | 'recipe_id' | 'status' | 'policy_result' | 'links'>
     & { ask_id?: string },
   returnToChat?: ChatPlanAddress,
+  returnToReception?: string,
 ): string => {
   // R17 — the approval link is run-SCOPED when the run carries a pending ask id:
   // `#approvals/<ask_id>` focuses + highlights that one card instead of dropping
@@ -2092,7 +2099,7 @@ const renderRunLinks = (
       ${renderReferenceLink({
         label: 'Audit detail',
         referenceId: row.run_id,
-        href: runHref(row.run_id, returnToChat),
+        href: runHref(row.run_id, returnToChat, returnToReception),
         attributes: { [LOGS_ROUTE_LINK_ATTR]: 'audit' },
       })}
       ${provenance}
@@ -2702,6 +2709,7 @@ const affectedItemsIntro = (status: RunAnchorStatus): string => {
 const renderAffectedItems = (
   detail: RunDetail,
   returnToChat?: ChatPlanAddress,
+  returnToReception?: string,
 ): string => {
   const items = projectRunAffectedItems(
     detail.links,
@@ -2710,6 +2718,7 @@ const renderAffectedItems = (
       status: detail.audit.status,
     },
     returnToChat,
+    returnToReception,
   );
   if (items.length === 0 && !runNeedsAffectedItemVerification(detail.audit.status)) {
     return '';
@@ -2768,6 +2777,7 @@ const renderDetail = (
   retrying: boolean,
   error: string | undefined,
   returnToChat?: ChatPlanAddress,
+  returnToReception?: string,
 ): string => {
   if (error !== undefined) {
     return `<aside ${LOGS_ROUTE_DETAIL_ATTR} aria-label="Run detail"><h2 ${LOGS_ROUTE_DETAIL_HEADING_ATTR}="${e(selectedRunId ?? '')}" tabindex="-1">Run detail</h2><p ${LOGS_ROUTE_ERROR_ATTR} role="alert">${e(error)}</p>${selectedRunId === null
@@ -2792,7 +2802,7 @@ const renderDetail = (
     <aside ${LOGS_ROUTE_DETAIL_ATTR}="${e(audit.run_id)}" aria-label="Run detail">
       <h2 ${LOGS_ROUTE_DETAIL_HEADING_ATTR}="${e(audit.run_id)}" tabindex="-1">${e(audit.recipe_id)}</h2>
       ${renderOutcome(detail)}
-      ${renderAffectedItems(detail, returnToChat)}
+      ${renderAffectedItems(detail, returnToChat, returnToReception)}
       <div class="logs-detail-meta">
         <span>run ${e(audit.run_id)}</span>
         <span>hash ${e(audit.recipe_hash)}</span>
@@ -2825,7 +2835,7 @@ const renderDetail = (
         policy_result: detail.gateway.policy_result,
         links: detail.links,
         ...(askId !== undefined ? { ask_id: askId } : {}),
-      }, returnToChat)}
+      }, returnToChat, returnToReception)}
     </aside>
   `;
 };
@@ -2915,6 +2925,8 @@ export const bootstrapLogsRoute = (
       : null;
   let chatReturn =
     chatReturnRunId === null ? undefined : opts.chatReturn;
+  const receptionReturnRunId = opts.receptionReturn === undefined ? null : selectedRunId;
+  let receptionReturn = opts.receptionReturn === undefined ? undefined : customerWorkReturnHash(opts.receptionReturn);
   const logsListAddress = () => {
     if (view === 'active') {
       return hierarchicalAddress(
@@ -2935,7 +2947,7 @@ export const bootstrapLogsRoute = (
     returnToChat?: ChatPlanAddress,
   ) => hierarchicalAddressFromHash(
     'logs',
-    runHref(runId, returnToChat),
+    runHref(runId, returnToChat, receptionReturn),
     hierarchicalLevel(`run:${runId}`, runId),
   );
   const logsHistory = createHierarchicalHistory({
@@ -3198,6 +3210,7 @@ export const bootstrapLogsRoute = (
         <h1 class="logs-title" ${LOGS_ROUTE_HEADING_ATTR}>Logs</h1>
       </header>
       ${renderChatReturn(chatReturn)}
+      ${receptionReturn === undefined ? '' : `<aside data-logs-reception-return role="note"><a href="${e(receptionReturn)}">Back to customer ${receptionReturn.startsWith('#reception/jobs/') ? 'job' : receptionReturn.startsWith('#reception/signoffs/') ? 'sign-off' : 'accounts'}</a></aside>`}
       ${hasActiveSection
         ? renderActivePeek(activeEntries, loadingActive, errors.active, nowMs)
         : ''}
@@ -3229,6 +3242,7 @@ export const bootstrapLogsRoute = (
           retryingDetail,
           errors.detail,
           chatReturn,
+          receptionReturn,
         )}
       </div>
     `;
@@ -3473,6 +3487,7 @@ export const bootstrapLogsRoute = (
     if (chatReturn !== undefined && run_id !== chatReturnRunId) {
       chatReturn = undefined;
     }
+    if (receptionReturn !== undefined && run_id !== receptionReturnRunId) receptionReturn = undefined;
     selectedRunId = run_id;
     syncSelectedHash(run_id, openingFromList ? 'push' : 'auto');
     if (opts.getCaller === undefined) {

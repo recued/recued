@@ -96,7 +96,7 @@ export const apiSchema: ConnectionSchema = {
       label: 'Auth Type',
       type: 'select',
       options: AUTH_TYPES,
-      optionLabels: { managed_oauth: 'Managed OAuth' }, // D-322
+      optionLabels: { managed_oauth: 'OAuth broker (optional)' },
     },
     // Bearer
     {
@@ -299,5 +299,5 @@ export const apiSchema: ConnectionSchema = {
       help: 'What to ask permission for, separated by spaces. You can leave this empty.',
     },
   ],
-  probe: { method: 'OPTIONS', path: '/' },
+  probe: { description: 'After saving, Recued tests service reachability. A protected read is needed to confirm access to your data.' },
 };

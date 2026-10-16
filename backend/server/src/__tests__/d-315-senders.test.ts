@@ -155,7 +155,20 @@ describe('Senders without a template (§6.5)', () => {
       mail('no-reply@bank.example', 'Your sign-in', 1, { body_text: 'Your verification code is 123456' }),
       mail('old@x.example', 'Long ago', 40),
     ]);
-    expect((await listSendersWithoutTemplate(deps(box), 20)).senders).toEqual([]);
+    // Recued's own: a reconciliation id its send claims hold.
+    const isOwnSend = (id: string) => id === 'rcd_0123456789abcdef';
+    expect((await listSendersWithoutTemplate({ ...deps(box), isOwnSend }, 20)).senders).toEqual([]);
+  });
+
+  it('D-318 audit — lists a sender whose email only writes a reconciliation id: the header is anyone’s', async () => {
+    const box = await mailbox([
+      mail('stranger@x.example', 'Invoice overdue', 1, { reconciliation_id: 'rcd_forged000000000000' }),
+    ]);
+    const isOwnSend = (id: string) => id === 'rcd_0123456789abcdef';
+    expect((await listSendersWithoutTemplate({ ...deps(box), isOwnSend }, 20)).senders.map((s) => s.address))
+      .toEqual(['stranger@x.example']);
+    // Without Recued's record to ask, no email is Recued's own.
+    expect((await listSendersWithoutTemplate(deps(box), 20)).senders).toHaveLength(1);
   });
 
   it('keeps a dismissed sender out until it is shown again, through the rpc', async () => {

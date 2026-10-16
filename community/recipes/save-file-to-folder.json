@@ -1,0 +1,77 @@
+{
+ "recipe_id": "save-file-to-folder",
+ "chat_exposed": true,
+ "version": 1,
+ "ttl": 60,
+ "metadata": {
+  "name": "Save a file to a folder",
+  "description": "Use “Save a file to a folder” in Recued. Save a file the user sent, such as an attachment on their email, into one of their folders. Pass its id (file:…) and the folder as the user named it: Receipts, or a path like documents/Receipts. It never replaces a file: a taken name gets a number. Tell the user where it went.",
+  "author": "recued-core",
+  "supported_platforms": [],
+  "tags": [
+   "file",
+   "folder",
+   "save",
+   "attachment",
+   "personal-organizer",
+   "pack:personal-organizer"
+  ],
+  "budget_ms": 20000
+ },
+ "variables": {
+  "file_id": {
+   "label": "File",
+   "type": "string",
+   "help": "The file's id, as the files attached to the message list it (file:…)."
+  },
+  "folder": {
+   "label": "Folder",
+   "type": "string",
+   "help": "The folder, the way the user named it: a connected folder (documents), a folder inside one (Receipts), or a path from a connected folder (documents/Receipts/2026). My folders lists them."
+  },
+  "file_name": {
+   "label": "Save as",
+   "type": "string",
+   "optional": true,
+   "help": "A file name to save it under instead of its own, without a folder in it. Leave empty to keep its own name."
+  }
+ },
+ "requires": [],
+ "steps": [
+  {
+   "id": "save",
+   "op": "core.storage.file.save-to-folder",
+   "args": {
+    "file_id": "{{config.file_id}}",
+    "folder": "{{config.folder}}",
+    "name": "{{config.file_name}}"
+   }
+  },
+  {
+   "id": "card",
+   "transform": "to_summary",
+   "fields": [
+    {
+     "label": "Result",
+     "value": "{{step.save.message}}"
+    },
+    {
+     "label": "Folder",
+     "value": "{{step.save.folder}}"
+    },
+    {
+     "label": "Saved as",
+     "value": "{{step.save.path}}"
+    }
+   ]
+  }
+ ],
+ "output": {
+  "render": [
+   {
+    "type": "summary",
+    "source": "step.card"
+   }
+  ]
+ }
+}

@@ -97,6 +97,7 @@ export const renderHousekeepingPanel = (props: HousekeepingPanelProps): string =
       ${renderHousekeepingPromotionBanner({
         suggestions: props.promotionSuggestions,
         writing: props.promotionWriting,
+        trustWriting: props.trustWriting,
         writeError: props.promotionWriteError,
       })}
 

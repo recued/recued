@@ -604,6 +604,8 @@ describe('D-138 P1 — MCP catalog ratchet (Reviewer #12)', () => {
       'collection.connection.',
       'collection.contract.',
       'collection.hostname.',
+      // D-318 step 1 — the email chat door's chat mailbox is the owner's door setting.
+      'collection.mail.chat_door.',
       'collection.mail.enrollManagedOAuth',
       'collection.operation.',
       'contact.alias.',
@@ -694,6 +696,8 @@ describe('D-138 P1 — MCP catalog ratchet (Reviewer #12)', () => {
       // D-179 — install config edits are owner autonomous-execution policy.
       'recipe_config.',
       'records.',
+      // D-324 — the owner's reminders list.
+      'reminder.',
       'schedules.',
       // D-196 S2 — seller cockpit read model (owner-only; exposes customer
       // roster, seller settings, readiness, and usage rollups).

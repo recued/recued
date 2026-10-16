@@ -1550,9 +1550,9 @@ describe('D-164 P6.3 cap-exit empty-content fail-loud', () => {
 
   it('keeps loop-final double-empty recovery off the cap-exit branch', async () => {
     // Mutation caught: loop-final empty recovery collides with the cap-exit budget message.
-    // The exit branch is unchanged (still `!moreTools`, still the empty-reply
-    // message, still NOT the budget message) — only its REASON label is now
-    // distinct, because an unreadable last packet is not a completion.
+    // Empty recovery keeps its own message and `!moreTools` exit.
+    // An unreadable final packet aborts its round and terminates the loop
+    // with `output_unreadable`.
     let dispatched = 0;
     const calls: CapturedAiCall[] = [];
     const executeAiCall = mkExecuteAiCall([
@@ -1581,7 +1581,7 @@ describe('D-164 P6.3 cap-exit empty-content fail-loud', () => {
     expect(calls).toHaveLength(3);
     expect(dispatched).toBe(1);
     expect(eventsByKind('recued.multi_turn.round_completed')).toMatchObject([
-      { outcome: 'completed' },
+      { outcome: 'aborted' },
     ]);
     expect(eventsByKind('recued.multi_turn.loop_terminated')).toMatchObject([
       { total_rounds: 1, termination_reason: 'output_unreadable' },

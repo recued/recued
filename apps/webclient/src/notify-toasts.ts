@@ -36,6 +36,8 @@
  *
  *  Spec: D-169 § N.5 #3 (live surface). */
 
+import { REMINDER_LIST_LINK } from '@recued/contracts';
+
 import type { BroadcastSubscriber } from './realtime/subscriber.js';
 
 // ════════════════════════════════════════════════════════════════
@@ -126,6 +128,8 @@ const safeNotifyLink = (value: unknown): string | undefined => {
   // stop the link being rendered at all.
   if (/^#views\/view_[a-f0-9-]{36}$/.test(value)) return value;
   if (/^#data\/view\/view_[a-f0-9-]{36}$/.test(value)) return value;
+  // D-324 — a delivered reminder links to the upcoming list. One exact address.
+  if (value === REMINDER_LIST_LINK) return value;
   try {
     const url = new URL(value);
     return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : undefined;

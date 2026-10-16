@@ -123,6 +123,7 @@ import type { RotationEngine } from '../../keys/rotation/index.js';
 import type { HousekeepingLlmCallables } from './wire-llm-substrate.js';
 import type { HousekeepingRpcDeps } from '../../housekeeping-handler.js';
 import type {
+  CollectionRecord,
   HousekeepingEnrichmentInfo,
   HousekeepingScopeReadEntry,
 } from '@recued/contracts';
@@ -482,6 +483,12 @@ export interface ComposeHousekeepingSchedulerDeps {
   crmRecordMirror?: CrmRecordMirrorStore;
   recipeStore: RecipeStore;
   collectionRegistry: CollectionRegistry;
+  /** D-318 step 1 — the email chat door's chat mailbox: no producer reads its
+   *  mail. Absent ⇒ none is. */
+  isChatMailbox?: (slug: string) => boolean;
+  /** D-318 step 5 — nor the conversation's mail in the owner's other
+   *  mailboxes. Absent ⇒ none is. */
+  isChatConversationRecord?: (record: CollectionRecord) => boolean;
   cacheBlobs: BlobStore;
   eventBus: EventBus;
   warehouseBus: WarehouseEventBus;
@@ -1048,9 +1055,13 @@ export const composeHousekeepingScheduler = async (
   const sourceWalkers = createSourceWalkerRegistry({
     collections: deps.collectionRegistry,
     ...(deps.contactStore ? { contactStore: deps.contactStore } : {}),
+    ...(deps.isChatMailbox ? { isChatMailbox: deps.isChatMailbox } : {}),
+    ...(deps.isChatConversationRecord ? { isChatConversationRecord: deps.isChatConversationRecord } : {}),
   });
   const summaryWalker = createMailSourceWalker(deps.collectionRegistry, {
     hashRecord: hashMailRecordWithBody,
+    ...(deps.isChatMailbox ? { isChatMailbox: deps.isChatMailbox } : {}),
+    ...(deps.isChatConversationRecord ? { isChatConversationRecord: deps.isChatConversationRecord } : {}),
   });
   const fileWalker = createFileSourceWalker(deps.collectionRegistry);
   // D-145 PA9 — note + task + project walkers wired directly off

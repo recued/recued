@@ -1,0 +1,48 @@
+{
+  "recipe_id": "reception-customer-account-payment-correction",
+  "version": 1,
+  "chat_exposed": false,
+  "ttl": 0,
+  "metadata": {
+    "name": "Correct a customer account payment",
+    "description": "Use “Correct a customer account payment” in Recued. Review a correction or void for one recorded payment and all its invoice entries. Keep the reason and history. Apply every balance change together after owner approval.",
+    "author": "recued-core",
+    "supported_platforms": [],
+    "recipe_bundle": "recued-core/reception-approval",
+    "tags": [
+      "pack:reception",
+      "payments"
+    ],
+    "budget_ms": 30000
+  },
+  "variables": {
+    "correction_id": {
+      "label": "Saved account payment correction",
+      "type": "string"
+    },
+    "expected_plan_hash": {
+      "label": "Reviewed correction digest",
+      "type": "string"
+    },
+    "summary": {
+      "label": "Payment correction and invoice changes",
+      "type": "string"
+    }
+  },
+  "steps": [
+    {
+      "id": "record",
+      "op": "core.work-entity.customer-account-payment.correct",
+      "args": {
+        "correction_id": "{{config.correction_id}}",
+        "expected_plan_hash": "{{config.expected_plan_hash}}",
+        "summary": "{{config.summary}}"
+      }
+    }
+  ],
+  "output": {
+    "render": []
+  },
+  "prefetch_steps": [],
+  "requires": []
+}

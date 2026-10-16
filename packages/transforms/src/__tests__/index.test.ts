@@ -5,10 +5,11 @@ describe('TRANSFORMS registry', () => {
   // 90 as of `enrich_by` (the relational join the recipe language lacked — see
   // its header in `collection.ts`); 94 as of `event_when` (an event's time on
   // the owner's clock, all-day or not — see `date.ts`); 95 as of `decimal_math`
-  // (exact fixed-point payment balances — see `numeric.ts`). The count is a
-  // deliberate ratchet: an addition must be a decision, not a drift, and this
-  // is where it gets noticed.
-  it('has 95 transforms', () => expect(TRANSFORMS.size).toBe(95));
+  // (exact fixed-point payment balances — see `numeric.ts`); 96 as of
+  // `date_from_text` (the time an English phrase names — see `time-phrase.ts`).
+  // The count is a deliberate ratchet: an addition must be a decision, not a
+  // drift, and this is where it gets noticed.
+  it('has 96 transforms', () => expect(TRANSFORMS.size).toBe(96));
 
   it('all values are functions', () => {
     for (const [name, fn] of TRANSFORMS) {
@@ -24,6 +25,7 @@ describe('TRANSFORMS registry', () => {
     'lowercase', 'uppercase', 'trim', 'string_length', 'split', 'contains_any', 'concat', 'replace', 'template', 'truncate', 'strip_html',
     'round', 'clamp', 'to_number', 'math', 'decimal_math',
     'date_diff', 'date_format', 'date_add', 'date_parse', 'is_past', 'is_future', 'date_period',
+    'event_when', 'date_from_text',
     'compare', 'coalesce', 'switch', 'all', 'any', 'count', 'default', 'not', 'ternary', 'pluralize',
     'hash_replace', 'hash_restore', 'redact',
     // D-167 P4 — reversible PII alias comfort layer

@@ -329,11 +329,11 @@ describe('renderAccountsPanel', () => {
     expect(html).not.toContain('data-action="accounts-open-add"');
   });
 
-  it('renders a lane pending note when one is set (file)', () => {
+  it('offers cloud sources from the Files lane through working enrollment links', () => {
     const html = renderAccountsPanel({ state: base({ rows: [], lane: 'file' }) });
-    expect(html).toContain('Using Amazon S3 or another S3-compatible store, Dropbox, Google Drive, Box, or OneDrive?');
-    expect(html).toContain('Data → Files');
-    expect(html).toContain('more provider actions');
+    expect(html).toContain('Connect cloud source');
+    expect(html).toContain('href="#connections/others/enroll/s3"');
+    expect(html).toContain('href="#connections/others/enroll/dropbox"');
   });
 
   it('renders a row with provider badge + truthful first-sync status + escapes the slug', () => {
@@ -396,7 +396,7 @@ describe('renderAccountsPanel', () => {
     expect(html).toContain('data-action="accounts-dismiss-success"');
   });
 
-  it('promotes the confirmation to ready only after a successful sync timestamp', () => {
+  it('promotes the confirmation to complete only after the initial import finishes', () => {
     const html = renderAccountsPanel({
       state: base({
         connectionSuccess: { slug: 'work', providerId: 'gmail' },
@@ -405,16 +405,42 @@ describe('renderAccountsPanel', () => {
           adapterType: 'gmail',
           authState: 'healthy',
           lastSyncedAt: 1_700_000_000_000,
+          mailSync: { access_verified: true, initial_sync_complete: true },
         }],
       }),
     });
 
     expect(html).toContain('data-sync-state="ready"');
     expect(html).toContain('Gmail is ready');
-    expect(html).toContain('Ready for Chat');
-    expect(html).toContain('The first sync finished');
+    expect(html).toContain('Initial sync complete');
+    expect(html).toContain('The initial mail import finished');
     expect(html).toContain('Ask about this account');
     expect(html).not.toContain('First sync pending');
+  });
+
+  it.each([
+    { verified: false, complete: false, state: 'pending', title: 'Gmail sign-in saved', badge: 'Checking mailbox access' },
+    { verified: true, complete: false, state: 'syncing', title: 'Gmail connected', badge: 'Connected — syncing' },
+    { verified: true, complete: true, state: 'ready', title: 'Gmail is ready', badge: 'Initial sync complete' },
+  ])('renders $badge from explicit mail evidence', ({ verified, complete, state, title, badge }) => {
+    const html = renderAccountsPanel({ state: base({ connectionSuccess: { slug: 'work', providerId: 'gmail' },
+      rows: [{ slug: 'work', adapterType: 'gmail', authState: 'healthy',
+        lastSyncedAt: verified ? 1_700_000_000_000 : null,
+        mailSync: { access_verified: verified, initial_sync_complete: complete } }],
+    }) });
+    expect(html).toContain(`data-sync-state="${state}"`);
+    expect(html).toContain(title); expect(html).toContain(badge);
+    if (!complete) expect(html).not.toContain('The initial mail import finished');
+    if (!verified) expect(html).not.toContain('Gmail connected');
+  });
+
+  it('keeps a legacy sync timestamp useful without claiming that the initial import finished', () => {
+    const html = renderAccountsPanel({ state: base({ connectionSuccess: { slug: 'work', providerId: 'gmail' },
+      rows: [{ slug: 'work', adapterType: 'gmail', authState: 'healthy', lastSyncedAt: 1_700_000_000_000 }],
+    }) });
+    expect(html).toContain('Mail is available in Chat');
+    expect(html).not.toContain('The first sync finished');
+    expect(html).not.toContain('Initial sync complete');
   });
 
   it('keeps a saved connection recoverable when status refresh cannot confirm it', () => {
@@ -482,7 +508,7 @@ describe('renderAccountsPanel', () => {
     expect(html).not.toContain('>never<');
   });
 
-  it('shows reauthorization for OAuth calendar rows, never file rows', () => {
+  it('offers Manage authentication for OAuth account details, never local file rows', () => {
     const calendar = renderAccountsPanel({
       state: base({
         lane: 'calendar',
@@ -492,7 +518,7 @@ describe('renderAccountsPanel', () => {
           slug: 'work',
           adapterType: 'gcal',
           authState: 'expired',
-          reauthAvailable: true,
+          authenticationSwitchAvailable: true,
         }],
       }),
     });
@@ -506,13 +532,14 @@ describe('renderAccountsPanel', () => {
           adapterType: 's3',
           authState: 'expired',
           // Even a malformed caller cannot revive the retired file OAuth UI.
-          reauthAvailable: true,
+          authenticationSwitchAvailable: true,
         }],
       }),
     });
 
-    expect(calendar).toContain('data-action="accounts-reauth"');
-    expect(file).not.toContain('data-action="accounts-reauth"');
+    expect(calendar).toContain('data-action="accounts-manage-authentication"');
+    expect(calendar).not.toContain('data-action="accounts-reauth"');
+    expect(file).not.toContain('data-action="accounts-manage-authentication"');
   });
 
   it('keeps busy account lifecycle actions focusable and announces their work', () => {
@@ -531,7 +558,7 @@ describe('renderAccountsPanel', () => {
       }),
     });
 
-    for (const action of ['accounts-resync', 'accounts-reauth']) {
+    for (const action of ['accounts-resync']) {
       const lifecycle = html.match(
         new RegExp(`<button[^>]*data-action="${action}"[^>]*>[^<]+</button>`),
       )?.[0];
@@ -624,7 +651,7 @@ describe('renderAccountsPanel', () => {
     expect(gone).toContain('Account not found');
   });
 
-  it('the Files lane offers a local folder, and sends a bucket to Data → Files', () => {
+  it('the Files lane uses the local adapter for folders and API enrollment for cloud sources', () => {
     const html = renderAccountsPanel({
       state: base({ lane: 'file', stage: 'provider-picker' }),
     });
@@ -632,7 +659,7 @@ describe('renderAccountsPanel', () => {
     expect(html).not.toContain('data-provider="s3"');
     expect(html).toContain('Local folder');
     expect(renderAccountsPanel({ state: base({ lane: 'file', stage: 'list' }) }))
-      .toContain('Using Amazon S3 or another S3-compatible store, Dropbox, Google Drive, Box, or OneDrive? Connect those from Data → Files.');
+      .toContain('href="#connections/others/enroll/s3"');
     expect(html).toContain(
       '<h2 class="accounts-picker-title" data-accounts-picker-heading tabindex="-1">Choose a file source</h2>',
     );
@@ -1278,5 +1305,24 @@ describe('renderAccountsPanel', () => {
     });
     expect(html).not.toContain('data-oauth-cred-field');
     expect(html).not.toContain('sign-in app');
+  });
+});
+
+
+describe('unified account authentication controls', () => {
+  it.each(['healthy', 'expired'] as const)('shows one entry point for %s Mail and the three explicit choices inside it', authState => {
+    const state: ReturnType<typeof initialAccountsPanelState> = { ...initialAccountsPanelState('mail'), lane: 'mail', stage: 'detail', detailSlug: 'work', rows: [{ slug: 'work', adapterType: 'gmail', authState,
+      authenticationSwitchAvailable: true, oauthAppSwitchAvailable: true }], authenticationManagement: { slug: 'work', action: 'reauthorize' } };
+    const html = renderAccountsPanel({ state });
+    expect(html).toContain('Manage authentication'); expect(html).toContain('Re-authorize current sign-in');
+    expect(html).toContain('Change OAuth app'); expect(html).toContain('Change authentication method');
+    expect(html).not.toContain('data-action="accounts-switch-authentication"'); expect(html).not.toContain('data-action="accounts-switch-oauth-app"');
+  });
+  it('routes a broker-backed account to its current connection without offering a native app switch', () => {
+    const state: ReturnType<typeof initialAccountsPanelState> = { ...initialAccountsPanelState('mail'), lane: 'mail', stage: 'detail', detailSlug: 'work', rows: [{ slug: 'work', adapterType: 'gmail', authState: 'healthy',
+      managedConnectionName: 'work-google', sourceAuthentication: 'broker', authenticationSwitchAvailable: true, oauthAppSwitchAvailable: true }],
+      authenticationManagement: { slug: 'work', action: 'reauthorize' } };
+    const html = renderAccountsPanel({ state }); expect(html).toContain('Continue to current sign-in');
+    expect(html).not.toContain('Change OAuth app'); expect(html).toContain('Broker sign-in');
   });
 });

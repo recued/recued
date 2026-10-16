@@ -33,6 +33,7 @@ import {
   type WebclientRpcResultEnvelope,
 } from '../realtime/rpc-conn.js';
 import { createBroadcastSubscriber } from '../realtime/subscriber.js';
+import { createManagedOAuthCaller } from '../settings/managed-oauth-panel.js';
 
 interface FakeWsControls {
   ws: WebclientWsClient;
@@ -132,6 +133,55 @@ const buildFakeConnStatus = (
 
 const flush = (): Promise<void> =>
   new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+describe('OAuth metadata checks over the browser RPC transport', () => {
+  it('receives a file-source preparation after the normal page-read timeout', async () => {
+    vi.useFakeTimers();
+    const controls = buildFakeWs(); const conn = createWebclientRpcConn({ ws: controls.ws, randomId: () => 'file-preparation' });
+    try {
+      let result: unknown;
+      const checking = createManagedOAuthCaller(conn.call)({ action: 'file_authentication_prepare', name: 'drive', expected_updated_at: 2 })
+        .then(value => { result = value; }, error => { result = error; });
+      await vi.advanceTimersByTimeAsync(45_000);
+      expect(result).toBeUndefined(); expect(conn.pendingCount()).toBe(1);
+      const response = { action: 'file_authentication_prepare', name: 'drive', updated_at: 3, file_source: null };
+      controls.fireMessage({ type: 'rpc_result', request_id: 'file-preparation', result: response });
+      await checking; expect(result).toEqual(response); expect(conn.pendingCount()).toBe(0);
+    } finally { conn.dispose(); vi.useRealTimers(); }
+  });
+  it.each([
+    { action: 'collection_authentication_app_context', platform: 'mail', slug: 'gmail', intent: 'reauthorize' },
+    { action: 'collection_authentication_app_review', authorization_id: 'authorization', code: 'code', redirect_uri: 'https://localhost/callback' },
+    { action: 'collection_authentication_app_apply', review_id: 'review', fingerprint: 'fingerprint', attempt_id: 'attempt' },
+    { action: 'collection_authentication_review', platform: 'calendar', slug: 'calendar', connection_name: 'native-calendar' },
+    { action: 'collection_authentication_apply', review_id: 'review', fingerprint: 'fingerprint', attempt_id: 'attempt' },
+    { action: 'account_impact', flow_id: 'flow', claim_secret: 'claim' },
+    { action: 'review_direct_authentication', selections: [{ name: 'drive', expected_updated_at: 2 }], source_name: 'native-drive' },
+    { action: 'apply_authentication_switch', attempt_id: 'file-migration-001', name: 'drive', expected_updated_at: 2,
+      verification_url: 'https://www.googleapis.com/drive/v3/about', auth: { type: 'direct_oauth', authorization_receipt: 'receipt', requested_scopes: [] } },
+  ] satisfies import('@recued/contracts').ManagedOAuthRequest[])('waits for the repeated metadata checks during $action, with a finite timeout', async request => {
+    vi.useFakeTimers(); const controls = buildFakeWs(); const conn = createWebclientRpcConn({ ws: controls.ws });
+    try {
+      let result: unknown;
+      const checking = createManagedOAuthCaller(conn.call)(request).then(value => { result = value; }, error => { result = error; });
+      await vi.advanceTimersByTimeAsync(210_000);
+      expect(result).toBeUndefined(); expect(conn.pendingCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(600_000);
+      await checking; expect(result).toMatchObject({ code: 'timeout' }); expect(conn.pendingCount()).toBe(0);
+    } finally { conn.dispose(); vi.useRealTimers(); }
+  });
+});
+
+describe('ordinary broker RPC page reads', () => {
+  it('keeps the normal timeout', async () => {
+    vi.useFakeTimers(); const controls = buildFakeWs(); const conn = createWebclientRpcConn({ ws: controls.ws });
+    try {
+      const checking = createManagedOAuthCaller(conn.call)({ action: 'profiles' }).catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(30_001);
+      expect(await checking).toMatchObject({ code: 'timeout' }); expect(conn.pendingCount()).toBe(0);
+    } finally { conn.dispose(); vi.useRealTimers(); }
+  });
+});
 
 // ══════════════════════════════════════════════════════════════════
 // Request id correlation

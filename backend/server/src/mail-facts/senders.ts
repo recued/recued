@@ -16,7 +16,6 @@
  */
 
 import {
-  isMailReconciliationId,
   MAIL_FACT_SENDERS_DAYS,
   type CollectionRecord,
   type MailFactSender,
@@ -29,6 +28,7 @@ import type { BlobStore } from '../storage/blob-store.js';
 import type { MailFactStore } from '../storage/mail-fact-store.js';
 import { looksLikeSecurityNoticeText } from './security-notice.js';
 import { summaryOf } from './template-preview.js';
+import { sentByRecued } from './own-mail.js';
 
 const DAY_MS = 86_400_000;
 export const SENDERS_SCAN_CAP = 5_000;
@@ -41,6 +41,8 @@ export interface SendersDeps {
   readonly blobs: BlobStore;
   readonly now: () => number;
   readonly retentionDays?: (slug: string) => number | null;
+  /** D-318 audit — Recued's own sends, by its send claims (`own-mail.ts`). */
+  readonly isOwnSend?: (reconciliation_id: string) => boolean;
 }
 
 const hotString = (record: CollectionRecord, key: string): string => {
@@ -87,7 +89,7 @@ export const listSendersWithoutTemplate = async (
         scanned += 1;
         const direction = record.hot_fields.direction;
         if (direction === 'outbound' || direction === 'draft') continue;
-        if (isMailReconciliationId(record.hot_fields.reconciliation_id)) continue;
+        if (sentByRecued(record.hot_fields.reconciliation_id, deps.isOwnSend)) continue;
         const address = hotString(record, 'from').trim().toLowerCase();
         if (address.length === 0 || address === own || skip.has(address)) continue;
         const tally = tallies.get(address) ?? { count: 0, read: false, newest: null, subjects: new Map() };

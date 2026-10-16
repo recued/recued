@@ -118,12 +118,13 @@ const mkFakeProvider = (
 const mkFactory = (
   kind: 'gcal' | 'graph' | 'caldav',
   hooks: FakeProviderHooks,
+  initialScan?: CalendarProvider['initialScan'],
 ): CalendarAdapterFactory => ({
   kind,
   async probeCaps() { return FULL_CAPS; },
   create(ctx: CalendarAdapterContext): CalendarProvider {
     hooks.factoryCreated += 1;
-    return mkFakeProvider(kind, ctx.slug, hooks);
+    return { ...mkFakeProvider(kind, ctx.slug, hooks), ...(initialScan ? { initialScan } : {}) };
   },
 });
 
@@ -135,7 +136,7 @@ interface Harness {
   cleanup: () => void;
 }
 
-const buildHarness = (opts: { isVaultUnlocked?: () => boolean } = {}): Harness => {
+const buildHarness = (opts: { isVaultUnlocked?: () => boolean; initialScan?: CalendarProvider['initialScan'] } = {}): Harness => {
   const db = new Database(':memory:');
   const bus = createWarehouseEventBus();
   const hooks: FakeProviderHooks = {
@@ -150,7 +151,7 @@ const buildHarness = (opts: { isVaultUnlocked?: () => boolean } = {}): Harness =
       getGate: () => mkNoopGate(),
     },
     {
-      factories: [mkFactory('gcal', hooks), mkFactory('graph', hooks), mkFactory('caldav', hooks)],
+      factories: [mkFactory('gcal', hooks, opts.initialScan), mkFactory('graph', hooks, opts.initialScan), mkFactory('caldav', hooks, opts.initialScan)],
       ...(opts.isVaultUnlocked ? { isVaultUnlocked: opts.isVaultUnlocked } : {}),
     },
   );
@@ -190,6 +191,24 @@ describe('composeCalendarStack — lifecycle', () => {
     expect(live.map((c) => c.slug).sort()).toEqual(['holidays', 'work']);
     expect(harness.hooks.factoryCreated).toBe(2);
     expect(harness.hooks.connect).toBeGreaterThanOrEqual(1);
+  });
+
+  it('returns from authentication restart before a long scan, and drains it before stopping', async () => {
+    let unlocked = false; let release!: () => void; let scanning = false;
+    const scan = new Promise<void>(resolve => { release = resolve; });
+    const h = buildHarness({ isVaultUnlocked: () => unlocked, initialScan: async () => { scanning = true; await scan; } });
+    let restarting: Promise<void> | undefined; let stopping: Promise<void> | undefined;
+    try {
+      enrollRow(h, 'work'); await h.stack.startAll(); await h.stack.enrollDeps.authenticationChange!.stop('work');
+      unlocked = true; let restarted = false;
+      restarting = h.stack.enrollDeps.authenticationChange!.restart('work').then(() => { restarted = true; });
+      await vi.waitFor(() => { expect(scanning).toBe(true); expect(restarted).toBe(true); });
+      let stopped = false;
+      stopping = h.stack.enrollDeps.authenticationChange!.stop('work').then(() => { stopped = true; });
+      await new Promise<void>(resolve => setImmediate(resolve)); expect(stopped).toBe(false);
+      release(); await stopping;
+      expect(h.stack.listLive()).toEqual([]); expect(h.hooks.startSyncCount).toBe(0);
+    } finally { release(); await restarting; await stopping; await h.stack.disposeAll(); h.cleanup(); }
   });
 
   it('disposeAll closes every live collection', async () => {

@@ -7,11 +7,19 @@ import {
   connectionsLaneAddress,
   parseConnectionsAddress,
   connectionsReviewAccessAddress,
+  connectionsFileAuthenticationAddress, parseConnectionsFileAuthentication,
   parseConnectionsReviewAccess,
+  connectionsOAuthAppsAddress, parseConnectionsOAuthApps,
 } from '../connections-navigation.js';
 import { parseShellRoute } from '../../shell/route.js';
 
 describe('Connections hierarchical navigation contract', () => {
+  it('opens only the saved-app manager without importing credentials or a callback from the route', () => {
+    const address = connectionsOAuthAppsAddress(); expect(address.hash).toBe('#connections/others/oauth-apps');
+    expect(parseConnectionsOAuthApps(parseShellRoute(address.hash).segments)).toBe(true);
+    expect(parseConnectionsAddress(parseShellRoute(address.hash))).toEqual({ kind: 'lane', tab: 'others' });
+    for (const parts of [['mail', 'oauth-apps'], ['others', 'oauth-apps', 'secret'], ['others', 'enroll']]) expect(parseConnectionsOAuthApps(parts)).toBe(false);
+  });
   it('routes an exact saved-account review without importing a URL or scope from the route', () => {
     const address = connectionsReviewAccessAddress('sheets-work');
     expect(address.hash).toBe('#connections/others/review-access/api/sheets-work');
@@ -19,6 +27,15 @@ describe('Connections hierarchical navigation contract', () => {
     expect(parseConnectionsAddress(parseShellRoute(address.hash))).toEqual({ kind: 'lane', tab: 'others' });
     for (const parts of [['others', 'review-access', 'api', '../bad'], ['others', 'review-access', 'mcp', 'main'],
       ['others', 'review-access', 'api', 'main', 'scopes']]) expect(parseConnectionsReviewAccess(parts)).toBeNull();
+  });
+  it('routes file migration with only a validated saved connection name', () => {
+    const address = connectionsFileAuthenticationAddress('work-drive');
+    expect(address.hash).toBe('#connections/others/switch-file-authentication/api/work-drive');
+    expect(parseConnectionsFileAuthentication(parseShellRoute(address.hash).segments)).toEqual({ name: 'work-drive' });
+    expect(parseConnectionsAddress(parseShellRoute(address.hash))).toEqual({ kind: 'lane', tab: 'others' });
+    for (const parts of [['others','switch-file-authentication','api','../bad'],['others','switch-file-authentication','mcp','work'],['others','switch-file-authentication','api','work','secret']]) {
+      expect(parseConnectionsFileAuthentication(parts)).toBeNull();
+    }
   });
   it('models lane -> account depth', () => {
     expect(connectionsLaneAddress('mail').hash).toBe('#connections/mail');

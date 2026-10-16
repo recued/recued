@@ -113,6 +113,23 @@ export const raiseMailSendOutcomeAsk = async (input: {
   return true;
 };
 
+/** Close the open question about this claim, if there is one: its sender gave
+ *  up on it (D-318: an email answer not sent within a day), so "send it next
+ *  time" would promise a send that no longer comes. Best-effort. */
+export const closeMailSendOutcomeAsk = async (input: {
+  notifier: unknown;
+  reconciliation_id: string;
+}): Promise<void> => {
+  const cancelAsk = (input.notifier as { cancelAsk?: unknown } | null | undefined)?.cancelAsk;
+  if (!isNotifier(input.notifier) || typeof cancelAsk !== 'function') return;
+  const open = (await input.notifier.listUnresolvedAsks()).filter((ask) =>
+    ask.handler_kind === MAIL_SEND_OUTCOME_ASK_KIND
+    && ask.handler_payload.reconciliation_id === input.reconciliation_id);
+  for (const ask of open) {
+    await (cancelAsk as (ask_id: string) => Promise<unknown>).call(input.notifier, ask.ask_id);
+  }
+};
+
 /** The owner's answer, applied to the claim it was asked about. A claim that has
  *  moved since (the provider proved it, another answer landed) is left alone. */
 export const registerMailSendOutcomeHandler = (

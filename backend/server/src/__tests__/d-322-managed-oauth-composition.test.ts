@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { createRuntimeConfigStore } from '@recued/config';
-import type { IngredientManifest, ManagedOAuthRequest, RecipeDefinition } from '@recued/contracts';
+import { isOAuthPermissionInventory, type IngredientManifest, type ManagedOAuthRequest, type RecipeDefinition } from '@recued/contracts';
 import { generateRecoveryKey } from '@recued/crypto';
 import { executeRecipe } from '@recued/engine';
 import { describe, expect, it } from 'vitest';
@@ -21,6 +21,7 @@ import { composeCollectionContext } from '../serve/compose-collection-context.js
 import { composeExecutionContext, createExecutionLateBoundRefs } from '../serve/compose-execution-context.js';
 import { composeStorageContext } from '../serve/compose-storage-context.js';
 import { createInstanceStore } from '../collections/instance-store.js';
+import { makeOAuthAppConfigHandlers } from '../oauth-app-config-handler.js';
 
 const environmentKey = 'd322-fixture-environment-key';
 const native = { spreadsheetId: 'fixture-id', sheets: [{ properties: { sheetId: 7 } }],
@@ -113,6 +114,9 @@ const boot = async (dbPath: string) => {
       cacheBlobs: app.cacheBlobs, warehouseBus: app.warehouseBus, contactStore: app.contactStoreRef,
       mailFactStore: storage.mailFactStoreRef, gateRegistry: storage.gateRegistry,
       accountStore: storage.accountStore, eventBus: storage.eventBus, keys: app.keys,
+      ...(app.oauthAppConnectionUses ? { oauthAppConnectionUses: app.oauthAppConnectionUses } : {}),
+      ...(app.oauthAppPermissionNeeds ? { oauthAppPermissionNeeds: app.oauthAppPermissionNeeds } : {}),
+      ...(app.oauthAppNativePermissionNeeds ? { oauthAppNativePermissionNeeds: app.oauthAppNativePermissionNeeds } : {}),
       connectionStore: app.connectionStoreRef, workEntityStore: storage.workEntityStoreRef,
       enrichmentCascade: app.enrichmentCascadeRef });
     const execution = await composeExecutionContext({ storage, app, collection,
@@ -120,7 +124,7 @@ const boot = async (dbPath: string) => {
     storage.manifests.register(manifest);
     const handlers = makeConnectionHandlers({ store: app.connectionStoreRef!,
       getEncryptionKey: app.keys!.keyProvider('connection'), managedOAuth: app.managedOAuth! })!.handlers;
-    return { storage, app, execution, handlers, executor: createServerExecutor(execution.executorConfig),
+    return { storage, app, collection, execution, handlers, executor: createServerExecutor(execution.executorConfig),
       rpc: (args: ManagedOAuthRequest) => handlers['collection.connection.managedOAuth'](args, undefined as never),
       close: () => { app.keys!.lock(); storage.db.close(); } };
   } catch (error) { storage.db.close(); throw error; }
@@ -184,6 +188,15 @@ describe('D-322 production composition and saved-account lifetime', () => {
         { kind: 'mail', id: 'fixture-mail' }, { kind: 'pack', id: 'fixture-pack' },
       ] });
       expect(JSON.stringify(usage)).not.toContain('fixture-secret-no-proj');
+      const permissionRpc = makeOAuthAppConfigHandlers(composed.collection.oauthAppConfigDeps)!.handlers['server.oauthApps'];
+      const localBefore = composed.app.connectionStoreRef!.list(); const proxyBefore = broker.proxyRequests.length;
+      const permissions = await permissionRpc({ action: 'permission_inventory' }, undefined as never);
+      expect(isOAuthPermissionInventory(permissions.permission_inventory)).toBe(true);
+      expect(permissions.permission_cleanup_available).toBe(true); expect(permissions.permission_cleanup_jobs).toEqual([]);
+      expect(permissions.permission_inventory?.groups[0]).toMatchObject({ authentication: 'broker', grants_known: false, requirements_complete: false });
+      expect(permissions.permission_inventory?.groups[0]?.scopes.every(scope => scope.status !== 'unused_locally')).toBe(true);
+      expect(composed.app.connectionStoreRef!.list()).toEqual(localBefore); expect(broker.proxyRequests).toHaveLength(proxyBefore);
+      expect(JSON.stringify(permissions)).not.toContain(environmentKey);
       expect(broker.sessionCount()).toBe(1);
       await runMetadata(composed);
       expect(broker.proxyRequests).toEqual([{ path: '/proxy/v4/spreadsheets/fixture-id?fields=spreadsheetId&fields=sheets',
@@ -198,6 +211,8 @@ describe('D-322 production composition and saved-account lifetime', () => {
 
       composed = await boot(dbPath);
       expect(composed.app.keys!.state()).toBe('locked');
+      const lockedPermissions = await makeOAuthAppConfigHandlers(composed.collection.oauthAppConfigDeps)!.handlers['server.oauthApps']({ action: 'permission_inventory' }, undefined as never);
+      expect(lockedPermissions.permission_cleanup_available).toBe(false); expect(lockedPermissions.permission_cleanup_jobs).toBeUndefined();
       expect(composed.app.connectionStoreRef!.get('api', 'sheets')).toEqual(before);
       expect(await composed.rpc({ action: 'status', flow_id: pending.flow_id, claim_secret: pending.claim_secret }))
         .toMatchObject({ status: 'expired' });

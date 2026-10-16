@@ -361,6 +361,10 @@ export type RecipeErrorCode =
    *  Per-call decision — recipient list mistake, not a credential
    *  issue. Detail tail carries the offending addresses. */
   | 'MAIL_SEND_RECIPIENT_INVALID'
+  /** The provider refused the message itself, not who it is to: a header
+   *  or form it will not take (Graph's `InvalidInternetMessageHeader`).
+   *  Nothing was sent, and the same message is refused the same way. */
+  | 'MAIL_SEND_MESSAGE_REFUSED'
   /** Transient send failure — provider 5xx, connection reset, DNS
    *  hiccup, SMTP timeout. Retryable on next run; not a recipe
    *  configuration mistake. */
@@ -625,6 +629,7 @@ export const ERR: Record<RecipeErrorCode, ErrorSeverity> = {
   MAIL_SEND_NOT_CAPABLE: 'error',
   MAIL_SEND_AUTH_FAILED: 'error',
   MAIL_SEND_RECIPIENT_INVALID: 'error',
+  MAIL_SEND_MESSAGE_REFUSED: 'error',
   MAIL_SEND_NETWORK_FAILED: 'error',
   MAIL_SEND_SELF_LOOP_TO: 'error',
   MAIL_SEND_APPEND_FAILED: 'warn',
@@ -805,6 +810,7 @@ export const ERROR_MESSAGES: Record<RecipeErrorCode, string> = {
   MAIL_SEND_NOT_CAPABLE: 'This mail account is not configured to send. Re-enroll it with sending enabled, or pick a different mail account.',
   MAIL_SEND_AUTH_FAILED: 'The mail account refused the send. Reconnect the account from Settings → Connections.',
   MAIL_SEND_RECIPIENT_INVALID: 'A recipient address was rejected by the mail provider. Check the addresses for typos.',
+  MAIL_SEND_MESSAGE_REFUSED: 'The mail provider refused this message as it was written, so nothing was sent. Sending it again would be refused the same way.',
   MAIL_SEND_NETWORK_FAILED: 'A network error stopped the send. Check your connection and try again.',
   MAIL_SEND_SELF_LOOP_TO: 'This recipe is configured to send mail to itself, which is almost always a configuration mistake. Adjust the recipient or move the address to bcc.',
   MAIL_SEND_APPEND_FAILED: 'The mail was sent but Recued could not save a copy to your Sent folder. The recipient still received it; your Sent folder will reconcile on the next sync.',
@@ -1003,6 +1009,8 @@ export const ERROR_ATTRIBUTION: Record<RecipeErrorCode, ErrorAttribution> = {
   MAIL_SEND_NOT_CAPABLE: 'choice',
   MAIL_SEND_AUTH_FAILED: 'environment',
   MAIL_SEND_RECIPIENT_INVALID: 'choice',
+  // Recued wrote the message the provider refused: not the recipe's choice.
+  MAIL_SEND_MESSAGE_REFUSED: 'environment',
   MAIL_SEND_NETWORK_FAILED: 'environment',
   MAIL_SEND_SELF_LOOP_TO: 'choice',
   MAIL_SEND_APPEND_FAILED: 'environment',

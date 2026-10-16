@@ -1,3 +1,4 @@
+import { recordMailChatSettledRun } from '../mail-chat-door/follow-ups.js';
 import {
   composeAppContext,
   type AppContext,
@@ -462,6 +463,20 @@ export const startPostStorageAppCollectionExecutionRuntime = async (
   //   and so cannot publish; the execution context is composed after this line
   //   and reads the sink through the same bag at settle time.
   lateBound.publishRunSettledSink(app.chatRunSettledSink);
+  // D-318 audit — a run an email turn left waiting for an approval can settle
+  // during boot recovery, before the door's answer loop exists (it is composed
+  // with the listeners): kept from here, its follow-up is written once the loop
+  // runs. Recorded only, so nothing here waits on the door.
+  const settledRunsDb = options.app.db;
+  if (settledRunsDb !== undefined) {
+    app.onChatRunSettled?.((settled) => {
+      try {
+        recordMailChatSettledRun(settledRunsDb, settled, Date.now());
+      } catch (error) {
+        console.warn('[mail-chat] a settled run could not be recorded', error instanceof Error ? error.message : error);
+      }
+    });
+  }
   const contactBackfillDone = app.contactBackfillDone;
   if (contactBackfillDone !== undefined) {
     options.postApp.postExecution.maintenance.backgroundServices.register({
@@ -490,6 +505,9 @@ export const startPostStorageAppCollectionExecutionRuntime = async (
       vaultStateBus: app.vaultStateBus,
       connectionStore: app.connectionStoreRef,
       ...(app.managedOAuthConsumers ? { managedOAuthConsumers: app.managedOAuthConsumers } : {}),
+      ...(app.oauthAppConnectionUses ? { oauthAppConnectionUses: app.oauthAppConnectionUses } : {}),
+      ...(app.oauthAppPermissionNeeds ? { oauthAppPermissionNeeds: app.oauthAppPermissionNeeds } : {}),
+      ...(app.oauthAppNativePermissionNeeds ? { oauthAppNativePermissionNeeds: app.oauthAppNativePermissionNeeds } : {}),
       workEntityStore: options.app.workEntityStore,
       enrichmentCascade: app.enrichmentCascadeRef,
       // D-192 P4b — late-bound: the ref is populated post-listener by

@@ -367,6 +367,10 @@ export const MCP_RESERVED_RPC_PREFIXES = [
   // broker account. Agent reads/writes continue through the governed adapters.
   'collection.mail.enrollManagedOAuth',
   'collection.calendar.enrollManagedOAuth',
+  // D-318 step 1 — which mailbox is the email chat door's chat mailbox is the
+  // owner's door setting: mail there starts chat turns with the owner's
+  // authority once the door is built. An agent may neither read nor move it.
+  'collection.mail.chat_door.',
   // D-166 override-write path — the `collection.contract.*` rpc family authors
   // user `contract.override` rows (the tightening policy layer the catalog
   // gateway reads). This is the user's restrict-what-agents-can-do surface; an
@@ -452,6 +456,11 @@ export const MCP_RESERVED_RPC_PREFIXES = [
   // ⛔ D-269 step 3 — the quiet-hours window. An agent that could write it could
   // silence its owner for nine hours a day, or read when they are asleep.
   'notification.quiet_hours.',
+  // ⛔ D-324 — the owner's reminders list. A door reaches reminders only through
+  // the `core.reminder.*` op grants, which the owner can see and revoke; this rpc
+  // is the Data screen's, and a door that could call it would move or withdraw
+  // what the owner asked to be told, past every grant.
+  'reminder.',
   // Recipe-editor authoring seam — the `recipe.*` rpc family is owner /
   // local-UI only. The read surfaces (`recipe.list` / `recipe.runnability` /
   // `recipe.pii`) already stay off MCP by `MCP_TOOL_CATALOG` omission, but the

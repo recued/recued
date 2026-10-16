@@ -27,7 +27,7 @@ import {
   type GcalEvent,
   type GcalProviderConfig,
 } from '../gcal-provider.js';
-import type { CalendarSyncEvent } from '../provider.js';
+import type { CalendarSyncEvent, CalendarSyncOutcome } from '../provider.js';
 
 // ────────────────────────────────────────────────────────────────
 // Helpers
@@ -655,6 +655,81 @@ describe('GcalProvider — initialScan', () => {
 // ────────────────────────────────────────────────────────────────
 
 describe('GcalProvider — startSync', () => {
+  it('a clean poll reports a sync, though it delivered nothing', async () => {
+    const store = seedStore();
+    store.data.set(`gcal.work.sync_token.${hashId('primary')}`, 'tok-quiet');
+    const { fetcher } = makeRouter([
+      calendarListRoute([{ id: 'primary' }]),
+      {
+        match: (u) => u.includes('/calendars/primary/events') && u.includes('syncToken=tok-quiet'),
+        response: { status: 200, body: { items: [], nextSyncToken: 'tok-quiet' } },
+      },
+    ]);
+    const provider = createGcalProvider({
+      slug: 'work', config: mkConfig(), accountStore: store, providerConfig, fetcher,
+      scheduler: () => () => undefined,
+    });
+    cleanup.push(() => provider.close());
+    const synced: CalendarSyncOutcome[] = [];
+    provider.onSyncOutcome!((outcome) => { synced.push(outcome); });
+    const stop = await provider.startSync(async () => {});
+    expect(synced).toEqual([{ ok: true, at: expect.any(Number) }]);
+    expect(provider.health().last_successful_sync_at).toBe(synced[0]!.at);
+    await stop();
+  });
+
+  it('a poll whose change the collection rejects reports a transient failure, not a sync', async () => {
+    const store = seedStore();
+    store.data.set(`gcal.work.sync_token.${hashId('primary')}`, 'tok-prev');
+    const { fetcher } = makeRouter([
+      calendarListRoute([{ id: 'primary' }]),
+      {
+        match: (u) => u.includes('/calendars/primary/events') && u.includes('syncToken=tok-prev'),
+        response: {
+          status: 200,
+          body: {
+            items: [{
+              id: 'e1', iCalUID: 'e1', status: 'confirmed', summary: 'One',
+              start: { dateTime: '2026-04-23T10:00:00Z' }, end: { dateTime: '2026-04-23T11:00:00Z' },
+            }],
+            nextSyncToken: 'tok-next',
+          },
+        },
+      },
+    ]);
+    const provider = createGcalProvider({
+      slug: 'work', config: mkConfig(), accountStore: store, providerConfig, fetcher,
+      scheduler: () => () => undefined,
+    });
+    cleanup.push(() => provider.close());
+    const synced: CalendarSyncOutcome[] = [];
+    provider.onSyncOutcome!((outcome) => { synced.push(outcome); });
+    const stop = await provider.startSync(async () => { throw new Error('collection write failed'); });
+    expect(synced).toEqual([{ ok: false, failure: 'transient', at: expect.any(Number) }]);
+    await stop();
+  });
+
+  it('a poll refused for its credential reports an auth failure', async () => {
+    const store = seedStore();
+    store.data.set(`gcal.work.sync_token.${hashId('primary')}`, 'tok-refused');
+    const { fetcher } = makeRouter([
+      calendarListRoute([{ id: 'primary' }]),
+      {
+        match: (u) => u.includes('/calendars/primary/events') && u.includes('syncToken=tok-refused'),
+        response: { status: 403, body: { error: { errors: [{ reason: 'insufficientPermissions' }] } } },
+      },
+    ]);
+    const provider = createGcalProvider({
+      slug: 'work', config: mkConfig(), accountStore: store, providerConfig, fetcher,
+      scheduler: () => () => undefined,
+    });
+    cleanup.push(() => provider.close());
+    const synced: CalendarSyncOutcome[] = [];
+    provider.onSyncOutcome!((outcome) => { synced.push(outcome); });
+    await expect(provider.startSync(async () => {})).rejects.toMatchObject({ code: 'auth_expired' });
+    expect(synced).toEqual([{ ok: false, failure: 'auth', at: expect.any(Number) }]);
+  });
+
   it('uses the stored syncToken and emits updated + deleted events', async () => {
     const store = seedStore();
     store.data.set(

@@ -22,6 +22,9 @@ export interface HousekeepingCustomWindowFieldsProps {
   /** Pending edits the user has typed into the inputs. Each field is
    *  optional — undefined ⇒ "show the persisted value". */
   draft: HousekeepingCustomDraft;
+  /** Number inputs may still be mid-edit when a background read repaints.
+   *  Keep their text until the server accepts a save. */
+  inputDraft?: Partial<Record<'cycle_budget_ms' | 'cycle_interval_minutes', string>>;
   /** True while saving. Disables every input. */
   saving: boolean;
 }
@@ -75,7 +78,7 @@ export const renderHousekeepingCustomWindowFields = (
           inputmode="numeric"
           min="${HOUSEKEEPING_CYCLE_BUDGET_MIN_MS}"
           max="${HOUSEKEEPING_CYCLE_BUDGET_MAX_MS}"
-          value="${budget !== undefined ? e(String(budget)) : ''}"
+          value="${e(props.inputDraft?.cycle_budget_ms ?? (budget !== undefined ? String(budget) : ''))}"
           data-action="housekeeping-custom-budget"
           ${props.saving ? 'disabled' : ''}
         />
@@ -88,7 +91,7 @@ export const renderHousekeepingCustomWindowFields = (
           type="number"
           inputmode="numeric"
           min="0"
-          value="${interval !== undefined ? e(String(interval)) : ''}"
+          value="${e(props.inputDraft?.cycle_interval_minutes ?? (interval !== undefined ? String(interval) : ''))}"
           data-action="housekeeping-custom-interval"
           ${props.saving ? 'disabled' : ''}
         />

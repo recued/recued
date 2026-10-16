@@ -175,6 +175,9 @@ export const MULTI_TURN_TERMINATION_REASONS = [
    *  owner still gets `EMPTY_AI_OUTPUT_MESSAGE`. It is a statement that the turn
    *  stopped for a reason nobody chose. */
   'output_unreadable',
+  /** Repeated successful re-reads lost their results again while fitting the
+   *  next prompt to the context window, so further rounds cannot progress. */
+  'context_trim_livelock',
 ] as const;
 export type MultiTurnTerminationReason =
   (typeof MULTI_TURN_TERMINATION_REASONS)[number];

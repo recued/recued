@@ -7,6 +7,46 @@
 import type { IngredientManifest } from '@recued/contracts';
 
 const MANIFESTS = [
+  { slug: 'customer-account-payment-correct',name: 'Correct a customer account payment',mcp_exposed: false,
+    description: 'After fresh owner review, correct or void the original allocations of one recorded account payment. Apply every invoice change and correction history atomically. Keep original payment identity and reject stale ledgers or linked refund entries.',
+    author: 'recued',kind: 'storage' as const,version: 1,category: 'action' as const,risk_tier: 'destructive' as const,
+    tags: ['kernel','reception','payments'],input: { correction_id: null,expected_plan_hash: null,summary: null },
+    output: { correction_id: 'correction_id',account_payment_id: 'account_payment_id',account_id: 'account_id',already_applied: 'already_applied' } },
+  { slug: 'customer-account-payment-apply',name: 'Record a customer account payment',mcp_exposed: false,
+    description: 'After fresh owner review, record one received payment across explicitly linked invoices. Apply all allocations and invoice balances atomically; bind the complete account and installed operations and refuse stale reviews.',
+    author: 'recued',kind: 'storage' as const,version: 1,category: 'action' as const,risk_tier: 'destructive' as const,
+    tags: ['kernel','reception','payments'],input: { account_payment_id: null,expected_plan_hash: null,summary: null },
+    output: { account_payment_id: 'account_payment_id',account_id: 'account_id',already_applied: 'already_applied' } },
+  { slug: 'customer-refund-correct',name: 'Correct a recorded customer refund',mcp_exposed: false,
+    description: 'After fresh owner review, reverse a mistaken refund record and optionally create a linked replacement in one transaction. Preserve original payment, invoice, credits and refund history. Bind the complete ledger and reject stale or excessive replacements.',
+    author: 'recued',kind: 'storage' as const,version: 1,category: 'action' as const,risk_tier: 'destructive' as const,
+    tags: ['kernel','reception','payments'],input: { correction_id: null,expected_plan_hash: null,summary: null },
+    output: { correction_id: 'correction_id',signoff_id: 'signoff_id',refund_id: 'refund_id',replacement_refund_id: 'replacement_refund_id',already_applied: 'already_applied' } },
+  { slug: 'customer-refund-apply',name: 'Review a customer refund',mcp_exposed: false,
+    description: 'After fresh owner review, issue a paid invoice credit or record a completed external refund. Bind the original payment and exact ledger. Keep history and reject stale or excessive refunds.',
+    author: 'recued',kind: 'storage' as const,version: 1,category: 'action' as const,risk_tier: 'destructive' as const,
+    tags: ['kernel','reception','payments'],input: { action_id: null,expected_plan_hash: null,summary: null },output: { action_id: 'action_id',signoff_id: 'signoff_id',kind: 'kind',already_applied: 'already_applied' } },
+  {
+    slug: 'customer-invoice-credit-correct',name: 'Correct a customer invoice credit',mcp_exposed: false,
+    description: 'After owner review, reverse an issued invoice credit and optionally issue a linked replacement in one transaction. Preserve the original credit and payment entries. Bind the complete ledger and installed operations; keep correction history and reject stale reviews.',
+    author: 'recued',kind: 'storage' as const,version: 1,category: 'action' as const,risk_tier: 'destructive' as const,
+    tags: ['kernel','reception','payments'],input: { correction_id: null,expected_plan_hash: null,summary: null },
+    output: { correction_id: 'correction_id',signoff_id: 'signoff_id',credit_id: 'credit_id',invoice_id: 'invoice_id',replacement_credit_id: 'replacement_credit_id',already_applied: 'already_applied' },
+  },
+  {
+    slug: 'customer-invoice-credit',name: 'Issue a customer invoice credit',mcp_exposed: false,
+    description: 'After owner review, record an invoice credit and reduce its unpaid balance in one transaction. Keep original totals and payment entries. Bind the full ledger and installed operations; preserve the reason and issue history.',
+    author: 'recued',kind: 'storage' as const,version: 1,category: 'action' as const,risk_tier: 'destructive' as const,
+    tags: ['kernel','reception','payments'],input: { credit_id: null,expected_plan_hash: null,summary: null },
+    output: { credit_id: 'credit_id',signoff_id: 'signoff_id',invoice_id: 'invoice_id',already_applied: 'already_applied' },
+  },
+  {
+    slug: 'customer-payment-correct',name: 'Correct a recorded customer payment',mcp_exposed: false,
+    description: 'After owner review, correct or void one recorded customer payment and update its invoice balance in one transaction. Bind the complete original ledger and installed write operations. Preserve encrypted before/after history. A completed correction replays its recorded result.',
+    author: 'recued',kind: 'storage' as const,version: 1,category: 'action' as const,risk_tier: 'destructive' as const,
+    tags: ['kernel','reception','payments'],input: { correction_id: null,expected_plan_hash: null,summary: null },
+    output: { correction_id: 'correction_id',signoff_id: 'signoff_id',payment_id: 'payment_id',invoice_id: 'invoice_id',action: 'action',already_applied: 'already_applied' },
+  },
   {
     slug: 'quote-completion-review', name: 'Review customer completion', mcp_exposed: false,
     description: 'After owner approval, close a local task for an accepted delivery or reopen it for customer corrections. Bind the saved released agreement, delivery summary, customer response and exact task version. Preserve payment records. Repeating a completed review returns its recorded action.',
@@ -2429,6 +2469,59 @@ const MANIFESTS = [
     }
   },
   {
+    "slug": "file-folders",
+    "name": "List the folders a file can be saved into",
+    "description": "The owner's connected folders (file instances), each with `folder` (its name, which file-save-to-folder takes), `adapter` (fs for a folder on this machine), `root_name` (a folder on this machine's own name on disk), `writable` (whether a file can be saved into it now), and `subfolders` (the folders inside it that hold files, as paths from it). An empty folder holds no file, so it is not listed: a path names it, and a save creates it.",
+    "author": "recued",
+    "kind": "storage",
+    "version": 1,
+    "category": "data",
+    "mcp_exposed": false,
+    "risk_tier": "read",
+    "tags": [
+      "kernel",
+      "file",
+      "folder",
+      "warehouse"
+    ],
+    "input": {},
+    "output": {
+      "folders": "folders"
+    }
+  },
+  {
+    "slug": "file-save-to-folder",
+    "name": "Save a stored file into a folder",
+    "description": "Save one stored file, by its record id (an emailed attachment's, as a chat turn lists it), into the folder the owner named. `folder` is said the way the owner says it: a connected folder's name, a folder inside one by its own name (Receipts), or a path from a connected folder (documents/Receipts/2026), which is created when it is not there yet. `name` is the file name to save as, without a folder; it defaults to the file's own name. Never saves over another file: a taken name gets a number (scan (2).pdf). A folder name that fits more than one folder, or none, saves nothing and says which folders there are. Requires the write capability on the destination folder.",
+    "author": "recued",
+    "kind": "storage",
+    "version": 1,
+    "category": "data",
+    "mcp_exposed": false,
+    "risk_tier": "write",
+    "tags": [
+      "kernel",
+      "file",
+      "folder",
+      "write",
+      "warehouse"
+    ],
+    "input": {
+      "file_id": null,
+      "folder": null,
+      "name": null
+    },
+    "output": {
+      "ok": "ok",
+      "folder": "folder",
+      "path": "path",
+      "name": "name",
+      "renamed": "renamed",
+      "bytes_written": "bytes_written",
+      "message": "message"
+    }
+  },
+  {
     "slug": "csv-columns",
     "name": "Read a stored CSV's column names",
     "description": "Return the header row of one stored CSV, in order. Cheap enough to run before a search, which is how 'no such column' stays distinguishable from 'no such record' — and it is what lets a recipe name the columns that DO exist when the one asked for does not.",
@@ -4426,6 +4519,139 @@ const MANIFESTS = [
       "id_output_field": "task.id"
     },
     "output": {
+      "task": "task"
+    }
+  },
+  {
+    "slug": "reminder-create",
+    "name": "Set a reminder",
+    "description": "Sets one reminder for the owner: the server rings it once at `at` on every notification channel they set up, then keeps it 30 days as history. `text` is what to say, in the owner's words. `at` is an ISO 8601 date-time WITH its offset (2026-10-16T15:00:00-04:00) or epoch milliseconds; a time that has passed is refused. Returns the reminder and `when`, its time worded on the owner's clock, plus `quiet_hours_note` when the time falls in their quiet hours and it will ring when the window ends; `confirmation` is the two together, the line to show the owner. At most 200 reminders wait at once.",
+    "author": "recued",
+    "kind": "storage",
+    "version": 1,
+    "category": "action",
+    "risk_tier": "read",
+    "permission": "notification_send",
+    "tags": [
+      "kernel",
+      "reminder",
+      "notification",
+      "action"
+    ],
+    "input": {
+      "text": null,
+      "at": null
+    },
+    "output": {
+      "reminder": "reminder",
+      "when": "when",
+      "quiet_hours_note": "quiet_hours_note",
+      "confirmation": "confirmation"
+    }
+  },
+  {
+    "slug": "reminder-list",
+    "name": "List reminders",
+    "description": "The owner's reminders still to ring, soonest first, each with `when`, its time worded on the owner's clock, and `count`, how many wait in all. `include_delivered: true` adds `delivered`, the ones rung or cancelled in the last 30 days.",
+    "author": "recued",
+    "kind": "storage",
+    "version": 1,
+    "category": "data",
+    "risk_tier": "read",
+    "tags": [
+      "kernel",
+      "reminder",
+      "notification"
+    ],
+    "input": {
+      "include_delivered": null,
+      "limit": null
+    },
+    "output": {
+      "reminders": "reminders",
+      "count": "count",
+      "delivered": "delivered"
+    }
+  },
+  {
+    "slug": "reminder-update",
+    "name": "Change a reminder",
+    "description": "Changes a reminder still to ring: its `text`, its `at` (an ISO 8601 date-time with its offset, or epoch milliseconds), or both. A reminder already rung or cancelled is not changed (`updated: false`, `reason: not_pending`); an unknown id gives `reason: not_found`. Returns the reminder, its new `when`, and `message`, what happened in a line for the owner.",
+    "author": "recued",
+    "kind": "storage",
+    "version": 1,
+    "category": "action",
+    "risk_tier": "write",
+    "tags": [
+      "kernel",
+      "reminder",
+      "notification",
+      "action"
+    ],
+    "input": {
+      "reminder_id": null,
+      "text": null,
+      "at": null
+    },
+    "output": {
+      "updated": "updated",
+      "reason": "reason",
+      "reminder": "reminder",
+      "when": "when",
+      "quiet_hours_note": "quiet_hours_note",
+      "message": "message"
+    }
+  },
+  {
+    "slug": "reminder-cancel",
+    "name": "Cancel a reminder",
+    "description": "Withdraws a reminder still to ring, so it never rings; it is kept 30 days as history. A reminder already rung is not changed (`cancelled: false`, `reason: not_pending`); an unknown id gives `reason: not_found`. `message` says what happened, in a line for the owner.",
+    "author": "recued",
+    "kind": "storage",
+    "version": 1,
+    "category": "action",
+    "risk_tier": "write",
+    "tags": [
+      "kernel",
+      "reminder",
+      "notification",
+      "action"
+    ],
+    "input": {
+      "reminder_id": null
+    },
+    "output": {
+      "cancelled": "cancelled",
+      "reason": "reason",
+      "reminder": "reminder",
+      "message": "message"
+    }
+  },
+  {
+    "slug": "task-mark-reminder-fired",
+    "name": "Mark a reminder delivered",
+    "description": "A Recued reminder (a task whose source_extension_blob.kind is recued_reminder) reached the owner: move it from reminder_pending to reminder_fired, so it is no longer due. Nothing else of the task changes, and nothing happens to any other task: `marked: false` with `reason: 'not_due'` for one that is not a pending reminder, or `reason: 'vendor_task'` for a reminder kept in a vendor's tasks, whose state goes to the vendor through task-update. Read tier, so the unattended reminder notifier is not held for approval after the reminder was delivered.",
+    "author": "recued",
+    "kind": "storage",
+    "version": 1,
+    "category": "action",
+    "risk_tier": "read",
+    "tags": [
+      "kernel",
+      "task",
+      "work-entity",
+      "reminder"
+    ],
+    "input": {
+      "id": null
+    },
+    "writes": {
+      "collection": "task",
+      "id_output_field": "task.id"
+    },
+    "output": {
+      "marked": "marked",
+      "reason": "reason",
       "task": "task"
     }
   },

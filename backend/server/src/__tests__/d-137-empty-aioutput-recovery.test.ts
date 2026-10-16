@@ -8,15 +8,20 @@ import { beforeEach, describe, expect, it, beforeAll, afterAll } from 'vitest';
 import Database from 'better-sqlite3';
 import {
   partitionPriorToolCalls,
+  renderTransparencyTemplate,
+  validateTransparencyEvent,
   type AIOutput,
   type ChatDispatchContext,
   type ChatDispatchResult,
   type ChatPriorToolCall,
   type ChatTailMessage,
   type InternalToolRegistry,
+  type MultiTurnTerminationReason,
   type RecuedServerSignature,
   type TokenUsageReport,
   type ToolEntry,
+  type TransparencyEvent,
+  type TransparencyMultiTurnRoundOutcome,
 } from '@recued/contracts';
 import {
   createChatOrchestrator,
@@ -667,6 +672,36 @@ describe('loop-final empty recovery', () => {
       : undefined;
   };
 
+  const expectRoundLifecycle = (
+    outcomes: readonly TransparencyMultiTurnRoundOutcome[],
+    reason: MultiTurnTerminationReason,
+    lastRoundText: string,
+  ): void => {
+    const events = captured.flatMap((message) => {
+      if (message.kind !== 'chat.transparency') return [];
+      const event = message.event;
+      if (event === null || typeof event !== 'object' || !('kind' in event)
+        || typeof event.kind !== 'string' || !event.kind.startsWith('recued.multi_turn.')) return [];
+      expect(validateTransparencyEvent(event)).toEqual([]);
+      return [event as Extract<TransparencyEvent, { kind: `recued.multi_turn.${string}` }>];
+    });
+    expect(events).toEqual([
+      ...outcomes.flatMap((outcome, round_index) => [
+        expect.objectContaining({ kind: 'recued.multi_turn.round_started', round_index }),
+        {
+          kind: 'recued.multi_turn.round_completed', round_index, outcome,
+          tool_calls_executed: 1,
+        },
+      ]),
+      {
+        kind: 'recued.multi_turn.loop_terminated', total_rounds: outcomes.length,
+        termination_reason: reason,
+      },
+    ]);
+    const rounds = events.filter((event) => event.kind === 'recued.multi_turn.round_completed');
+    expect(renderTransparencyTemplate(rounds.at(-1)!)).toBe(lastRoundText);
+  };
+
   it('recovers an empty loop-final synthesis with one tool_loop feedback retry', async () => {
     const result = await runScriptedTurn('sess-loop-final-recover', [
       toolOutput('Peter'),
@@ -678,6 +713,7 @@ describe('loop-final empty recovery', () => {
     expect(result.dispatches).toBe(1);
     expect(streamedDelta()).toBe('Found Peter.');
     expect(result.assistant?.content).toBe('Found Peter.');
+    expectRoundLifecycle(['completed'], 'completed', 'round 1 done ✓');
 
     const first = packetAt(result.promptBodies, 0);
     const second = packetAt(result.promptBodies, 1);
@@ -710,6 +746,7 @@ describe('loop-final empty recovery', () => {
       tool_name: 'mail.search',
       status: 'ok',
     });
+    expectRoundLifecycle(['aborted'], 'output_unreadable', 'round 1 aborted');
   });
 
   it('lets a loop-final retry return more tool calls and continue the loop', async () => {
@@ -724,6 +761,7 @@ describe('loop-final empty recovery', () => {
     expect(result.dispatches).toBe(2);
     expect(streamedDelta()).toBe('Found both.');
     expect(result.assistant?.content).toBe('Found both.');
+    expectRoundLifecycle(['continue', 'completed'], 'completed', 'round 2 done ✓');
   });
 
   it('keeps initial and loop-final empty recovery budgets separate', async () => {
@@ -738,6 +776,7 @@ describe('loop-final empty recovery', () => {
     expect(result.dispatches).toBe(1);
     expect(streamedDelta()).toBe('Recovered from both sites.');
     expect(result.assistant?.content).toBe('Recovered from both sites.');
+    expectRoundLifecycle(['completed'], 'completed', 'round 1 done ✓');
 
     const initialRetry = packetAt(result.promptBodies, 1);
     const loopRetry = packetAt(result.promptBodies, 3);
@@ -766,6 +805,7 @@ describe('loop-final empty recovery', () => {
     expect(result.dispatches).toBe(2);
     expect(streamedDelta()).toContain('returned an empty reply twice');
     expect(result.assistant?.content).toContain('returned an empty reply twice');
+    expectRoundLifecycle(['continue', 'aborted'], 'output_unreadable', 'round 2 aborted');
   });
 
   it('ships the fail-loud message when the loop-final retry throws', async () => {
@@ -783,6 +823,7 @@ describe('loop-final empty recovery', () => {
     const messages = await store.listMessages('sess-loop-final-retry-throws');
     const assistant = messages.find((m) => m.role === 'assistant');
     expect(assistant?.content).toContain('returned an empty reply twice');
+    expectRoundLifecycle(['aborted'], 'output_unreadable', 'round 1 aborted');
   });
 
   it('includes both recovery sites in loop-abort total_calls accounting', async () => {
@@ -797,6 +838,7 @@ describe('loop-final empty recovery', () => {
     expect(result.calls).toBe(5);
     expect(result.dispatches).toBe(2);
     expect(budgetExceeded()).toMatchObject({ total_calls: 5 });
+    expectRoundLifecycle(['continue', 'aborted'], 'aborted', 'round 2 aborted');
   });
 
   it('builds site-specific empty-output feedback for initial and tool_loop sites', () => {

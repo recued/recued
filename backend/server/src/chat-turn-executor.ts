@@ -121,11 +121,13 @@ import {
   type IngredientManifest,
   type InternalToolRegistry,
   type ModelTier,
+  type MultiTurnTerminationReason,
   type TokenUsageReport,
   type Tier1ToolName,
   type ToolCall,
   type ToolTier,
   type TransparencyDecoderUnavailableReason,
+  type TransparencyMultiTurnRoundOutcome,
   isTier1ToolName,
 } from '@recued/contracts';
 import { dispatchToolCalls } from '@recued/middleware';
@@ -2319,10 +2321,8 @@ export const runChatTurn = async (
    *  evicted. The trim reliably discards the escalation the tool contract just
    *  told the model to perform, and the ladder reports success every round.
    *
-   *  This set is OBSERVATION ONLY for now. It counts the loop so a fix can be
-   *  gated on evidence rather than on the story above — the eviction-briefing
-   *  work earlier the same day was built on a diagnosis that turned out wrong
-   *  and was never exercised, which is the mistake this avoids repeating. */
+   *  Both truncated payloads and wholly removed call/result pairs lose answers.
+   *  Two re-fetches of those answers end the turn; one reread can recover. */
   const elidedCallSignatures = new Set<string>();
   /** `(tool, args)` — the call a model would have to repeat to get a value
    *  back. Args are serialized with sorted keys so two identical calls whose
@@ -2346,10 +2346,26 @@ export const runChatTurn = async (
       return `${call.tool_name ?? '?'}|<unserializable>`;
     }
   };
-  /** How many results arrived that the trim had ALREADY taken earlier in this
-   *  turn — i.e. the model paid for a call whose answer it was about to lose
-   *  again. Non-zero means the turn is in the loop above. */
+  // An intact reread can be evicted by a later call. Keep its identity until
+  // a settled composition loses it, and count that loss only once.
+  const pendingRefetchedCalls = new Set<ChatPriorToolCall>();
+  /** Successful rereads whose answers the trim then lost again. */
   let refetchedAfterElisionCount = 0;
+  // Keep dispatch outcome metadata out of the model-facing call shape. An
+  // acknowledged hold or failed run is not a completed answer to recover.
+  const successfulAnswerCalls = new WeakSet<ChatPriorToolCall>();
+  const observeToolCall = (
+    tc: ToolCall,
+    result: ChatDispatchResult,
+    started_at: number,
+    completed_at: number,
+    tier_override?: ToolTier,
+  ): ChatPriorToolCall => {
+    const observed = priorToolCallEntry(tc, result, deps.registry, started_at, completed_at, tier_override);
+    if (result.ok && result.run_failed === undefined && !isNonTerminalToolResult(result)
+      && result.result !== undefined) successfulAnswerCalls.add(observed);
+    return observed;
+  };
   // Stable ref per (call, field). The ladder re-composes many times — the
   // preview binary search alone runs ~log2(preview) rounds — and minting per
   // composition would hand the model a different ref for the same value on
@@ -2647,6 +2663,7 @@ export const runChatTurn = async (
     | {
         kind: 'failed';
         detail: string;
+        context_trim_livelock?: true;
         usage?: TokenUsageReport;
         validation_issues?: ReadonlyArray<AIOutputValidationIssue>;
       }
@@ -2989,6 +3006,7 @@ export const runChatTurn = async (
         //   Recomposing makes one state the single source of both.
         fittedChatTail = untrimmedTail;
         fittedPriorToolCalls = untrimmedPriorToolCalls;
+        settledSourceToolCalls = untrimmedPriorToolCalls;
         omittedContext = false;
         promptParts = composePrompt();
       }
@@ -3004,12 +3022,31 @@ export const runChatTurn = async (
     //   state are two different trims and were never meant to be observed
     //   together.
     //
-    //   So the signatures come from the SETTLED composition, keyed positionally
+    //   So preview signatures come from the SETTLED composition, keyed positionally
     //   against the un-elided sources so the identity is the real `(tool, args)`
     //   even when the shipped copy has both fields behind refs.
+    // Whole-call removals leave no marker. A surviving copy of the same call
+    // is checked by the preview logic below; dropping an older duplicate alone
+    // does not lose that answer. Only successful terminal answers can be lost.
+    const lostResultCalls = new Set<ChatPriorToolCall>();
+    if (settledSourceToolCalls.length < untrimmedPriorToolCalls.length) {
+      const retainedResultSignatures = new Set(
+        settledSourceToolCalls
+          .filter((call) => successfulAnswerCalls.has(call))
+          .map(elidedCallSignature),
+      );
+      for (const source of untrimmedPriorToolCalls) {
+        if (!successfulAnswerCalls.has(source)) continue;
+        const signature = elidedCallSignature(source);
+        if (!retainedResultSignatures.has(signature)) {
+          elidedCallSignatures.add(signature);
+          lostResultCalls.add(source);
+        }
+      }
+    }
     for (const [i, shipped] of fittedPriorToolCalls.entries()) {
       const source = settledSourceToolCalls[i];
-      if (source === undefined) continue;
+      if (source === undefined || !successfulAnswerCalls.has(source)) continue;
       const result = (shipped as { readonly result?: unknown }).result;
       if (result === null || typeof result !== 'object') continue;
       const marker = result as Record<string, unknown>;
@@ -3025,13 +3062,41 @@ export const runChatTurn = async (
       //   So the test is whether the model can still SEE the value: content was
       //   withheld only when the source is longer than the preview it was given.
       const raw = (source as { readonly result?: unknown }).result;
-      const rawLen = typeof raw === 'string'
-        ? raw.length
-        : ((): number => { try { return JSON.stringify(raw)?.length ?? 0; } catch { return 0; } })();
+      // Previews contain JSON text, including string quotes and escapes. Raw
+      // string length can make a truncated preview look like the whole result.
+      const rawLen = ((): number => {
+        try { return JSON.stringify(raw)?.length ?? 0; } catch { return 0; }
+      })();
       const previewLen = typeof marker['preview'] === 'string'
         ? (marker['preview']).length
         : 0;
-      if (rawLen > previewLen) elidedCallSignatures.add(elidedCallSignature(source));
+      if (rawLen > previewLen) {
+        elidedCallSignatures.add(elidedCallSignature(source));
+        lostResultCalls.add(source);
+      }
+    }
+    // Array order is dispatch order, including calls in the same batch. An
+    // older complete copy cannot stand in for the answer returned later.
+    const latestAnswerCalls = new Map<string, ChatPriorToolCall>();
+    for (const call of untrimmedPriorToolCalls) {
+      if (successfulAnswerCalls.has(call)) latestAnswerCalls.set(elidedCallSignature(call), call);
+    }
+    const visibleResultSignatures = new Set(
+      settledSourceToolCalls
+        .filter((call) => latestAnswerCalls.get(elidedCallSignature(call)) === call && !lostResultCalls.has(call))
+        .map(elidedCallSignature),
+    );
+    for (const source of lostResultCalls) {
+      if (!pendingRefetchedCalls.delete(source)) continue;
+      // A complete newer copy can recover the answer even if an older copy
+      // is truncated. A reread's arrival alone never proves another loss.
+      if (!visibleResultSignatures.has(elidedCallSignature(source))) {
+        refetchedAfterElisionCount += 1;
+      }
+    }
+    if (refetchedAfterElisionCount >= 2) {
+      // Stop before spending a model call on a packet that lost the rereads.
+      return { kind: 'failed', detail: 'context_trim_livelock', context_trim_livelock: true };
     }
     const layer: ChatModelRoutingLayer = inputs.model_layer;
     const forceLayer = chatModelLayerToForceLayer(layer);
@@ -3286,7 +3351,7 @@ export const runChatTurn = async (
       });
       const completed_at = now();
       collectProvenance(tool_name, result);
-      const observed = priorToolCallEntry(tc, result, deps.registry, started_at, completed_at);
+      const observed = observeToolCall(tc, result, started_at, completed_at);
       freshCalls.push(observed);
       mailEvidence?.record(observed);
       assistantToolCalls!.push(toolCallProvenanceEntry(tc, result, deps.registry, started_at, completed_at, session_id, turn_id));
@@ -3629,12 +3694,38 @@ export const runChatTurn = async (
       // one model call, not a loop.
       let invalidRecoveryUsed = false;
       let loopEmptyUnrecovered = false;
-      let terminationReason:
-        | 'completed'
-        | 'output_unreadable'
-        | 'max_rounds_exhausted'
-        | 'context_trim_livelock'
-        | 'aborted' = 'completed';
+      let terminationReason: MultiTurnTerminationReason = 'completed';
+      let startedRounds = 0;
+      let openRound: { round_index: number; tool_calls_executed: number } | undefined;
+      const completeRound = (outcome: TransparencyMultiTurnRoundOutcome): void => {
+        const round = openRound;
+        if (round === undefined) return;
+        openRound = undefined;
+        deps.emit({
+          kind: 'chat.transparency', session_id, turn_id,
+          event: { kind: 'recued.multi_turn.round_completed', ...round, outcome },
+        });
+      };
+
+      const stopForContextTrim = (result: Awaited<ReturnType<typeof tryMainTurn>>): boolean => {
+        if (result.kind !== 'failed' || result.context_trim_livelock !== true) return false;
+        // End only after the whole batch is recorded and its next prompt is
+        // fitted. Two confirmed reread losses justify stopping; one can recover.
+        console.warn(
+          `[chat] context-trim livelock: ${String(refetchedAfterElisionCount)} tool `
+          + `result(s) re-fetched after the trim had already elided them this turn `
+          + `(${String(elidedCallSignatures.size)} distinct call(s) elided over `
+          + `${String(roundIndex)} round(s)). Ending the turn instead of looping — `
+          + `the trim reaches fit every round by discarding the work the round `
+          + `produced, so further rounds cannot make progress.`,
+        );
+        terminationReason = 'context_trim_livelock';
+        assistantContent = CONTEXT_TRIM_LIVELOCK_MESSAGE;
+        // Critique runs before a round starts; review can run after it closes.
+        // Only an open dispatch round needs a terminal event here.
+        completeRound('aborted');
+        return true;
+      };
 
       toolLoop: while (nextToolCalls.length > 0) {
         // D-214 §10.2 — treatment-only advisory reinvocation before a
@@ -3692,6 +3783,7 @@ export const runChatTurn = async (
               critiqueReinvoke.usage,
             );
           }
+          if (stopForContextTrim(critiqueReinvoke)) break toolLoop;
           if (critiqueReinvoke.kind !== 'ok') {
             toolLoopFailure = { detail: critiqueReinvoke.detail };
             terminationReason = 'aborted';
@@ -3715,6 +3807,8 @@ export const runChatTurn = async (
           if (nextToolCalls.length === 0) break toolLoop;
         }
 
+        openRound = { round_index: roundIndex, tool_calls_executed: 0 };
+        startedRounds += 1;
         deps.emit({
           kind: 'chat.transparency',
           session_id,
@@ -3993,19 +4087,9 @@ export const runChatTurn = async (
             ...(heldRunId !== undefined ? { pair_id: heldRunId } : {}),
             ts: execution.completed_at ?? execution.started_at,
           });
-          // ⛔ THE LOOP DETECTOR. This result is arriving now; if the trim
-          //   already took the answer to this exact call earlier in the turn,
-          //   the model has just paid for work it is about to lose again.
-          if (elidedCallSignatures.has(elidedCallSignature({
-            tool_name: tc.tool,
-            args: tc.args,
-          }))) {
-            refetchedAfterElisionCount += 1;
-          }
-          const observed = priorToolCallEntry(
+          const observed = observeToolCall(
             tc,
             execution.result,
-            deps.registry,
             execution.started_at,
             execution.completed_at,
             // D-137 P4 Codex review P2 fold — same rationale as
@@ -4013,6 +4097,14 @@ export const runChatTurn = async (
             // for peer-routed rounds.
             dispatchPeerName !== null ? 3 : undefined,
           );
+          // A successful reread is only a candidate until a settled prompt
+          // loses its answer. Failures and holds have not recovered an answer.
+          if (
+            successfulAnswerCalls.has(observed)
+            && elidedCallSignatures.has(elidedCallSignature(observed))
+          ) {
+            pendingRefetchedCalls.add(observed);
+          }
           priorToolCalls.push(observed);
           mailEvidence?.record(observed);
           toolCallsExecuted += 1;
@@ -4032,11 +4124,12 @@ export const runChatTurn = async (
           collectProvenance(tc.tool, result);
           toolCallsAccum.push(toolCallProvenanceEntry(tc, result, deps.registry, started_at, completed_at, session_id, turn_id));
           toolResultsAccum.push({ tool_name: tc.tool, args, result, ts: completed_at, message_id: savedChatToolCallId(result) });
-          const observed = priorToolCallEntry(tc, result, deps.registry, started_at, completed_at);
+          const observed = observeToolCall(tc, result, started_at, completed_at);
           priorToolCalls.push(observed);
           mailEvidence?.record(observed);
           toolCallsExecuted += 1;
         });
+        openRound.tool_calls_executed = toolCallsExecuted;
         // ⛔ THE ROLLING BRIEF, flag-gated. Compress this turn's accumulated
         //   results into a carry-forward BEFORE they force a trim, then drop
         //   them. Runs here — at the round boundary, after the batch has landed
@@ -4096,33 +4189,6 @@ export const runChatTurn = async (
             briefedCallCount = priorToolCalls.length;
           }
         }
-        // ⛔⛔ THE LIVELOCK EXIT. Two results this turn that the trim had ALREADY
-        //   taken means the model is re-fetching into a hole: the elision rung
-        //   removes the biggest value, `work.read` results ARE the biggest
-        //   value, and re-reading produces the same too-large result. Measured
-        //   4 cycles on task 342 before the round cap, 0/4 answered.
-        //
-        //   ⚠ END OF ROUND, NOT MID-DISPATCH. The other calls in this batch are
-        //   already executing and their results belong in the audit; breaking
-        //   between them would record a round that half-happened.
-        //
-        //   ⚠ AND `>= 2`, MATCHING THE DETECTOR. One re-fetch is ordinary
-        //   recovery from a lost result; stopping there would abort turns that
-        //   were about to succeed.
-        if (refetchedAfterElisionCount >= 2) {
-          console.warn(
-            `[chat] context-trim livelock: ${String(refetchedAfterElisionCount)} tool `
-            + `result(s) re-fetched after the trim had already elided them this turn `
-            + `(${String(elidedCallSignatures.size)} distinct call(s) elided over `
-            + `${String(roundIndex)} round(s)). Ending the turn instead of looping — `
-            + `the trim reaches fit every round by discarding the work the round `
-            + `produced, so further rounds cannot make progress.`,
-          );
-          terminationReason = 'context_trim_livelock';
-          assistantContent = CONTEXT_TRIM_LIVELOCK_MESSAGE;
-          break toolLoop;
-        }
-
         // Codex Trio #B P2 fold #1 — the cap check fires AFTER the
         // reinvocation so the last allowed round still gets the
         // model's synthesis pass over its dispatched tool results.
@@ -4156,6 +4222,7 @@ export const runChatTurn = async (
           effectiveReinvoke = invalidRetry;
         }
 
+        if (stopForContextTrim(effectiveReinvoke)) break toolLoop;
         if (effectiveReinvoke.kind !== 'ok') {
           toolLoopFailure = { detail: effectiveReinvoke.detail };
           // ⛔ LOG THE CAUSE, BECAUSE THE EMITTED `reason` CANNOT CARRY IT.
@@ -4179,17 +4246,7 @@ export const runChatTurn = async (
             + `${decoderUnavailableReason(effectiveReinvoke)}: `
             + effectiveReinvoke.detail.slice(0, 300),
           );
-          deps.emit({
-            kind: 'chat.transparency',
-            session_id,
-            turn_id,
-            event: {
-              kind: 'recued.multi_turn.round_completed',
-              round_index: roundIndex,
-              outcome: 'aborted',
-              tool_calls_executed: toolCallsExecuted,
-            },
-          });
+          completeRound('aborted');
           deps.emit({
             kind: 'chat.transparency',
             session_id,
@@ -4246,9 +4303,9 @@ export const runChatTurn = async (
         // math is untouched; a recovered output flows through the normal
         // moreTools / cap branches below (more tool_calls may continue the
         // loop). Still-empty, failed retry, or budget already consumed →
-        // the fail-loud message ships; termination reason + transparency
-        // events stay unchanged; the loop exits via !moreTools and the
-        // post-loop normalisation relabels it `output_unreadable`.
+        // the fail-loud message ships and the round is aborted. The loop exits
+        // via !moreTools and the post-loop normalisation relabels its
+        // termination reason `output_unreadable`.
         if (isEmptyChatAiOutput(currentAiOutput)) {
           if (!loopRecoveryUsed) {
             loopRecoveryUsed = true;
@@ -4261,6 +4318,7 @@ export const runChatTurn = async (
               totalUsage,
               loopRetryResult.usage,
             );
+            if (stopForContextTrim(loopRetryResult)) break toolLoop;
             if (loopRetryResult.kind === 'ok') {
               currentAiOutput = loopRetryResult.output;
               loopEmptyUnrecovered = isEmptyChatAiOutput(currentAiOutput);
@@ -4284,7 +4342,9 @@ export const runChatTurn = async (
         const moreTools =
           !loopEmptyUnrecovered && currentAiOutput.tool_calls.length > 0;
 
-        // Cap check AFTER reinvocation. Two cases:
+        // Cap check AFTER reinvocation. Round outcomes:
+        //  - Empty-output recovery failed or was already spent: abort the
+        //    round so its status agrees with `output_unreadable` below.
         //  - Reinvocation synthesised (no more tool_calls): the
         //    round outcome is `completed`; the loop terminates
         //    cleanly via the `!moreTools` branch below.
@@ -4307,17 +4367,9 @@ export const runChatTurn = async (
           chargedRounds += 1;
         }
         const atCap = chargedRounds >= CHAT_MAIN_TURN_TOOL_LOOP_CAP;
-        deps.emit({
-          kind: 'chat.transparency',
-          session_id,
-          turn_id,
-          event: {
-            kind: 'recued.multi_turn.round_completed',
-            round_index: roundIndex,
-            outcome: moreTools ? 'continue' : 'completed',
-            tool_calls_executed: toolCallsExecuted,
-          },
-        });
+        completeRound(
+          loopEmptyUnrecovered ? 'aborted' : moreTools ? 'continue' : 'completed',
+        );
 
         if (!moreTools) {
           // ── VERIFY PASS (env-gated, OFF by default) ──────────────────────
@@ -4380,6 +4432,7 @@ export const runChatTurn = async (
               reviewInstruction,
             );
             totalUsage = aggregateTokenUsageReports(totalUsage, reviewed.usage);
+            if (stopForContextTrim(reviewed)) break toolLoop;
             if (
               reviewed.kind === 'ok'
               && !isEmptyChatAiOutput(reviewed.output)
@@ -4434,7 +4487,8 @@ export const runChatTurn = async (
         turn_id,
         event: {
           kind: 'recued.multi_turn.loop_terminated',
-          total_rounds: roundIndex + 1,
+          // A critique can stop the next proposal before its round starts.
+          total_rounds: startedRounds,
           termination_reason: terminationReason,
         },
       });

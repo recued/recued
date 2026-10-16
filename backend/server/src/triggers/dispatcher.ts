@@ -186,6 +186,14 @@ export interface EventTriggerDispatcherDeps {
   isVaultUnlocked?: () => boolean;
   /** Late-bound because the realm review service composes after this bus. */
   getPreapprovalDriver?: () => PreapprovalDriver | undefined;
+  /** D-318 step 1 — is this mailbox the email chat door's chat mailbox? Its
+   *  mail is the conversation with Recued, not the owner's mail, so a mail
+   *  event from it starts no recipe. Read per event. Absent ⇒ none is. */
+  isChatMailbox?: (slug: string) => boolean;
+  /** D-318 step 5 — is this stored message, in one of the owner's other
+   *  mailboxes, the conversation with the chat mailbox (an answer, or the Sent
+   *  copy of a request)? It starts no recipe either. Absent ⇒ none is. */
+  isChatConversationRecord?: (slug: string, record_id: string) => boolean;
 }
 
 interface Subscription {
@@ -504,6 +512,12 @@ export const createEventTriggerDispatcher = (
           eventPath(event.platform, event.slug, event.entity_type, event.event_kind))) {
           return;
         }
+        // D-318 step 1 — the chat mailbox's mail is the conversation with Recued;
+        // it starts no mail recipe. Before both the run and the pre-approval
+        // capture below, so neither sees it.
+        if (event.platform === 'mail' && deps.isChatMailbox?.(event.slug) === true) return;
+        // D-318 step 5 — nor its answers and requests in the owner's other mailboxes.
+        if (event.platform === 'mail' && deps.isChatConversationRecord?.(event.slug, event.record_id) === true) return;
         // Authoring sugar — per-row dispatch filter (design § 3/§ 5):
         // read-free payload conditions evaluated BEFORE the queue, so a
         // non-matching event never costs a fire (zero skip-noise for

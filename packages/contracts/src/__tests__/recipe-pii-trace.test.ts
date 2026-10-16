@@ -202,6 +202,23 @@ describe('tracePiiFlow', () => {
     }
   });
 
+  it('keeps the taint of the text date_from_text reads, in what it gives back', () => {
+    // It returns the input's own words with the time taken out: a subject that
+    // named a person still names them.
+    const t = trace([
+      { id: 'contact', ingredient: 'contact-source' },
+      { id: 'when', transform: 'date_from_text', input: '{{step.contact.email}}' },
+      { id: 'ai_text', ingredient: 'ai-classify', input: { 'llm.data': '{{step.when.text}}' } },
+      { id: 'ai_whole', ingredient: 'ai-classify', input: { 'llm.data': '{{step.when}}' } },
+    ], {
+      'contact-source': { email: ['email'] },
+    });
+
+    for (const id of ['ai_text', 'ai_whole']) {
+      expect(uncoveredOf(finding(t, id)), id).toEqual([{ input_key: 'llm.data', path: '', kinds: ['email'] }]);
+    }
+  });
+
   it('unions coalesce values without collapsing list element structure', () => {
     const listEmail = `${PII_LIST_SEGMENT}.email`;
     const t = trace([

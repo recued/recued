@@ -42,6 +42,23 @@ const fixture = (ambiguous = false, intercept?: (request: ManagedOAuthRequest) =
         : { action: 'status', status: 'pending' };
       case 'cancel': return { action: 'cancel' };
       case 'account_impact': throw new Error('This fixture needs an explicit account impact response.');
+      case 'collection_authentication_candidates':
+      case 'collection_authentication_app_context':
+      case 'collection_authentication_app_authorize':
+      case 'collection_authentication_app_review':
+      case 'collection_authentication_app_apply':
+      case 'collection_authentication_app_status':
+      case 'collection_authentication_app_retire':
+      case 'collection_authentication_review':
+      case 'collection_authentication_apply':
+      case 'collection_authentication_status':
+      case 'collection_authentication_retire': throw new Error('This fixture does not handle collection authentication migration.');
+      case 'review_direct_authentication':
+      case 'authentication_worklist':
+      case 'file_authentication_files':
+      case 'file_authentication_prepare':
+      case 'reauthorization_context':
+      case 'retire_direct_authentication': throw new Error('This fixture does not handle direct OAuth reviews.');
       case 'migration_candidates':
       case 'migration_prepare':
       case 'migration_apply':
@@ -466,7 +483,7 @@ describe('managed OAuth browser controller', () => {
       disabled: false, focus() { doc.activeElement = this; for (const listener of f.listeners.get('focusin') ?? []) listener({} as Event); },
       setSelectionRange(start: number, end: number) { this.selectionStart = start; this.selectionEnd = end; } };
     let markup = f.host.innerHTML;
-    Object.assign(f.host, { ownerDocument: doc, querySelector: () => replacement });
+    Object.assign(f.host, { ownerDocument: doc, querySelector: (selector: string) => selector === '[data-managed-field="label"]' ? replacement : null });
     Object.defineProperty(f.host, 'innerHTML', { get: () => markup, set: (value: string) => { markup = value; doc.activeElement = body; } });
     doc.activeElement = { ...replacement, selectionStart: 1, selectionEnd: 1 };
     f.input('label', 'I');
@@ -922,4 +939,15 @@ describe('managed OAuth browser controller', () => {
     expect(f.calls).toContainEqual({ action: 'cancel', flow_id: 'flow', claim_secret: 'private-claim' });
     f.panel.dispose();
   });
+});
+
+
+it('manual reauthorization keeps the broker account and explicitly requests fresh consent', async () => {
+  const f = fixture(false, undefined, false, { mode: 'switch', reauthorize_current: true, forceReauthorization: true,
+    profile_id: 'cloud', integration_id: 'sheets-prod', connection_id: 'existing-account', expected_updated_at: 3 });
+  await settle();
+  expect(f.calls.some(request => request.action === 'preview' && request.force_reauthorization === true && request.connection_id === 'existing-account')).toBe(true);
+  expect(f.calls.some(request => request.action === 'remote_connections')).toBe(false);
+  expect(f.host.innerHTML).not.toContain('Authorize a new account');
+  f.panel.dispose();
 });

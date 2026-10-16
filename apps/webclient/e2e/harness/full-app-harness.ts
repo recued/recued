@@ -40,6 +40,9 @@ import type {
   PacksUnrunnableResult,
   RegistryDescribeRpcOutput,
   ServerLlmUsageResponse,
+  HousekeepingConfigRow,
+  EnrichmentTrustRow,
+  ConfidenceDriftSignal,
 } from '@recued/contracts';
 import {
   HARNESS_SERVER_FINGERPRINT,
@@ -54,6 +57,7 @@ import { workEntityUpsertDemoReply } from './work-entity-upsert.js';
 import { recipeSimulationDemoReply } from './recipe-simulation.js';
 import { preapprovalDemoReply } from './preapproval.js';
 import type { GrantRecipeOpUsageCaller } from '../../src/contracts/contract-grants-panel.js';
+import { HOUSEKEEPING_PRESET_DEFAULTS, HOUSEKEEPING_CYCLE_BUDGET_MIN_MS, HOUSEKEEPING_CYCLE_BUDGET_MAX_MS } from '@recued/contracts';
 import {
   bootstrapWebclient,
   type WebclientHandle,
@@ -701,7 +705,7 @@ const demoCreatedWebhookIngress = (
   };
 };
 
-type AiSettingsReadMethod = 'chat.default_model_pref.get' | 'chat.rolling_brief.get' | 'chat.install_offers.get';
+type AiSettingsReadMethod = 'chat.default_model_pref.get' | 'chat.rolling_brief.get' | 'chat.install_offers.get' | 'housekeeping.cache.stats';
 
 interface FakeTransportControls {
   transport: WebclientWsTransport;
@@ -714,6 +718,9 @@ interface FakeTransportControls {
   setAiModelsConfig(config: Record<string, unknown>): void;
   failNextAiModelsConfigRead(): void;
   failNextAiSettingsRead(method: AiSettingsReadMethod): void;
+  setAiCacheEntries(entries: number): void;
+  setHousekeepingDriftSignal(signal: ConfidenceDriftSignal): void;
+  setHousekeepingTrustRow(row: EnrichmentTrustRow): void;
   fireState(state: WebclientWsState): void;
   fireMessage(message: unknown): void;
 }
@@ -901,8 +908,30 @@ const buildFakeTransport = (
   const states = new Set<(s: WebclientWsState) => void>();
   const messages = new Set<(m: unknown) => void>();
   const rpcCallCounts = new Map<string, number>();
+  const housekeepingTrustRows = new Map<string, EnrichmentTrustRow>(
+    ['summary', 'thread_signals'].map((topic): [string, EnrichmentTrustRow] => [topic, {
+      topic, trust_state: housekeepingBannersDemo ? 'manual' : 'auto',
+      pool_policy: 'free_then_byok', manual_run_count: housekeepingBannersDemo ? 3 : 0,
+      promotion_suggested_at: housekeepingBannersDemo ? FIXED_NOW : null,
+      promotion_dismissed_at: null, updated_at: FIXED_NOW,
+    }]),
+  );
+  const housekeepingDriftRows = new Map<string, ConfidenceDriftSignal>(
+    ['summary', 'thread_signals'].map((source_topic): [string, ConfidenceDriftSignal] => [source_topic, {
+      source_topic, psi: 0.31, severity: 'significant', computed_at: FIXED_NOW,
+      baseline_window: { start_at: FIXED_NOW - 60000, end_at: FIXED_NOW - 30000, sample_count: 30 },
+      recent_window: { start_at: FIXED_NOW - 30000, end_at: FIXED_NOW, sample_count: 30 },
+      baseline_distribution: [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1],
+      recent_distribution: [0.4, 0.3, 0.1, 0.05, 0.05, 0.05, 0.025, 0.025, 0, 0],
+    }]),
+  );
+  const housekeepingResetPreviews = new Map<string, {
+    topic: string; resetPsiBaselines: boolean;
+  }>();
   const recipeBodies = createRecipeBodyMemory();
   const heldServerControlResponses: Array<() => void> = [];
+  let aiCacheEntries = searchParams.get('ai_cache') === 'populated' ? 12 : 0;
+  let aiCacheClearFailures = searchParams.get('ai_cache_clear_response') === 'fail-first' ? 1 : 0;
   const heldRpcResponses = new Map<string, Array<() => void>>();
   const heldRpcMethods = new Set(searchParams.getAll('hold_rpc'));
   let failNextAiModelsRead = false;
@@ -1065,10 +1094,12 @@ const buildFakeTransport = (
   let allowByokBackground = false;
   let pauseBackgroundAiUntil: number | null = null;
   let housekeepingUpdatedAt = FIXED_NOW;
+  let housekeepingSchedule: Pick<HousekeepingConfigRow, 'preset' | 'cycle_budget_ms' | 'cycle_interval_minutes' | 'custom_window_start_hour' | 'custom_window_end_hour'> = {
+    preset: 'balanced', cycle_budget_ms: 60_000, cycle_interval_minutes: 15,
+  };
+  let housekeepingSaveFailures = searchParams.get('housekeeping_save') === 'fail-first' ? 1 : 0;
   const housekeepingSnapshot = () => ({
-    preset: 'balanced' as const,
-    cycle_budget_ms: 60_000,
-    cycle_interval_minutes: 15,
+    ...housekeepingSchedule,
     allow_byok_background: allowByokBackground,
     pause_background_ai_until: pauseBackgroundAiUntil,
     updated_at: housekeepingUpdatedAt,
@@ -1779,7 +1810,8 @@ const buildFakeTransport = (
       adapter_type: imapEnrollSucceeds ? 'imap' : 'gmail',
       auth_state: 'healthy',
       // Initial route list = read 1; post-enroll refresh = read 2 (pending);
-      // two quiet panel polls keep the pending state observable, then ready.
+      // Two quiet reads keep checking observable, then access is verified while
+      // later reads still import history. Only the final milestone is ready.
       last_synced_at:
         imapEnrollSucceeds
         || connectedSourceReadyDemo
@@ -1788,6 +1820,12 @@ const buildFakeTransport = (
         || mailListReads >= 4
         ? FIXED_NOW
         : null,
+      sync_status: {
+        access_verified: imapEnrollSucceeds || connectedSourceReadyDemo || connectedSourceAnswerDemo
+          || (connectedSourceCheckDemo && mailListReads >= 2) || mailListReads >= 4,
+        initial_sync_complete: imapEnrollSucceeds || connectedSourceReadyDemo || connectedSourceAnswerDemo
+          || (connectedSourceCheckDemo && mailListReads >= 2) || mailListReads >= 6,
+      },
       send_capable: false,
       account_email: imapEnrollSucceeds
         ? 'me@example.com'
@@ -2392,6 +2430,15 @@ const buildFakeTransport = (
             server_budget_tokens: aiBudget,
           } satisfies ServerLlmUsageResponse;
         }
+        if (rpc.method === 'housekeeping.cache.clear') {
+          if (aiCacheClearFailures > 0) {
+            aiCacheClearFailures -= 1;
+            error = { code: 'UNAVAILABLE', message: 'Cache clear unavailable.' };
+          } else {
+            result = { ok: true, rows_deleted: aiCacheEntries };
+            aiCacheEntries = 0;
+          }
+        }
         if (rpc.method === 'server.getConfigSchema') {
           result = {
             schema: aiModelsUsageDemo
@@ -2455,6 +2502,13 @@ const buildFakeTransport = (
             }],
           };
         }
+        if (
+          housekeepingDemo && rpc.method === 'housekeeping.status.read'
+          && searchParams.get('housekeeping_status') === 'fail-after-run'
+          && (rpcCallCounts.get('housekeeping.task.run_now') ?? 0) > 0
+        ) {
+          error = { code: 'UNAVAILABLE', message: 'Housekeeping status unavailable.' };
+        }
         if (housekeepingDemo && rpc.method === 'housekeeping.trust.read') {
           result = {
             rows: [{
@@ -2475,6 +2529,61 @@ const buildFakeTransport = (
               updated_at: FIXED_NOW,
             }],
           };
+          if (searchParams.get('housekeeping_trust') === 'tracked') {
+            result = { rows: [...housekeepingTrustRows.values()] };
+          }
+        }
+        if (housekeepingDemo && rpc.method === 'housekeeping.trust.write'
+          && searchParams.get('housekeeping_trust') === 'tracked') {
+          const args = rpc.args as { topic?: unknown; trust_state?: unknown; pool_policy?: unknown };
+          const saved = typeof args.topic === 'string' ? housekeepingTrustRows.get(args.topic) : undefined;
+          if (!saved) {
+            error = { code: 'NOT_FOUND', message: 'Housekeeping topic unavailable.' };
+          } else if ((searchParams.get('housekeeping_trust_response') === 'fail-first'
+            || (housekeepingBannersDemo && searchParams.get('housekeeping_banner_response') === 'fail-first'))
+            && rpcCallCounts.get(rpc.method) === 1) {
+            error = { code: 'UNAVAILABLE', message: housekeepingBannersDemo
+              ? 'Banner save unavailable.' : 'Run policy or model pool save unavailable.' };
+          } else {
+            const effective: EnrichmentTrustRow = {
+              ...saved,
+              ...(args.trust_state === 'off' || args.trust_state === 'manual' || args.trust_state === 'auto'
+                ? { trust_state: args.trust_state } : {}),
+              ...(args.pool_policy === 'free_only' || args.pool_policy === 'free_then_byok' || args.pool_policy === 'byok_only'
+                ? { pool_policy: args.pool_policy } : {}),
+              updated_at: FIXED_NOW + (rpcCallCounts.get(rpc.method) ?? 0),
+            };
+            housekeepingTrustRows.set(effective.topic, effective);
+            result = { ok: true, effective };
+          }
+        }
+        if (housekeepingDemo && housekeepingBannersDemo && rpc.method === 'housekeeping.trust.dismiss_promotion') {
+          const args = rpc.args as { topic?: unknown };
+          const saved = typeof args.topic === 'string' ? housekeepingTrustRows.get(args.topic) : undefined;
+          if (!saved) error = { code: 'NOT_FOUND', message: 'Housekeeping topic unavailable.' };
+          else if (searchParams.get('housekeeping_banner_response') === 'fail-first'
+            && rpcCallCounts.get(rpc.method) === 1) error = { code: 'UNAVAILABLE', message: 'Banner save unavailable.' };
+          else {
+            const effective = { ...saved, promotion_dismissed_at: FIXED_NOW };
+            housekeepingTrustRows.set(effective.topic, effective);
+            result = { ok: true, effective };
+          }
+        }
+        if (housekeepingDemo && housekeepingBannersDemo && rpc.method === 'housekeeping.drift.read') {
+          result = { rows: [...housekeepingDriftRows.values()] };
+        }
+        if (housekeepingDemo && housekeepingBannersDemo && rpc.method === 'housekeeping.drift.dismiss') {
+          const args = rpc.args as { source_topic?: unknown };
+          const saved = typeof args.source_topic === 'string' ? housekeepingDriftRows.get(args.source_topic) : undefined;
+          if (!saved) error = { code: 'NOT_FOUND', message: 'Housekeeping drift unavailable.' };
+          else if (searchParams.get('housekeeping_banner_response') === 'fail-first'
+            && rpcCallCounts.get(rpc.method) === 1) error = { code: 'UNAVAILABLE', message: 'Banner save unavailable.' };
+          else {
+            const effective = { ...saved, dismissed_at: saved.dismissed_at
+              ?? Math.max(saved.computed_at, FIXED_NOW + (rpcCallCounts.get(rpc.method) ?? 0)) };
+            housekeepingDriftRows.set(effective.source_topic, effective);
+            result = { ok: true, effective };
+          }
         }
         if (housekeepingDemo && rpc.method === 'housekeeping.registry.describe') {
           result = {
@@ -2485,7 +2594,9 @@ const buildFakeTransport = (
               lifecycle_policy: 'forward_only',
               valid_scopes: ['mail'],
               compression_class: 'lossy',
-              prompt_bias_hints: [],
+              prompt_bias_hints: housekeepingBiasHintsDemo
+                ? ['Prefer the original subject when interpreting a summary.']
+                : [],
               description: 'Mail summary digest',
               ai_surface: true,
               mcp_exposed: 'public',
@@ -2505,7 +2616,9 @@ const buildFakeTransport = (
               lifecycle_policy: 'forward_only',
               valid_scopes: ['mail'],
               compression_class: 'lossless',
-              prompt_bias_hints: [],
+              prompt_bias_hints: housekeepingBiasHintsDemo
+                ? ['Use thread ids rather than subjects to group messages.']
+                : [],
               description: 'Thread relationship signals',
               ai_surface: false,
               mcp_exposed: 'public',
@@ -5987,22 +6100,45 @@ const buildFakeTransport = (
               code: 'UNAVAILABLE',
               message: 'AI usage policy update unavailable.',
             };
+          } else if (housekeepingSaveFailures > 0) {
+            housekeepingSaveFailures -= 1;
+            error = { code: 'UNAVAILABLE', message: 'Schedule save unavailable.' };
           } else {
             const args = rpc.args as {
+              preset?: HousekeepingConfigRow['preset'];
+              cycle_budget_ms?: number;
+              cycle_interval_minutes?: number;
+              custom_window_start_hour?: number;
+              custom_window_end_hour?: number;
               allow_byok_background?: unknown;
               pause_background_ai_until?: unknown;
             };
-            if (typeof args.allow_byok_background === 'boolean') {
-              allowByokBackground = args.allow_byok_background;
+            if (args.preset === 'custom') {
+              const validHour = (n: number | undefined): n is number => n !== undefined && Number.isInteger(n) && n >= 0 && n <= 23;
+              if (typeof args.cycle_budget_ms !== 'number' || !Number.isFinite(args.cycle_budget_ms)
+                || args.cycle_budget_ms < HOUSEKEEPING_CYCLE_BUDGET_MIN_MS || args.cycle_budget_ms > HOUSEKEEPING_CYCLE_BUDGET_MAX_MS
+                || typeof args.cycle_interval_minutes !== 'number' || !Number.isFinite(args.cycle_interval_minutes) || args.cycle_interval_minutes < 0
+                || !validHour(args.custom_window_start_hour) || !validHour(args.custom_window_end_hour)) {
+                error = { code: 'INVALID_ARGUMENT', message: 'Enter a valid custom budget, interval, and both window hours.' };
+              } else {
+                housekeepingSchedule = {
+                  preset: 'custom', cycle_budget_ms: args.cycle_budget_ms, cycle_interval_minutes: args.cycle_interval_minutes,
+                  custom_window_start_hour: args.custom_window_start_hour, custom_window_end_hour: args.custom_window_end_hour,
+                };
+              }
+            } else if (args.preset === 'off') {
+              housekeepingSchedule = { preset: 'off', cycle_budget_ms: 0, cycle_interval_minutes: 0 };
+            } else if (args.preset !== undefined) {
+              housekeepingSchedule = { preset: args.preset, ...HOUSEKEEPING_PRESET_DEFAULTS[args.preset] };
             }
-            if (
-              args.pause_background_ai_until === null
-              || typeof args.pause_background_ai_until === 'number'
-            ) {
-              pauseBackgroundAiUntil = args.pause_background_ai_until;
+            if (error === undefined) {
+              if (typeof args.allow_byok_background === 'boolean') allowByokBackground = args.allow_byok_background;
+              if (args.pause_background_ai_until === null || typeof args.pause_background_ai_until === 'number') {
+                pauseBackgroundAiUntil = args.pause_background_ai_until;
+              }
+              housekeepingUpdatedAt += 1;
+              result = { ok: true, effective: housekeepingSnapshot() };
             }
-            housekeepingUpdatedAt += 1;
-            result = { ok: true, effective: housekeepingSnapshot() };
           }
         }
         if (rpc.method === 'server.upsertFreePoolEntry') {
@@ -6297,6 +6433,10 @@ const buildFakeTransport = (
             message: 'Calendar sign-in is temporarily unavailable.',
           };
         }
+        if (calendarLifecycleDemo && rpc.method === 'collection.connection.managedOAuth'
+          && (rpc.args as { action?: string })?.action === 'collection_authentication_app_context') {
+          error = { code: 'UNAVAILABLE', message: 'Calendar sign-in is temporarily unavailable.' };
+        }
         if (rpc.method === 'collection.mail.enrollImap' && imapEnrollFails) {
           error = {
             code: 'VALIDATION',
@@ -6427,27 +6567,40 @@ const buildFakeTransport = (
               ? args.topic
               : 'unknown';
             const applied = typeof args.confirmation_token === 'string';
+            const tracked = searchParams.get('housekeeping_reset') === 'tracked';
+            const resetPsiBaselines = typeof args.reset_psi_baselines === 'boolean'
+              ? args.reset_psi_baselines : true;
+            const token = tracked
+              ? `reset-${topic}-${rpcCallCounts.get('housekeeping.topic.reset')}-token`
+              : `reset-${topic}-token`;
+            if (tracked && !applied) {
+              housekeepingResetPreviews.set(token, { topic, resetPsiBaselines });
+            } else if (tracked && typeof args.confirmation_token === 'string') {
+              const preview = housekeepingResetPreviews.get(args.confirmation_token);
+              if (!preview || preview.topic !== topic || preview.resetPsiBaselines !== resetPsiBaselines) {
+                error = { code: 'CONFLICT', message: 'Reset confirmation does not match its preview.' };
+              } else {
+                housekeepingResetPreviews.delete(args.confirmation_token);
+              }
+            }
             result = {
               applied,
-              confirmation_token: applied ? null : `reset-${topic}-token`,
+              confirmation_token: applied ? null : token,
               expires_at: applied ? null : FIXED_NOW + 300_000,
               topic,
               scope_filter: null,
-              reset_psi_baselines:
-                typeof args.reset_psi_baselines === 'boolean'
-                  ? args.reset_psi_baselines
-                  : true,
+              reset_psi_baselines: resetPsiBaselines,
               impact: {
                 rows_to_tombstone: 48,
                 pinned_protected: 2,
-                psi_baselines_to_drop: 1,
+                psi_baselines_to_drop: tracked && !resetPsiBaselines ? 0 : 1,
                 estimated_recompute_tokens: 28_800,
               },
               applied_summary: applied
                 ? {
                     rows_tombstoned: 48,
                     rows_recompute_enqueued: 48,
-                    psi_baselines_dropped: 1,
+                    psi_baselines_dropped: tracked && !resetPsiBaselines ? 0 : 1,
                     pinned_skipped: 2,
                   }
                 : {
@@ -6457,6 +6610,9 @@ const buildFakeTransport = (
                     pinned_skipped: 0,
                   },
             };
+            if (searchParams.get('housekeeping_reset_fail_at') === String(rpcCallCounts.get('housekeeping.topic.reset'))) {
+              error = { code: 'UNAVAILABLE', message: 'Reset preview unavailable.' };
+            }
           }
           // ── Settings panel reads, answered as UNAVAILABLE ─────────────────
           //
@@ -6502,7 +6658,12 @@ const buildFakeTransport = (
             // `NotificationsDescribeCaller`
             'chat.execution.learned': { cases: [] },
             'housekeeping.cache.stats': {
-              total_entries: 0, total_hits: 0, per_topic: [],
+              total_entries: aiCacheEntries,
+              total_hits: aiCacheEntries * 3,
+              per_topic: aiCacheEntries === 0 ? [] : [
+                { topic: 'summary', entry_count: aiCacheEntries, hit_count: aiCacheEntries * 3 },
+              ],
+              last_gc_at: null,
             },
             'notifications.describe': { rows: [] },
             // ── Contracts → Connect tab (the permissions panel) ────────────
@@ -6972,6 +7133,19 @@ const buildFakeTransport = (
         if (rpc.method === 'recipe.get' && result === undefined && error === undefined) {
           result = { recipe: recipeBodies.get((rpc.args as { recipe_id?: unknown } | undefined)?.recipe_id) };
         }
+        // Empty authentication inventories are ordinary first-run states.
+        if (result === undefined && error === undefined) {
+          if (rpc.method === 'data.file.attachments.sources') result = { sources: [] };
+          if (rpc.method === 'packs.reconnect_later' && (rpc.args as { action?: string })?.action === 'list') result = { action: 'list', groups: [], unresolved_packs: [] };
+          if (rpc.method === 'server.oauthApps' && (rpc.args as { action?: string })?.action === 'list') result = { action: 'list', apps: oauthConfigured || firstSyncDemo
+            ? [{ id: 'default', issuer: 'google', label: 'Default Google app', client_id: 'GOOGLE-CID', has_secret: true, revision: 1 },
+              { id: 'default', issuer: 'microsoft', label: 'Default Microsoft app', client_id: 'MICROSOFT-CID', has_secret: true, revision: 1 }] : [] };
+          if (rpc.method === 'collection.connection.managedOAuth') {
+            const action = (rpc.args as { action?: string })?.action;
+            if (action === 'authentication_worklist') result = { action, worklist: { observed_at: FIXED_NOW, groups: [], unavailable: [] } };
+            if (action === 'profiles') result = { action, profiles: [] };
+          }
+        }
         // `trace_pending=1` — name every read this transport never answers.
         // The list is how a coverage gap stops being archaeology: a route stuck
         // on "Loading…" tells you nothing, the method name tells you exactly
@@ -6986,6 +7160,12 @@ const buildFakeTransport = (
         if (failingAiSettingsReads.delete(rpc.method as AiSettingsReadMethod)) {
           error = { code: 'UNAVAILABLE', message: 'AI setting read unavailable.' };
         }
+        // Opt-in per-test fixture for populated customer-work journeys. The
+        // normal harness and production transport have no override.
+        const receptionFixture=(window as Window & {__receptionFixture?: (method:string,args:unknown)=>Promise<{result?:unknown;error?:{code:string;message:string}}|undefined>}).__receptionFixture;
+        if(receptionFixture){const receptionReply=await receptionFixture(rpc.method,rpc.args);if(receptionReply){result=receptionReply.result;error=receptionReply.error;}}
+        const connectionsFixture = (window as Window & { __connectionsFixture?: (method: string, args: unknown) => Promise<{ result?: unknown; error?: { code: string; message: string } } | undefined> }).__connectionsFixture;
+        if (connectionsFixture) { const reply = await connectionsFixture(rpc.method, rpc.args); if (reply) { result = reply.result; error = reply.error; } }
         if (result === undefined && error === undefined) return;
         // rpc-conn registers the pending request before transport.send. One
         // harness mode deliberately lets the AI-config read settle on a later
@@ -7288,6 +7468,8 @@ const buildFakeTransport = (
           && (
             rpc.method === 'collection.calendar.resync'
             || rpc.method === 'collection.calendar.reauth'
+            || rpc.method === 'collection.connection.managedOAuth'
+              && (rpc.args as { action?: string })?.action === 'collection_authentication_app_context'
           )
         ) {
           setTimeout(respond, 500);
@@ -7727,6 +7909,13 @@ const buildFakeTransport = (
     },
     failNextAiModelsConfigRead: () => { failNextAiModelsRead = true; },
     failNextAiSettingsRead: (method) => { failingAiSettingsReads.add(method); },
+    setAiCacheEntries: (entries) => { aiCacheEntries = entries; },
+    setHousekeepingDriftSignal: (signal) => {
+      if (housekeepingBannersDemo) housekeepingDriftRows.set(signal.source_topic, structuredClone(signal));
+    },
+    setHousekeepingTrustRow: (row) => {
+      if (housekeepingBannersDemo) housekeepingTrustRows.set(row.topic, structuredClone(row));
+    },
     fireState: (state) => {
       for (const listener of [...states]) listener(state);
     },
@@ -7827,6 +8016,12 @@ interface FullAppHooks {
   setAiModelsConfig?(config: Record<string, unknown>): void;
   failNextAiModelsConfigRead?(): void;
   failNextAiSettingsRead?(method: AiSettingsReadMethod): void;
+  /** Mutate only the fixture server's cache before broadcasting a GC event. */
+  setAiCacheEntries?(entries: number): void;
+  /** Supply a complete fixture server row before its narrow drift broadcast. */
+  setHousekeepingDriftSignal?(signal: ConfidenceDriftSignal): void;
+  /** Supply the fixture server's complete trust row before a promotion event. */
+  setHousekeepingTrustRow?(row: EnrichmentTrustRow): void;
   /** Exercise the real route mount's public read, with no provider request. */
   refreshAiModels?(): Promise<void>;
   fireState(state: WebclientWsState): void;
@@ -7957,6 +8152,9 @@ const failLearningDraft =
 const learningDraftHandoffRecoveryDemo =
   searchParams.get('learning_draft_handoff') === 'fail-once';
 const housekeepingDemo = searchParams.get('housekeeping') === 'ready';
+// Optional populated disclosures for native open-state and keyboard checks.
+const housekeepingBiasHintsDemo = searchParams.get('housekeeping_bias_hints') === 'ready';
+const housekeepingBannersDemo = searchParams.get('housekeeping_banners') === 'ready';
 const workEntitySourcesDemo =
   searchParams.get('work_entities') === 'multiple-sources';
 const longWorkEntityTextDemo = searchParams.get('work_entity_text') === 'long';
@@ -9549,6 +9747,9 @@ void (async (): Promise<void> => {
       failNextAiModelsConfigRead: () => transport.failNextAiModelsConfigRead(),
       failNextAiSettingsRead: (method) => transport.failNextAiSettingsRead(method),
       refreshAiModels: () => handle.settingsRoute()?.aiModelsPage()?.refresh() ?? Promise.resolve(),
+      setAiCacheEntries: (entries) => transport.setAiCacheEntries(entries),
+      setHousekeepingDriftSignal: (signal) => transport.setHousekeepingDriftSignal(signal),
+      setHousekeepingTrustRow: (row) => transport.setHousekeepingTrustRow(row),
       fireState: (state) => transport.fireState(state),
       fireMessage: (message) => transport.fireMessage(message),
       ...(accountDemo

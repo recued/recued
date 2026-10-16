@@ -76,6 +76,10 @@ export interface StoredEmailDeps {
    *  (`MailCollection.legacyAttachmentsAmbiguous`). Such a file is offered
    *  only when this answers false; without it, none is. */
   readonly legacyAttachmentsAmbiguous?: (slug: string, record_id: string) => boolean;
+  /** D-318 audit — did Recued send mail under this reconciliation id (its send
+   *  claims)? Only then is a stored email carrying one Recued's own, which the
+   *  ingest left out (`own-mail.ts`). Absent ⇒ none is. */
+  readonly isOwnSend?: (reconciliation_id: string) => boolean;
 }
 
 const hotString = (record: CollectionRecord, key: string): string => {

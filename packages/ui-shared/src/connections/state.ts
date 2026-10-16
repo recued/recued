@@ -126,6 +126,14 @@ export interface ConnectionsPostSafeStopRecoveryState {
 }
 
 export interface ConnectionsDialogState {
+  authenticationManagement?: import('./manage-authentication.js').AuthenticationManagementAction;
+  authenticationManagementCanChangeApp?: boolean;
+  authenticationManagementCurrentAppId?: string;
+  authenticationManagementCurrentClientId?: string;
+  /** Pack-guided reauthorization keeps the selected authentication type. */
+  authenticationRepair?: true;
+  /** Non-secret metadata for the current server's saved issuer apps. */
+  savedOAuthApps?: { loading: boolean;config?: import('@recued/contracts').OAuthAppConfigSnapshot;error?: string;canManage?: boolean };
   /** The EXACT callback URL to register with the provider, resolved for THIS
    *  PWA's origin (`oauthCallbackUrlForPwa`). Threaded in because this renderer
    *  is pure and has no `window`.
@@ -168,6 +176,8 @@ export interface ConnectionsDialogState {
   editingId: string | null;
   /** D-322 §23 — original safe view while preparing a replacement broker account. */
   authenticationSwitch: ConnectionView | null;
+  /** Native replacement review is tab-local and never restored from browser storage. */
+  directAuthenticationReview: import('@recued/contracts').DirectOAuthAuthenticationReview | null;
   /** Set by authoritative sibling/focus reconciliation. This warning never
    * replaces `values`; it is the explicit stale-editor boundary. */
   externalChange: ConnectionsDialogExternalChangeState | null;
@@ -201,6 +211,7 @@ export interface ConnectionsDialogState {
     kind: ConnectionKind;
     name: string;
     status: string;
+    last_error?: string;
     purpose?: 'probe' | 'credential_rotation' | 'post_safe_stop';
     resolution?:
       | 'checking'
@@ -221,6 +232,7 @@ export interface ConnectionsDialogState {
     verified_at?: number;
     auth_type?: ConnectionAuthType;
     access_expires_at?: number;
+    reconnect_collections?: readonly import('@recued/contracts').ManagedOAuthConnectionUse[];
   } | null;
   /** D-129 P1.3 — vendor OAuth code-exchange state. The host catches
    *  the "Authorize with <Vendor>" button click, runs the OAuth dance
@@ -426,6 +438,7 @@ export interface ConnectionsServerUpdateTriage {
 }
 
 export interface ConnectionsPageState {
+  inventoryFilters?: { query?: string; vendor?: string; status?: string } | undefined;
   loading: boolean;
   error: string | null;
   /** Flat list returned from `collection.connection.list`. The
@@ -538,6 +551,7 @@ export const initialConnectionsDialogState = (): ConnectionsDialogState => ({
   values: {},
   editingId: null,
   authenticationSwitch: null,
+  directAuthenticationReview: null,
   externalChange: null,
   credentialRotationOwnership: null,
   saving: false,

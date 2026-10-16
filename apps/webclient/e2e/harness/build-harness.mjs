@@ -22,7 +22,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(here, '../..'); // apps/webclient
 copyFilePreviewAssets(here);
 
-const ENTRIES = ['kitchen-harness.ts', 'full-app-harness.ts', 'chat-queue-harness.ts', 'file-lifecycle-harness.ts', 'existing-files-harness.ts', 'mail-work-harness.ts', 'quote-signoff-harness.ts', 'customer-jobs-harness.ts'];
+const ENTRIES = ['kitchen-harness.ts', 'full-app-harness.ts', 'chat-queue-harness.ts', 'file-lifecycle-harness.ts', 'existing-files-harness.ts', 'mail-work-harness.ts', 'quote-signoff-harness.ts', 'customer-jobs-harness.ts', 'customer-accounts-harness.ts', 'customer-account-payments-harness.ts', 'quote-completion-reminders-harness.ts', 'quote-payment-reminders-harness.ts', 'customer-payment-receipts-harness.ts', 'saved-oauth-apps-harness.ts', 'mail-chat-door-harness.ts'];
 for (const entry of ENTRIES) {
   // An entry may legitimately be absent from a source projection: the public
   // export withholds `kitchen-harness.ts`, because it stress-tests marketplace

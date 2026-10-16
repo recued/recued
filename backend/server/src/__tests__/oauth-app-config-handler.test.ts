@@ -19,15 +19,15 @@ const setup = (store?: OAuthAppConfigStore) => {
 describe('OAuth app config handlers', () => {
   it('getOAuthAppConfig: unconfigured → source null, no client_id, no secret', async () => {
     const snap = await setup().get();
-    expect(snap.google).toEqual({ client_id: null, has_secret: false, source: null });
-    expect(snap.microsoft).toEqual({ client_id: null, has_secret: false, source: null });
+    expect(snap.google).toEqual({ client_id: null, has_secret: false, source: null, apps: [] });
+    expect(snap.microsoft).toEqual({ client_id: null, has_secret: false, source: null, apps: [] });
   });
 
   it('set then get: source "stored", client_id shown, has_secret true — secret never returned', async () => {
     const { get, set } = setup();
     await set({ issuer: 'google', client_id: 'gid', client_secret: 'gsecret' });
     const snap = await get();
-    expect(snap.google).toEqual({ client_id: 'gid', has_secret: true, source: 'stored' });
+    expect(snap.google).toMatchObject({ client_id: 'gid', has_secret: true, source: 'stored' });
     // No client_secret anywhere in the response shape.
     expect(JSON.stringify(snap)).not.toContain('gsecret');
     expect(JSON.stringify(snap)).not.toContain('client_secret');
@@ -45,9 +45,9 @@ describe('OAuth app config handlers', () => {
   it('clear leaves the issuer unconfigured — nothing sits behind the store', async () => {
     const { get, set, clear } = setup();
     await set({ issuer: 'google', client_id: 'ui-gid', client_secret: 's' });
-    expect((await get()).google).toEqual({ client_id: 'ui-gid', has_secret: true, source: 'stored' });
+    expect((await get()).google).toMatchObject({ client_id: 'ui-gid', has_secret: true, source: 'stored' });
     await clear({ issuer: 'google' });
-    expect((await get()).google).toEqual({ client_id: null, has_secret: false, source: null });
+    expect((await get()).google).toEqual({ client_id: null, has_secret: false, source: null, apps: [] });
   });
 
   it('a client_id is only ever reported with source "stored"', async () => {

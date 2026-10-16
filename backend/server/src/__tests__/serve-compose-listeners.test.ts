@@ -119,6 +119,7 @@ import { createWebhookDeliveryStore } from '../storage/webhook-delivery-store.js
 import { createWebhookConsumerStore } from '../storage/webhook-consumer-store.js';
 import { createConnectionStore } from '../storage/connection-store.js';
 import { createChatStore, ensureChatSchema } from '../storage/chat-store.js';
+import { createChatTurnQueueStore } from '../storage/chat-turn-queue-store.js';
 import { createChatOrchestrator } from '../chat-orchestrator.js';
 import type { ChatRpcDeps } from '../chat-handler.js';
 import { encodeAuthForStorage } from '../connection-handler.js';
@@ -135,6 +136,8 @@ import { createDishStore } from '../dish-store.js';
 import { createDish, type DishHandlerDeps } from '../dish-handler.js';
 import { createSchedule, type ScheduleHandlerDeps } from '../schedule-handler.js';
 import { createScheduleStore } from '../schedule-store.js';
+import { createMailChatDoorStore } from '../storage/mail-chat-door-store.js';
+import { createMailChatConversations } from '../mail-chat-door/conversations.js';
 import { bundledPacksShippingRecipe } from '../bundled-pack-source.js';
 import {
   createPublicAddressService,
@@ -291,6 +294,9 @@ const makeOptions = (
     // D-318 P23 — the email-approval reply check's holder, bound once the
     // notification block exists. Recording, as above.
     emailAnswerHook: { run: vi.fn(), bind: vi.fn() },
+    // D-318 step 2 — the Sent-record proof, started once the notice is bound
+    // and stopped at close. Recording, as above.
+    mailChatProof: { bindNotify: vi.fn(), bindAdmit: vi.fn(), start: vi.fn(), dispose: vi.fn(async () => undefined) },
     channelDispatchers: undefined,
     oauthClientConfigDeps: undefined,
   },
@@ -651,6 +657,109 @@ describe('composeListeners', () => {
     }).emailAnswerHook;
     expect(bind).toHaveBeenCalledTimes(1);
     expect(bind.mock.calls[0]![0]).toBeTypeOf('function');
+  });
+
+  it('D-318 step 2 — starts the Sent-record proof after binding the owner’s notice, and stops it at close', async () => {
+    const notify = vi.fn(async () => undefined);
+    const base = makeOptions();
+    const options = makeOptions({
+      execution: {
+        ...(base.execution as unknown as Record<string, unknown>),
+        notificationBlock: {
+          notify,
+          ask: vi.fn(async () => ({ ask_id: 'ask-1' })),
+          listOpenAsks: vi.fn(async () => []),
+        },
+      },
+    });
+    const result = await composeListeners(options);
+    const proof = (options.collection as unknown as {
+      mailChatProof: { bindNotify: ReturnType<typeof vi.fn>; start: ReturnType<typeof vi.fn>; dispose: ReturnType<typeof vi.fn> };
+    }).mailChatProof;
+    expect(proof.bindNotify).toHaveBeenCalledTimes(1);
+    expect(proof.start).toHaveBeenCalledTimes(1);
+    expect(proof.bindNotify.mock.invocationCallOrder[0]!).toBeLessThan(proof.start.mock.invocationCallOrder[0]!);
+
+    // The bound notice is the block's, with the history row the proof wrote.
+    const message = { title: 'An email to your chat mailbox was not answered', text: 'x' };
+    await (proof.bindNotify.mock.calls[0]![0] as (m: unknown, e?: unknown) => Promise<void>)(
+      message, { persisted_activity_id: 'mail-chat-proof:1' },
+    );
+    expect(notify).toHaveBeenCalledWith(message, undefined, { persisted_activity_id: 'mail-chat-proof:1' });
+
+    expect(proof.dispose).not.toHaveBeenCalled();
+    await result.server.close().catch(() => undefined);
+    expect(proof.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('D-318 step 3 — registers the `mail` turn family and binds the hand-over before the proof starts', async () => {
+    const base = makeOptions();
+    const register = vi.fn();
+    const options = makeOptions({
+      app: {
+        ...(base.app as unknown as Record<string, unknown>),
+        chatOrchestratorRef: { turnQueue: { register }, runMessengerTurn: vi.fn(), sessionStore: {} },
+      },
+      collection: {
+        ...(base.collection as unknown as Record<string, unknown>),
+        mailChatDoor: createMailChatDoorStore(storageDb),
+        mailChatConversations: createMailChatConversations(storageDb),
+      },
+    });
+    const result = await composeListeners(options);
+    try {
+      const proof = (options.collection as unknown as {
+        mailChatProof: { bindAdmit: ReturnType<typeof vi.fn>; start: ReturnType<typeof vi.fn> };
+      }).mailChatProof;
+      expect(register).toHaveBeenCalledWith('mail', expect.any(Function));
+      expect(proof.bindAdmit).toHaveBeenCalledTimes(1);
+      expect(proof.bindAdmit.mock.calls[0]![0]).toBeTypeOf('function');
+      expect(proof.bindAdmit.mock.invocationCallOrder[0]!).toBeLessThan(proof.start.mock.invocationCallOrder[0]!);
+    } finally {
+      await result.server.close().catch(() => undefined);
+    }
+  });
+
+  it('D-318 step 5 — owes each email turn’s answer by email, over the server’s own database', async () => {
+    const stopListening = vi.fn();
+    const onChatRunSettled = vi.fn((_listener: (settled: unknown) => void) => stopListening);
+    ensureChatSchema(storageDb);
+    createChatTurnQueueStore(storageDb);
+    const base = makeOptions();
+    const options = makeOptions({
+      app: {
+        ...(base.app as unknown as Record<string, unknown>),
+        chatOrchestratorRef: { turnQueue: { register: vi.fn() }, runMessengerTurn: vi.fn(), sessionStore: {} },
+        chatStoreRef: createChatStore(storageDb),
+        onChatRunSettled,
+      },
+      collection: {
+        ...(base.collection as unknown as Record<string, unknown>),
+        mailChatDoor: createMailChatDoorStore(storageDb),
+        mailChatConversations: createMailChatConversations(storageDb),
+      },
+    });
+    const result = await composeListeners(options);
+    try {
+      expect(storageDb.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = 'mail_chat_answer_owed'").get())
+        .toEqual({ name: 'mail_chat_answer_owed' });
+      // Part 2 — it hears of each run that settles after its turn.
+      expect(onChatRunSettled).toHaveBeenCalledTimes(1);
+      expect(onChatRunSettled.mock.calls[0]![0]).toBeTypeOf('function');
+    } finally {
+      await result.server.close().catch(() => undefined);
+    }
+    expect(stopListening).toHaveBeenCalledTimes(1);
+  });
+
+  it('D-318 step 3 — without chat, nothing is bound and the proof still starts', async () => {
+    const options = makeOptions();
+    await composeListeners(options);
+    const proof = (options.collection as unknown as {
+      mailChatProof: { bindAdmit: ReturnType<typeof vi.fn>; start: ReturnType<typeof vi.fn> };
+    }).mailChatProof;
+    expect(proof.bindAdmit).not.toHaveBeenCalled();
+    expect(proof.start).toHaveBeenCalledTimes(1);
   });
 
   it('seals the boot scan’s recorded mail events as the dispatcher composes, and replays them once, after', async () => {
@@ -2825,7 +2934,9 @@ describe('composeListeners — D-319 a recipe the server only ships cannot be sw
   // hard-coded — a checkout ships ~1,000 packs, a release only its foundation.
   it('refuses a shipped recipe that starts on its own until it is installed, and nothing else', async () => {
     const recipeStore = createRecipeStore(undefined, storageDb);
-    const shipped = 'reminder-due-notifier';
+    // A Personal Organizer view that refreshes on its own (D-324 took the hidden
+    // reminder notifier, the example here before, out of the pack).
+    const shipped = 'today';
     expect(recipeStore.get(shipped)?.auto_run).toBeDefined();
     expect(recipeStore.getStored(shipped)).toBeNull();
     const dishDeps: DishHandlerDeps = { store: createDishStore(storageDb) };

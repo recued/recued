@@ -46,6 +46,7 @@ export interface ButtonProps {
   ariaDisabled?: boolean;
   /** Announces an asynchronous action still in progress. */
   ariaBusy?: boolean;
+  ariaPressed?: boolean;
   /** Extra class tokens appended after the primitive classes. */
   extraClass?: string;
   /** Set to true to render label as raw HTML (e.g., when it contains
@@ -90,6 +91,7 @@ export const button = (props: ButtonProps): string => {
   if (props.id) attrs.push(`id="${e(props.id)}"`);
   if (props.action) attrs.push(`data-action="${e(props.action)}"`);
   if (props.disabled) attrs.push('disabled');
+  if (props.ariaPressed !== undefined) attrs.push(`aria-pressed="${props.ariaPressed}"`);
   if (props.ariaDisabled) attrs.push('aria-disabled="true"');
   if (props.ariaBusy) attrs.push('aria-busy="true"');
   if (props.title) attrs.push(`title="${e(props.title)}"`);

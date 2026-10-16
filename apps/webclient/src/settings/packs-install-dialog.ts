@@ -1,3 +1,4 @@
+import { renderPackVendorPermissions, vendorPermissionReviewRequired } from './pack-vendor-permissions.js';
 /** Packs R22 R2 — the pack install/consent dialog RENDER, extracted from
  *  `packs-panel.ts` (the 3.4K-line panel keeps growing surfaces; R3 adds the
  *  by-PACK Access panel next).
@@ -426,6 +427,9 @@ export interface InstallPreviewRecipe {
  *  ⛔ `resolved: false` ⇒ the dialog renders NOTHING rather than a count it
  *  cannot verify, and the picker falls back to the flat read tier. */
 export interface InstallPreview {
+  readonly vendor_permissions?: import('@recued/contracts').PackVendorPermissionReview;
+  /** Client-only transport failure; an older server's unknown method is exempt. */
+  readonly vendor_permission_review_failed?: boolean;
   readonly resolved: boolean;
   readonly will_enable: readonly InstallPreviewRecipe[];
   readonly hidden_count: number;
@@ -1115,6 +1119,12 @@ const renderInstallRecipeDisclosure = (
 };
 
 export interface PacksInstallDialogProps {
+  vendorPermissionsReviewed?: boolean;
+  vendorPermissionsLoading?: boolean;
+  onReconnectVendorPermissions?(name: string): void;
+  vendorPermissionRepairNotice?: string;
+  onReviewVendorPermissions?(checked: boolean): void;
+  onRefreshVendorPermissions?(): void;
   /** D-247 D15 — the server-resolved preview. Absent ⇒ no disclosure and the
    *  flat read tier, which is exactly the pre-D-247 behaviour. */
   installPreview?: InstallPreview;
@@ -1301,6 +1311,21 @@ export const renderPacksInstallDialog = (
     ? DIALOG_COPY.update_heading_prefix
     : DIALOG_COPY.heading_prefix}${pack.name}?`;
   container.appendChild(heading);
+  if (props.vendorPermissionRepairNotice) {
+    const notice = doc.createElement('p'); notice.textContent = props.vendorPermissionRepairNotice;
+    notice.setAttribute('role', 'status'); notice.setAttribute('data-pack-permission-repair-return', ''); container.appendChild(notice);
+  }
+  const vendorPermissions = renderPackVendorPermissions({ document: doc, preview: props.installPreview,
+    packSlug: pack.slug, chosen: props.chosenConnection, reviewed: props.vendorPermissionsReviewed === true,
+    also: isUpdate ? [] : props.installPreview?.shared_connections?.map(c => c.connection_name).filter(name => !props.alsoUnticked?.has(name)),
+    disabled: installing, onReview: checked => props.onReviewVendorPermissions?.(checked),
+    ...(props.onReconnectVendorPermissions ? { onReconnect: props.onReconnectVendorPermissions } : {}),
+    onRefresh: () => props.onRefreshVendorPermissions?.() });
+  if (vendorPermissions) container.appendChild(vendorPermissions);
+  if (props.vendorPermissionsLoading) {
+    const checking = doc.createElement('p'); checking.id = 'packs-dialog-vendor-permissions';
+    checking.textContent = 'Checking vendor permissions…'; checking.setAttribute('role', 'status'); container.appendChild(checking);
+  }
 
   const intro = doc.createElement('p');
   intro.className = 'packs-dialog-intro';
@@ -1983,6 +2008,9 @@ export const renderPacksInstallDialog = (
     // has not named yet.
     installBtn.disabled = true;
     installBtn.setAttribute('aria-describedby', 'packs-dialog-permissions-checking');
+  } else if (props.vendorPermissionsLoading || vendorPermissionReviewRequired(props.installPreview) && !props.vendorPermissionsReviewed) {
+    installBtn.disabled = true;
+    installBtn.setAttribute('aria-describedby', 'packs-dialog-vendor-permissions');
   }
   installBtn.addEventListener('click', () => {
     props.onSubmit();

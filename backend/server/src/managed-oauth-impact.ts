@@ -20,6 +20,7 @@ export const managedOAuthImpact = (args: {
   row?: ConnectionRow; members: readonly ConnectionRow[];
   read?: Parameters<typeof managedOAuthImpactUses>[1];
   membership_known?: boolean;
+  file_source?: import('@recued/contracts').FileSourceAuthenticationPreview;
 }): ManagedOAuthImpactPreview => {
   const rows = new Map(args.members.map(row => [row.name, row]));
   if (args.row) rows.set(args.row.name, args.row);
@@ -28,7 +29,9 @@ export const managedOAuthImpact = (args: {
     effect: item.name === args.row?.name ? 'selected_connection' as const
       : args.consent === 'request' ? 'shared_consent' as const : 'shares_account' as const,
   }));
-  const warnings = ['Usage covers this Recued server. Other tools may use the same broker account.',
+  const warnings = [args.target.authentication === 'broker'
+    ? 'Usage covers this Recued server. Other tools may use the same broker account.'
+    : 'Usage covers this Recued server. Other tools may use the same OAuth app.',
     'Account details do not prove resource access or all permissions.'];
   if (connections.some(c => !c.usage_available)) warnings.push('Some local usage is unknown. Review the connection before continuing.');
   if (args.membership_known === false) warnings.push('Stable broker account identity is unavailable. Matching connections on other broker profiles may be missing.');
@@ -36,7 +39,8 @@ export const managedOAuthImpact = (args: {
     warnings.push('Mail and Calendar bindings pin their broker account. Review and reconnect those collections after switching.');
   }
   const preview: ManagedOAuthImpactPreview = { fingerprint: '', phase: args.phase, mode: args.mode, consent: args.consent,
-    ...(args.current ? { current: args.current } : {}), target: args.target, connections, warnings };
+    ...(args.current ? { current: args.current } : {}), target: args.target, connections, warnings,
+    ...(args.file_source ? { file_source: args.file_source } : {}) };
   preview.fingerprint = createHash('sha256').update(JSON.stringify(preview)).digest('hex');
   return preview;
 };

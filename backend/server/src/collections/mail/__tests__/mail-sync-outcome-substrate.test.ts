@@ -606,6 +606,38 @@ const newImapHarness = (opts: {
 };
 
 describe('ImapProvider per-attempt sync outcomes', () => {
+  it('verifies an empty folder read before the rest of the backfill finishes', async () => {
+    const h = newImapHarness({ seed: { INBOX: [], Archive: [] } });
+    await h.provider.connect();
+    const pending = deferred<void>(); const requested = deferred<void>();
+    h.state.clients[1]!.search = async () => { requested.resolve(); await pending.promise; return []; };
+    const verified = vi.fn();
+    const scanning = h.provider.initialScan({ backfill_days: 30, onAccessVerified: verified, onMessage: async () => true });
+    try {
+      await requested.promise;
+      expect(verified).toHaveBeenCalledOnce();
+    } finally { pending.resolve(); await scanning; }
+    expect(verified).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not verify a folder whose search fails', async () => {
+    const h = newImapHarness();
+    await h.provider.connect();
+    h.state.clients[0]!.search = async () => { throw new Error('fixture search refused'); };
+    const verified = vi.fn();
+    await expect(h.provider.initialScan({ backfill_days: 30, onAccessVerified: verified, onMessage: async () => true })).rejects.toThrow();
+    expect(verified).not.toHaveBeenCalled();
+  });
+
+  it('does not mistake a refused search for an empty mailbox', async () => {
+    const h = newImapHarness();
+    await h.provider.connect();
+    h.state.clients[0]!.search = async () => false;
+    const verified = vi.fn();
+    await expect(h.provider.initialScan({ backfill_days: 30, onAccessVerified: verified, onMessage: async () => true })).rejects.toThrow();
+    expect(verified).not.toHaveBeenCalled();
+  });
+
   it('reopens reconnect admission after a close and reconnect cycle', async () => {
     const h = newImapHarness();
     await h.provider.connect();

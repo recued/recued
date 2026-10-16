@@ -95,7 +95,7 @@ import {
   CONNECTION_VENDOR_ENTITIES,
   admitByOpRisk,
   executionSourceHasContract,
-  isDeclaredMessengerVendor,
+  isMessengerSourceVendor,
   readOwnerOperationOverride,
   resolveTrustCeiling,
   type CanonicalEvent,
@@ -795,10 +795,11 @@ const surfaceExecutionSource = (surface: SurfaceTag): ExecutionSource | null => 
   }
   // A `messenger-<vendor>` surface mints the messenger probe for any DECLARED
   // transport vendor (D-192 CORE #6 — registry-validated at runtime, not a
-  // closed `switch`); an undeclared / malformed surface returns null → the
-  // authorization fails closed, exactly as the prior `default` arm did.
+  // closed `switch`), or a chat door (D-318's `messenger-email`); an
+  // undeclared / malformed surface returns null → the authorization fails
+  // closed, exactly as the prior `default` arm did.
   const vendor = surfaceMessengerVendor(surface);
-  if (vendor !== null && isDeclaredMessengerVendor(vendor)) {
+  if (vendor !== null && isMessengerSourceVendor(vendor)) {
     return { channel: 'messenger', actor: 'user_self', vendor, from: 'owner' };
   }
   return null;
@@ -823,7 +824,7 @@ const sourceMatchesSurface = (
   // surface's declared vendor. An undeclared / malformed surface matches
   // nothing (fail closed), same as the prior `default` arm.
   const vendor = surfaceMessengerVendor(surface);
-  if (vendor !== null && isDeclaredMessengerVendor(vendor)) {
+  if (vendor !== null && isMessengerSourceVendor(vendor)) {
     return source.channel === 'messenger' && source.vendor === vendor;
   }
   return false;

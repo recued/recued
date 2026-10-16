@@ -1,10 +1,11 @@
 /** D-127 Phase 1.2 — mail-send error taxonomy (D-172 P2 update).
  *
  *  Asserts the `MAIL_SEND_*` codes are registered in the typed
- *  `RecipeErrorCode` union, that severity is wired correctly (6 'error'
+ *  `RecipeErrorCode` union, that severity is wired correctly (7 'error'
  *  + 1 'warn'; D-172 P2 retired the lone 'fatal'
  *  `ATTACHMENTS_NOT_YET_IMPLEMENTED` and added the 'error'
- *  `ATTACHMENT_UNRESOLVABLE` resolve-failure code), and that
+ *  `ATTACHMENT_UNRESOLVABLE` resolve-failure code; 2026-10-15 added
+ *  `MESSAGE_REFUSED`, the message itself refused), and that
  *  user-facing copy exists for each. */
 
 import { describe, it, expect } from 'vitest';
@@ -21,6 +22,7 @@ const MAIL_SEND_FAMILY: ReadonlyArray<{ code: RecipeErrorCode; severity: ErrorSe
   { code: 'MAIL_SEND_NOT_CAPABLE',                  severity: 'error' },
   { code: 'MAIL_SEND_AUTH_FAILED',                  severity: 'error' },
   { code: 'MAIL_SEND_RECIPIENT_INVALID',            severity: 'error' },
+  { code: 'MAIL_SEND_MESSAGE_REFUSED',              severity: 'error' },
   { code: 'MAIL_SEND_NETWORK_FAILED',               severity: 'error' },
   { code: 'MAIL_SEND_SELF_LOOP_TO',                 severity: 'error' },
   { code: 'MAIL_SEND_APPEND_FAILED',                severity: 'warn' },

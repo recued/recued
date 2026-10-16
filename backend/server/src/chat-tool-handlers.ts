@@ -4898,7 +4898,18 @@ const dispatchChatCanonicalOp = async (
   } as unknown as ExecuteRequest);
 
   if (named) {
-    return { ok: true, result: (await runOne(connection as string)) as Record<string, unknown> };
+    const response = (await runOne(connection as string)) as ExecuteResponse;
+    // The run's address, and its hold, beside what the model reads (unchanged):
+    // a write held for the owner's approval is then known by its run — the
+    // owner's chat records its late result, and the email door its follow-up
+    // (D-318 audit). A recipe run's dispatch carries the same (`wrapRecipeRunResult`).
+    const run_id = executeResponseAuditRunId(response);
+    return {
+      ok: true,
+      result: response as unknown as Record<string, unknown>,
+      ...(response.awaiting_approval === true ? { run_held: { kind: 'approval' as const } } : {}),
+      ...(run_id !== undefined ? { run_id } : {}),
+    };
   }
   // Unnamed `search` — every connection the DESCRIPTOR offers, which is already the
   // profile-granted set, so the fan-out can never reach a connection the catalog

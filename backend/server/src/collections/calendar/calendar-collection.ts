@@ -69,6 +69,7 @@ import {
   type CalendarListQuery,
   type CalendarRowSnapshot,
 } from './calendar-table.js';
+import { calendarSyncFailureOf } from './provider.js';
 import type {
   CalendarProvider,
   CalendarSeriesSnapshot,
@@ -258,6 +259,60 @@ export const createCalendarCollection = (
     log?.('warn', msg, { err: err instanceof Error ? err.message : String(err) });
   };
 
+  /** Minimum gap between two `last_synced_at` writes, as mail's: a 30 s poll
+   *  would otherwise write the row on every tick. */
+  const SYNC_CLOCK_WRITE_INTERVAL_MS = 60_000;
+  let lastSyncClockWriteAt = 0;
+
+  /** Advance the instance's `last_synced_at` — what Connections shows as
+   *  synced — when a sync completed: the first import, or a provider's clean
+   *  poll, including one that found nothing.
+   *
+   *  ⛔ Nothing wrote it but the owner's Re-sync, so every calendar, empty or
+   *  full, read "First sync pending" for good (live, 2026-10-15).
+   *
+   *  It reports `healthy` alongside, as mail's does: a sync that worked is
+   *  the credential's evidence, so a stale `expired` (a Re-sync's probe that
+   *  failed) must not outlive the recovery. At once when the row is not
+   *  healthy; the minute's throttle bounds only redundant writes. */
+  const touchSyncClock = (at?: number): void => {
+    const instances = opts.instances;
+    if (instances === undefined) return;
+    const now = at ?? nowOf();
+    try {
+      const row = instances.get('calendar', slug);
+      if (row === null) return;
+      if (row.auth_state === 'healthy' && now - lastSyncClockWriteAt < SYNC_CLOCK_WRITE_INTERVAL_MS) return;
+      instances.updateAuthState('calendar', slug, { auth_state: 'healthy', last_synced_at: now });
+      lastSyncClockWriteAt = now;
+    } catch (err) {
+      // A reporting write must never break a sync that otherwise worked.
+      bumpError('calendar sync clock write failed', err);
+    }
+  };
+
+  /** A rejected credential — on connect, the first import or a poll — marks
+   *  the calendar `expired` at once: the healing above must never leave a dead
+   *  credential looking healthy. A transient failure changes nothing: a
+   *  calendar's writes are refused while it is not healthy, and a network
+   *  blip must not refuse them. */
+  const markCredentialRejected = (): void => {
+    const instances = opts.instances;
+    if (instances === undefined) return;
+    try {
+      const row = instances.get('calendar', slug);
+      if (row === null || row.auth_state === 'expired' || row.auth_state === 'unauthorized') return;
+      instances.updateAuthState('calendar', slug, { auth_state: 'expired' });
+    } catch (err) {
+      bumpError('calendar auth state write failed', err);
+    }
+  };
+  provider.onSyncOutcome?.((outcome) => {
+    if (closed) return;
+    if (outcome.ok) touchSyncClock(outcome.at);
+    else if (outcome.failure === 'auth') markCredentialRejected();
+  });
+
   const upsertPayload = async (
     payload: ProviderEventPayload,
     shouldContinue: () => boolean = () => true,
@@ -407,6 +462,7 @@ export const createCalendarCollection = (
       if (!isCurrentGeneration(generation)) return;
       state = stateName('error');
       bumpError('calendar provider connect failed', err);
+      if (calendarSyncFailureOf(err) === 'auth') markCredentialRejected();
       throw err;
     }
     if (!isCurrentGeneration(generation)) return;
@@ -463,10 +519,13 @@ export const createCalendarCollection = (
       // harnesses keep working without an instance row.
       try { opts.instances?.markBackfillComplete('calendar', slug); }
       catch (err) { bumpError('calendar markBackfillComplete failed', err); }
+      // The first import is a sync too, though it found no events.
+      touchSyncClock();
       await backfillRecorder.finish();
     } catch (err) {
       if (!isCurrentGeneration(generation)) return;
       bumpError('calendar initialScan failed', err);
+      if (calendarSyncFailureOf(err) === 'auth') markCredentialRejected();
       await backfillRecorder.finish('failed');
     }
     if (!isCurrentGeneration(generation)) return;

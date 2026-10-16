@@ -127,6 +127,8 @@ export interface FileAttachmentListResult {
 
 /** Connected-source browsing reads metadata only. Import explicitly saves bytes. */
 export interface CloudFileSource {
+  /** Saved connection identity only; no credential or provider URL in navigation. */
+  authentication_connection?: string;
   source_id: string;
   label: string;
   provider: string;

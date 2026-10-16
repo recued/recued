@@ -261,6 +261,39 @@ export const collectionTableName = (platform: CollectionPlatform, slug: string):
  *  hot fields. */
 const FILTER_KEY_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
+/** What a database's readers of the owner's data leave out
+ *  (`setCollectionReaderExclusion`). */
+export interface CollectionReaderExclusion {
+  /** Whole tables: the email chat door's chat mailbox. */
+  readonly tables?: (platform: CollectionPlatform, table: string) => boolean;
+  /** Rows, per platform: a SQL condition over a data table's columns that
+   *  holds for the owner's rows (D-318's: the conversation's mail in the
+   *  owner's mailboxes is not). Trusted SQL, written by the composition. */
+  readonly rows?: Readonly<Partial<Record<CollectionPlatform, string>>>;
+}
+
+/** Per database: what `listCollectionDataTables` leaves out. */
+const readerExclusions = new WeakMap<Database.Database, CollectionReaderExclusion>();
+/** Per database: the row views made so far. */
+const readerViews = new WeakMap<Database.Database, Set<string>>();
+
+/** A temporary view of `table` that keeps the rows `keep` holds for, made once
+ *  per connection. Named by the condition too, so another condition is another
+ *  view. Read-only, and every column of the table. */
+const readerView = (db: Database.Database, table: string, keep: string): string => {
+  const view = assertIdent(`${table}_owner_${createHash('sha256').update(keep).digest('hex').slice(0, 8)}`);
+  let made = readerViews.get(db);
+  if (made === undefined) {
+    made = new Set();
+    readerViews.set(db, made);
+  }
+  if (!made.has(view)) {
+    db.exec(`CREATE TEMP VIEW IF NOT EXISTS ${view} AS SELECT * FROM main.${table} WHERE ${keep}`);
+    made.add(view);
+  }
+  return view;
+};
+
 /** ⛔ THE ONLY CORRECT WAY TO DISCOVER COLLECTION DATA TABLES.
  *
  *  A collection creates SEVEN tables, not one: the data table
@@ -282,10 +315,29 @@ const FILTER_KEY_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
  *
  *  (The reasoning is `mail-union-twin-resolver.ts`'s, generalised: it had the
  *  right predicate for one caller while twenty others open-coded the loose
- *  scan.) */
+ *  scan.)
+ *
+ *  ⛔ D-318 — AND IT LEAVES OUT WHAT IS NOT THE OWNER'S DATA: the email chat
+ *  door's chat mailbox, whose mail is the conversation with Recued (strangers'
+ *  mail included). Every reader of the owner's mail lists its tables here — the
+ *  housekeeping producers, the contact backfill, the CRM twin join — so the
+ *  exclusion is the listing's default, set once per database
+ *  (`setCollectionReaderExclusion`), and a new reader inherits it. A caller that
+ *  must see every table (one checking a record id across all of them) asks for
+ *  `{ all: true }`.
+ *
+ *  ⛔ D-318 audit — AND THE ROWS THAT ARE NOT THE OWNER'S: the conversation's
+ *  mail in the owner's OTHER mailboxes (Recued's answers, the owner's Sent
+ *  copies of requests), marked as each was stored. Where the database names a
+ *  row condition for the platform, each name returned is a temporary VIEW of
+ *  its table keeping only the owner's rows: every reader's
+ *  `SELECT … FROM "<name>"` reads without them, and so does the next reader
+ *  written, with no line of its own to forget. The view has every column of its
+ *  table, and is read-only; `{ all: true }` returns the tables themselves. */
 export const listCollectionDataTables = (
   db: Database.Database,
   platform: CollectionPlatform,
+  options?: { readonly all?: boolean },
 ): string[] => {
   const exact = new RegExp(`^collection_${platform}_[0-9a-f]{10}$`);
   const rows = db
@@ -294,7 +346,21 @@ export const listCollectionDataTables = (
         WHERE type='table' AND name LIKE 'collection_${platform}_%'`,
     )
     .all() as Array<{ name: string }>;
-  return rows.map((r) => r.name).filter((n) => exact.test(n));
+  const exclusion = options?.all === true ? undefined : readerExclusions.get(db);
+  const tables = rows.map((r) => r.name)
+    .filter((n) => exact.test(n) && exclusion?.tables?.(platform, n) !== true);
+  const keep = exclusion?.rows?.[platform];
+  return keep === undefined ? tables : tables.map((table) => readerView(db, table, keep));
+};
+
+/** D-318 — name what a database's readers of the owner's data leave out: whole
+ *  tables, read at each listing (the chat mailbox can change), and rows, by a
+ *  condition per platform. One per database: the server composes it once. */
+export const setCollectionReaderExclusion = (
+  db: Database.Database,
+  exclude: CollectionReaderExclusion,
+): void => {
+  readerExclusions.set(db, exclude);
 };
 
 // ────────────────────────────────────────────────────────────────

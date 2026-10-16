@@ -1342,6 +1342,17 @@ export interface ExecuteHandlerDeps {
   /** Reception's live address/key/offer validator, wired after composition.
    * Protected reminder mail refuses dispatch while this seam is unavailable. */
   getQuoteSignoffReminderService?: () => import('./quote-signoff-reminder-service.js').QuoteSignoffReminderService;
+  getCustomerJobPaymentStatementService?: () => import('./customer-job-payment-statement-service.js').CustomerJobPaymentStatementService;
+  getCustomerAccountStatementService?: () => import('./customer-account-statement-service.js').CustomerAccountStatementService;
+    getCustomerAccountPaymentService?: () => import('./customer-account-payment-service.js').CustomerAccountPaymentService;
+    getCustomerAccountPaymentCorrectionService?: () => import('./customer-account-payment-correction-service.js').CustomerAccountPaymentCorrectionService;
+  getCustomerRefundService?: () => import('./customer-refund-service.js').CustomerRefundService;
+  getCustomerInvoiceCreditService?: () => import('./customer-invoice-credit-service.js').CustomerInvoiceCreditService;
+  getCustomerPaymentCorrectionService?: () => import('./customer-payment-correction-service.js').CustomerPaymentCorrectionService;
+  getCustomerPaymentReceiptService?: () => import('./customer-payment-receipt-service.js').CustomerPaymentReceiptService;
+  getQuotePaymentReminderService?: () => import('./quote-payment-reminder-service.js').QuotePaymentReminderService;
+  getCustomerAccountPaymentReminderService?: () => import('./customer-account-payment-reminder-service.js').CustomerAccountPaymentReminderService;
+  getQuoteCompletionReminderService?: () => import('./quote-completion-reminder-service.js').QuoteCompletionReminderService;
   /** D-157 A.1 step 1, runtime half — the same block, threaded as the
    *  in-doubt notifier and handed to the commit Gateway.
    *
@@ -7364,7 +7375,8 @@ const handleExecuteInner = async (
                 // This control can start a child with its own approval hold.
                 // Keep its decision individual: batch answer settlement holds
                 // the coordinator mutex, which child registration also needs.
-                const individualWorkflowReview = awaitingApproval.authorization_provenance?.lift_reason === 'review_approval_workflow';
+                const individualWorkflowReview = awaitingApproval.authorization_provenance?.lift_reason === 'review_approval_workflow'
+                  || awaitingApproval.authorization_provenance?.lift_reason === 'review_customer_payment';
                 const resolvedOffer =
                   deps.sessionGrantResolver !== undefined
                   && !individualWorkflowReview
@@ -9165,14 +9177,16 @@ const withRecipeRunFacts = async (
   auditLog: Pick<AuditLogStore, 'get'> | undefined,
 ): Promise<ServerExecuteResponse> => {
   const runId = executeResponseAuditRunId(response);
-  if (runId === undefined || auditLog === undefined) return response;
+  if (runId === undefined) return response;
+  const receipt: ServerExecuteResponse = { ...response, run_id: runId };
+  if (auditLog === undefined) return receipt;
   try {
     const entry = await auditLog.get(runId);
-    if (entry === null) return response;
+    if (entry === null) return receipt;
     const runFacts = recipeRunFactsFromAuditEntry(entry);
-    return runFacts === undefined ? response : { ...response, run_facts: runFacts };
+    return runFacts === undefined ? receipt : { ...receipt, run_facts: runFacts };
   } catch {
-    return response;
+    return receipt;
   }
 };
 

@@ -147,6 +147,14 @@ export interface CreateMailSourceWalkerOptions {
    *  `hashMailRecordWithBody` (or a custom variant) so a body
    *  change marks the source row dirty for re-derivation. */
   hashRecord?: (record: CollectionRecord) => string;
+  /** D-318 step 1 — is this mailbox the email chat door's chat mailbox? Its
+   *  mail is the conversation with Recued, not the owner's mail: no producer
+   *  reads it. Asked at each walk. Absent ⇒ none is. */
+  isChatMailbox?: (slug: string) => boolean;
+  /** D-318 step 5 — is this record, in one of the owner's other mailboxes, the
+   *  conversation with the chat mailbox (an answer, or the Sent copy of a
+   *  request)? No producer reads it either. Absent ⇒ none is. */
+  isChatConversationRecord?: (record: CollectionRecord) => boolean;
 }
 
 /** Build a `mail` walker over a `CollectionRegistry`. Iterates every
@@ -168,10 +176,12 @@ export const createMailSourceWalker = (
   options?: CreateMailSourceWalkerOptions,
 ): SourceCollectionWalker => {
   const hashFn = options?.hashRecord ?? hashMailRecord;
+  const isChatMailbox = options?.isChatMailbox ?? (() => false);
+  const isChatConversationRecord = options?.isChatConversationRecord ?? (() => false);
   const liveMailCollections = () =>
     collections
       .list()
-      .filter((c) => c.platform === 'mail')
+      .filter((c) => c.platform === 'mail' && !isChatMailbox(c.slug))
       .sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
 
   return {
@@ -194,6 +204,7 @@ export const createMailSourceWalker = (
           if (collection.slug === cursor_slug && record.record_id <= cursor_record_id) {
             continue;
           }
+          if (isChatConversationRecord(record)) continue;
           if (yielded >= batch_size) return;
           yield {
             target_id: record.record_id,
@@ -216,6 +227,7 @@ export const createMailSourceWalker = (
       for (const collection of liveMailCollections()) {
         const record = collection.get(target_id);
         if (record !== null) {
+          if (isChatConversationRecord(record)) return null;
           return {
             target_id,
             data: record,
@@ -856,6 +868,10 @@ export interface SourceWalkerRegistry {
 
 export interface SourceWalkerDeps {
   collections: CollectionRegistry;
+  /** D-318 step 1 — the mail walker leaves the chat mailbox out. */
+  isChatMailbox?: (slug: string) => boolean;
+  /** D-318 step 5 — and the conversation's mail in the owner's other mailboxes. */
+  isChatConversationRecord?: (record: CollectionRecord) => boolean;
   /** Required to register the `contact` walker. When omitted (test
    *  paths, or boot before the contact store is constructed), the
    *  registry's `get('contact')` returns undefined. The mail,
@@ -872,7 +888,10 @@ export interface SourceWalkerDeps {
  *  `createTestSourceWalkerRegistry` to bypass live storage entirely. */
 export const createSourceWalkerRegistry = (deps: SourceWalkerDeps): SourceWalkerRegistry => {
   const walkers = new Map<EnrichmentScope, AnySourceWalker>();
-  walkers.set('mail', createMailSourceWalker(deps.collections));
+  walkers.set('mail', createMailSourceWalker(deps.collections, {
+    ...(deps.isChatMailbox ? { isChatMailbox: deps.isChatMailbox } : {}),
+    ...(deps.isChatConversationRecord ? { isChatConversationRecord: deps.isChatConversationRecord } : {}),
+  }));
   walkers.set('calendar', createCalendarSourceWalker(deps.collections));
   walkers.set('file', createFileSourceWalker(deps.collections));
   if (deps.contactStore) {

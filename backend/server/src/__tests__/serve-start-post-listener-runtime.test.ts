@@ -13,6 +13,7 @@ const runtimeMocks = vi.hoisted(() => ({
   startHousekeepingStartup: vi.fn(),
   startPostHousekeepingTail: vi.fn(),
   buildSellerAccessReconcileDepsIfReady: vi.fn(),
+  wireReminderDelivery: vi.fn(),
 }));
 
 vi.mock('../serve/wrap-peer-cache.js', () => ({
@@ -59,6 +60,11 @@ vi.mock('../composition/bin/wire-pro-cert-enrollment.js', () => ({
   composeProCertEnrollment: vi.fn(),
 }));
 
+// D-324 — the reminder minute service builds its store over `db`, a tag here.
+vi.mock('../composition/bin/wire-reminders.js', () => ({
+  wireReminderDelivery: runtimeMocks.wireReminderDelivery,
+}));
+
 vi.mock('../seller/access-reconcile-deps.js', () => ({
   buildSellerAccessReconcileDepsIfReady: runtimeMocks.buildSellerAccessReconcileDepsIfReady,
 }));
@@ -96,6 +102,7 @@ beforeEach(() => {
   runtimeMocks.startHousekeepingStartup.mockReset();
   runtimeMocks.startPostHousekeepingTail.mockReset();
   runtimeMocks.buildSellerAccessReconcileDepsIfReady.mockReset();
+  runtimeMocks.wireReminderDelivery.mockReset();
 });
 
 /** ⛔⛔ `composeProCertEnrollment` IS MOCKED, AND FINDING THE RIGHT SEAM TOOK
@@ -657,6 +664,41 @@ describe('D-232 § 24 — the retry sweep is REACHED at boot', () => {
       mock: { calls: Array<[{ name: string }]> };
     }).mock.calls.map((c) => c[0]?.name);
     expect(names).toContain('custom-domain-enrollment');
+  });
+
+  it('D-324 — the boot starts the reminder minute service over the channel dispatchers', async () => {
+    // ⛔ THE JOIN. The service's own suite drives its tick directly, so it stays
+    //    green whether or not a boot ever starts it — and a reminder service no
+    //    boot starts is D-193's notifier again: saved, and never rung.
+    runtimeMocks.composeCertStackLate.mockResolvedValue({
+      tlsCertSource: undefined, tlsRenewerConfigured: false,
+    });
+    runtimeMocks.startHousekeepingStartup.mockResolvedValue({ scheduler: undefined });
+    const dispatchers = { tag: 'channel-dispatchers' };
+    const base = makeOptions();
+    const options = makeOptions({
+      collection: { ...base.collection, channelDispatchers: dispatchers } as never,
+    });
+    await startPostListenerRuntime(options);
+    expect(runtimeMocks.wireReminderDelivery).toHaveBeenCalledTimes(1);
+    expect(runtimeMocks.wireReminderDelivery).toHaveBeenCalledWith(expect.objectContaining({
+      db: options.storage.db,
+      registry: options.backgroundServices,
+      notification: { dispatchers },
+      isVaultUnlocked: options.app.isVaultUnlocked,
+      // D-324 §6 — and the old reminder tasks move first, from the server's task store.
+      workEntityStore: options.storage.workEntityStoreRef,
+      logActivity: expect.any(Function),
+    }));
+  });
+
+  it('D-324 — no channel dispatchers, no reminder service', async () => {
+    runtimeMocks.composeCertStackLate.mockResolvedValue({
+      tlsCertSource: undefined, tlsRenewerConfigured: false,
+    });
+    runtimeMocks.startHousekeepingStartup.mockResolvedValue({ scheduler: undefined });
+    await startPostListenerRuntime(makeOptions());
+    expect(runtimeMocks.wireReminderDelivery).not.toHaveBeenCalled();
   });
 
   // ── D-268 ───────────────────────────────────────────────────────────────

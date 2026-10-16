@@ -30,6 +30,8 @@
  *  user-typed enroll target, so it is deliberately absent.) */
 
 import {
+  savedOAuthAppsForIssuer,
+  oauthAppStatusForSelection,
   buildOpenerRelayRedirectUri,
   isLoopbackOrigin,
   isProDdnsHost,
@@ -37,10 +39,15 @@ import {
   oauthAppIssuerForProvider,
   selfServesOAuthCallback,
   type CollectionAuthState,
+  type MailSyncStatus,
   type OAuthAppConfigSnapshot,
   type OAuthAppIssuer,
+  type CloudFileSource,
+  FILE_VENDOR_DECLARATIONS,
+  CONNECTION_NAME_REGEX,
 } from '@recued/contracts';
 import { e } from '../template.js';
+import { renderAuthenticationManagement, type AuthenticationManagementAction } from '../connections/manage-authentication.js';
 import { button } from '../primitives/button.js';
 import { textInput, select as selectField, formRow } from '../primitives/field.js';
 import { inlineError, inlineHint, inlineMessage } from '../primitives/message.js';
@@ -362,7 +369,7 @@ const MICROSOFT_MAIL_PROVIDER: AccountProvider = {
     'Sign in with Microsoft to read — and optionally send — Outlook / Microsoft 365 mail.',
   transport: 'mail-oauth',
   fields: mailOAuthFields(
-    'Requests the Mail.Send scope so recipes can send on your behalf. You can still say no on the Microsoft screen.',
+    'Requests the Mail.Send and Mail.ReadWrite scopes so recipes can send on your behalf: Recued writes each email as a draft in your mailbox, then sends it. You can still say no on the Microsoft screen.',
     [CALENDAR_TOO_FIELD],
   ),
   project: projectMailOAuth,
@@ -529,7 +536,6 @@ export const ACCOUNT_LANES: readonly AccountLane[] = [
     // Data → Files mirrors S3 and S3-compatible stores (endpoint, path style)
     // with search, preview and download, so a bucket is connected there.
     providers: [FS_PROVIDER],
-    pending: 'Using Amazon S3 or another S3-compatible store, Dropbox, Google Drive, Box, or OneDrive? Connect those from Data → Files. Installed packs can add more provider actions.',
   },
 ];
 
@@ -550,6 +556,8 @@ export const findAccountProvider = (
  *  (`collection.mail.list` / `collection.calendar.list` /
  *  `collection.listInstances`) onto this shape. */
 export interface AccountRow {
+  cloudSource?: CloudFileSource;
+  passwordRepairAvailable?: boolean;
   slug: string;
   /** Adapter / provider key (`'imap'` / `'gmail'` / `'fs'` / `'s3'` …)
    *  for the provider badge. */
@@ -561,10 +569,15 @@ export interface AccountRow {
   sendCapable?: boolean;
   /** A borrowed API account; owner write choices are not evidence of grants. */
   managedConnectionName?: string;
+  sourceAuthentication?: 'direct_oauth' | 'broker';
+  authenticationSwitchAvailable?: boolean;
+  oauthAppSwitchAvailable?: boolean;
   /** True only when this lane owns an executable reauthorization action. */
   reauthAvailable?: boolean;
   /** Unix-ms of last successful sync, or null before the first tick. */
   lastSyncedAt?: number | null;
+  /** Mail read access is separate from completion of its initial import. */
+  mailSync?: MailSyncStatus;
 }
 
 export type AccountsPanelStage =
@@ -646,6 +659,12 @@ export interface AccountsOAuthReloadRecovery {
 }
 
 export interface AccountsPanelState {
+  filters?: { query?: string; provider?: string; status?: string } | undefined;
+  cloudFilesError?: string | undefined;
+  localFilesError?: string | undefined;
+  authenticationManagement?: { slug: string; action: AuthenticationManagementAction };
+  authenticationManagementBusy?: boolean;
+  bulkOAuthAppSwitchAvailable?: boolean;
   /** Selected lane tab. */
   lane: AccountLaneId;
   /** App origin (e.g. `https://app.recued.com`), seeded by the mount from
@@ -830,12 +849,12 @@ export const canSubmitAccountForm = (
   if (clientSecret.length > 0) return clientId.length > 0;
   if (state.oauthAppConfig === null) return clientId.length === 0;
 
-  const status = state.oauthAppConfig[issuer];
+  const status = oauthAppStatusForSelection(state.oauthAppConfig, issuer, state.values.oauth_app_id);
   if (!isReusableOAuthApp(status)) return false;
   // The configured Client ID is prefilled as reference. Leaving it alone (or
   // clearing the optional replacement draft) reuses the server app; changing
   // it starts a replacement and therefore also requires its matching secret.
-  const configuredClientId = status.client_id?.trim() ?? '';
+  const configuredClientId = status?.client_id?.trim() ?? '';
   return clientId.length === 0 || clientId === configuredClientId;
 };
 
@@ -923,8 +942,13 @@ const renderOAuthAppSection = (
   state: AccountsPanelState,
 ): string => {
   const label = OAUTH_ISSUER_LABEL[issuer];
-  const status = state.oauthAppConfig?.[issuer] ?? null;
+  const status = oauthAppStatusForSelection(state.oauthAppConfig, issuer, state.values.oauth_app_id);
   const configKnown = state.oauthAppConfig !== null;
+  const choices = savedOAuthAppsForIssuer(state.oauthAppConfig, issuer).filter(app => app.has_secret);
+  const appId = state.values.oauth_app_id ?? 'default';
+  const picker = choices.length ? `<label>Saved ${e(label)} app <select data-acct-field="oauth_app_id"${state.saving ? ' disabled' : ''}>
+    ${choices.map(app => `<option value="${e(app.id)}"${app.id === appId ? ' selected' : ''}>${e(app.label)} · ${e(app.client_id)}</option>`).join('')}</select></label>
+    <p>${button({ label: 'Manage saved apps', action: 'accounts-manage-saved-apps', size: 'sm' })}</p>` : '';
   const reusable = isReusableOAuthApp(status);
   const clientId = state.oauthCredValues.client_id ?? '';
   const clientSecret = state.oauthCredValues.client_secret ?? '';
@@ -995,9 +1019,10 @@ const renderOAuthAppSection = (
           <div>
             <p class="accounts-oauth-app-title">${e(label)} sign-in is ready</p>
             <p class="accounts-oauth-app-desc">${e(sourceCopy)}</p>
+            ${picker}
           </div>
         </div>
-        <details class="accounts-oauth-manage">
+        ${appId !== 'default' ? '<p>Edit this named app in Apps &amp; APIs.</p>' : `<details class="accounts-oauth-manage">
           <summary>Change ${e(label)} sign-in app</summary>
           <div class="accounts-oauth-manage-body">
             ${inlineHint(OAUTH_ISSUER_COVERS[issuer])}
@@ -1005,7 +1030,7 @@ const renderOAuthAppSection = (
             ${callback(false)}
             ${credentials(`Replacement ${label} app credentials`)}
           </div>
-        </details>
+        </details>`}
       </section>
     `;
   }
@@ -1078,7 +1103,7 @@ const renderProviderForm = (
   const canSubmit = canSubmitAccountForm(provider, state);
   const needsOAuthSetup = !managed && issuer !== null
     && state.oauthAppConfig !== null
-    && !isReusableOAuthApp(state.oauthAppConfig[issuer]);
+    && !isReusableOAuthApp(oauthAppStatusForSelection(state.oauthAppConfig, issuer, state.values.oauth_app_id));
   const formVerb = lane.id === 'file' ? 'Add' : 'Connect';
   const submitLabel = state.saving
     ? lane.id === 'file' ? 'Adding…' : 'Connecting…'
@@ -1089,8 +1114,8 @@ const renderProviderForm = (
     htmlFor: 'acct-field-auth-method',
     control: selectField({ id: 'acct-field-auth-method', data: { 'acct-field': 'auth_method' },
       options: [
-        { value: 'direct', label: 'Your OAuth app', selected: !managed },
-        { value: 'managed_oauth', label: 'Managed OAuth — saved API connection', selected: managed },
+        { value: 'direct', label: 'Recued direct OAuth (recommended)', selected: !managed },
+        { value: 'managed_oauth', label: 'OAuth broker (optional)', selected: managed },
       ] }),
   }) : '';
   const compatible = managedConnectionsForAccount(provider.id, state.managedConnections ?? []);
@@ -1105,7 +1130,7 @@ const renderProviderForm = (
     <p class="accounts-form-desc">Use an account authorized through an OAuth broker. Add the needed mail or calendar scopes in its API connection before enabling writes here. Requested scopes do not confirm permissions; the vendor checks each action. Write actions also require Recued approval.</p>
     ${state.managedConnectionsError ? inlineError(state.managedConnectionsError) : ''}
     ${compatible.length === 0 ? inlineHint('Connect a managed '+provider.label+' API account in Apps & APIs first, then return here.') : ''}
-    ${button({ label: 'Open Apps & APIs', action: 'accounts-open-managed-connection', size: 'sm' })}
+    ${button({ label: 'Set up broker connection', action: 'accounts-open-managed-connection', size: 'sm' })}
   ` : '';
   const oauthSection = managed ? managedSection : isOAuth && issuer !== null ? renderOAuthAppSection(issuer, state) : '';
 
@@ -1145,6 +1170,7 @@ const renderProviderForm = (
       ${isOAuth ? '<p class="accounts-form-section-title">Connection details</p>' : ''}
       <div class="accounts-form-fields">${fields}</div>
       ${oauthSection}
+      ${isOAuth ? '<div data-account-oauth-help-host></div>' : ''}
       <div class="accounts-form-actions">
         ${primary}
         ${button({
@@ -1186,18 +1212,26 @@ const renderProviderPicker = (lane: AccountLane): string => {
 
 const providerLabelFor = (lane: AccountLane, adapterType: string): string => {
   const match = lane.providers.find((p) => p.id === adapterType);
-  return match ? match.label : adapterType;
+  return match ? match.label : lane.id === 'file' ? FILE_VENDOR_DECLARATIONS.find(vendor => vendor.vendor === adapterType)?.display_name ?? adapterType : adapterType;
 };
 
 type AccountDisplayState = CollectionAuthState | 'syncing';
 
 const displayStatusFor = (
   row: AccountRow,
-): { state: AccountDisplayState; label: string } =>
-  row.authState === 'healthy'
+): { state: AccountDisplayState; label: string } => {
+  if (row.mailSync !== undefined) {
+    if (row.authState !== 'healthy') return { state: row.authState, label: row.authState === 'degraded' ? 'Sync interrupted' : AUTH_STATE_LABEL[row.authState] };
+    if (!row.mailSync.access_verified) return { state: 'syncing', label: 'Checking mailbox access' };
+    return row.mailSync.initial_sync_complete
+      ? { state: 'healthy', label: 'Initial sync complete' }
+      : { state: 'syncing', label: 'Connected — syncing' };
+  }
+  return row.authState === 'healthy'
     && (row.lastSyncedAt === undefined || row.lastSyncedAt === null)
     ? { state: 'syncing', label: 'First sync pending' }
     : { state: row.authState, label: AUTH_STATE_LABEL[row.authState] };
+};
 
 const renderConnectionSuccess = (
   lane: AccountLane,
@@ -1212,7 +1246,7 @@ const renderConnectionSuccess = (
     ?? providerLabelFor(lane, row?.adapterType ?? success.providerId);
   const identity = row?.sublabel ?? success.slug;
 
-  let syncState: 'checking' | 'pending' | 'ready' | 'attention' | 'unknown';
+  let syncState: 'checking' | 'pending' | 'syncing' | 'ready' | 'attention' | 'unknown';
   let title: string;
   let badge: string;
   let description: string;
@@ -1220,7 +1254,7 @@ const renderConnectionSuccess = (
 
   if (state.loading) {
     syncState = 'checking';
-    title = `${providerLabel} connected`;
+    title = lane.id === 'mail' ? `${providerLabel} sign-in saved` : `${providerLabel} connected`;
     badge = 'Checking sync status';
     description = 'The connection is saved. Checking whether its first sync has finished…';
   } else if (state.error !== null || row === undefined) {
@@ -1231,12 +1265,44 @@ const renderConnectionSuccess = (
       ? `Recued saved ${success.slug}, but it has not appeared in the account list yet.`
       : `Recued saved ${success.slug}, but could not refresh its sync status.`;
     detail = 'Try checking again. You do not need to repeat the sign-in flow.';
+  } else if (row.authState !== 'healthy' && row.mailSync !== undefined) {
+    syncState = 'attention';
+    const verified = row.mailSync.access_verified;
+    const retryable = row.authState === 'degraded';
+    title = retryable
+      ? verified ? `${providerLabel} connected` : `${providerLabel} sign-in saved`
+      : `${providerLabel} sign-in needs attention`;
+    badge = retryable ? 'Sync interrupted' : 'Sign-in needs attention';
+    description = retryable
+      ? 'Your sign-in is saved, but a sync attempt failed. Recued will keep trying in the background.'
+      : 'The vendor refused mailbox access. Review this account’s sign-in and permissions.';
+    detail = retryable ? 'You can check the status again without repeating sign-in.' : 'Open the account details to review or repair access.';
   } else if (row.authState !== 'healthy') {
     syncState = 'attention';
     title = `${providerLabel} connected, but needs attention`;
     badge = AUTH_STATE_LABEL[row.authState];
     description = 'The account is saved, but the server reports a connection problem that needs attention.';
     detail = 'Open the account details to review it. You do not need to repeat setup unless the issue persists.';
+  } else if (row.mailSync !== undefined) {
+    if (!row.mailSync.access_verified) {
+      syncState = 'pending';
+      title = `${providerLabel} sign-in saved`;
+      badge = 'Checking mailbox access';
+      description = 'Your sign-in is saved. Recued is checking that it can read this mailbox.';
+      detail = 'You can leave this page; checking and syncing continue on your server.';
+    } else if (!row.mailSync.initial_sync_complete) {
+      syncState = 'syncing';
+      title = `${providerLabel} connected`;
+      badge = 'Connected — syncing';
+      description = 'Mailbox access is verified. You can use mail already received while the rest syncs in the background.';
+      detail = 'Large mailboxes can take longer. You can leave this page; syncing continues on your server.';
+    } else {
+      syncState = 'ready';
+      title = `${providerLabel} is ready`;
+      badge = 'Initial sync complete';
+      description = 'The initial mail import finished. Recued will keep checking for new mail.';
+      if (row.lastSyncedAt !== undefined && row.lastSyncedAt !== null) detail = `Last checked ${new Date(row.lastSyncedAt).toLocaleString()}.`;
+    }
   } else if (row.lastSyncedAt === undefined || row.lastSyncedAt === null) {
     syncState = 'pending';
     title = `${providerLabel} connected`;
@@ -1247,7 +1313,9 @@ const renderConnectionSuccess = (
     syncState = 'ready';
     title = `${providerLabel} is ready`;
     badge = 'Ready for Chat';
-    description = 'The first sync finished. This account is now available in Chat.';
+    description = lane.id === 'mail'
+      ? 'Mail is available in Chat. The initial import may still be running.'
+      : 'The first sync finished. This account is now available in Chat.';
     detail = `Last brought in ${new Date(row.lastSyncedAt).toLocaleString()}.`;
   }
 
@@ -1285,7 +1353,7 @@ const renderConnectionSuccess = (
         action: 'accounts-success-open-lane',
         data: { lane: adjacentLane.id },
       });
-  const checkAction = syncState === 'pending'
+  const checkAction = syncState === 'pending' || syncState === 'syncing' || syncState === 'attention'
     ? button({
         label: 'Check status',
         variant: 'link',
@@ -1303,7 +1371,7 @@ const renderConnectionSuccess = (
       <div class="accounts-success-content">
         <div class="accounts-success-live" role="status" aria-live="polite" aria-atomic="true">
           <div class="accounts-success-heading">
-            <p class="accounts-success-eyebrow">Account connected</p>
+            <p class="accounts-success-eyebrow">${lane.id === 'mail' && row?.mailSync?.access_verified !== true ? 'Sign-in saved' : 'Account connected'}</p>
             <span class="accounts-success-badge" data-state="${e(syncState)}">${e(badge)}</span>
           </div>
           <h2 class="accounts-success-title"
@@ -1385,6 +1453,15 @@ const renderOAuthReloadRecovery = (state: AccountsPanelState): string => {
 };
 
 const renderRow = (lane: AccountLane, row: AccountRow): string => {
+  if (row.cloudSource) {
+    const source = row.cloudSource;
+    const provider = FILE_VENDOR_DECLARATIONS.find(vendor => vendor.vendor === source.provider)?.display_name ?? source.provider;
+    return `<li class="accounts-row"><div class="accounts-row-main accounts-cloud-source"><strong class="accounts-row-name">${e(source.label)}</strong>
+      <span class="accounts-row-meta">${e(provider)} · Cloud source · ${source.stale ? 'File list may be out of date' : source.last_synced_at === null ? 'Waiting for first sync' : 'Metadata available'}</span>
+      <div class="accounts-form-actions"><a class="rx-btn rx-btn-secondary rx-btn-sm" href="#data/files/${encodeURIComponent('remote:' + source.source_id)}">Browse files</a>
+      ${source.authentication_connection && CONNECTION_NAME_REGEX.test(source.authentication_connection) ? `<a class="rx-btn rx-btn-secondary rx-btn-sm" href="#connections/others/${['google', 'onedrive', 'sharepoint', 'dropbox', 'box'].includes(source.provider) ? 'switch-file-authentication' : 'review-access'}/api/${encodeURIComponent(source.authentication_connection)}">Manage authentication</a>` : ''}</div>
+    </div></li>`;
+  }
   const status = displayStatusFor(row);
   return `
     <li class="accounts-row" data-account-slug="${e(row.slug)}">
@@ -1395,7 +1472,7 @@ const renderRow = (lane: AccountLane, row: AccountRow): string => {
           <span class="accounts-badge">${e(providerLabelFor(lane, row.adapterType))}</span>
           <span class="accounts-status" data-state="${e(status.state)}">${e(status.label)}</span>
           ${row.sendCapable ? '<span class="accounts-badge accounts-badge--send">'+(row.managedConnectionName ? 'sending enabled' : 'can send')+'</span>' : ''}
-          ${row.managedConnectionName ? '<span class="accounts-badge">managed OAuth</span>' : ''}
+          ${row.managedConnectionName ? '<span class="accounts-badge">' + (row.sourceAuthentication === 'direct_oauth' ? 'direct OAuth' : 'managed OAuth') + '</span>' : ''}
         </span>
         ${row.sublabel ? `<span class="accounts-row-sub">${e(row.sublabel)}</span>` : ''}
       </button>
@@ -1434,12 +1511,23 @@ const renderEmptyState = (lane: AccountLane): string => `
 `;
 
 const renderList = (lane: AccountLane, state: AccountsPanelState): string => {
+  const filters = state.filters;
+  const visible = state.rows.filter(row => (!filters?.query || [row.slug, row.sublabel, row.cloudSource?.label, row.adapterType].join(' ').toLowerCase().includes(filters.query.toLowerCase()))
+    && (!filters?.provider || row.adapterType === filters.provider)
+    && (!filters?.status || (filters.status === 'attention' ? row.cloudSource?.stale || row.authState !== 'healthy' : row.cloudSource ? !row.cloudSource.stale : row.authState === 'healthy')));
+  const filterBar = state.rows.length ? `<div class="accounts-inventory-filters" role="group" aria-label="Filter connections">
+    <label>Search connections<input type="search" data-acct-filter="query" value="${e(filters?.query ?? '')}" autocomplete="off"></label>
+    <label>Provider<select data-acct-filter="provider"><option value="">All providers</option>${[...new Set(state.rows.map(row => row.adapterType))].map(provider => `<option value="${e(provider)}"${filters?.provider === provider ? ' selected' : ''}>${e(providerLabelFor(lane, provider))}</option>`).join('')}</select></label>
+    <label>Status<select data-acct-filter="status"><option value="">All statuses</option><option value="healthy"${filters?.status === 'healthy' ? ' selected' : ''}>No recorded problems</option><option value="attention"${filters?.status === 'attention' ? ' selected' : ''}>Needs attention</option></select></label>
+    ${filters?.query || filters?.provider || filters?.status ? button({ label: 'Clear filters', action: 'accounts-clear-filters', size: 'sm' }) : ''}
+    <span role="status">${visible.length} of ${state.rows.length}</span></div>` : '';
   const hasSuccess = state.connectionSuccess !== null;
   const hasRecovery = state.oauthReloadRecovery !== null;
   const isEmpty = !hasSuccess
     && !hasRecovery
     && !state.loading
     && state.error === null
+    && !state.cloudFilesError && !state.localFilesError
     && state.rows.length === 0;
   let body: string;
   if (state.loading) {
@@ -1456,7 +1544,7 @@ const renderList = (lane: AccountLane, state: AccountsPanelState): string => {
   } else if (state.rows.length === 0) {
     body = '';
   } else {
-    body = `<ul class="accounts-rows">${state.rows.map((r) => renderRow(lane, r)).join('')}</ul>`;
+    body = `${filterBar}${visible.length ? `<ul class="accounts-rows">${visible.map((r) => renderRow(lane, r)).join('')}</ul>` : inlineHint('No connections match these filters.')}`;
   }
   const canAdd = lane.providers.length > 0;
   const addRow = canAdd
@@ -1480,8 +1568,11 @@ const renderList = (lane: AccountLane, state: AccountsPanelState): string => {
           <h2 class="accounts-list-title">${e(lane.listTitle)}</h2>
           <p class="accounts-blurb">${e(lane.blurb)}</p>
         </header>`}
-    ${body}
     ${addRow}
+    ${lane.id === 'file' ? `<details class="accounts-cloud-connect"><summary>Connect cloud source</summary><p>Files stay with the provider. Recued mirrors their metadata and reads downloads or exports when requested.</p><div class="accounts-form-actions">${FILE_VENDOR_DECLARATIONS.map(vendor => `<a class="rx-btn rx-btn-outline rx-btn-sm" href="#connections/others/enroll/${encodeURIComponent(vendor.vendor)}">${e(vendor.display_name)}</a>`).join('')}</div></details>
+      ${state.localFilesError ? inlineError(state.localFilesError) : ''}${state.cloudFilesError ? inlineError(state.cloudFilesError) : ''}
+      ${state.cloudFilesError || state.localFilesError ? button({ label: 'Refresh file sources', action: 'accounts-success-refresh', size: 'sm' }) : ''}` : ''}
+    ${body}
     ${pending}
   `;
 };
@@ -1511,7 +1602,7 @@ const renderDetail = (lane: AccountLane, state: AccountsPanelState): string => {
     !hasSynced
       ? row.authState === 'healthy' ? 'Waiting for first sync' : 'No successful sync yet'
       : new Date(lastSyncedAt).toLocaleString();
-  // Re-sync exists on calendar + file lanes; reauthorization is calendar-only.
+  // Re-sync is independent of authorization and exists on Calendar and Files.
   const lifecycle = lane.id !== 'mail';
   return `
     <div class="accounts-detail">
@@ -1520,13 +1611,22 @@ const renderDetail = (lane: AccountLane, state: AccountsPanelState): string => {
         <dt>Provider</dt><dd>${e(providerLabelFor(lane, row.adapterType))}</dd>
         <dt>Status</dt><dd><span class="accounts-status" data-state="${e(status.state)}">${e(status.label)}</span></dd>
         ${row.sublabel ? `<dt>Account</dt><dd>${e(row.sublabel)}</dd>` : ''}
-        ${row.managedConnectionName ? `<dt>Managed API connection</dt><dd>${e(row.managedConnectionName)}</dd>` : ''}
-        <dt>${hasSynced ? 'Last synced' : 'Sync'}</dt><dd>${e(synced)}</dd>
+        ${row.managedConnectionName ? `<dt>API connection</dt><dd>${e(row.managedConnectionName)}</dd>` : ''}
+        <dt>${hasSynced ? row.mailSync ? 'Last mailbox read' : 'Last synced' : 'Sync'}</dt><dd>${e(synced)}</dd>
+        ${row.mailSync ? `<dt>Initial sync</dt><dd>${row.mailSync.initial_sync_complete ? 'Complete' : row.mailSync.access_verified ? 'Importing mail in the background' : 'Waiting for mailbox access'}</dd>` : ''}
       </dl>
       ${rowErr ? inlineError(rowErr) : ''}
+      ${['gmail', 'gcal', 'graph'].includes(row.adapterType) ? '<div data-account-oauth-help-host></div>' : ''}
       ${row.managedConnectionName ? inlineHint('Reconnect this account in Apps & APIs if authorization expires. Vendor permissions are checked when an action runs.') : ''}
-      ${row.managedConnectionName ? button({ label: 'Open Apps & APIs', action: 'accounts-open-managed-connection', size: 'sm' }) : ''}
+
       <div class="accounts-form-actions">
+        ${row.mailSync && !row.mailSync.initial_sync_complete
+          ? button({ label: 'Check sync status', action: 'accounts-success-refresh', size: 'sm' }) : ''}
+        ${row.passwordRepairAvailable ? button({ label: 'Update credentials', action: 'accounts-update-credentials', size: 'sm', data: { slug: row.slug } }) : ''}
+        ${lane.id === 'file' ? `<a class="rx-btn rx-btn-outline rx-btn-sm" href="#data/files/${encodeURIComponent(row.slug)}">Browse files</a>` : ''}
+        ${(row.authenticationSwitchAvailable || row.oauthAppSwitchAvailable) && ((lane.id === 'mail' && ['gmail', 'graph'].includes(row.adapterType))
+          || (lane.id === 'calendar' && ['gcal', 'graph'].includes(row.adapterType)))
+          ? button({ label: 'Manage authentication', action: 'accounts-manage-authentication', size: 'sm', data: { slug: row.slug } }) : ''}
         ${
           lifecycle
             ? button({
@@ -1536,20 +1636,6 @@ const renderDetail = (lane: AccountLane, state: AccountsPanelState): string => {
                 data: { slug: row.slug },
                 ariaDisabled: busyKey('resync'),
                 ariaBusy: busyKey('resync'),
-              })
-            : ''
-        }
-        ${
-          lane.id === 'calendar'
-            && row.reauthAvailable === true
-            && row.authState !== 'healthy'
-            ? button({
-                label: busyKey('reauth') ? 'Re-authorizing…' : 'Re-authorize',
-                size: 'sm',
-                action: 'accounts-reauth',
-                data: { slug: row.slug },
-                ariaDisabled: busyKey('reauth'),
-                ariaBusy: busyKey('reauth'),
               })
             : ''
         }
@@ -1828,6 +1914,23 @@ export const renderAccountsPanel = (props: AccountsPanelProps): string => {
   return `
     <div class="accounts-panel" data-accounts-lane="${e(state.lane)}">
       <div class="accounts-stage">${stageHtml}</div>
+      ${state.bulkOAuthAppSwitchAvailable && state.stage === 'list' && !state.oauthFinishing && ['mail', 'calendar'].includes(state.lane)
+        && state.rows.some(row => ['gmail', 'gcal', 'graph'].includes(row.adapterType) && !row.managedConnectionName)
+        ? button({ label: 'Bulk switch saved OAuth apps', action: 'accounts-bulk-switch-oauth-app', size: 'sm' }) : ''}
+      ${state.stage === 'detail' && state.authenticationManagement?.slug === state.detailSlug ? (() => {
+        const row = state.rows.find(r => r.slug === state.detailSlug);
+        return row ? renderAuthenticationManagement({ prefix: 'accounts', action: state.authenticationManagement!.action,
+          current: row.sourceAuthentication === 'broker' ? 'Broker sign-in' : 'Recued direct OAuth', account: row.sublabel,
+          canChangeApp: row.oauthAppSwitchAvailable === true && !row.managedConnectionName,
+          canChangeMethod: row.authenticationSwitchAvailable === true, busy: state.authenticationManagementBusy })
+          + (row.managedConnectionName && state.authenticationManagement!.action === 'reauthorize'
+            ? '<p>Re-authorize the saved API connection shared by this account. Review its linked connections before applying.</p>'
+              + button({ label: 'Continue to current sign-in', action: 'accounts-open-managed-connection', size: 'sm' }) : '') : '';
+      })() : ''}
+      <div data-bulk-collection-oauth-app-host></div>
+      <div data-account-password-host></div>
+      <div data-collection-authentication-host></div>
+      <div data-collection-oauth-app-host></div>
       ${renderAccountsDeleteConfirm(state)}
     </div>
   `;
@@ -1839,6 +1942,13 @@ export const renderAccountsPanel = (props: AccountsPanelProps): string => {
 
 export const ACCOUNTS_PANEL_STYLES = `
 .accounts-panel { min-width: 0; display: grid; gap: 14px; }
+.accounts-inventory-filters{display:flex;flex-wrap:wrap;align-items:end;gap:10px;margin:12px 0;font-size:13px}
+.accounts-inventory-filters label,.accounts-password-repair label{display:grid;gap:5px;min-width:0}
+.accounts-inventory-filters input,.accounts-inventory-filters select,.accounts-password-repair input{box-sizing:border-box;max-width:100%;min-width:0;font:inherit;padding:9px;border:1px solid var(--border);border-radius:7px;background:var(--surface);color:var(--fg)}
+.accounts-inventory-filters label:first-child{flex:1 1 180px}.accounts-cloud-connect{margin:12px 0}.accounts-cloud-connect summary{cursor:pointer;font-weight:600}
+.accounts-password-repair{border:1px solid var(--border);padding:16px;border-radius:10px;overflow-wrap:anywhere;font-size:13px;line-height:1.5}.accounts-password-repair h3{margin-top:0;font-size:16px}.accounts-password-repair form{display:grid;gap:12px}
+.accounts-password-repair p{color:var(--fg-muted);font-weight:400}.accounts-password-repair label{font-weight:500}
+.accounts-cloud-source{cursor:default}.accounts-cloud-source:hover{background:transparent}.accounts-cloud-source .accounts-row-meta{font-size:12px;color:var(--fg-muted);line-height:1.5}
 .accounts-delete-backdrop {
   box-sizing: border-box; min-width: 0; max-width: 100%;
   position: fixed; inset: 0; z-index: 40;
@@ -1996,7 +2106,8 @@ export const ACCOUNTS_PANEL_STYLES = `
   border-radius: 50%; background: currentColor;
 }
 .accounts-success-badge[data-state='checking']::before,
-.accounts-success-badge[data-state='pending']::before { background: var(--accent); }
+.accounts-success-badge[data-state='pending']::before,
+.accounts-success-badge[data-state='syncing']::before { background: var(--accent); }
 .accounts-success-badge[data-state='ready'] { color: var(--ok, #2e7d32); }
 .accounts-success-badge[data-state='attention'] { color: var(--danger); }
 .accounts-success-badge[data-state='unknown'] { color: var(--warn); }

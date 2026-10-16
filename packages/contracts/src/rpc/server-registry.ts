@@ -1108,6 +1108,8 @@ export interface RecipeRunFacts {
 }
 
 export interface ServerExecuteResponse {
+  /** Exact persisted audit anchor for this execution. Absent for unaudited runs. */
+  run_id?: string;
   recipe_id: string;
   recipe_hash: string;
   success: boolean;
@@ -3561,6 +3563,9 @@ export type ServerRpcRegistry = {
       publisher_id?: string;
       config: Record<string, unknown>;
       auth: ConnectionAuth;
+      /** Reuse a saved issuer app; its secret stays on the server. */
+      oauth_app_id?: string;
+      oauth_app_issuer?: import('../foundational-oauth.js').OAuthAppIssuer;
       /** D-165 P3.path-picker — optional sub-resource scope (default
        *  `/` = whole account). Canonicalized server-side. Omitting it
        *  on a re-enroll preserves the existing scope rather than
@@ -4458,6 +4463,9 @@ export type ServerRpcRegistry = {
       redirect_uri: string;
       client_id: string;
       client_secret?: string;
+      /** Reuse a saved issuer app; its secret stays on the server. */
+      oauth_app_id?: string;
+      oauth_app_issuer?: import('../foundational-oauth.js').OAuthAppIssuer;
       /** R26.2-for-vendors — form-supplied endpoints for a NON-REGISTRY vendor,
        *  mirroring `startVendorOAuth`. Ignored for a registered vendor, which
        *  always uses its registry config so these can never bypass its PKCE /
@@ -4532,6 +4540,9 @@ export type ServerRpcRegistry = {
       vendor: string;
       client_id: string;
       client_secret?: string;
+      /** Reuse a saved issuer app; its secret stays on the server. */
+      oauth_app_id?: string;
+      oauth_app_issuer?: import('../foundational-oauth.js').OAuthAppIssuer;
       /** The redirect URI the user registered with their BYO vendor
        *  OAuth app. Must match one of
        *  `vendorOAuthRedirectChoices(server_url)`. */
@@ -5306,6 +5317,11 @@ export type ServerRpcRegistry = {
   // not the error channel; the Settings UI renders each `failure.code`
   // with targeted copy. Only manifest-validator failures + arg-shape
   // problems reach the rpc error channel as `bad_request`.
+  /** Owner reminder state for installed Pack permissions; never grants access. */
+  'packs.reconnect_later': RpcMethodSpec<
+    import('../pack-reconnect-worklist.js').PackReconnectRequest,
+    import('../pack-reconnect-worklist.js').PackReconnectResponse
+  >;
   /** D-145 PA10 follow-on — install a bulk pack from a raw manifest.
    *  `manifest` is the unparsed JSON the install dialog accepted; the
    *  handler runs `parseBulkPackManifest` against it (errors surface
@@ -5339,6 +5355,7 @@ export type ServerRpcRegistry = {
     { manifest: unknown; marketplace?: boolean },
     {
       resolved: boolean;
+      vendor_permissions?: import('../pack-vendor-permissions.js').PackVendorPermissionReview;
       will_enable: Array<{
         publisher_id: string;
         recipe_id: string;
@@ -5477,6 +5494,7 @@ export type ServerRpcRegistry = {
        *  installs unconnected and stays deny-until-granted until the owner
        *  connects later. Recipe-only packs (no composition) ignore it. */
       chosen_connection?: string;
+      vendor_permission_consent?: import('../pack-vendor-permissions.js').PackVendorPermissionConsent;
       /** D-320 slice 2j (ruling 16) — the connections its sign-in shares that the
        *  owner left ticked (`packs.install_preview` `shared_connections`). A FIRST
        *  install puts them on the pack's list beside `chosen_connection`, which
@@ -5540,6 +5558,7 @@ export type ServerRpcRegistry = {
       /** D-194 2b — forwarded verbatim to `packs.install`. See `packs.install`'s
        *  `chosen_connection` doc. */
       chosen_connection?: string;
+      vendor_permission_consent?: import('../pack-vendor-permissions.js').PackVendorPermissionConsent;
       /** D-320 slice 2j — forwarded to `packs.install`. See its `also_connections`. */
       also_connections?: ReadonlyArray<string>;
       /** D-201 Slice 4 — forwarded to the trusted by-value install path. */
@@ -6163,6 +6182,8 @@ export type ServerRpcRegistry = {
   /** Per-issuer status for the setup UI. NEVER returns the client_secret
    *  (write-only) — only `has_secret` + `client_id` + `source`. */
   'server.getOAuthAppConfig': RpcMethodSpec<void, OAuthAppConfigSnapshot>;
+  /** Named, write-only-secret app profiles. Legacy issuer settings remain the default profile. */
+  'server.oauthApps': RpcMethodSpec<import('../foundational-oauth.js').OAuthAppsRequest, import('../foundational-oauth.js').OAuthAppsResponse>;
 
   /** Store (or overwrite) an issuer's BYO client_id + client_secret. The
    *  secret is encrypted at rest; a locked server rejects the write. */
@@ -6304,6 +6325,8 @@ export type ServerRpcRegistry = {
       account_slug: string;
       code: string;
       redirect_uri: string;
+      oauth_app_id?: string;
+      oauth_client_id?: string;
     },
     { ok: true; account_key_prefix: string }
   >;
@@ -6355,6 +6378,12 @@ export type ServerRpcRegistry = {
     { slug: string; send_capable: boolean }
   >;
 
+  /** Verify replacement login credentials before updating the existing mailbox. */
+  'collection.mail.updateCredentials': RpcMethodSpec<
+    { slug: string; password?: string; smtp_password?: string },
+    { ok: true; restart_needed: boolean }
+  >;
+
   /** D-127 wire-up — enumerate every enrolled `data.mail.<slug>`
    *  instance with `send_capable` + `account_email` surfaced for the
    *  picker / `data.mail.send_capable_instances` resolver. Cheap —
@@ -6374,6 +6403,13 @@ export type ServerRpcRegistry = {
            *  running for the slug. */
           draft_capable: boolean;
           account_email: string;
+          /** Absent on older servers. Read access and initial import completion
+           * are separate milestones; an empty mailbox can verify access. */
+          sync_status?: import('../collections.js').MailSyncStatus;
+          /** D-318 step 1 — the email chat door's chat mailbox. Present and
+           *  `true` on that one row; its mail is the conversation, not the
+           *  owner's mail. */
+          chat_mailbox?: true;
         }
       >;
     }
@@ -6383,6 +6419,48 @@ export type ServerRpcRegistry = {
    *  associated credentials. Compose root closes the live provider
    *  via `onDeleted`. */
   'collection.mail.delete': RpcMethodSpec<{ slug: string }, { ok: true }>;
+
+  /** D-318 step 1 — the email chat door's settings: which connected mailbox is
+   *  the chat mailbox (one per server, or none). It must be able to send, since
+   *  the door answers from it. Its mail makes no mail facts or contacts and
+   *  starts no mail recipe. Owner-only: `collection.mail.chat_door.` is an MCP
+   *  reserved prefix. */
+  'collection.mail.chat_door.get': RpcMethodSpec<void, import('../mail-chat-door.js').MailChatDoorSettings>;
+  'collection.mail.chat_door.set': RpcMethodSpec<
+    {
+      /** The chat mailbox's slug, or `null` to clear it. */
+      chat_mailbox?: string | null;
+      /** D-318 step 4 — the `ask:` filter's prefix, or `null` to switch it off. */
+      ask_prefix?: string | null;
+      /** D-318 audit — the owner's own mailboxes (slugs), whose Sent record proves a request. */
+      owner_mailboxes?: readonly string[];
+      /** D-318 step 6 — a request not reached within this many minutes (5 to
+       *  1440) is answered with one line and not run. */
+      stale_after_minutes?: number;
+      /** D-318 step 6 — `true` resumes the door after the burst guard paused it. */
+      resume?: true;
+      /** D-318 step 8 — enrol an address Recued does not read (proof (b)):
+       *  a fresh code, to be sent from that address to the chat mailbox. An
+       *  address already listed gets a new code. */
+      enroll?: string;
+      /** D-318 step 8 — remove an enrolled address. */
+      unenroll?: string;
+    },
+    import('../mail-chat-door.js').MailChatDoorSettings
+  >;
+  /** D-318 step 7 — the checks before switching the door on (§4.12), for the
+   *  mailboxes given, else the ones named. Asks each of the owner's mailboxes
+   *  for one Message-ID no message has, so it costs one lookup each. */
+  'collection.mail.chat_door.check': RpcMethodSpec<
+    { chat_mailbox?: string; owner_mailboxes?: readonly string[] } | void,
+    import('../mail-chat-door.js').MailChatDoorCheckResult
+  >;
+  /** D-318 step 7 — the latest requests and how far each got, for the test
+   *  round trip. Never a subject or a body. */
+  'collection.mail.chat_door.recent': RpcMethodSpec<
+    void,
+    { readonly requests: readonly import('../mail-chat-door.js').MailChatDoorRecentRequest[] }
+  >;
 
   // ── Phase G (D-109) additions ───────────────────────────────────
 
@@ -6575,6 +6653,8 @@ export type ServerRpcRegistry = {
       adapter: 'gcal' | 'graph';
       oauth_code: string;
       oauth_redirect_uri: string;
+      oauth_app_id?: string;
+      oauth_client_id?: string;
       backfill_days?: number;
       expansion_future_days?: number;
       expansion_past_days?: number;
@@ -6641,6 +6721,11 @@ export type ServerRpcRegistry = {
       discover_timeout_ms?: number;
     },
     { slug: string; caps: CalendarCollectionCaps }
+  >;
+  /** Password-only CalDAV repair; keeps the account, selections and sync cursors. */
+  'collection.calendar.updateCredentials': RpcMethodSpec<
+    { slug: string; password: string },
+    { ok: true; restart_needed: boolean }
   >;
   /** Enumerate calendar instances on this server. */
   'collection.calendar.list': RpcMethodSpec<
@@ -7611,14 +7696,63 @@ export type ServerRpcRegistry = {
     import('../quote-signoff.js').QuoteSignoffPublishResult>;
   'reception.signoff.list': RpcMethodSpec<import('../quote-signoff.js').QuoteSignoffListInput | void,
     import('../quote-signoff.js').QuoteSignoffListResult>;
+  'reception.jobs.receivables': RpcMethodSpec<import('../customer-receivables-aging.js').CustomerReceivablesAgingInput | void,import('../customer-receivables-aging.js').CustomerReceivablesAging>;
+  'reception.jobs.timeline': RpcMethodSpec<import('../customer-job-timeline.js').CustomerJobTimelineInput,import('../customer-job-timeline.js').CustomerJobTimeline>;
+  'reception.jobs.closeout.get': RpcMethodSpec<import('../customer-job-closeout.js').CustomerJobCloseoutInput,import('../customer-job-closeout.js').CustomerJobCloseoutReport>;
+  'reception.jobs.archive': RpcMethodSpec<import('../customer-job-closeout.js').CustomerJobArchiveInput,import('../customer-job-closeout.js').CustomerJobArchiveRecord>;
+  'reception.jobs.restore': RpcMethodSpec<import('../customer-job-closeout.js').CustomerJobRestoreInput,import('../customer-job-closeout.js').CustomerJobArchiveRecord>;
   'reception.jobs.list': RpcMethodSpec<import('../customer-jobs.js').CustomerJobsListInput | void,
     import('../customer-jobs.js').CustomerJobsListResult>;
+  'reception.accounts.list': RpcMethodSpec<import('../customer-account-statements.js').CustomerAccountsListInput | void, import('../customer-account-statements.js').CustomerAccountsListResult>;
+  'reception.accounts.get': RpcMethodSpec<import('../customer-account-statements.js').CustomerAccountInput, import('../customer-account-statements.js').CustomerAccount>;
+  'reception.accounts.save': RpcMethodSpec<import('../customer-account-statements.js').CustomerAccountSaveInput, import('../customer-account-statements.js').CustomerAccount>;
+  'reception.accounts.contact.get': RpcMethodSpec<import('../customer-account-statements.js').CustomerAccountInput,import('../customer-account-contact-defaults.js').CustomerAccountContactDefaultsRecord>;
+  'reception.accounts.contact.set': RpcMethodSpec<import('../customer-account-contact-defaults.js').CustomerAccountContactDefaultsSetInput,import('../customer-account-contact-defaults.js').CustomerAccountContactDefaultsRecord>;
+  'reception.accounts.statement': RpcMethodSpec<import('../customer-account-statements.js').CustomerAccountInput, import('../customer-account-statements.js').CustomerAccountStatement>;
+  'reception.accounts.statement.draft': RpcMethodSpec<import('../customer-account-statements.js').CustomerAccountStatementDraftInput, import('../customer-account-statements.js').CustomerAccountStatementDraftResult>;
+  'reception.accounts.payment.reminders.get': RpcMethodSpec<import('../customer-account-payment-reminders.js').CustomerAccountPaymentReminderInput,import('../customer-account-payment-reminders.js').CustomerAccountPaymentReminder>;
+  'reception.accounts.payment.reminders.set': RpcMethodSpec<import('../customer-account-payment-reminders.js').CustomerAccountPaymentReminderSetInput,import('../customer-account-payment-reminders.js').CustomerAccountPaymentReminder>;
+  'reception.accounts.payment.reminders.list': RpcMethodSpec<import('../customer-account-payment-reminders.js').CustomerAccountPaymentReminderListInput,import('../customer-account-payment-reminders.js').CustomerAccountPaymentReminderListResult>;
+  'reception.accounts.payment.reminders.draft': RpcMethodSpec<import('../customer-account-payment-reminders.js').CustomerAccountPaymentReminderDraftInput,import('../customer-account-payment-reminders.js').CustomerAccountPaymentReminderDraftResult>;
+  'reception.accounts.payment.correction.prepare': RpcMethodSpec<import('../customer-account-payment-corrections.js').CustomerAccountPaymentCorrectionPrepareInput,import('../customer-account-payment-corrections.js').CustomerAccountPaymentCorrectionPreview>;
+  'reception.accounts.payment.correction.history': RpcMethodSpec<import('../customer-account-payment-corrections.js').CustomerAccountPaymentCorrectionHistoryInput,import('../customer-account-payment-corrections.js').CustomerAccountPaymentCorrectionHistory>;
+  'reception.accounts.payment.prepare': RpcMethodSpec<import('../customer-account-payments.js').CustomerAccountPaymentPrepareInput,import('../customer-account-payments.js').CustomerAccountPaymentPreview>;
+  'reception.accounts.payment.history': RpcMethodSpec<import('../customer-account-payments.js').CustomerAccountPaymentHistoryInput,import('../customer-account-payments.js').CustomerAccountPaymentHistory>;
+  'reception.accounts.payment.receipt': RpcMethodSpec<import('../customer-account-payments.js').CustomerAccountPaymentReceiptInput,import('../customer-account-payments.js').CustomerAccountPaymentReceipt>;
+  'reception.accounts.payment.receipt.draft': RpcMethodSpec<import('../customer-account-payments.js').CustomerAccountPaymentReceiptDraftInput,import('../customer-account-payments.js').CustomerAccountPaymentReceiptDraftResult>;
+  'reception.jobs.payment.statement': RpcMethodSpec<import('../customer-job-payment-statements.js').CustomerJobPaymentStatementInput, import('../customer-job-payment-statements.js').CustomerJobPaymentStatement>;
+  'reception.jobs.payment.statement.draft': RpcMethodSpec<import('../customer-job-payment-statements.js').CustomerJobPaymentStatementDraftInput, import('../customer-job-payment-statements.js').CustomerJobPaymentStatementDraftResult>;
+
   'reception.signoff.cancel': RpcMethodSpec<import('../quote-signoff.js').QuoteSignoffCancelInput,
     import('../quote-signoff.js').QuoteSignoffSummary>;
   'reception.signoff.completion.prepare': RpcMethodSpec<import('../quote-completion.js').QuoteCompletionPrepareInput, import('../quote-completion.js').QuoteCompletionPrepareResult>;
   'reception.signoff.completion.publish': RpcMethodSpec<import('../quote-completion.js').QuoteCompletionPublishInput, import('../quote-completion.js').QuoteCompletionPublishResult>;
   'reception.signoff.completion.list': RpcMethodSpec<import('../quote-completion.js').QuoteCompletionListInput | void, import('../quote-completion.js').QuoteCompletionListResult>;
   'reception.signoff.completion.cancel': RpcMethodSpec<import('../quote-completion.js').QuoteCompletionCancelInput, import('../quote-completion.js').QuoteCompletionSummary>;
+  'reception.signoff.payment.history': RpcMethodSpec<import('../customer-payment-receipts.js').CustomerPaymentHistoryInput, import('../customer-payment-receipts.js').CustomerPaymentHistory>;
+  'reception.signoff.payment.receipt': RpcMethodSpec<import('../customer-payment-receipts.js').CustomerPaymentReceiptInput, import('../customer-payment-receipts.js').CustomerPaymentReceipt>;
+  'reception.signoff.payment.receipt.draft': RpcMethodSpec<import('../customer-payment-receipts.js').CustomerPaymentReceiptDraftInput, import('../customer-payment-receipts.js').CustomerPaymentReceiptDraftResult>;
+  'reception.signoff.invoice.credit.correction.prepare': RpcMethodSpec<import('../customer-credit-corrections.js').CustomerCreditCorrectionPrepareInput,import('../customer-credit-corrections.js').CustomerCreditCorrectionPreview>;
+  'reception.signoff.invoice.credit.correction.history': RpcMethodSpec<import('../customer-credit-corrections.js').CustomerCreditCorrectionHistoryInput,import('../customer-credit-corrections.js').CustomerCreditCorrectionHistory>;
+  'reception.signoff.refund.prepare': RpcMethodSpec<import('../customer-refunds.js').CustomerRefundPrepareInput,import('../customer-refunds.js').CustomerRefundPreview>;
+  'reception.signoff.refund.correction.prepare': RpcMethodSpec<import('../customer-refund-corrections.js').CustomerRefundCorrectionPrepareInput,import('../customer-refund-corrections.js').CustomerRefundCorrectionPreview>;
+  'reception.signoff.refund.correction.history': RpcMethodSpec<import('../customer-refund-corrections.js').CustomerRefundCorrectionHistoryInput,import('../customer-refund-corrections.js').CustomerRefundCorrectionHistory>;
+  'reception.signoff.refund.history': RpcMethodSpec<import('../customer-refunds.js').CustomerRefundHistoryInput,import('../customer-refunds.js').CustomerRefundHistory>;
+  'reception.signoff.refund.copy': RpcMethodSpec<import('../customer-refunds.js').CustomerRefundCopyInput,import('../customer-refunds.js').CustomerRefundDocument>;
+  'reception.signoff.refund.receipt.draft': RpcMethodSpec<import('../customer-refunds.js').CustomerRefundDraftInput,import('../customer-refunds.js').CustomerRefundDraftResult>;
+  'reception.signoff.invoice.credit.prepare': RpcMethodSpec<import('../customer-invoice-credits.js').CustomerInvoiceCreditPrepareInput,import('../customer-invoice-credits.js').CustomerInvoiceCreditPreview>;
+  'reception.signoff.invoice.credit.history': RpcMethodSpec<import('../customer-invoice-credits.js').CustomerInvoiceCreditHistoryInput,import('../customer-invoice-credits.js').CustomerInvoiceCreditHistory>;
+  'reception.signoff.invoice.credit.copy': RpcMethodSpec<import('../customer-invoice-credits.js').CustomerInvoiceCreditCopyInput,import('../customer-invoice-credits.js').CustomerInvoiceCreditCopy>;
+  'reception.signoff.payment.correction.prepare': RpcMethodSpec<import('../customer-payment-corrections.js').CustomerPaymentCorrectionPrepareInput,import('../customer-payment-corrections.js').CustomerPaymentCorrectionPreview>;
+  'reception.signoff.payment.correction.history': RpcMethodSpec<import('../customer-payment-corrections.js').CustomerPaymentCorrectionHistoryInput,import('../customer-payment-corrections.js').CustomerPaymentCorrectionHistory>;
+  'reception.signoff.payment.reminders.get': RpcMethodSpec<import('../quote-payment-reminders.js').QuotePaymentReminderGetInput, import('../quote-payment-reminders.js').QuotePaymentReminder>;
+  'reception.signoff.completion.reminders.get': RpcMethodSpec<import('../quote-completion-reminders.js').QuoteCompletionReminderGetInput, import('../quote-completion-reminders.js').QuoteCompletionReminder>;
+  'reception.signoff.payment.reminders.set': RpcMethodSpec<import('../quote-payment-reminders.js').QuotePaymentReminderSetInput, import('../quote-payment-reminders.js').QuotePaymentReminder>;
+  'reception.signoff.completion.reminders.set': RpcMethodSpec<import('../quote-completion-reminders.js').QuoteCompletionReminderSetInput, import('../quote-completion-reminders.js').QuoteCompletionReminder>;
+  'reception.signoff.payment.reminders.list': RpcMethodSpec<import('../quote-payment-reminders.js').QuotePaymentReminderListInput | void, import('../quote-payment-reminders.js').QuotePaymentReminderListResult>;
+  'reception.signoff.completion.reminders.list': RpcMethodSpec<import('../quote-completion-reminders.js').QuoteCompletionReminderListInput | void, import('../quote-completion-reminders.js').QuoteCompletionReminderListResult>;
+  'reception.signoff.payment.reminders.draft': RpcMethodSpec<import('../quote-payment-reminders.js').QuotePaymentReminderDraftInput, import('../quote-payment-reminders.js').QuotePaymentReminderDraftResult>;
+  'reception.signoff.completion.reminders.draft': RpcMethodSpec<import('../quote-completion-reminders.js').QuoteCompletionReminderDraftInput, import('../quote-completion-reminders.js').QuoteCompletionReminderDraftResult>;
   'reception.signoff.receipt': RpcMethodSpec<import('../quote-signoff.js').QuoteSignoffReceiptInput,
     import('../quote-signoff.js').QuoteSignoffReceipt>;
   'reception.signoff.reminders.get': RpcMethodSpec<import('../quote-signoff-reminders.js').QuoteSignoffReminderGetInput,
@@ -7961,6 +8095,23 @@ export type ServerRpcRegistry = {
   'notification.quiet_hours.set': RpcMethodSpec<
     import('../quiet-hours.js').QuietHoursSetRequest,
     import('../quiet-hours.js').QuietHoursSetResponse
+  >;
+
+  /** D-324 — the owner's reminders, for the Data → Reminders list: the ones still
+   *  to ring, a waiting one's new words or time, a waiting one withdrawn. The same
+   *  answers as the `core.reminder.*` ops. Owner-only: `reminder.` is an MCP
+   *  reserved prefix. */
+  'reminder.list': RpcMethodSpec<
+    { include_delivered?: boolean; limit?: number },
+    import('../reminder.js').ReminderListResult
+  >;
+  'reminder.update': RpcMethodSpec<
+    { reminder_id: string; text?: string; at?: number },
+    import('../reminder.js').ReminderUpdateResult
+  >;
+  'reminder.cancel': RpcMethodSpec<
+    { reminder_id: string },
+    import('../reminder.js').ReminderCancelResult
   >;
 };
 
@@ -8477,6 +8628,7 @@ export const SERVER_RPC_METHODS = [
   // cannot ship attacker-controlled SI rules / body grants / recipes.
   'packs.install',
   'packs.install_preview',
+  'packs.reconnect_later',
   // Install seam 5c — pack install BY SLUG from the marketplace (the apex
   // `#packs/<slug>` detail/consent handoff + in-app Discover). Same `packs.`
   // reserved-prefix gate as `packs.install`.
@@ -8573,6 +8725,7 @@ export const SERVER_RPC_METHODS = [
   'server.getQualitySwitches',
   'server.getOAuthClientConfig',
   'server.getOAuthAppConfig',
+  'server.oauthApps',
   'server.setOAuthAppConfig',
   'server.clearOAuthAppConfig',
   'server.runPressureReclaim',
@@ -8601,8 +8754,13 @@ export const SERVER_RPC_METHODS = [
   // it ever returns to the wire surface or the MCP catalog.
   // D-127 wire-up — IMAP enroll + listing for picker resolution
   'collection.mail.enrollImap',
+  'collection.mail.updateCredentials',
   'collection.mail.list',
   'collection.mail.delete',
+  'collection.mail.chat_door.get',
+  'collection.mail.chat_door.set',
+  'collection.mail.chat_door.check',
+  'collection.mail.chat_door.recent',
   // D-120 Phase 7 — unified memory export pair. D-157 P0 deleted the
   // legacy `audit.*` read-rpc family, leaving these two.
   'audit.export.estimate',
@@ -8641,6 +8799,7 @@ export const SERVER_RPC_METHODS = [
   // then refuses to boot the server.
   'collection.calendar.attachGraphGrant',
   'collection.calendar.enrollBasic',
+  'collection.calendar.updateCredentials',
   'collection.calendar.list',
   'collection.calendar.update',
   'collection.calendar.delete',
@@ -8781,13 +8940,62 @@ export const SERVER_RPC_METHODS = [
   'reception.signoff.prepare_addition',
   'reception.signoff.publish',
   'reception.signoff.list',
+  'reception.jobs.receivables',
+  'reception.jobs.timeline',
+  'reception.jobs.closeout.get',
+  'reception.jobs.archive',
+  'reception.jobs.restore',
   'reception.jobs.list',
+  'reception.accounts.list',
+  'reception.accounts.get',
+  'reception.accounts.save',
+  'reception.accounts.contact.get',
+  'reception.accounts.contact.set',
+  'reception.accounts.statement',
+  'reception.accounts.statement.draft',
+  'reception.accounts.payment.reminders.get',
+  'reception.accounts.payment.reminders.set',
+  'reception.accounts.payment.reminders.list',
+  'reception.accounts.payment.reminders.draft',
+  'reception.accounts.payment.correction.prepare',
+  'reception.accounts.payment.correction.history',
+  'reception.accounts.payment.prepare',
+  'reception.accounts.payment.history',
+  'reception.accounts.payment.receipt',
+  'reception.accounts.payment.receipt.draft',
+  'reception.jobs.payment.statement',
+  'reception.jobs.payment.statement.draft',
+
   'reception.signoff.cancel',
   'reception.signoff.receipt',
   'reception.signoff.completion.prepare',
   'reception.signoff.completion.publish',
   'reception.signoff.completion.list',
   'reception.signoff.completion.cancel',
+  'reception.signoff.payment.history',
+  'reception.signoff.payment.receipt',
+  'reception.signoff.payment.receipt.draft',
+  'reception.signoff.invoice.credit.prepare',
+  'reception.signoff.invoice.credit.history',
+  'reception.signoff.invoice.credit.copy',
+  'reception.signoff.invoice.credit.correction.prepare',
+  'reception.signoff.invoice.credit.correction.history',
+  'reception.signoff.refund.prepare',
+  'reception.signoff.refund.correction.prepare',
+  'reception.signoff.refund.correction.history',
+  'reception.signoff.refund.history',
+  'reception.signoff.refund.copy',
+  'reception.signoff.refund.receipt.draft',
+  'reception.signoff.payment.correction.prepare',
+  'reception.signoff.payment.correction.history',
+  'reception.signoff.payment.reminders.get',
+  'reception.signoff.completion.reminders.get',
+  'reception.signoff.payment.reminders.set',
+  'reception.signoff.completion.reminders.set',
+  'reception.signoff.payment.reminders.list',
+  'reception.signoff.completion.reminders.list',
+  'reception.signoff.payment.reminders.draft',
+  'reception.signoff.completion.reminders.draft',
   'reception.signoff.reminders.get',
   'reception.signoff.reminders.set',
   'reception.signoff.reminders.list',
@@ -8865,6 +9073,10 @@ export const SERVER_RPC_METHODS = [
   // D-269 step 3 — the one quiet-hours window.
   'notification.quiet_hours.get',
   'notification.quiet_hours.set',
+  // D-324 — the owner's reminders, for the Data → Reminders list.
+  'reminder.list',
+  'reminder.update',
+  'reminder.cancel',
 ] as const satisfies readonly (keyof ServerRpcRegistry)[];
 
 /** The same list as a Set for O(1) lookup. */

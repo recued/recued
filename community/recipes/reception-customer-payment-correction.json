@@ -1,0 +1,48 @@
+{
+  "recipe_id": "reception-customer-payment-correction",
+  "version": 1,
+  "chat_exposed": false,
+  "ttl": 0,
+  "metadata": {
+    "name": "Correct a recorded payment",
+    "description": "Use “Correct a recorded payment” in Recued. Review a saved payment correction and its invoice balance change. Apply both changes together and keep their original values and your reason in correction history.",
+    "author": "recued-core",
+    "supported_platforms": [],
+    "recipe_bundle": "recued-core/reception-approval",
+    "tags": [
+      "pack:reception",
+      "payments"
+    ],
+    "budget_ms": 30000
+  },
+  "variables": {
+    "correction_id": {
+      "label": "Saved correction",
+      "type": "string"
+    },
+    "expected_plan_hash": {
+      "label": "Reviewed correction digest",
+      "type": "string"
+    },
+    "summary": {
+      "label": "Payment and balance change",
+      "type": "string"
+    }
+  },
+  "steps": [
+    {
+      "id": "correct",
+      "op": "core.work-entity.customer-payment.correct",
+      "args": {
+        "correction_id": "{{config.correction_id}}",
+        "expected_plan_hash": "{{config.expected_plan_hash}}",
+        "summary": "{{config.summary}}"
+      }
+    }
+  ],
+  "output": {
+    "render": []
+  },
+  "prefetch_steps": [],
+  "requires": []
+}

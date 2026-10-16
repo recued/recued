@@ -38,7 +38,7 @@ import {
   type CalDavEtagStore,
   type CalDavProviderConfig,
 } from '../caldav-provider.js';
-import type { CalendarSyncEvent } from '../provider.js';
+import type { CalendarSyncEvent, CalendarSyncOutcome } from '../provider.js';
 
 // ────────────────────────────────────────────────────────────────
 // Helpers
@@ -848,6 +848,61 @@ describe('CalDavProvider — startSync (ETag diff)', () => {
     const updated = emitted.filter((e) => e.kind === 'updated');
     expect(updated.length).toBe(2);
     await stop();
+  });
+
+  it('a clean poll reports a sync, though it delivered nothing', async () => {
+    const fetcher: HttpFetcher = async (_url, init) => {
+      if (init?.method === 'PROPFIND') return mkText(207, homeXml);
+      if (init?.method === 'REPORT') return mkText(207, makeReport([]));
+      return mkText(404, '');
+    };
+    const provider = createCalDavProvider({
+      slug: 'personal', config: mkConfig(), fetcher, etagStore: makeEtagStore(),
+      scheduler: () => () => undefined, now: () => Date.UTC(2026, 3, 20),
+    });
+    cleanup.push(() => provider.close());
+    const synced: CalendarSyncOutcome[] = [];
+    provider.onSyncOutcome!((outcome) => { synced.push(outcome); });
+    const stop = await provider.startSync(async () => {});
+    expect(synced).toEqual([{ ok: true, at: Date.UTC(2026, 3, 20) }]);
+    await stop();
+  });
+
+  it('a poll whose change the collection rejects reports a transient failure, not a sync', async () => {
+    const fetcher: HttpFetcher = async (_url, init) => {
+      if (init?.method === 'PROPFIND') return mkText(207, homeXml);
+      if (init?.method === 'REPORT') {
+        return mkText(207, makeReport([{ href: '/calendars/alice/work/one.ics', etag: '"e1"', ics: eventIcs('one', 'One') }]));
+      }
+      return mkText(404, '');
+    };
+    const provider = createCalDavProvider({
+      slug: 'personal', config: mkConfig(), fetcher, etagStore: makeEtagStore(),
+      scheduler: () => () => undefined, now: () => Date.UTC(2026, 3, 20),
+    });
+    cleanup.push(() => provider.close());
+    const synced: CalendarSyncOutcome[] = [];
+    provider.onSyncOutcome!((outcome) => { synced.push(outcome); });
+    const stop = await provider.startSync(async () => { throw new Error('collection write failed'); });
+    expect(synced).toEqual([{ ok: false, failure: 'transient', at: Date.UTC(2026, 3, 20) }]);
+    await stop();
+  });
+
+  it('a poll refused for its credential reports an auth failure', async () => {
+    const fetcher: HttpFetcher = async (_url, init) => {
+      if (init?.method === 'PROPFIND') return mkText(207, homeXml);
+      if (init?.method === 'REPORT') return mkText(401, '');
+      return mkText(404, '');
+    };
+    const provider = createCalDavProvider({
+      slug: 'personal', config: mkConfig(), fetcher, etagStore: makeEtagStore(),
+      scheduler: () => () => undefined, now: () => Date.UTC(2026, 3, 20),
+    });
+    cleanup.push(() => provider.close());
+    const synced: CalendarSyncOutcome[] = [];
+    provider.onSyncOutcome!((outcome) => { synced.push(outcome); });
+    await expect(provider.startSync(async () => {})).rejects.toMatchObject({ code: 'auth_expired' });
+    expect(synced).toEqual([{ ok: false, failure: 'auth', at: Date.UTC(2026, 3, 20) }]);
   });
 
   it('on unchanged ETag, skips re-fetch', async () => {

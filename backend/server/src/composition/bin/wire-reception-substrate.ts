@@ -1,3 +1,17 @@
+import { createCustomerAccountContactDefaultsService,type CustomerAccountContactDefaultsService } from '../../customer-account-contact-defaults-service.js';
+import { createCustomerReceivablesAgingService,type CustomerReceivablesAgingService } from '../../customer-receivables-aging-service.js';
+import { createCustomerJobTimelineService,type CustomerJobTimelineService } from '../../customer-job-timeline-service.js';
+import { createCustomerJobCloseoutService,type CustomerJobCloseoutService } from '../../customer-job-closeout-service.js';
+import { captureCustomerJobs } from '../../customer-jobs-rpc-handler.js';
+import { createCustomerAccountPaymentReminderService,type CustomerAccountPaymentReminderService } from '../../customer-account-payment-reminder-service.js';
+import { createCustomerAccountPaymentCorrectionService,type CustomerAccountPaymentCorrectionService } from '../../customer-account-payment-correction-service.js';
+import { createCustomerRefundService,type CustomerRefundService } from '../../customer-refund-service.js';
+import { createCustomerInvoiceCreditService,type CustomerInvoiceCreditService } from '../../customer-invoice-credit-service.js';
+import { createCustomerAccountPaymentService,type CustomerAccountPaymentService } from '../../customer-account-payment-service.js';
+import { createCustomerPaymentCorrectionService,type CustomerPaymentCorrectionService } from '../../customer-payment-correction-service.js';
+import { createCustomerAccountStatementService,type CustomerAccountStatementService } from '../../customer-account-statement-service.js';
+import { createCustomerJobPaymentStatementService,type CustomerJobPaymentStatementService } from '../../customer-job-payment-statement-service.js';
+import { createCustomerPaymentReceiptService,type CustomerPaymentReceiptService } from '../../customer-payment-receipt-service.js';
 /** D-149 P3 § A.3 — reception substrate composer.
  *
  *  Builds `receptionRpcDeps` (admin-only `reception.*` rpc surface) +
@@ -117,6 +131,8 @@ import { assertRecordsNonOwnerRecipeExposure } from '../../records/non-owner-exp
 import { createQuoteSignoffService, quoteSignoffManifestReader, type QuoteSignoffService } from '../../quote-signoff-service.js';
 import { createQuoteCompletionService, type QuoteCompletionService } from '../../quote-completion-service.js';
 import { createQuoteSignoffReminderService, type QuoteSignoffReminderService } from '../../quote-signoff-reminder-service.js';
+import { createQuoteCompletionReminderService, type QuoteCompletionReminderService } from '../../quote-completion-reminder-service.js';
+import { createQuotePaymentReminderService, type QuotePaymentReminderService } from '../../quote-payment-reminder-service.js';
 import { createPreapprovalCodec } from '../../storage/preapproval-codec.js';
 import { createQuietHoursStore } from '../../storage/quiet-hours-store.js';
 import { createServerTimeZoneStore } from '../../storage/server-timezone-store.js';
@@ -457,10 +473,141 @@ export const composeReceptionSubstrate = async (
       },
     });
   }
+  let completionReminders: QuoteCompletionReminderService | undefined;
+  const getQuoteCompletionReminderService = getQuoteCompletionService && deps.db
+    ? () => completionReminders ??= createQuoteCompletionReminderService({ db: deps.db!,
+      completions: getQuoteCompletionService(), codec: createPreapprovalCodec(receptionKeyProvider),
+      endpoints: registryStore, pepper: getReceptionPepper, shareBaseUrl: getShareBaseUrl, now: Date.now,
+    }) : undefined;
+  if (deps.executeDeps && getQuoteCompletionReminderService) {
+    deps.executeDeps.getQuoteCompletionReminderService = getQuoteCompletionReminderService;
+  }
+  if (getQuoteCompletionReminderService && deps.executeDeps?.preflightNotifier && deps.db) {
+    const quietHours = createQuietHoursStore(deps.db);
+    const zone = createServerTimeZoneStore(deps.db);
+    deps.backgroundServices.registerInterval({ name: 'quote-completion-reminders', intervalMs: 60_000,
+      fireImmediate: true, tick: async () => {
+        if (!receptionKeyProvider()) return;
+        await getQuoteCompletionReminderService().sweep(
+          message => deps.executeDeps!.preflightNotifier!.notify({ ...message, link_url: '#reception/jobs' }),
+          at => shouldSuppressForQuietHours({ policy: quietHours.read(), instant: at,
+            timeZone: resolveServerTimeZone(zone.read(), Intl.DateTimeFormat().resolvedOptions().timeZone) }),
+        );
+      },
+    });
+  }
+  let refunds: CustomerRefundService | undefined;
+  const getCustomerRefundService = getQuoteSignoffService && deps.db && deps.recordsStore
+    ? () => refunds ??= createCustomerRefundService({ db: deps.db!,records: deps.recordsStore!,signoffs: getQuoteSignoffService(),codec: createPreapprovalCodec(receptionKeyProvider),now: Date.now }) : undefined;
+  if (deps.executeDeps && getCustomerRefundService) deps.executeDeps.getCustomerRefundService = getCustomerRefundService;
+  let invoiceCredits: CustomerInvoiceCreditService | undefined;
+  const getCustomerInvoiceCreditService = getQuoteSignoffService && deps.db && deps.recordsStore
+    ? () => invoiceCredits ??= createCustomerInvoiceCreditService({ db: deps.db!,records: deps.recordsStore!,
+      signoffs: getQuoteSignoffService(),codec: createPreapprovalCodec(receptionKeyProvider),now: Date.now }) : undefined;
+  if (deps.executeDeps && getCustomerInvoiceCreditService) deps.executeDeps.getCustomerInvoiceCreditService = getCustomerInvoiceCreditService;
+  let paymentCorrections: CustomerPaymentCorrectionService | undefined;
+  const getCustomerPaymentCorrectionService = getQuoteSignoffService && deps.db && deps.recordsStore
+    ? () => paymentCorrections ??= createCustomerPaymentCorrectionService({ db: deps.db!,records: deps.recordsStore!,
+      signoffs: getQuoteSignoffService(),codec: createPreapprovalCodec(receptionKeyProvider),now: Date.now }) : undefined;
+  if (deps.executeDeps && getCustomerPaymentCorrectionService) deps.executeDeps.getCustomerPaymentCorrectionService = getCustomerPaymentCorrectionService;
+  let accountStatements: CustomerAccountStatementService | undefined;
+  const getCustomerAccountStatementService = getQuoteSignoffService && deps.db
+    ? () => accountStatements ??= createCustomerAccountStatementService({ db: deps.db!,
+      signoffs: getQuoteSignoffService(),codec: createPreapprovalCodec(receptionKeyProvider),now: Date.now }) : undefined;
+  if (deps.executeDeps && getCustomerAccountStatementService) deps.executeDeps.getCustomerAccountStatementService = getCustomerAccountStatementService;
+  let accountContacts: CustomerAccountContactDefaultsService | undefined;
+  const getCustomerAccountContactDefaultsService = getCustomerAccountStatementService && deps.db
+    ? () => accountContacts ??= createCustomerAccountContactDefaultsService({ db: deps.db!,accounts: getCustomerAccountStatementService(),
+      codec: createPreapprovalCodec(receptionKeyProvider),now: Date.now }) : undefined;
+  let accountPaymentReminders: CustomerAccountPaymentReminderService | undefined;
+  const getCustomerAccountPaymentReminderService = getCustomerAccountStatementService && deps.db
+    ? () => accountPaymentReminders ??= createCustomerAccountPaymentReminderService({ db: deps.db!,accounts: getCustomerAccountStatementService(),
+      codec: createPreapprovalCodec(receptionKeyProvider),now: Date.now }) : undefined;
+  if (deps.executeDeps && getCustomerAccountPaymentReminderService) deps.executeDeps.getCustomerAccountPaymentReminderService = getCustomerAccountPaymentReminderService;
+  if (getCustomerAccountPaymentReminderService && deps.executeDeps?.preflightNotifier && deps.db) {
+    const quietHours = createQuietHoursStore(deps.db);const zone = createServerTimeZoneStore(deps.db);
+    deps.backgroundServices.registerInterval({ name: 'customer-account-payment-reminders',intervalMs: 60_000,fireImmediate: true,tick: async () => {
+      if (!receptionKeyProvider()) return;
+      await getCustomerAccountPaymentReminderService().sweep(
+        message => deps.executeDeps!.preflightNotifier!.notify({ ...message,link_url: '#reception/jobs' }),
+        at => shouldSuppressForQuietHours({ policy: quietHours.read(),instant: at,
+          timeZone: resolveServerTimeZone(zone.read(),Intl.DateTimeFormat().resolvedOptions().timeZone) }),
+      );
+    } });
+  }
+  let accountPayments: CustomerAccountPaymentService | undefined;
+  const getCustomerAccountPaymentService = getQuoteSignoffService && getCustomerAccountStatementService && deps.db && deps.recordsStore
+    ? () => accountPayments ??= createCustomerAccountPaymentService({ db: deps.db!,records: deps.recordsStore!,
+      signoffs: getQuoteSignoffService(),accounts: getCustomerAccountStatementService(),codec: createPreapprovalCodec(receptionKeyProvider),now: Date.now }) : undefined;
+  if (deps.executeDeps && getCustomerAccountPaymentService) deps.executeDeps.getCustomerAccountPaymentService = getCustomerAccountPaymentService;
+  let paymentStatements: CustomerJobPaymentStatementService | undefined;
+  const getCustomerJobPaymentStatementService = getQuoteSignoffService && deps.db
+    ? () => paymentStatements ??= createCustomerJobPaymentStatementService({ db: deps.db!,
+      signoffs: getQuoteSignoffService(),codec: createPreapprovalCodec(receptionKeyProvider),now: Date.now }) : undefined;
+  if (deps.executeDeps && getCustomerJobPaymentStatementService) deps.executeDeps.getCustomerJobPaymentStatementService = getCustomerJobPaymentStatementService;
+  let paymentReceipts: CustomerPaymentReceiptService | undefined;
+  const getCustomerPaymentReceiptService = getQuoteSignoffService && deps.db
+    ? () => paymentReceipts ??= createCustomerPaymentReceiptService({ db: deps.db!,
+      signoffs: getQuoteSignoffService(),codec: createPreapprovalCodec(receptionKeyProvider),now: Date.now }) : undefined;
+  if (deps.executeDeps && getCustomerPaymentReceiptService) deps.executeDeps.getCustomerPaymentReceiptService = getCustomerPaymentReceiptService;
+  let paymentReminders: QuotePaymentReminderService | undefined;
+  const getQuotePaymentReminderService = getQuoteSignoffService && deps.db
+    ? () => paymentReminders ??= createQuotePaymentReminderService({ db: deps.db!,
+      signoffs: getQuoteSignoffService(), codec: createPreapprovalCodec(receptionKeyProvider),
+      now: Date.now,
+    }) : undefined;
+  if (deps.executeDeps && getQuotePaymentReminderService) {
+    deps.executeDeps.getQuotePaymentReminderService = getQuotePaymentReminderService;
+  }
+  if (getQuotePaymentReminderService && deps.executeDeps?.preflightNotifier && deps.db) {
+    const quietHours = createQuietHoursStore(deps.db);
+    const zone = createServerTimeZoneStore(deps.db);
+    deps.backgroundServices.registerInterval({ name: 'quote-payment-reminders', intervalMs: 60_000,
+      fireImmediate: true, tick: async () => {
+        if (!receptionKeyProvider()) return;
+        await getQuotePaymentReminderService().sweep(
+          message => deps.executeDeps!.preflightNotifier!.notify({ ...message, link_url: '#reception/jobs' }),
+          at => shouldSuppressForQuietHours({ policy: quietHours.read(), instant: at,
+            timeZone: resolveServerTimeZone(zone.read(), Intl.DateTimeFormat().resolvedOptions().timeZone) }),
+        );
+      },
+    });
+  }
+  let accountPaymentCorrections: CustomerAccountPaymentCorrectionService | undefined;
+  const getCustomerAccountPaymentCorrectionService = getCustomerAccountPaymentService && getCustomerPaymentCorrectionService && getQuoteSignoffService && deps.db
+    ? () => accountPaymentCorrections ??= createCustomerAccountPaymentCorrectionService({ db: deps.db!,signoffs: getQuoteSignoffService(),
+      payments: getCustomerAccountPaymentService(),corrections: getCustomerPaymentCorrectionService(),codec: createPreapprovalCodec(receptionKeyProvider),now: Date.now }) : undefined;
+  if (deps.executeDeps && getCustomerAccountPaymentCorrectionService) deps.executeDeps.getCustomerAccountPaymentCorrectionService = getCustomerAccountPaymentCorrectionService;
+  let jobCloseouts: CustomerJobCloseoutService | undefined;
+  const getCustomerJobCloseoutService = getQuoteSignoffService && getQuoteCompletionService && deps.db
+    ? () => jobCloseouts ??= createCustomerJobCloseoutService({ db: deps.db!,signoffs: getQuoteSignoffService(),
+      codec: createPreapprovalCodec(receptionKeyProvider),now: Date.now,capture: jobId => captureCustomerJobs(receptionRpcDepsBase,jobId) }) : undefined;
+  let jobTimeline: CustomerJobTimelineService | undefined;
+  const getCustomerJobTimelineService = getQuoteSignoffService && getQuoteCompletionService && getCustomerPaymentCorrectionService && getCustomerInvoiceCreditService && getCustomerRefundService && deps.db && deps.recordsStore
+    ? () => jobTimeline ??= createCustomerJobTimelineService({ db: deps.db!,records: deps.recordsStore!,codec: createPreapprovalCodec(receptionKeyProvider),now: Date.now,rpc: () => receptionRpcDepsBase }) : undefined;
+  let receivablesAging: CustomerReceivablesAgingService | undefined;
+  const getCustomerReceivablesAgingService = getQuoteSignoffService && deps.db
+    ? () => receivablesAging ??= createCustomerReceivablesAgingService({ db: deps.db!,signoffs: getQuoteSignoffService(),codec: createPreapprovalCodec(receptionKeyProvider),now: Date.now,
+      timeZone: () => resolveServerTimeZone(createServerTimeZoneStore(deps.db!).read(),Intl.DateTimeFormat().resolvedOptions().timeZone) }) : undefined;
   const receptionRpcDepsBase: ReceptionRpcDeps = {
+    ...(getCustomerReceivablesAgingService ? { getCustomerReceivablesAgingService } : {}),
+    ...(getCustomerJobTimelineService ? { getCustomerJobTimelineService } : {}),
+    ...(getCustomerJobCloseoutService ? { getCustomerJobCloseoutService } : {}),
+    ...(getCustomerAccountPaymentReminderService ? { getCustomerAccountPaymentReminderService } : {}),
+    ...(getCustomerAccountPaymentCorrectionService ? { getCustomerAccountPaymentCorrectionService } : {}),
+    ...(getCustomerAccountStatementService ? { getCustomerAccountStatementService } : {}),
+    ...(getCustomerAccountContactDefaultsService ? { getCustomerAccountContactDefaultsService } : {}),
+    ...(getCustomerAccountPaymentService ? { getCustomerAccountPaymentService } : {}),
+    ...(getCustomerRefundService ? { getCustomerRefundService } : {}),
+    ...(getCustomerInvoiceCreditService ? { getCustomerInvoiceCreditService } : {}),
+    ...(getCustomerPaymentCorrectionService ? { getCustomerPaymentCorrectionService } : {}),
+    ...(getCustomerJobPaymentStatementService ? { getCustomerJobPaymentStatementService } : {}),
+    ...(getCustomerPaymentReceiptService ? { getCustomerPaymentReceiptService } : {}),
+    ...(getQuotePaymentReminderService ? { getQuotePaymentReminderService } : {}),
     ...(getQuoteSignoffReminderService ? { getQuoteSignoffReminderService } : {}),
     ...(getQuoteSignoffService ? { getQuoteSignoffService } : {}),
     ...(getQuoteCompletionService ? { getQuoteCompletionService } : {}),
+    ...(getQuoteCompletionReminderService ? { getQuoteCompletionReminderService } : {}),
     ...(getApprovalWorkflowService ? { getApprovalWorkflowService } : {}),
     getStore: () => registryStore,
     getPreviewStore: () => previewStore,

@@ -6,7 +6,7 @@
  *    - empty cache (DD#5 — skip table + Clear button)
  *    - populated cache (rollup dl + per-topic table + Clear button)
  *    - clear-confirm strip (two-stage; mirror SI Slice 1.5 + packs)
- *    - clearing-in-flight (Confirm disabled, label swaps)
+ *    - clearing-in-flight (focusable busy controls, label swaps)
  *
  *  Plus the two small format helpers:
  *    - `formatCacheHitRate(entry, hit)` — derives the user-visible
@@ -176,7 +176,7 @@ describe('D-145 PA11 — renderHousekeepingLlmResultCacheCard', () => {
     expect(html).toContain('data-action="housekeeping-cache-clear-cancel"');
   });
 
-  it('swaps Confirm label + disables both buttons while clearing in flight', () => {
+  it('keeps both busy controls focusable and announces the in-flight clear', () => {
     const html = renderHousekeepingLlmResultCacheCard({
       state: baseCacheState({
         stats: populatedStats(),
@@ -186,9 +186,23 @@ describe('D-145 PA11 — renderHousekeepingLlmResultCacheCard', () => {
       now: NOW,
     });
     expect(html).toContain('Clearing…');
-    // Both confirm + cancel disabled — primitive emits `disabled`
-    // attribute when the prop is true.
-    expect(html.match(/disabled/g)?.length).toBeGreaterThanOrEqual(2);
+    expect(html.match(/aria-disabled="true"/g)).toHaveLength(2);
+    expect(html).toContain('aria-busy="true"');
+    expect(html).not.toMatch(/<button[^>]*\sdisabled(?:\s|>)/);
+  });
+
+  it('retains a busy confirmation when a concurrent stats read finds an empty cache', () => {
+    const html = renderHousekeepingLlmResultCacheCard({
+      state: baseCacheState({
+        stats: { total_entries: 0, total_hits: 0, per_topic: [], last_gc_at: null },
+        confirmingClear: true,
+        clearing: true,
+      }),
+      now: NOW,
+    });
+    expect(html).toContain('data-action="housekeeping-cache-clear-confirm"');
+    expect(html).toContain('data-action="housekeeping-cache-clear-cancel"');
+    expect(html).toContain('Clearing…');
   });
 
   it('surfaces the clearError inline alongside the populated card', () => {

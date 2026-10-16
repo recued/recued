@@ -5,6 +5,8 @@
  *  canned responses — we don't talk to Google in CI.
  */
 
+import { readFileSync } from 'node:fs';
+
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   canonicalizeGmail,
@@ -523,6 +525,62 @@ describe('GmailProvider — initialScan', () => {
     await expect(part.fetchBytes()).resolves.toEqual(bytes);
     expect(h.calls.some((u) => u.includes('/messages/id-attach/attachments/ATT-1'))).toBe(true);
   });
+
+  it('D-318 — an image of a multipart/related with no disposition is the HTML’s own: inline, as Outlook sends a logo', async () => {
+    // The structure of a real Outlook 16 reply (fixtures/mail-outlook-reply-in-zoho).
+    const source = readFileSync(new URL('./fixtures/mail-outlook-reply-in-zoho/reply.eml', import.meta.url));
+    const raw = source.toString('base64url');
+    const logo = Buffer.from('fixture firm logo bytes');
+    const contentId = { name: 'Content-ID', value: '<image001.jpg@01DD5A10.3C4F2E70>' };
+    const image = (partId: string, attachmentId: string, headers: Array<{ name: string; value: string }>) => ({
+      partId, mimeType: 'image/jpeg', filename: `${attachmentId}.jpg`,
+      headers: [{ name: 'Content-Type', value: `image/jpeg; name="${attachmentId}.jpg"` }, ...headers],
+      body: { attachmentId, size: logo.length },
+    });
+    h = newHarness({
+      routes: [
+        { match: (u) => u.includes('/profile'),
+          response: { status: 200, body: { historyId: '1000', emailAddress: 'owner@owner.example' } } },
+        { match: (u) => u.includes('/messages?') || u.endsWith('/messages'),
+          response: { status: 200, body: { messages: [{ id: 'id-outlook', threadId: 't-9' }] } } },
+        { match: (u) => u.includes('/messages/id-outlook?format=raw'),
+          response: { status: 200, body: { id: 'id-outlook', threadId: 't-9', labelIds: ['INBOX'], raw, internalDate: '1790231736000' } } },
+        { match: (u) => u.includes('/messages/id-outlook?format=full'),
+          response: { status: 200, body: {
+            id: 'id-outlook', threadId: 't-9', labelIds: ['INBOX'],
+            payload: {
+              partId: '', mimeType: 'multipart/mixed',
+              parts: [
+                {
+                  partId: '0', mimeType: 'multipart/related',
+                  parts: [
+                    { partId: '0.0', mimeType: 'multipart/alternative', parts: [
+                      { partId: '0.0.0', mimeType: 'text/plain', body: { size: 1, data: 'eA' } },
+                      { partId: '0.0.1', mimeType: 'text/html', body: { size: 1, data: 'eA' } },
+                    ] },
+                    // Outlook's logo: a Content-ID, no Content-Disposition.
+                    image('0.1', 'LOGO', [contentId]),
+                    // One that says it is an attachment is one.
+                    image('0.2', 'SAYS-ATTACHED', [contentId, { name: 'Content-Disposition', value: 'attachment; filename="x.jpg"' }]),
+                  ],
+                },
+                // Outside a related part, an image with no disposition is an attachment.
+                image('1', 'PLAIN', []),
+              ],
+            },
+          } } },
+        { match: (u) => u.includes('/messages/id-outlook/attachments/'),
+          response: { status: 200, body: { data: logo.toString('base64url'), size: logo.length } } },
+      ],
+    });
+    await h.provider.connect();
+    let message: { attachments?: Array<{ source_part_id: string; disposition?: string }> } | undefined;
+    await h.provider.initialScan({ backfill_days: 7, onMessage: async (m) => { message = m; return true; } });
+    const disposition = (id: string) => message!.attachments!.find((part) => part.source_part_id === id)?.disposition;
+    expect(disposition('LOGO')).toBe('inline');
+    expect(disposition('SAYS-ATTACHED')).toBeUndefined();
+    expect(disposition('PLAIN')).toBeUndefined();
+  });
 });
 
 // ────────────────────────────────────────────────────────────────
@@ -578,6 +636,8 @@ describe('GmailProvider — incremental sync', () => {
       'deleted:id-C', // TRASH label → deleted
       'updated:id-D',
     ]));
+    // D-318 step 6 — seen as they arrived: no recovery mark.
+    expect(events.filter((e) => e.recovered !== undefined)).toEqual([]);
     expect(store.data.get('gmail.work.history_id')).toBe('105');
     await provider.close();
   });
@@ -666,8 +726,9 @@ describe('GmailProvider — incremental sync', () => {
     const stop = await provider.startSync(async (event) => { events.push(event); });
     await stop();
 
+    // D-318 step 6 — found by the recovery scan, not as it arrived.
     expect(events).toEqual([
-      expect.objectContaining({ kind: 'updated', source_id: 'recovered-id' }),
+      expect.objectContaining({ kind: 'updated', source_id: 'recovered-id', recovered: true }),
     ]);
     expect(store.data.get('gmail.work.history_id')).toBe('replacement');
     await provider.close();

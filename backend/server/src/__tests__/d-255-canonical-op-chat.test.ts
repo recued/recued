@@ -17,6 +17,7 @@ import {
   type ChatToolHandlerDeps,
 } from '../chat-tool-handlers.js';
 import { buildCanonicalOpToolDescriptors } from '../canonical-op-tool-catalog.js';
+import { stampExecuteResponseAuditRun } from '../types.js';
 
 const CANONICAL = buildCanonicalOpToolDescriptors({
   boundConnections: [{ name: 'acme-corp', vendor: 'hubspot' }],
@@ -90,6 +91,18 @@ describe('canonical ops dispatch through the shared hook', () => {
     expect(res.ok).toBe(true);
     expect(seen!.recipe!.steps![0]!.op).toBe('contact.update');
     expect(seen!.config).toEqual({ connection: 'acme-corp' });
+  });
+
+  it('D-318 audit — a write held for the owner’s approval is known by its run, as a raw op’s and a recipe’s are', async () => {
+    const run = (response: Record<string, unknown>, run_id: string) => dispatch({
+      getExecuteRecipe: () => (async () => stampExecuteResponseAuditRun(response as never, run_id)) as never,
+    })(`${CANONICAL_OP_TOOL_PREFIX}contact.update`, { connection: 'acme-corp', args: { id: 'c-1' } }, {} as never);
+    const held = { success: false, awaiting_approval: true, approval_id: 'ask-1' };
+    await expect(run(held, 'run-held')).resolves.toEqual({
+      ok: true, result: held, run_held: { kind: 'approval' }, run_id: 'run-held',
+    });
+    // Run through: its run named, and nothing held.
+    await expect(run({ success: true }, 'run-done')).resolves.toEqual({ ok: true, result: { success: true }, run_id: 'run-done' });
   });
 
   it('still routes a NON-canonical name down the raw-op path', async () => {

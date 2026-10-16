@@ -284,6 +284,9 @@ describe('D-169 P2 Slice 5 notify toasts', () => {
     // re-points it) — it stops the toast rendering a link AT ALL, silently.
     ['#data/view/view_00000000-0000-4000-8000-000000000001', true],
     ['https://recued.example/#data/view/view_00000000-0000-4000-8000-000000000001', true],
+    // D-324 — a delivered reminder's link to the list, exactly.
+    ['#data/reminder', true],
+    ['#data/reminder/../settings', false],
     // ⛔ Neither spelling may be loosened into a general hash allowance.
     ['#views/../settings', false],
     ['#views/not-a-view-id', false],

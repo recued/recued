@@ -114,9 +114,8 @@ export interface MountLlmResultCacheCardOptions {
   /** Host element the card renders into. Owned wholesale —
    *  `innerHTML` writes wipe + replace the inner DOM on every state
    *  transition. `dispose()` clears `innerHTML` + drops the listener.
-   *  The mount uses only `host.innerHTML` + the click delegator, so no
-   *  `document` reference is needed (mirrors `devices-page-mount.ts`
-   *  + `prompts-host.ts`'s string-renderer pattern). */
+   *  The host's ownerDocument identifies focus owned by the card before
+   *  each replacement, so reads never steal focus from other controls. */
   host: HTMLElement;
   /** Stats rpc caller (DD#1). Fired on mount + after every successful
    *  clear (DD#4). */
@@ -193,6 +192,9 @@ export const mountLlmResultCacheCard = (
   // Track the in-flight clear so the confirm-click test seam can
   // await the rpc + the chained refresh.
   let pendingClear: Promise<void> | null = null;
+  // The confirmation stays busy through its follow-up read, but navigation
+  // only needs a warning while the destructive write has no terminal result.
+  let clearWritePending = false;
   // Stale-load generation guard — closes the 304th Slice D MINOR
   // finding. `doRefresh` captures this value BEFORE awaiting
   // `runStats`; after the await, a mismatch with `loadGeneration`
@@ -209,19 +211,34 @@ export const mountLlmResultCacheCard = (
   opts.host.setAttribute(CACHE_CARD_HOST_ATTR, '');
 
   // ── Render ───────────────────────────────────────────────────────
-  const render = (): void => {
+  const render = (focusAction?: string): void => {
     if (disposed) return;
+    const active = opts.host.ownerDocument?.activeElement;
+    const ownedFocus = active != null && opts.host.contains?.(active);
+    let action = focusAction ?? (ownedFocus ? active.getAttribute('data-action') : null);
     opts.host.innerHTML = renderHousekeepingLlmResultCacheCard({
       state,
       now: now(),
     });
+    if (!ownedFocus && focusAction === undefined) return;
+    if (action === ACTION_CLEAR && state.confirmingClear) action = ACTION_CLEAR_CANCEL;
+    if ((action === ACTION_CLEAR_CONFIRM || action === ACTION_CLEAR_CANCEL) && !state.confirmingClear) {
+      action = ACTION_CLEAR;
+    }
+    const control = action === ACTION_CLEAR || action === ACTION_CLEAR_CONFIRM || action === ACTION_CLEAR_CANCEL
+      ? opts.host.querySelector?.<HTMLElement>(`[data-action="${action}"]`)
+      : null;
+    // A successful clear or GC can remove every button. The labelled summary
+    // is a programmatic focus target, without adding a stop to the Tab order.
+    const target = control ?? opts.host.querySelector?.<HTMLElement>('.housekeeping-cache-card');
+    target?.focus?.({ preventScroll: true });
   };
 
   // ── Transitions ──────────────────────────────────────────────────
-  const setState = (patch: Partial<HousekeepingCacheCardState>): void => {
+  const setState = (patch: Partial<HousekeepingCacheCardState>, focusAction?: string): void => {
     if (disposed) return;
     state = { ...state, ...patch };
-    render();
+    render(focusAction);
   };
 
   const doRefresh = async (): Promise<void> => {
@@ -239,7 +256,10 @@ export const mountLlmResultCacheCard = (
       const stats = await opts.runStats();
       if (disposed) return;
       if (captured !== loadGeneration) return; // newer load in flight
-      setState({ loading: false, stats, loadError: null });
+      setState({
+        loading: false, stats, loadError: null,
+        ...(stats.total_entries === 0 && !state.clearing ? { confirmingClear: false } : {}),
+      });
     } catch (err) {
       if (disposed) return;
       if (captured !== loadGeneration) return; // newer load in flight
@@ -251,25 +271,29 @@ export const mountLlmResultCacheCard = (
   const doClear = async (): Promise<void> => {
     if (disposed) return;
     if (!opts.runClear) return;
+    clearWritePending = true;
     setState({ clearing: true, clearError: null });
     try {
       await opts.runClear();
+      clearWritePending = false;
       if (disposed) return;
-      // Close the confirm strip + immediately re-fetch stats so the
-      // rollup zeros + the per-topic table empties (DD#4). The post-
-      // clear refresh sets its own loading/loadError flags; we don't
-      // double-set `clearing: false` until after the refresh settles
-      // so the disabled-confirm button outlives the round-trip.
+      // Keep the focused busy controls until the replacement stats settle,
+      // rather than briefly offering another clear against the old snapshot.
+      await doRefresh();
       setState({
         clearing: false,
         confirmingClear: false,
         clearError: null,
       });
-      await doRefresh();
     } catch (err) {
+      clearWritePending = false;
       if (disposed) return;
       const message = humanizeRpcError(err);
-      setState({ clearing: false, clearError: message });
+      setState({
+        clearing: false,
+        clearError: message,
+        confirmingClear: (state.stats?.total_entries ?? 0) > 0,
+      });
     }
   };
 
@@ -292,22 +316,19 @@ export const mountLlmResultCacheCard = (
       // both cases, but a fake DOM in tests could still synthesize
       // the click.
       if (!opts.runClear) return;
-      if (state.stats === null) return;
-      setState({ confirmingClear: true, clearError: null });
+      if (state.clearing || state.stats === null || state.stats.total_entries === 0) return;
+      setState({ confirmingClear: true, clearError: null }, ACTION_CLEAR_CANCEL);
       return;
     }
     if (action === ACTION_CLEAR_CANCEL) {
-      // Defensive — Cancel is disabled mid-clear, but a stray click
-      // through a fake DOM in tests would otherwise leak past the
-      // disabled attribute. Guard so the state machine stays
-      // deterministic.
+      // aria-disabled keeps Cancel focusable; activation is fenced here.
       if (state.clearing) return;
-      setState({ confirmingClear: false, clearError: null });
+      setState({ confirmingClear: false, clearError: null }, ACTION_CLEAR);
       return;
     }
     if (action === ACTION_CLEAR_CONFIRM) {
       if (!opts.runClear) return;
-      if (state.clearing) return;
+      if (state.clearing || !state.confirmingClear || state.stats === null || state.stats.total_entries === 0) return;
       pendingClear = doClear();
       return;
     }
@@ -345,7 +366,7 @@ export const mountLlmResultCacheCard = (
     },
     whenLoaded: () => pendingLoad,
     whenClearSettled: () => pendingClear ?? Promise.resolve(),
-    hasInFlightWork: () => !disposed && state.clearing,
+    hasInFlightWork: () => !disposed && clearWritePending,
     dispose: () => {
       if (disposed) return;
       disposed = true;
@@ -395,6 +416,10 @@ export const LLM_RESULT_CACHE_CARD_STYLES = `
   margin: 0;
   font-size: 14px;
   font-weight: 600;
+}
+.housekeeping-cache-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .housekeeping-cache-card-summary,
 .housekeeping-cache-card-meta,

@@ -7,6 +7,9 @@
 
 export * from './template.js';
 export * from './date-time.js';
+export { renderAuthenticationReconnect } from './connections/authentication-reconnect.js';
+export { renderAuthenticationManagement, type AuthenticationManagementAction } from './connections/manage-authentication.js';
+export { renderCollectionPermissionChoices, sameCollectionPermissionChoices } from './connections/collection-permissions.js';
 // D-269 REV 4 — the two-clock preview, beside the formatter it composes.
 export * from './two-clock.js';
 export * from './run-facts.js';
@@ -116,6 +119,8 @@ export {
   connectionSetupGuideReturnTarget,
   connectionFormRunsOAuthDance,
   connectionOAuthCredentialReadiness,
+  selectedSavedOAuthAppIssuer,
+  compatibleSavedOAuthAppIssuer,
   connectionOAuthHttpsEndpointIssue,
   invalidatesConnectionOAuthResult,
   isConnectionOAuthLockedField,

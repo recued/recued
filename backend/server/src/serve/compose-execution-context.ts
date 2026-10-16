@@ -20,6 +20,7 @@ import { withGuardedTaskMarkDone } from '../work-entity-crud-handler.js';
 import {
   composeExecutorConfig,
 } from '../composition/bin/wire-executor-config.js';
+import { wireReminderDispatchers } from '../composition/bin/wire-reminders.js';
 import { scopedCandidatesForChannelSession } from '../chat-forwarded-sender-index.js';
 import { createContactKnownValueIndexBuilder } from '../chat-recall-index.js';
 import {
@@ -494,6 +495,8 @@ export const composeExecutionContext = async (
       collection.workEntityDispatchers,
       storage.workEntityStoreRef,
     ),
+    // D-324 — the owner's reminders (`core.reminder.*`), their own store.
+    ...(storage.db ? { reminderDispatchers: wireReminderDispatchers({ db: storage.db }) } : {}),
     // D-173 P1-dispatch — the reception projection's local materialize deps.
     // The SAME per-pair work-entity store + contact path `composeListeners`
     // binds its inbox-side `projectReception` effect over (R2 INT-3), so the

@@ -51,7 +51,15 @@ import {
   GOOGLE_TOKEN_URL,
   isMailReconciliationId,
   MAIL_RECONCILIATION_ID_HEADER,
+  MAIL_SENT_BY_MESSAGE_ID_MAX_MATCHES,
+  MAIL_SENT_REPLIES_MAX_MATCHES,
   MailAdapterError,
+  type MailSentByMessageIdMatch,
+  type MailSentByMessageIdQuery,
+  type MailSentByMessageIdResult,
+  type MailSentRepliesQuery,
+  type MailSentRepliesResult,
+  type MailSentReplyMatch,
 } from '@recued/contracts';
 import {
   ProviderPaginationGuard,
@@ -61,8 +69,10 @@ import {
   mailAttachmentPartFromBytes,
   mailParsedFromName,
   mailParsedHeaderMap,
+  mailPartDisposition,
   assertMailSentReconciliationQuery,
   evaluateMailSentReconciliationCandidates,
+  MAIL_AUTOMATIC_REPLY_HEADERS,
   MAIL_SENT_RECONCILIATION_MAX_SCAN,
   MAIL_SENT_RECONCILIATION_MAX_SOURCE_BYTES,
   mailSentReconciliationAttachmentPartFromBytes,
@@ -72,6 +82,7 @@ import {
   normalizeMailAttachmentMimeType,
   sanitizeMailAttachmentFilename,
   mimeFilenameParameter,
+  normalizeRfcMessageId,
   type CanonicalMessage,
   type InitialScanOptions,
   type InboundMailAttachmentPart,
@@ -149,6 +160,8 @@ export interface CreateGmailProviderOptions {
   /** Owner's feature choices for managed accounts; vendor permissions still govern each call. */
   managedSendEnabled?: boolean;
   managedMutationEnabled?: boolean;
+  nativeSendEnabled?: boolean;
+  nativeMutationEnabled?: boolean;
   now?: () => number;
   log?: (level: 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
   /** Test hook — override the poll scheduler so suites don't wait
@@ -244,7 +257,7 @@ const parsedAttachmentParts = (parsed: ParsedMail): InboundMailAttachmentPart[] 
       filename: attachment.filename ?? `attachment-${idx + 1}`,
       mime_type: attachment.contentType,
       source_part_id: `part-${idx}`,
-      disposition: attachment.contentDisposition === 'inline' ? 'inline' : 'attachment',
+      disposition: mailPartDisposition(attachment.contentDisposition, attachment.related === true),
       bytes,
     }));
   }
@@ -261,7 +274,7 @@ const parsedReconciliationAttachmentParts = (
     filename: attachment.filename,
     mime_type: attachment.contentType,
     source_part_id: `part-${idx}`,
-    disposition: attachment.contentDisposition === 'inline' ? 'inline' : 'attachment',
+    disposition: mailPartDisposition(attachment.contentDisposition, attachment.related === true),
     bytes,
   });
 });
@@ -362,6 +375,7 @@ export const canonicalizeGmail = async (
     is_flagged: labels.includes(GMAIL_STARRED_LABEL),
     has_attachments: hasAttachments(parsed) || attachments.length > 0,
     received_at: receivedAt,
+    ...(Number.isFinite(internalDate) && internalDate > 0 ? { provider_received_at: internalDate } : {}),
     body_text: bodyTextFor(parsed),
     body_html: typeof parsed.html === 'string' ? parsed.html : undefined,
     labels,
@@ -510,6 +524,9 @@ export const buildGmailRfc5322 = (
   if (msg.references && msg.references.length > 0) {
     // RFC 5322 §3.6.4 — References is space-separated msg-id list.
     headers.push(`References: ${msg.references.join(' ')}`);
+  }
+  if (msg.automatic === true) {
+    for (const [name, value] of MAIL_AUTOMATIC_REPLY_HEADERS) headers.push(`${name}: ${value}`);
   }
 
   const part = renderGmailBodyPart(msg, rand);
@@ -732,6 +749,8 @@ export const createGmailProvider = (
     part: GmailMessagePart | undefined,
     path = '0',
     out: InboundMailAttachmentPart[] = [],
+    /** The part is one of a `multipart/related`'s own: a resource of its HTML. */
+    related = false,
   ): InboundMailAttachmentPart[] => {
     if (!part) return out;
     const body = part.body;
@@ -749,16 +768,25 @@ export const createGmailProvider = (
         : body.data
           ? base64UrlDecode(body.data).length
           : 0;
+      // D-318 step 4 — inline or attached: what tells an image in the HTML
+      // from a file. These parts, not the raw message's, are the ones a Gmail
+      // sync stores. (No Content-ID: the HTML a Gmail sync keeps shows each
+      // image by its bytes, a `data:` URI, never by `cid:`.) A related part
+      // with no disposition is the HTML's own image (`mailPartDisposition`).
+      const disposition = part.headers
+        ?.find((header) => header.name?.toLowerCase() === 'content-disposition')?.value ?? '';
       out.push({
         filename: sanitizeMailAttachmentFilename(filename, `attachment-${out.length + 1}`),
         mime_type: normalizeMailAttachmentMimeType(part.mimeType),
         size,
         source_part_id: sourcePartId,
+        ...(mailPartDisposition(disposition, related) === 'inline' ? { disposition: 'inline' as const } : {}),
         fetchBytes: attachmentBytesFetcher(messageId, body),
       });
     }
+    const isRelated = normalizeMailAttachmentMimeType(part.mimeType) === 'multipart/related';
     for (const [idx, child] of (part.parts ?? []).entries()) {
-      collectGmailAttachmentParts(messageId, child, `${path}.${idx}`, out);
+      collectGmailAttachmentParts(messageId, child, `${path}.${idx}`, out, isRelated);
     }
     return out;
   };
@@ -865,6 +893,7 @@ export const createGmailProvider = (
         throw new Error('gmail initial scan could not fetch a complete message page');
       }
       const ids = (list.messages ?? []).map((m) => m.id);
+      scanOpts.onAccessVerified?.();
       for (const id of ids) {
         try {
           const raw = await fetchMessageRaw(id);
@@ -954,6 +983,7 @@ export const createGmailProvider = (
                   kind: 'updated',
                   source_id: message.source_id,
                   message,
+                  recovered: true,
                 });
                 return true;
               },
@@ -1017,7 +1047,9 @@ export const createGmailProvider = (
   // ── outbound send (D-127 P1.3) ──────────────────────────────
   //
   // Status mapping mirrors P1.2 § severity classification:
-  //   401 / 403  → MAIL_SEND_AUTH_FAILED   (recoverable: re-enroll)
+  //   401 / 403  → MAIL_SEND_AUTH_FAILED   (recoverable: re-enroll), a 403
+  //                 only when its reason is a credential's (`classifyMailApiStatus`)
+  //   429, quota 403 → MAIL_SEND_NETWORK_FAILED (throttled: nothing sent)
   //   4xx other → MAIL_SEND_RECIPIENT_INVALID (typo / rejected addr)
   //   5xx        → MAIL_SEND_NETWORK_FAILED (transient)
   //
@@ -1117,7 +1149,9 @@ export const createGmailProvider = (
         ...oauthAuthorizationHeaders(token),
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ raw }),
+      // D-318 step 5 — a reply joins the sending mailbox's thread only when it
+      // names it (the headers and subject alone thread it for the recipient).
+      body: JSON.stringify({ raw, ...(msg.thread_id ? { threadId: msg.thread_id } : {}) }),
     });
 
     let res = await post(await ensureToken(false));
@@ -1135,11 +1169,25 @@ export const createGmailProvider = (
         // claim may start afresh. A 5xx proves nothing either way.
         ...(res.status >= 400 && res.status < 500 ? { not_sent: true } : {}),
       };
-      if (res.status === 401 || res.status === 403) {
+      // Gmail sends quota as 403 too (`rateLimitExceeded`): only a credential's
+      // reason is one (`classifyMailApiStatus`). Throttled, a send goes later;
+      // read as auth or as a recipient, it told the owner to reconnect a good
+      // account or check addresses that were right.
+      const throttled = res.status === 429
+        || (res.status === 403 && classifyMailApiStatus(res.status, text) === 'transient');
+      if (!throttled && (res.status === 401 || res.status === 403)) {
         markError(`gmail send auth ${res.status}`, text);
         throw new IngredientError(
           'MAIL_SEND_AUTH_FAILED',
           `Gmail rejected the send (${res.status}): ${text.slice(0, 200)}`,
+          detail,
+        );
+      }
+      if (throttled) {
+        markError(`gmail send throttled ${res.status}`, text);
+        throw new IngredientError(
+          'MAIL_SEND_NETWORK_FAILED',
+          `Gmail throttled the send (${res.status}): ${text.slice(0, 200)}`,
           detail,
         );
       }
@@ -1229,6 +1277,90 @@ export const createGmailProvider = (
       attachments: parsedReconciliationAttachmentParts(parsed),
       attachment_set_complete: true,
     };
+  };
+
+  /** D-318 step 2 — proof (a): the messages this account SENT that carry one
+   *  Message-ID. `rfc822msgid:` finds them in one search; the `SENT` label on
+   *  each is Gmail's own record that this account sent it, and each hit's
+   *  Message-ID header is compared exactly. */
+  const lookupSentByMessageId = async (
+    query: MailSentByMessageIdQuery,
+  ): Promise<MailSentByMessageIdResult> => {
+    try {
+      const url = new URL(`${GMAIL_API_BASE}/messages`);
+      url.searchParams.set('q', `rfc822msgid:${query.rfc_message_id}`);
+      url.searchParams.append('labelIds', 'SENT');
+      url.searchParams.set('maxResults', String(MAIL_SENT_BY_MESSAGE_ID_MAX_MATCHES));
+      const page = await getReconciliationSource<GmailMessageList>(url.toString());
+      const matches: MailSentByMessageIdMatch[] = [];
+      for (const ref of (page.messages ?? []).slice(0, MAIL_SENT_BY_MESSAGE_ID_MAX_MATCHES)) {
+        const metadataUrl = new URL(`${GMAIL_API_BASE}/messages/${encodeURIComponent(ref.id)}`);
+        metadataUrl.searchParams.set('format', 'metadata');
+        for (const header of ['Message-ID', 'To', 'Subject']) {
+          metadataUrl.searchParams.append('metadataHeaders', header);
+        }
+        const metadata = await getReconciliationSource<GmailMessageMetadataPayload>(metadataUrl.toString());
+        if (!(metadata.labelIds ?? []).includes('SENT')) continue;
+        const headerOf = (name: string): string => (metadata.payload?.headers ?? [])
+          .find((header) => header.name?.toLowerCase() === name)?.value?.replace(/[\r\n]+/g, ' ') ?? '';
+        if (normalizeRfcMessageId(headerOf('message-id')) !== query.rfc_message_id) continue;
+        // The address list and an encoded subject, read by the same parser as a
+        // synced message.
+        const parsed = await simpleParser(Buffer.from(`To: ${headerOf('to')}\r\nSubject: ${headerOf('subject')}\r\n\r\n`));
+        const sentAt = Number(metadata.internalDate);
+        matches.push({
+          to: addressToStringList(parsed.to),
+          subject: parsed.subject ?? '',
+          sent_at: Number.isFinite(sentAt) ? sentAt : 0,
+        });
+      }
+      return matches.length > 0 ? { status: 'found', matches } : { status: 'not_found' };
+    } catch (err) {
+      markError('gmail sent lookup by message id failed', err);
+      return { status: 'unavailable', reason: 'provider_error' };
+    }
+  };
+
+  /** D-318 — the replies this account SENT to one Message-ID: has the chat
+   *  mailbox answered this request? An answer is sent into the request's own
+   *  thread (§2.5), so one `rfc822msgid:` search finds the request and names
+   *  its thread, and the thread's `SENT` messages whose In-Reply-To is exactly
+   *  that id are the replies. */
+  const lookupSentReplies = async (
+    query: MailSentRepliesQuery,
+  ): Promise<MailSentRepliesResult> => {
+    try {
+      const url = new URL(`${GMAIL_API_BASE}/messages`);
+      url.searchParams.set('q', `rfc822msgid:${query.rfc_message_id}`);
+      url.searchParams.set('maxResults', '5');
+      const page = await getReconciliationSource<GmailMessageList>(url.toString());
+      const threads = [...new Set((page.messages ?? []).map((ref) => ref.threadId).filter((id) => typeof id === 'string' && id.length > 0))];
+      const matches: MailSentReplyMatch[] = [];
+      for (const threadId of threads.slice(0, 2)) {
+        const threadUrl = new URL(`${GMAIL_API_BASE}/threads/${encodeURIComponent(threadId)}`);
+        threadUrl.searchParams.set('format', 'metadata');
+        for (const header of ['In-Reply-To', MAIL_RECONCILIATION_ID_HEADER]) {
+          threadUrl.searchParams.append('metadataHeaders', header);
+        }
+        const thread = await getReconciliationSource<{ messages?: GmailMessageMetadataPayload[] }>(threadUrl.toString());
+        for (const message of thread.messages ?? []) {
+          if (matches.length >= MAIL_SENT_REPLIES_MAX_MATCHES) break;
+          if (!(message.labelIds ?? []).includes('SENT')) continue;
+          const headerOf = (name: string): string | undefined => (message.payload?.headers ?? [])
+            .find((header) => header.name?.toLowerCase() === name)?.value;
+          if (normalizeRfcMessageId(headerOf('in-reply-to')) !== query.rfc_message_id) continue;
+          const sentAt = Number(message.internalDate);
+          matches.push({
+            reconciliation_id: headerOf(MAIL_RECONCILIATION_ID_HEADER)?.trim() || null,
+            sent_at: Number.isFinite(sentAt) ? sentAt : 0,
+          });
+        }
+      }
+      return matches.length > 0 ? { status: 'found', matches } : { status: 'not_found' };
+    } catch (err) {
+      markError('gmail sent replies lookup failed', err);
+      return { status: 'unavailable', reason: 'provider_error' };
+    }
   };
 
   const lookupSentByReconciliationId = async (
@@ -1523,18 +1655,18 @@ export const createGmailProvider = (
   // Tolerant match — a provider need not echo a scope in the form it was
   // requested, and an exact miss makes send silently unavailable (see
   // `grantedScopesInclude`).
-  const sendCapable = opts.managedFetcher ? opts.managedSendEnabled === true : grantedScopesInclude(
+  const sendCapable = opts.nativeSendEnabled !== false && (opts.managedFetcher ? opts.managedSendEnabled === true : grantedScopesInclude(
     opts.config().granted_scopes ?? [],
     GMAIL_SEND_SCOPE,
-  );
+  ));
   const accountEmail = opts.config().account_email ?? '';
   // D-239 — same lockstep discipline as `sendCapable`, and the same
   // tolerant scope match for direct accounts. Managed mutation opt-in does
   // not assert that the broker's vendor account granted modification.
-  const mutationCapable = opts.managedFetcher ? opts.managedMutationEnabled === true : grantedScopesInclude(
+  const mutationCapable = opts.nativeMutationEnabled !== false && (opts.managedFetcher ? opts.managedMutationEnabled === true : grantedScopesInclude(
     opts.config().granted_scopes ?? [],
     GMAIL_MODIFY_SCOPE,
-  );
+  ));
 
   return {
     kind: 'gmail',
@@ -1599,6 +1731,8 @@ export const createGmailProvider = (
     },
 
     lookupSentByReconciliationId,
+    lookupSentByMessageId,
+    lookupSentReplies,
     fetchMessage,
 
     ...(sendCapable ? { send: sendImpl } : {}),

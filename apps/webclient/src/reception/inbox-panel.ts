@@ -98,6 +98,7 @@ export interface ReceptionInboxPanelOptions {
   now?: () => number;
   /** The panel is reusable below either a route h1 or a settings h2. */
   headingLevel?: 2 | 3;
+  initialTargetId?: string;
 }
 
 export interface ReceptionInboxPanelMount {
@@ -716,6 +717,7 @@ export const mountReceptionInboxPanel = (
     error: null,
     acknowledge_risk: false,
   };
+  let targetToSelect = opts.initialTargetId;
   let disposed = false;
   let loadGeneration = 0;
   let currentModel: ReceptionInboxModel = buildReceptionInboxModel({
@@ -1233,7 +1235,7 @@ export const mountReceptionInboxPanel = (
             row.hold_id === state.selected_hold_id ? 'true' : 'false',
           );
           btn.addEventListener('click', () => {
-            pendingDetailFocusHoldId = row.hold_id;
+            targetToSelect = undefined;pendingDetailFocusHoldId = row.hold_id;
             state = {
               ...state,
               selected_hold_id: row.hold_id,
@@ -1485,7 +1487,10 @@ export const mountReceptionInboxPanel = (
           (item) => item.hold_id === state.selected_hold_id,
         );
       const priorSelectedHoldId = state.selected_hold_id;
-      const selectedHoldId = stillSelected
+      const targeted = targetToSelect ? reconciledItems.find(item=>item.hold_id === targetToSelect || item.args.signoff_id === targetToSelect || item.args.completion_id === targetToSelect || item.source.record_ref === targetToSelect) : undefined;
+      const requestedTarget = targetToSelect;
+      if (targeted) { pendingDetailFocusHoldId = targeted.hold_id;targetToSelect = undefined; }
+      const selectedHoldId = targeted ? targeted.hold_id : requestedTarget ? null : stillSelected
         ? priorSelectedHoldId
         : priorSelectedHoldId === null
           ? reconciledItems[0]?.hold_id ?? null
@@ -1522,7 +1527,7 @@ export const mountReceptionInboxPanel = (
         selected_hold_id: selectedHoldId,
         loading: false,
         in_flight: settledDecision ? false : state.in_flight,
-        error: null,
+        error: requestedTarget && !targeted ? 'The requested review is no longer waiting. Choose another item from the inbox.' : null,
         acknowledge_risk: false,
       };
       render();
@@ -1999,7 +2004,7 @@ export const mountReceptionInboxPanel = (
     hasInFlightWork: () => state.in_flight,
     select: (holdId) => {
       if (!state.items.some((item) => item.hold_id === holdId)) return;
-      state = { ...state, selected_hold_id: holdId, error: null, acknowledge_risk: false };
+      targetToSelect = undefined;state = { ...state, selected_hold_id: holdId, error: null, acknowledge_risk: false };
       render();
     },
     dispose: () => {

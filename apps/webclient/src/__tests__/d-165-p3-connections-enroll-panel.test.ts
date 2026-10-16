@@ -11,6 +11,7 @@
  *  widened with `innerHTML` / `contains` / `querySelector`). */
 
 import { createHash } from 'node:crypto';
+import { pickerTestDom } from './helpers/file-download-picker-dom.js';
 import { describe, expect, it, vi } from 'vitest';
 import type { FoundationalOAuthEnv } from '../connections/foundational-oauth-popup.js';
 
@@ -87,6 +88,7 @@ import {
   type ConnectionView,
   type EngagementHealthResponse,
   type PackListEntry,
+  type BulkPackManifest,
   type ReprobeEngagementCapabilitiesResponse,
 } from '@recued/contracts';
 
@@ -162,6 +164,7 @@ const SERVER_UPDATE_REVIEW_SELECTOR =
 const fieldSelector = (key: string): string => `[data-conn-field="${key}"]`;
 
 const makeFakeHost = () => {
+  const filePicker=pickerTestDom();
   let html = '';
   let renderCount = 0;
   let focusedSelector: string | null = null;
@@ -260,6 +263,7 @@ const makeFakeHost = () => {
       return true;
     },
     querySelector(sel: string) {
+      if (sel === '[data-file-download-picker-host]') return html.includes('data-file-download-picker-host') ? filePicker.root : null;
       if (sel === SUBMIT_SELECTOR) return submitBtn;
       if (sel === FORM_VALIDATION_PANEL_SELECTOR) return validationPanel;
       if (sel === FORM_VALIDATION_TITLE_SELECTOR) return validationTitle;
@@ -332,6 +336,10 @@ const makeFakeHost = () => {
       focusedSelector = 'outside-guide';
       activeElement = {};
     },
+    pickerAction:(action:string)=>filePicker.action(action).click(),
+    pickerChoice:(id:string)=>filePicker.choice(id).fire('change'),
+    pickerText:()=>filePicker.root.textContent,
+    pickerDocument:filePicker.document,
     listenerCount: () =>
       [...listeners.values()].reduce((n, l) => n + l.length, 0),
     click,
@@ -601,6 +609,11 @@ interface MountOpts {
     CredentialRotationServerUpdateTarget;
   initialPostSafeStopRecovery?: CredentialRotationServerUpdateTarget;
   initialConnectionAccessReview?: { name: string };
+  initialFileAuthenticationSwitch?: { name: string };
+  initialPermissionRepair?: import('../settings/reconnect-worklist-continuity.js').ConnectionPermissionRepair;
+  runPermissionRepairPreview?: import('../settings/packs-panel.js').PacksInstallPreviewCaller;
+  runPermissionRepairWorklist?: import('../settings/reconnect-worklist-panel.js').PackReconnectCaller;
+  onPermissionRepairReturn?(verified: boolean): void;
   postSafeStopProfileLabel?: string;
   postSafeStopProfileHandoff?: ConnectionsPostSafeStopProfileHandoff;
   onOpenPostSafeStopServerProfiles?: () => void;
@@ -729,11 +742,16 @@ const mountPanel = (opts: MountOpts = {}) => {
 
   const mount = mountConnectionsEnrollPanel({
     host: fake.host,
-    document: { } as unknown as Document, // unused — host is supplied
+    document: fake.pickerDocument,
     runList,
     runEnroll,
     runUpdate,
     ...(opts.initialConnectionAccessReview ? { initialConnectionAccessReview: opts.initialConnectionAccessReview } : {}),
+    ...(opts.initialFileAuthenticationSwitch ? { initialFileAuthenticationSwitch: opts.initialFileAuthenticationSwitch } : {}),
+    ...(opts.initialPermissionRepair ? { initialPermissionRepair: opts.initialPermissionRepair } : {}),
+    ...(opts.runPermissionRepairPreview ? { runPermissionRepairPreview: opts.runPermissionRepairPreview } : {}),
+    ...(opts.runPermissionRepairWorklist ? { runPermissionRepairWorklist: opts.runPermissionRepairWorklist } : {}),
+    ...(opts.onPermissionRepairReturn ? { onPermissionRepairReturn: opts.onPermissionRepairReturn } : {}),
     ...(opts.runRotateCredentials !== null ? { runRotateCredentials } : {}),
     ...(opts.runCredentialRotationStatus !== undefined
       ? { runCredentialRotationStatus }
@@ -896,6 +914,273 @@ describe('D-322 pack access review entry point', () => {
   });
 });
 
+describe('pack-guided permission repair editor', () => {
+  const source = (broker = false): ConnectionView => ({ name: 'saved-sheets', kind: 'api', display_name: 'Saved sheets',
+    auth_type: broker ? 'managed_oauth' : 'oauth2_refresh', base_url: 'https://sheets.googleapis.com/v4', updated_at: 2,
+    granted_scopes: ['read'], ...(broker ? { managed_oauth: { type: 'managed_oauth' as const, broker_profile_id: 'cloud', integration_id: 'sheets',
+      connection_id: 'same-account', target_origin: 'https://sheets.googleapis.com', requested_scopes: ['old'], required_scopes: ['old'] } } : {}) });
+  const repair = (broker = false): import('../settings/pack-permission-repair.js').PackPermissionRepair => {
+    const manifest: BulkPackManifest = { manifest_version: 1, slug: 'scope-pack', publisher: 'recued-core', name: 'Scope pack',
+      description: 'Fixture', version: 1, recipes: [{ slug: 'fixture', version: 1 }], requires: [], tags: [] };
+    return { id: 'ppr-' + 'a'.repeat(32), name: 'saved-sheets', authentication: broker ? 'broker' : 'direct_oauth',
+      review_fingerprint: 'a'.repeat(64), required_scopes: ['new'], expires_at: Date.now() + 30 * 60_000,
+      resume: { pack: { ...manifest, pre_install: false, installed: false, recipe_count: 1, recipe_refs: manifest.recipes,
+        body_visibility_grant_keys: [], body_visibility_grant_count: 0, manifest }, marketplace: false, permissions: [],
+        chosen_connection: 'saved-sheets', also_unticked: [], also_connections: [], webhook_picks: [], template_keep: [], dependency_access: [] } };
+  };
+  const preview = (broker = false, fingerprint = 'a'.repeat(64)) => ({ resolved: true, will_enable: [], hidden_count: 0,
+    vendor_permissions: { fingerprint, resolved: true, changes: [{ pack_slug: 'scope-pack', pack_name: 'Scope pack', slot: 'sheets',
+      required_scopes: ['new'], current_connections: [], connections: [{ name: 'saved-sheets', display_name: 'Saved sheets',
+        authentication: broker ? 'broker' as const : 'direct_oauth' as const, coverage: 'missing' as const, granted_scopes: ['read'], missing_scopes: ['new'] }] }] } });
+  it.each(['expired', 'changed'] as const)('refuses a worklist handoff that %s during the native app context read', async change => {
+    const context = deferred<import('@recued/contracts').ManagedOAuthResponse>();
+    let group: import('@recued/contracts').PackReconnectGroup = { id: 'b'.repeat(64), fingerprint: 'a'.repeat(64), name: 'saved-sheets',
+      display_name: 'Saved sheets', authentication: 'direct_oauth', required_scopes: ['new'], reviewed: false, can_reconnect: true, can_mark_reviewed: true,
+      items: [{ id: 'c'.repeat(64), pack_slug: 'scope-pack', pack_name: 'Scope pack', version: 1, slot: 'sheets', required_scopes: ['new'],
+        coverage: 'unknown', missing_scopes: [], reviewed: false }] };
+    const incoming: import('../settings/reconnect-worklist-continuity.js').ReconnectWorklistRepair = { source: 'worklist',
+      id: 'ppr-' + 'a'.repeat(32), name: 'saved-sheets', authentication: 'direct_oauth', label: 'Scope pack',
+      group_id: group.id, review_fingerprint: group.fingerprint, required_scopes: ['new'], return_to: 'packs', expires_at: Date.now() + 30 * 60_000 };
+    const call = vi.fn<import('../settings/managed-oauth-panel.js').ManagedOAuthCaller>(async request =>
+      request.action === 'reauthorization_context' ? context.promise : { action: 'profiles', profiles: [] });
+    const f = mountPanel({ connections: [source()], initialPermissionRepair: incoming,
+      runPermissionRepairWorklist: async () => ({ action: 'list', groups: [group], unresolved_packs: [] }), runManagedOAuth: call });
+    try {
+      await f.mount.whenLoaded(); await vi.waitFor(() => expect(call.mock.calls.some(([request]) => request.action === 'reauthorization_context')).toBe(true));
+      if (change === 'expired') vi.spyOn(Date, 'now').mockReturnValue(incoming.expires_at);
+      else group = { ...group, fingerprint: 'e'.repeat(64), required_scopes: ['new', 'newer'] };
+      context.resolve({ action: 'reauthorization_context', name: 'saved-sheets', updated_at: 2, auth_type: 'oauth2_refresh',
+        client_id: 'saved-client', token_endpoint: 'https://oauth2.googleapis.com/token' });
+      await tick(30); expect(f.mount.getState().dialog.stage).toBe('closed');
+      expect(f.mount.getState().error).toContain(change === 'expired' ? 'expired' : 'changed');
+      expect(f.calls.runUpdate).not.toHaveBeenCalled(); expect(f.calls.runRotateCredentials).not.toHaveBeenCalled();
+    } finally { f.mount.dispose(); vi.restoreAllMocks(); }
+  });
+  it('prefills incoming scopes and existing grants, reads only public app context, and keeps native OAuth selected', async () => {
+    const returned = vi.fn(); const call = vi.fn<import('../settings/managed-oauth-panel.js').ManagedOAuthCaller>(async request =>
+      request.action === 'reauthorization_context' ? { action: 'reauthorization_context', name: 'saved-sheets', updated_at: 2,
+        auth_type: 'oauth2_refresh', client_id: 'saved-client', token_endpoint: 'https://oauth2.googleapis.com/token' }
+        : { action: 'profiles', profiles: [] });
+    const f = mountPanel({ connections: [source()], initialPermissionRepair: repair(), runPermissionRepairPreview: async () => preview(),
+      runManagedOAuth: call, onPermissionRepairReturn: returned }); await f.mount.whenLoaded(); await tick(30);
+    const dialog = f.mount.getState().dialog;
+    expect(dialog.authenticationRepair).toBe(true); expect(dialog.values.name).toBe('saved-sheets');
+    expect(dialog.values['auth.type']).toBe('oauth2_refresh'); expect(dialog.values['auth.scopes']).toBe('new read');
+    expect(dialog.values['auth.client_id']).toBe('saved-client'); expect(dialog.values['auth.client_secret']).toBeUndefined();
+    expect(f.getHtml()).toContain('Reconnect'); expect(f.getHtml()).toContain('Verify access and return to pack');
+    expect(f.calls.runEnroll).not.toHaveBeenCalled(); expect(f.calls.runUpdate).not.toHaveBeenCalled();
+    f.click({ action: 'connections-return-to-pack-repair' }); expect(returned).toHaveBeenCalledWith(false); f.mount.dispose();
+  });
+  it('keeps installed-pack requirements in the native request when granted scope evidence is missing', async () => {
+    const f = mountPanel({ connections: [{ ...source(), granted_scopes: undefined }], initialPermissionRepair: repair(),
+      runPermissionRepairPreview: async () => preview(), runManagedOAuth: async request => request.action === 'reauthorization_context'
+        ? { action: 'reauthorization_context', name: 'saved-sheets', updated_at: 2, auth_type: 'oauth2_refresh',
+          client_id: 'saved-client', token_endpoint: 'https://oauth2.googleapis.com/token', required_scopes: ['older-pack-permission'] }
+        : { action: 'profiles', profiles: [] } });
+    await f.mount.whenLoaded(); await vi.waitFor(() => expect(f.mount.getState().dialog.authenticationRepair).toBe(true));
+    expect(f.mount.getState().dialog.values['auth.scopes']).toBe('new older-pack-permission'); f.mount.dispose();
+  });
+  it('refuses a stale incoming review and drops a late review after the user starts another form', async () => {
+    const call = vi.fn<import('../settings/managed-oauth-panel.js').ManagedOAuthCaller>(async () => ({ action: 'profiles', profiles: [] }));
+    const f = mountPanel({ connections: [source()], initialPermissionRepair: repair(), runPermissionRepairPreview: async () => preview(false, 'b'.repeat(64)), runManagedOAuth: call });
+    await f.mount.whenLoaded(); await tick(30); expect(f.mount.getState().dialog.stage).toBe('closed');
+    expect(f.mount.getState().error).toContain('changed'); expect(call.mock.calls.some(([request]) => request.action === 'reauthorization_context')).toBe(false); f.mount.dispose();
+    const later = deferred<ReturnType<typeof preview>>();
+    const other = mountPanel({ connections: [source()], initialPermissionRepair: repair(), runPermissionRepairPreview: () => later.promise, runManagedOAuth: call });
+    await other.mount.whenLoaded(); other.click({ action: 'connections-open-add' }); later.resolve(preview()); await tick(30);
+    expect(other.mount.getState().dialog.authenticationRepair).toBeUndefined(); other.mount.dispose();
+  });
+  it.each(['install', 'worklist'] as const)('retains the broker account and verifies before returning from %s', async origin => {
+    const returned = vi.fn(); const call = vi.fn<import('../settings/managed-oauth-panel.js').ManagedOAuthCaller>(async request => {
+      if (request.action === 'apply_authentication_switch') return { action: 'apply_authentication_switch', connection: source(true),
+        verification: { status: 'verified', auth_type: 'managed_oauth', verified_at: 5 } };
+      if (request.action === 'preview') return { action: 'preview', preview: { fingerprint: 'preview', decision: 'reconnect', scope_metadata: 'available',
+        required_scopes: ['new'], previous_scopes: ['old'], requested_scopes: ['new', 'old'], sources: [], warnings: [] } };
+      if (request.action === 'integrations') return { action: 'integrations', integrations: [], required_scopes: [] };
+      return { action: 'profiles', profiles: [] };
+    });
+    const group: import('@recued/contracts').PackReconnectGroup = { id: 'b'.repeat(64), fingerprint: 'a'.repeat(64), name: 'saved-sheets', display_name: 'Saved sheets',
+      authentication: 'broker', required_scopes: ['new'], reviewed: false, can_reconnect: true, can_mark_reviewed: true,
+      items: [{ id: 'c'.repeat(64), pack_slug: 'scope-pack', pack_name: 'Scope pack', version: 1, slot: 'sheets', required_scopes: ['new'],
+        coverage: 'unknown', missing_scopes: [], reviewed: false }] };
+    const worklistRepair: import('../settings/reconnect-worklist-continuity.js').ReconnectWorklistRepair = {
+      source: 'worklist', id: 'ppr-' + 'a'.repeat(32), name: 'saved-sheets', authentication: 'broker', label: 'Scope pack',
+      group_id: group.id, review_fingerprint: group.fingerprint, required_scopes: ['new'], return_to: 'packs', expires_at: Date.now() + 30 * 60_000 };
+    const f = mountPanel({ connections: [source(true)], initialPermissionRepair: origin === 'install' ? repair(true) : worklistRepair,
+      runPermissionRepairPreview: async () => preview(true), runPermissionRepairWorklist: async () => ({ action: 'list', groups: [group], unresolved_packs: [] }),
+      runManagedOAuth: call, onPermissionRepairReturn: returned }); await f.mount.whenLoaded(); await tick(30);
+    const values = f.mount.getState().dialog.values;
+    expect(values['auth.type']).toBe('managed_oauth'); expect(values['auth.connection_id']).toBe('same-account');
+    expect(values['auth.scopes']).toBe('new old read');
+    expect(call.mock.calls.find(([request]) => request.action === 'preview')?.[0]).toMatchObject({ reauthorize_current: true,
+      switch_authentication: true, connection_id: 'same-account', name: 'saved-sheets' });
+    expect(f.getHtml()).not.toContain('Authorize a new account');
+    Object.assign(values, { 'auth.authorization_receipt': 'ready-receipt', 'switch.verification_url': 'https://docs.google.com/spreadsheets/d/test-sheet/edit' });
+    f.click({ action: 'connections-submit-form' }); await tick(40);
+    expect(returned).toHaveBeenCalledWith(true); expect(f.calls.runUpdate).not.toHaveBeenCalled(); expect(f.calls.runRotateCredentials).not.toHaveBeenCalled();
+    f.mount.dispose();
+  });
+  it.each(['failed', 'stale'] as const)('ignores a delayed %s preview after the owner opens another form', async result => {
+    const later = deferred<ReturnType<typeof preview>>();
+    const f = mountPanel({ connections: [source()], initialPermissionRepair: repair(), runPermissionRepairPreview: () => later.promise,
+      runManagedOAuth: async () => ({ action: 'profiles', profiles: [] }) });
+    await f.mount.whenLoaded(); f.click({ action: 'connections-open-add' });
+    if (result === 'failed') later.reject(new Error('Old repair failed'));
+    else later.resolve(preview(false, 'b'.repeat(64)));
+    await tick(30); expect(f.mount.getState().error).toBeNull(); expect(f.mount.getState().dialog.stage).toBe('kind-picker'); f.mount.dispose();
+  });
+  it.each([false, true])('refuses a refreshed row while its native app context was pending, unchanged timestamp=%s', async sameTimestamp => {
+    let current = source(); const context = deferred<import('@recued/contracts').ManagedOAuthResponse>();
+    const call = vi.fn<import('../settings/managed-oauth-panel.js').ManagedOAuthCaller>(async request =>
+      request.action === 'reauthorization_context' ? context.promise : { action: 'profiles', profiles: [] });
+    const f = mountPanel({ runList: async () => ({ connections: [current] }), initialPermissionRepair: repair(),
+      runPermissionRepairPreview: async () => preview(), runManagedOAuth: call });
+    await f.mount.whenLoaded(); await vi.waitFor(() => expect(call.mock.calls.some(([request]) => request.action === 'reauthorization_context')).toBe(true));
+    current = { ...current, display_name: 'Refreshed account', updated_at: sameTimestamp ? current.updated_at : 3 }; await f.mount.refresh();
+    context.resolve({ action: 'reauthorization_context', name: 'saved-sheets', updated_at: 2,
+      auth_type: 'oauth2_refresh', client_id: 'old-client', token_endpoint: 'https://oauth2.googleapis.com/token' });
+    await tick(30); expect(f.mount.getState().dialog.stage).toBe('closed'); expect(f.mount.getState().error).toContain('changed'); f.mount.dispose();
+  });
+  it.each(['add', 'edit'] as const)('retires repair-only scopes and broker mode when the owner starts another %s', async transition => {
+    const other: ConnectionView = { ...source(true), name: 'other-sheets', granted_scopes: [], managed_oauth: {
+      ...source(true).managed_oauth!, connection_id: 'other-account', requested_scopes: ['other'], required_scopes: ['other'] } };
+    const call = vi.fn<import('../settings/managed-oauth-panel.js').ManagedOAuthCaller>(async request =>
+      request.action === 'preview' ? { action: 'preview', preview: { fingerprint: 'fixture', decision: 'reuse', scope_metadata: 'available',
+        required_scopes: [], previous_scopes: [], sources: [], warnings: [] } } : { action: 'profiles', profiles: [] });
+    const f = mountPanel({ connections: [source(true), other], initialPermissionRepair: repair(true),
+      runPermissionRepairPreview: async () => preview(true), runManagedOAuth: call });
+    await f.mount.whenLoaded(); await vi.waitFor(() => expect(f.mount.getState().dialog.authenticationRepair).toBe(true));
+    if (transition === 'edit') f.click({ action: 'connections-edit', kind: 'api', name: 'other-sheets' });
+    else {
+      f.click({ action: 'connections-open-add' }); f.click({ action: 'connections-pick-kind', kind: 'api' });
+      f.field('name', 'other-sheets'); f.field('config.base_url', 'https://sheets.googleapis.com/v4'); f.field('auth.type', 'managed_oauth', 'SELECT');
+      f.field('auth.broker_profile_id', 'cloud'); f.field('auth.integration_id', 'sheets');
+    }
+    f.field('auth.scopes', 'other'); await tick(30);
+    const request = call.mock.calls.map(([request]) => request).filter(request => request.action === 'preview' && request.name === 'other-sheets').at(-1);
+    if (transition === 'edit') {
+      expect(request).toBeDefined(); expect(request).not.toHaveProperty('reauthorize_current'); expect(request).toHaveProperty('scopes', ['other']);
+    } else {
+      expect(request).toBeUndefined();
+      expect(call.mock.calls.some(([request]) => request.action === 'remote_connections')).toBe(true);
+    }
+    f.mount.dispose();
+  });
+  it('lets a custom native app supply its missing authorization endpoint while keeping its client and token endpoint', async () => {
+    const f = mountPanel({ connections: [source()], initialPermissionRepair: repair(), runPermissionRepairPreview: async () => preview(),
+      runManagedOAuth: async request => request.action === 'reauthorization_context' ? { action: 'reauthorization_context', name: 'saved-sheets', updated_at: 2,
+        auth_type: 'oauth2_refresh', client_id: 'custom-client', token_endpoint: 'https://login.example.com/token' } : { action: 'profiles', profiles: [] } });
+    await f.mount.whenLoaded(); await vi.waitFor(() => expect(f.mount.getState().dialog.authenticationRepair).toBe(true));
+    const field = f.getHtml().match(/<input[^>]*data-conn-field="auth.authorize_url"[^>]*>/)?.[0];
+    expect(field).toBeDefined(); expect(field).not.toMatch(/\breadonly\b/);
+    f.field('auth.authorize_url', 'https://login.example.com/authorize');
+    expect(f.mount.getState().dialog.values['auth.authorize_url']).toBe('https://login.example.com/authorize'); f.mount.dispose();
+  });
+});
+
+describe('File-source authentication entry and preparation', () => {
+  const saved = (): ConnectionView => ({ name: 'work-drive', kind: 'api', display_name: 'Work drive', auth_type: 'oauth2_refresh',
+    vendor: 'google', base_url: 'https://www.googleapis.com/drive/v3', enrolled_at: 1, updated_at: 2 });
+  const pending = (): import('@recued/contracts').FileSourceAuthenticationPreview => ({ source_id: 'google.work-drive.file', connection_name: 'work-drive', provider: 'google',
+    status: 'pending', expires_at: Date.now() + 1800000, file_count: 2, current: { status: 'known', account_id: 'owner' }, selections: ['Existing vendor root'] });
+  it('prepares the original file source and defaults to direct OAuth without importing credentials from the route', async () => {
+    const call = vi.fn<import('../settings/managed-oauth-panel.js').ManagedOAuthCaller>(async request => request.action === 'file_authentication_prepare'
+      ? { action: request.action, name: 'work-drive', updated_at: 2, file_source: pending() } : { action: 'profiles', profiles: [] });
+    const f = mountPanel({ connections: [saved()], initialFileAuthenticationSwitch: { name: 'work-drive' }, runManagedOAuth: call });
+    await f.mount.whenLoaded(); await vi.waitFor(()=>expect(f.pickerText()).toContain('Check a file')); f.pickerAction('metadata-only'); await vi.waitFor(() => expect(f.mount.getState().dialog.authenticationSwitch?.name).toBe('work-drive'));
+    expect(call).toHaveBeenCalledWith({ action: 'file_authentication_prepare', name: 'work-drive', expected_updated_at: 2 });
+    expect(f.mount.getState().dialog.values['auth.type']).toBe('oauth2_refresh');
+    expect(f.mount.getState().dialog.values['auth.refresh_token']).toBeUndefined();
+    expect(f.getHtml()).toContain('complete file visibility'); expect(f.getHtml()).not.toContain('data-conn-field="switch.verification_url"');
+    expect(f.calls.runUpdate).not.toHaveBeenCalled(); expect(f.calls.runEnroll).not.toHaveBeenCalled(); f.mount.dispose();
+  });
+  it.each([false,true])('keeps selected-file verification required when oldServer=%s',async oldServer=>{
+    const call=vi.fn<import('../settings/managed-oauth-panel.js').ManagedOAuthCaller>(async request=>{
+      if(request.action==='file_authentication_files')return {action:request.action,choices:{source_id:'google.work-drive.file',connection_name:'work-drive',updated_at:2,available:true,max_bytes:10485760,
+        files:[{remote_id:'chosen',filename:'Chosen.pdf',output_filename:'Chosen.pdf',mime_type:'application/pdf',mode:'download'}]}};
+      if(request.action==='file_authentication_prepare')return {action:request.action,name:'work-drive',updated_at:2,file_source:{...pending(),...(!oldServer?{download:{review_id:'a'.repeat(64),remote_id:'chosen',filename:'Chosen.pdf',output_filename:'Chosen.pdf',mime_type:'application/pdf',mode:'download',comparison:'same_bytes',status:'pending',max_bytes:10485760}}:{})}};
+      return {action:'profiles',profiles:[]};
+    });
+    const f=mountPanel({connections:[saved()],initialFileAuthenticationSwitch:{name:'work-drive'},runManagedOAuth:call});await f.mount.whenLoaded();await vi.waitFor(()=>expect(f.pickerText()).toContain('Chosen.pdf'));
+    expect(call.mock.calls.some(([r])=>r.action==='file_authentication_prepare')).toBe(false);f.pickerChoice('chosen');f.pickerAction('verify');
+    await vi.waitFor(()=>expect(call).toHaveBeenCalledWith({action:'file_authentication_prepare',name:'work-drive',expected_updated_at:2,verification_file_id:'chosen'}));
+    if(oldServer){await vi.waitFor(()=>expect(f.mount.getState().dialog.error).toContain('could not be verified'));expect(f.mount.getState().dialog.authenticationSwitch).toBeNull();}
+    else await vi.waitFor(()=>expect(f.mount.getState().dialog.authenticationSwitch?.name).toBe('work-drive'));
+    expect(f.calls.runUpdate).not.toHaveBeenCalled();f.mount.dispose();
+  });
+  it('cancels file selection without preparing or changing authentication',async()=>{
+    const call=vi.fn<import('../settings/managed-oauth-panel.js').ManagedOAuthCaller>(async()=>({action:'profiles',profiles:[]}));const f=mountPanel({connections:[saved()],initialFileAuthenticationSwitch:{name:'work-drive'},runManagedOAuth:call});
+    await f.mount.whenLoaded();await vi.waitFor(()=>expect(f.pickerText()).toContain('Check a file'));f.pickerAction('cancel');await vi.waitFor(()=>expect(f.mount.getState().dialog.oauthInFlight).toBe(false));
+    expect(call.mock.calls.some(([r])=>r.action==='file_authentication_prepare')).toBe(false);expect(f.mount.getState().dialog.authenticationSwitch).toBeNull();expect(f.calls.runUpdate).not.toHaveBeenCalled();f.mount.dispose();
+  });
+  it('uses the renewed editor revision returned by file preparation', async () => {
+    let current = saved(); const f = mountPanel({ runList: async () => ({ connections: [current] }), runManagedOAuth: async request => {
+      if (request.action === 'file_authentication_prepare') { current = { ...current, updated_at: 3 }; return { action: request.action, name: 'work-drive', updated_at: 3, file_source: pending() }; }
+      return { action: 'profiles', profiles: [] };
+    } });
+    await f.mount.whenLoaded(); f.click({ action: 'connections-edit', kind: 'api', name: 'work-drive' });
+    f.click({ action: 'connections-switch-authentication' }); await vi.waitFor(()=>expect(f.pickerText()).toContain('Check a file')); f.pickerAction('metadata-only'); await vi.waitFor(() => expect(f.mount.getState().dialog.authenticationSwitch?.updated_at).toBe(3));
+    f.mount.dispose();
+  });
+  it.each(['missing','invalid','failed'] as const)('leaves the original editor active when preparation is %s', async mode => {
+    const f = mountPanel({ connections: [saved()], initialFileAuthenticationSwitch: { name: 'work-drive' }, runManagedOAuth: async request => {
+      if (request.action !== 'file_authentication_prepare') return { action: 'profiles', profiles: [] };
+      if (mode === 'failed') throw new Error('Repair the source first');
+      return { action: request.action, name: 'work-drive', updated_at: 2, file_source: mode === 'missing' ? null : { ...pending(), connection_name: 'another-source' } };
+    } });
+    await f.mount.whenLoaded(); await vi.waitFor(()=>expect(f.pickerText()).toContain('Check a file')); f.pickerAction('metadata-only'); await vi.waitFor(() => expect(f.mount.getState().dialog.error).not.toBeNull());
+    expect(f.mount.getState().dialog.authenticationSwitch).toBeNull(); expect(f.mount.getState().dialog.oauthInFlight).toBe(false);
+    expect(f.calls.runUpdate).not.toHaveBeenCalled(); expect(f.calls.runEnroll).not.toHaveBeenCalled(); f.mount.dispose();
+  });
+  it('shows a current-app lookup failure after the file source has been prepared', async () => {
+    const f = mountPanel({ connections: [saved()], initialFileAuthenticationSwitch: { name: 'work-drive' }, runManagedOAuth: async request => {
+      if (request.action === 'file_authentication_prepare') return { action: request.action, name: 'work-drive', updated_at: 2, file_source: pending() };
+      if (request.action === 'reauthorization_context') throw new Error('Current OAuth app is unavailable');
+      return { action: 'profiles', profiles: [] };
+    } });
+    await f.mount.whenLoaded(); await vi.waitFor(() => expect(f.pickerText()).toContain('Check a file')); f.pickerAction('metadata-only');
+    await vi.waitFor(() => expect(f.mount.getState().dialog.error).toBe('Current OAuth app is unavailable'));
+    expect(f.getHtml()).toContain('Current OAuth app is unavailable'); expect(f.mount.getState().dialog.oauthInFlight).toBe(false);
+    expect(f.calls.runUpdate).not.toHaveBeenCalled(); expect(f.calls.runEnroll).not.toHaveBeenCalled(); f.mount.dispose();
+  });
+  it('does not show a late current-app failure after cancelling a prepared file source', async () => {
+    const ready = deferred<import('@recued/contracts').ManagedOAuthResponse>(); let lookingUp = false;
+    const f = mountPanel({ connections: [saved()], initialFileAuthenticationSwitch: { name: 'work-drive' }, runManagedOAuth: async request => {
+      if (request.action === 'file_authentication_prepare') return { action: request.action, name: 'work-drive', updated_at: 2, file_source: pending() };
+      if (request.action === 'reauthorization_context') { lookingUp = true; return ready.promise; }
+      return { action: 'profiles', profiles: [] };
+    } });
+    await f.mount.whenLoaded(); await vi.waitFor(() => expect(f.pickerText()).toContain('Check a file')); f.pickerAction('metadata-only');
+    await vi.waitFor(() => expect(lookingUp).toBe(true)); f.click({ action: 'connections-cancel-dialog' });
+    ready.reject(new Error('Late current-app failure')); await tick();
+    expect(f.mount.getState().dialog.stage).toBe('closed'); expect(f.getHtml()).not.toContain('Late current-app failure');
+    expect(f.calls.runUpdate).not.toHaveBeenCalled(); f.mount.dispose();
+  });
+  it('retires a late preparation after disposal', async () => {
+    let preparing=false; const ready = deferred<import('@recued/contracts').ManagedOAuthResponse>();
+    const f = mountPanel({ connections: [saved()], initialFileAuthenticationSwitch: { name: 'work-drive' },
+      runManagedOAuth: async request => {if(request.action === 'file_authentication_prepare'){preparing=true;return ready.promise;} return { action: 'profiles', profiles: [] };} });
+    await f.mount.whenLoaded(); await vi.waitFor(()=>expect(f.pickerText()).toContain('Check a file'));f.pickerAction('metadata-only');await vi.waitFor(()=>expect(preparing).toBe(true));
+    f.mount.dispose(); ready.resolve({ action: 'file_authentication_prepare', name: 'work-drive', updated_at: 2, file_source: pending() }); await tick();
+    expect(f.mount.getState().dialog.authenticationSwitch).toBeNull(); expect(f.calls.runUpdate).not.toHaveBeenCalled();
+  });
+  it('does not show a late preparation error on another editor after cancellation', async () => {
+    let preparing=false; const ready = deferred<import('@recued/contracts').ManagedOAuthResponse>();
+    const f = mountPanel({ connections: [saved()], initialFileAuthenticationSwitch: { name: 'work-drive' },
+      runManagedOAuth: async request => {if(request.action === 'file_authentication_prepare'){preparing=true;return ready.promise;} return { action: 'profiles', profiles: [] };} });
+    await f.mount.whenLoaded(); await vi.waitFor(()=>expect(f.pickerText()).toContain('Check a file'));f.pickerAction('metadata-only');await vi.waitFor(()=>expect(preparing).toBe(true));
+    f.click({ action: 'connections-cancel-dialog' }); ready.reject(new Error('Late source failure')); await tick();
+    expect(f.mount.getState().dialog.stage).toBe('closed'); expect(f.mount.getState().dialog.error).toBeNull();
+    expect(f.getHtml()).not.toContain('Late source failure'); f.mount.dispose();
+  });
+  it('does not start migration for a missing or unrelated saved connection', async () => {
+    const call = vi.fn<import('../settings/managed-oauth-panel.js').ManagedOAuthCaller>(async () => ({ action: 'profiles', profiles: [] }));
+    const f = mountPanel({ connections: [], initialFileAuthenticationSwitch: { name: 'gone-drive' }, runManagedOAuth: call });
+    await f.mount.whenLoaded(); await tick(); expect(f.mount.getState().error).toContain('no longer available');
+    expect(call).not.toHaveBeenCalled(); expect(f.calls.runEnroll).not.toHaveBeenCalled(); f.mount.dispose();
+  });
+});
+
 describe('D-322 switch authentication editor', () => {
   const saved = (): ConnectionView => ({ name: 'saved-sheets', kind: 'api', display_name: 'Saved sheets', auth_type: 'oauth2_refresh',
     vendor: 'google', base_url: 'https://sheets.googleapis.com/v4', enrolled_at: 1, updated_at: 2 });
@@ -910,8 +1195,8 @@ describe('D-322 switch authentication editor', () => {
     expect(dialog.values.name).toBe('saved-sheets'); expect(dialog.values.display_name).toBe('Current saved sheets');
     expect(dialog.values['auth.type']).toBe('managed_oauth');
     expect(dialog.values['auth.refresh_token']).toBeUndefined(); expect(dialog.values['auth.client_secret']).toBeUndefined();
-    expect(f.getHtml()).toContain('Verify and switch'); expect(f.getHtml()).toContain('Read-only access check URL');
-    expect(f.mount.hasUnsavedChanges()).toBe(true); expect(f.calls.runEnroll).not.toHaveBeenCalled(); expect(f.calls.runUpdate).not.toHaveBeenCalled();
+    expect(f.getHtml()).toContain('Verify and apply'); expect(f.getHtml()).toContain('Read-only access check URL');
+    expect(f.mount.hasUnsavedChanges()).toBe(false); expect(f.calls.runEnroll).not.toHaveBeenCalled(); expect(f.calls.runUpdate).not.toHaveBeenCalled();
     f.mount.dispose();
   });
   it('keeps a draft when the owner declines to switch and retires a late switch read after navigation', async () => {
@@ -11975,5 +12260,49 @@ describe('R26.2 Option B — a LOOPBACK PWA authorizes without a public server',
     expect(values['auth.token_endpoint']).toBe(SALESFORCE_OAUTH_TOKEN_URL_SANDBOX);
     expect(values['config.sandbox']).toBe('sandbox');
     mount.dispose();
+  });
+});
+
+
+describe('Manage authentication on existing API connections', () => {
+  const saved = (): ConnectionView => ({ kind: 'api', name: 'work-api', display_name: 'Work API', auth_type: 'oauth2_refresh', vendor: 'google',
+    base_url: 'https://sheets.googleapis.com/v4', updated_at: 2, granted_scopes: ['https://www.googleapis.com/auth/spreadsheets'] });
+  const context = () => ({ action: 'reauthorization_context' as const, name: 'work-api', updated_at: 2,
+    auth_type: 'oauth2_refresh' as const, client_id: 'current-client', token_endpoint: 'https://oauth2.googleapis.com/token',
+    required_scopes: ['https://www.googleapis.com/auth/drive.readonly'] });
+  it('defaults to current-app consent and retains recorded grants and current Pack requirements', async () => {
+    const call = vi.fn<import('../settings/managed-oauth-panel.js').ManagedOAuthCaller>(async request => request.action === 'reauthorization_context'
+      ? context() : { action: 'profiles', profiles: [] });
+    const f = mountPanel({ connections: [saved()], runManagedOAuth: call }); await f.mount.whenLoaded();
+    f.click({ action: 'connections-edit', kind: 'api', name: 'work-api' }); f.click({ action: 'connections-manage-authentication' });
+    await vi.waitFor(() => expect(f.mount.getState().dialog.values['auth.client_id']).toBe('current-client'));
+    const dialog = f.mount.getState().dialog;
+    expect(dialog.authenticationManagement).toBe('reauthorize'); expect(dialog.values['auth.type']).toBe('oauth2_refresh');
+    expect(dialog.values['auth.scopes']).toContain('drive.readonly'); expect(dialog.values['auth.scopes']).toContain('spreadsheets');
+    expect(dialog.values['auth.refresh_token']).toBeUndefined(); expect(f.getHtml()).toContain('Manage authentication');
+    expect(f.calls.runUpdate).not.toHaveBeenCalled(); expect(f.calls.runEnroll).not.toHaveBeenCalled();
+    f.click({ action: 'connections-authentication-choice', choice: 'method' });
+    await vi.waitFor(() => expect(f.mount.getState().dialog.authenticationManagement).toBe('method'));
+    expect(f.mount.getState().dialog.values['auth.type']).toBe('managed_oauth');
+    expect(f.mount.getState().dialog.values.name).toBe('work-api'); f.mount.dispose();
+  });
+  it('chooses another saved app through the same manager while retaining direct OAuth', async () => {
+    const f = mountPanel({ connections: [saved()], runManagedOAuth: async request => request.action === 'reauthorization_context' ? context() : { action: 'profiles', profiles: [] } });
+    await f.mount.whenLoaded(); f.click({ action: 'connections-edit', kind: 'api', name: 'work-api' }); f.click({ action: 'connections-manage-authentication' });
+    await vi.waitFor(() => expect(f.mount.getState().dialog.authenticationManagementCanChangeApp).toBe(true));
+    f.click({ action: 'connections-authentication-choice', choice: 'app' });
+    await vi.waitFor(() => expect(f.mount.getState().dialog.authenticationManagement).toBe('app'));
+    expect(f.mount.getState().dialog.values['auth.type']).toBe('oauth2_refresh'); expect(f.mount.getState().dialog.values.name).toBe('work-api');
+    expect(f.calls.runUpdate).not.toHaveBeenCalled(); f.mount.dispose();
+  });
+  it('does not reopen a cancelled manager when its current-app read completes late', async () => {
+    const ready = deferred<import('@recued/contracts').ManagedOAuthResponse>();
+    const call = vi.fn<import('../settings/managed-oauth-panel.js').ManagedOAuthCaller>(async request => request.action === 'reauthorization_context' ? ready.promise : { action: 'profiles', profiles: [] });
+    const f = mountPanel({ connections: [saved()], runManagedOAuth: call }); await f.mount.whenLoaded();
+    f.click({ action: 'connections-edit', kind: 'api', name: 'work-api' }); f.click({ action: 'connections-manage-authentication' });
+    await vi.waitFor(() => expect(call.mock.calls.some(([r]) => r.action === 'reauthorization_context')).toBe(true));
+    f.click({ action: 'connections-cancel-dialog' }); ready.resolve(context()); await tick(20);
+    expect(f.mount.getState().dialog.stage).toBe('closed'); expect(f.mount.getState().dialog.error).toBeNull();
+    expect(f.calls.runUpdate).not.toHaveBeenCalled(); f.mount.dispose();
   });
 });

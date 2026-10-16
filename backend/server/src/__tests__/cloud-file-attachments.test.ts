@@ -60,6 +60,15 @@ const fixture = () => {
 };
 
 describe('connected cloud attachments', () => {
+  it('exposes a migration entry only for an authored OAuth file API service', async () => {
+    const f = fixture(); const row = f.connections.get('api','work')!;
+    f.connections.upsert({ ...row, config_json: JSON.stringify({ vendor: 'google', base_url: 'https://www.googleapis.com/drive/v3' }) });
+    const source = (await f.handlers['data.file.attachments.sources'](undefined,client)).sources.find(source => source.source_id === scope)!;
+    expect(source.authentication_connection).toBe('work');
+    f.connections.upsert({ ...row, config_json: JSON.stringify({ vendor: 'google', base_url: 'https://sheets.googleapis.com/v4' }) });
+    expect((await f.handlers['data.file.attachments.sources'](undefined,client)).sources[0]).not.toHaveProperty('authentication_connection');
+    expect(JSON.stringify(source)).not.toMatch(/encrypted-secret|download-secret/);
+  });
   it('previews through the production download adapter without retaining bytes or changing remote metadata', async () => {
     const f = fixture(); const id = remoteFileRecordId(scope, 'one'); const before = f.meta.get(scope, 'one');
     const put = vi.spyOn(f.blobs, 'put'); const selection = await f.select();

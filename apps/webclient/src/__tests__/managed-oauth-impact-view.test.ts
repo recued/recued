@@ -25,3 +25,14 @@ describe('D-322 account and impact view', () => {
     }
   });
 });
+
+
+describe('selected-file impact copy',()=>{
+  it.each(['download','export','unchecked'] as const)('shows the exact %s proof and escapes file labels',mode=>{
+    const v=value();v.file_source={source_id:'google.work.file',connection_name:'work',provider:'google',expires_at:Date.now()+1000,current:{status:'known',account_id:'same'},target:{status:'known',account_id:'same'},file_count:2,selections:['Existing root'],status:'verified',
+      ...(mode!=='unchecked'?{download:{review_id:'a'.repeat(64),remote_id:'one',filename:'<img src=x>',output_filename:'<script>x</script>.docx',mode,mime_type:'application/pdf',comparison:mode==='download'?'same_bytes':'same_file_and_format',status:'verified',max_bytes:10485760}}:{})};
+    const html=renderManagedOAuthImpact(v);expect(html).not.toMatch(/<img|<script>/);
+    if(mode==='unchecked')expect(html).toContain('Metadata only. File download/export access was not checked.');
+    else{expect(html).toContain('10 MiB');expect(html).not.toContain('data-file-download-unchecked');expect(html).toContain(mode==='download'?'Same file bytes verified':'Exported bytes can vary');}
+  });
+});

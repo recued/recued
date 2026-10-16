@@ -1,3 +1,4 @@
+import { fileSourceOAuthProvider, isFileSourceAuthenticationPreview } from '@recued/contracts';
 /** D-165 P3.enroll-host — the generic `connection.*` REACH enrollment panel.
  *
  *  The host that MOUNTS `renderConnectionsPage` (D-125 Phase 7's enrollment
@@ -78,7 +79,16 @@ import {
   createManagedOAuthPanel,
   type ManagedOAuthCaller,
 } from './managed-oauth-panel.js';
-import { managedOAuthDefaultVerificationUrl, managedOAuthVerificationUrl } from '@recued/contracts';
+import { managedOAuthDefaultVerificationUrl, managedOAuthVerificationUrl, isDirectOAuthAuthenticationReview } from '@recued/contracts';
+import { createFileDownloadPicker, FILE_DOWNLOAD_PICKER_STYLES } from './file-download-picker.js';
+import { renderManagedOAuthImpact } from './managed-oauth-impact-view.js';
+import { escapeHtml } from '@recued/ui-shared';
+import { validatePackPermissionRepair, type PackPermissionRepair } from './pack-permission-repair.js';
+import { isWorklistRepair, validateWorklistRepair, type ConnectionPermissionRepair } from './reconnect-worklist-continuity.js';
+import { createOAuthTroubleshooting } from '../connections/oauth-troubleshooting.js';
+import { savedOAuthAppIssuerForEndpoints } from '@recued/contracts';
+import type { PackReconnectCaller } from './reconnect-worklist-panel.js';
+import type { PacksInstallPreviewCaller } from './packs-panel.js';
 import {
   runOAuthPopup,
   defaultFoundationalOAuthEnv,
@@ -131,6 +141,10 @@ import {
   connectionCredentialRejectionTriage,
   GENERIC_OAUTH_VENDOR,
   buildVendorAuthorizeUrl,
+  buildGenericVendorProvider,
+  withSavedOAuthAppProvider,
+  savedOAuthAppRequestedScopes,
+  savedOAuthAppsForIssuer,
   getVendorProvider,
   vendorOAuthRequestedScopes,
   MAX_HEADER_AUTH_ENTRIES,
@@ -170,6 +184,8 @@ import {
   connectionSetupGuideReturnTarget,
   connectionFormRunsOAuthDance,
   connectionOAuthCredentialReadiness,
+  selectedSavedOAuthAppIssuer,
+  compatibleSavedOAuthAppIssuer,
   invalidatesConnectionOAuthResult,
   isConnectionOAuthLockedField,
   type ConnectionFormValidationIssue,
@@ -178,6 +194,7 @@ import {
   MCP_PACK_INSTALL_SCOPE_HOST_ATTR,
   SIGNIN_GRIDS_HOST_ATTR,
   type ConnectionsPageState,
+  type ConnectionsDialogState,
   type ConnectionsPostSafeStopProfileHandoff,
   type ConnectionsDialogCredentialCorrectionState,
   type ConnectionsServerUpdateTriage,
@@ -434,6 +451,8 @@ export type ConnectionsStartVendorOAuthCaller = (args: {
   vendor: string;
   client_id: string;
   client_secret?: string;
+  oauth_app_id?: string;
+  oauth_app_issuer?: import('@recued/contracts').OAuthAppIssuer;
   redirect_uri: string;
   sandbox?: boolean;
   /** R14 — form-supplied OAuth config for a generic (non-registry) vendor.
@@ -502,6 +521,8 @@ export type ConnectionsCompleteVendorOAuthCaller = (args: {
   redirect_uri: string;
   client_id: string;
   client_secret?: string;
+  oauth_app_id?: string;
+  oauth_app_issuer?: import('@recued/contracts').OAuthAppIssuer;
   authorize_url?: string;
   token_endpoint?: string;
   sandbox?: boolean;
@@ -515,6 +536,7 @@ export interface VendorOAuthBrowserEnv {
 }
 
 export interface MountConnectionsEnrollPanelOptions {
+  onManageOAuthApps?(): void;
   /** Host element the page renders into — replaced on every structural
    *  re-render, cleared on `dispose()`. */
   host: HTMLElement;
@@ -669,6 +691,7 @@ export interface MountConnectionsEnrollPanelOptions {
    *  degrades to the honest "paste a refresh token" fallback. `subscribe`
    *  is the shared `BroadcastSubscriber['on']`; the panel listens for the
    *  `connection.vendor_oauth_completed` frame matching its own `flow_id`. */
+  runGetOAuthAppConfig?: () => Promise<import('@recued/contracts').OAuthAppConfigSnapshot>;
   runStartVendorOAuth?: ConnectionsStartVendorOAuthCaller;
   /** D-322 — broker setup and authorization on this paired server. */
   runManagedOAuth?: ManagedOAuthCaller;
@@ -705,10 +728,18 @@ export interface MountConnectionsEnrollPanelOptions {
    *  fails the connection-name regex or the user has already begun a dialog
    *  interaction by the time the load settles. */
   initialVendor?: string;
+  /** Trusted memory-only handoff from Mail/Calendar, never credential or scope URL parameters. */
+  initialAccountSetup?: { vendor: string; base_url: string; name: string; scopes: readonly string[] };
   /** D-322 — service metadata comes from this current pack row, not a route URL. */
   initialPack?: import('../connections/connections-navigation.js').ConnectionEnrollmentPack;
   /** D-322 §24 — exact named account to review after the authoritative first list. */
   initialConnectionAccessReview?: { name: string };
+  initialFileAuthenticationSwitch?: { name: string };
+  initialPermissionRepair?: ConnectionPermissionRepair;
+  permissionRepairUnavailable?: boolean;
+  runPermissionRepairPreview?: PacksInstallPreviewCaller;
+  runPermissionRepairWorklist?: PackReconnectCaller;
+  onPermissionRepairReturn?(verified: boolean, collections?: PackPermissionRepair['reconnect_collections']): void;
 }
 
 export interface ConnectionsEnrollPanelMount {
@@ -752,6 +783,10 @@ export interface ConnectionsEnrollPanelMount {
 
 /** The `data-action` strings this host handles. */
 type ConnectionsEnrollAction =
+  | 'connections-review-direct-authentication'
+  | 'connections-manage-authentication'
+  | 'connections-manage-row-authentication'
+  | 'connections-authentication-choice'
   | 'connections-switch-authentication'
   | 'connections-cancel-authentication-switch'
   | 'connections-open-add'
@@ -762,6 +797,7 @@ type ConnectionsEnrollAction =
   | 'connections-back-to-kind'
   | 'connections-back-to-subtype'
   | 'connections-cancel-dialog'
+  | 'connections-return-to-pack-repair'
   | 'connections-focus-first-invalid'
   | 'connections-focus-credential-correction'
   | 'connections-focus-credential-triage'
@@ -794,6 +830,10 @@ type ConnectionsEnrollAction =
   | 'connections-delete-cancel'
   | 'connections-delete-toggle-mirror'
   | 'connections-authorize-vendor'
+  | 'connections-use-saved-oauth-app'
+  | 'connections-manage-oauth-apps'
+  | 'connections-enter-oauth-app'
+  | 'connections-refresh-saved-oauth-apps'
   | 'connections-guide-open'
   | 'connections-guide-close'
   | 'connections-guide-review'
@@ -1530,6 +1570,9 @@ export const mountConnectionsEnrollPanel = (
 
   const { host } = opts;
   const state: ConnectionsPageState = initialConnectionsPageState();
+  let filePreparationGeneration: number | undefined;
+  const fileDownloadPicker = createFileDownloadPicker({ document:doc, changed:() => render(),
+    call:request => { if (!opts.runManagedOAuth) return Promise.reject(new Error('File verification is unavailable.')); return opts.runManagedOAuth(request); } });
   /** Host-owned state for the generated MCP pack's shared install picker. It
    *  is deliberately separate from the pure shared-page render model: the
    *  latter contains only reviewed tool disclosure, while this is the consent
@@ -1546,6 +1589,7 @@ export const mountConnectionsEnrollPanel = (
   let mcpPackGrantAudience: InstallAudienceSelection =
     resolveInstallAudienceSelection(undefined);
   let disposed = false;
+  const oauthHelp = createOAuthTroubleshooting();
   let postSafeStopProfileLabel = (() => {
     const label = opts.postSafeStopProfileLabel?.trim();
     return label === undefined || label.length === 0 ? undefined : label;
@@ -1588,6 +1632,9 @@ export const mountConnectionsEnrollPanel = (
   // navigation bumps it mid-flight, the completion is stale and must not
   // reset / clobber the newer dialog the user has moved on to.
   let dialogGen = 0;
+  let renderedDialogStage: string = state.dialog.stage;
+  let pendingControlFocus: Record<string, string | undefined> | undefined;
+  let returnControlFocus: Record<string, string | undefined> | undefined;
   // Safe snapshot of the exact list row an edit form was built from. Form
   // values (including replacement credentials) stay in `dialog.values`; this
   // carries only the server revision + auth-excluded view fingerprint used to
@@ -1639,7 +1686,18 @@ export const mountConnectionsEnrollPanel = (
   // the `claim_secret` (closure-only, never rendered). `oauthUnsub` is the bus
   // subscription torn down on dispose.
   const oauthEnv = opts.oauthEnv ?? defaultVendorOAuthEnv();
+  const retireDirectAuthenticationReview = (): void => {
+    const review = state.dialog.directAuthenticationReview;
+    if (!review) return;
+    state.dialog.directAuthenticationReview = null; delete state.dialog.values['auth.authorization_receipt'];
+    const impact = host.querySelector<HTMLElement>('[data-direct-oauth-impact]');
+    if (impact) impact.innerHTML = '';
+    const button = host.querySelector<HTMLElement>('[data-action="connections-review-direct-authentication"]');
+    if (button) button.textContent = 'Review direct OAuth account and permissions';
+    void opts.runManagedOAuth?.({ action: 'retire_direct_authentication', auth: review.auth }).catch(() => {});
+  };
   let hasPackEnrollmentContext = false;
+  let activePermissionRepair: ConnectionPermissionRepair | undefined;
   // D-322 — the module owns its short-lived claims and broker key draft.
   const managedOAuthPanel = createManagedOAuthPanel({
     ...(opts.runManagedOAuth ? { call: opts.runManagedOAuth } : {}),
@@ -1648,9 +1706,12 @@ export const mountConnectionsEnrollPanel = (
       enabled: state.dialog.kind === 'api' && state.dialog.stage === 'form' && state.dialog.values['auth.type'] === 'managed_oauth',
       mode: state.dialog.authenticationSwitch ? 'switch' : state.dialog.mode, name: state.dialog.values.name ?? '',
       saving: state.dialog.saving,
+      ...(activePermissionRepair?.authentication === 'broker' || state.dialog.authenticationManagement === 'reauthorize' ? { reauthorize_current: true } : {}),
+      forceReauthorization: state.dialog.authenticationManagement === 'reauthorize' && !activePermissionRepair,
       ...(state.dialog.authenticationSwitch ? { expected_updated_at: editorRevision?.updatedAt } : {}),
       base_url: state.dialog.values['config.base_url'] ?? '',
-      scopes: (state.dialog.values['auth.scopes'] ?? '').split(/[\s,]+/).filter(Boolean),
+      scopes: [...new Set([...(state.dialog.values['auth.scopes'] ?? '').split(/[\s,]+/).filter(Boolean),
+        ...activePermissionRepair?.required_scopes ?? []])].sort(),
       profile_id: state.dialog.values['auth.broker_profile_id'] ?? '',
       integration_id: state.dialog.values['auth.integration_id'] ?? '',
       connection_id: state.dialog.values['auth.connection_id'] ?? '',
@@ -1659,13 +1720,17 @@ export const mountConnectionsEnrollPanel = (
         vendor: state.dialog.values['config.vendor'] || state.dialog.vendor!,
       } : {}),
     }),
-    select: (profile, integration) => {
+    select: (profile, integration, options) => {
+      if (activePermissionRepair?.authentication === 'broker') return;
       state.dialog.values['auth.broker_profile_id'] = profile;
       state.dialog.values['auth.integration_id'] = integration;
+      if (options?.automatic) updateDialogDraftBaselineValues(values => ({ ...values,
+        'auth.broker_profile_id': profile, 'auth.integration_id': integration }));
     },
     requiredScopes: (scopes) => {
       const current = (state.dialog.values['auth.scopes'] ?? '').split(/[\s,]+/).filter(Boolean);
       state.dialog.values['auth.scopes'] = [...new Set([...current, ...scopes])].sort().join(' ');
+      updateDialogDraftBaselineValues(values => ({ ...values, 'auth.scopes': [...new Set([...(values['auth.scopes'] ?? '').split(/[\s,]+/).filter(Boolean), ...scopes])].sort().join(' ') }));
     },
     authorized: (auth, grantedScopes) => {
       delete state.dialog.values['auth.imported'];
@@ -1680,6 +1745,30 @@ export const mountConnectionsEnrollPanel = (
       renderPreservingActiveField(); syncSubmitDisabled();
     } },
   });
+  let savedOAuthApps: ConnectionsDialogState['savedOAuthApps'] = opts.runGetOAuthAppConfig ? { loading: true } : undefined;
+  let savedOAuthAppsGeneration = 0;
+  const clearSavedOAuthApp = (): void => {
+    delete state.dialog.values['auth.saved_oauth_app'];
+    delete state.dialog.values['auth.saved_oauth_app_id'];
+    state.dialog.values['auth.client_id'] = '';
+    delete state.dialog.values['auth.client_secret'];
+    const hadToken = Boolean(state.dialog.values['auth.refresh_token']);
+    state.dialog.values['auth.refresh_token'] = '';
+    state.dialog.oauthGrantedScopes = null;state.dialog.oauthNeedsReauthorization = hadToken;
+  };
+  const reconcileSavedOAuthApp = (): void => {
+    const config = savedOAuthApps?.config;
+    const issuer = selectedSavedOAuthAppIssuer(state.dialog);
+    if (!issuer || !config || savedOAuthApps?.loading || savedOAuthApps?.error
+      || state.dialog.oauthInFlight || state.dialog.saving) return;
+    const app = savedOAuthAppsForIssuer(config, issuer).find(app => app.id === (state.dialog.values['auth.saved_oauth_app_id'] ?? 'default'));
+    if (!app?.has_secret || app.client_id !== state.dialog.values['auth.client_id']) {
+      clearSavedOAuthApp();
+      state.dialog.oauthError = 'The saved OAuth app changed or was removed. Choose an app and authorize again.';
+      state.dialog.oauthErrorFieldKey = null;
+    }
+  };
+
   let pendingOAuth: PendingVendorOAuth | null = null;
   let oauthUnsub: (() => void) | null = null;
   // A guide call is a paid owner-triggered model request. Keep a mount-level
@@ -1914,6 +2003,19 @@ export const mountConnectionsEnrollPanel = (
 
   const render = (): void => {
     if (disposed) return;
+    const activeControl = doc.activeElement as HTMLInputElement | null | undefined;
+    const ownControl = activeControl && host.contains(activeControl)
+      && (activeControl.dataset?.action || activeControl.dataset?.connField || activeControl.dataset?.connInventoryFilter
+        || activeControl.hasAttribute?.('data-connection-dialog-heading') || activeControl.hasAttribute?.('data-manage-authentication-heading'));
+    if (ownControl) pendingControlFocus = { ...activeControl.dataset };
+    else if (activeControl && !['BODY', 'MAIN'].includes(activeControl.tagName)) pendingControlFocus = undefined;
+    if (renderedDialogStage === 'closed' && ownControl && activeControl.dataset.action) returnControlFocus = { ...activeControl.dataset };
+    const stageChanged = renderedDialogStage !== state.dialog.stage; renderedDialogStage = state.dialog.stage;
+    const selectionStart = activeControl?.selectionStart; const selectionEnd = activeControl?.selectionEnd;
+    // Defer source changes while an attempt owns the form; reconcile as soon
+    // as it settles, including a metadata response received during that attempt.
+    reconcileSavedOAuthApp();
+    state.dialog.savedOAuthApps = savedOAuthApps ? { ...savedOAuthApps, canManage: Boolean(opts.onManageOAuthApps) } : undefined;
     let serverUpdateProgress: ServerUpdateTabProgress | null = null;
     if (state.dialog.stage === 'form') {
       serverUpdateProgress = opts.credentialRotationTabConvergence
@@ -1929,7 +2031,17 @@ export const mountConnectionsEnrollPanel = (
         state.dialog.error = null;
       }
     }
-    host.innerHTML = renderConnectionsPage({
+    const permissionRepairBanner = opts.initialPermissionRepair || opts.permissionRepairUnavailable
+      ? `<section data-pack-permission-repair role="region" aria-label="Pack permission repair"><h3>Reconnect for ${escapeHtml(opts.initialPermissionRepair
+        ? isWorklistRepair(opts.initialPermissionRepair) ? opts.initialPermissionRepair.label : opts.initialPermissionRepair.resume.pack.name : 'this pack')}</h3>
+        <p>${opts.permissionRepairUnavailable ? 'This repair expired or belongs to another server session. Return to Packs and start again.'
+          : opts.initialPermissionRepair && isWorklistRepair(opts.initialPermissionRepair)
+            ? 'Review the requested permissions, authorize, then verify a protected read before applying. Unknown permission reminders stay until you mark them reviewed.'
+            : 'Review the requested permissions, authorize, then verify a protected read before applying. The saved connection name and installation choices are kept.'}</p>
+        ${activePermissionRepair ? `<p>Incoming pack permissions: ${escapeHtml(activePermissionRepair.required_scopes.join(', '))}</p>` : ''}
+        <button type="button" data-action="connections-return-to-pack-repair"${hasInFlightWork() ? ' disabled' : ''}>${opts.initialPermissionRepair && isWorklistRepair(opts.initialPermissionRepair) ? 'Return to Reconnect later' : 'Return to pack'}</button></section>` : '';
+    host.innerHTML = fileDownloadPicker.active() ? '<style>' + FILE_DOWNLOAD_PICKER_STYLES + '</style><div data-file-download-picker-host></div>'
+      : (filePreparationGeneration === dialogGen ? '<p role="status">Checking the existing file account, metadata and any chosen download/export before choosing authentication…</p>' : '') + permissionRepairBanner + renderConnectionsPage({
       ...state,
       managedOAuthAvailable: opts.runManagedOAuth !== undefined,
       layout: 'embedded',
@@ -1943,14 +2055,50 @@ export const mountConnectionsEnrollPanel = (
         : {}),
       ...(signInGrid.enabled ? { signInGrids: true } : {}),
     });
+    fileDownloadPicker.mount(host.querySelector<HTMLElement>('[data-file-download-picker-host]'));
     mountMcpPackInstallScopePicker();
     mountSignInGrids();
     managedOAuthPanel.mount(host.querySelector<HTMLElement>('[data-managed-oauth-host]'));
+    const helpIssuer = selectedSavedOAuthAppIssuer(state.dialog) ?? savedOAuthAppIssuerForEndpoints({ token_endpoint: state.dialog.values['auth.token_endpoint'] ?? '' });
+    oauthHelp.mount(host.querySelector<HTMLElement>('[data-connection-oauth-help-host]'), state.dialog.stage === 'form'
+      && ['oauth2_refresh', 'oauth2_client_credentials'].includes(state.dialog.values['auth.type'] ?? '') ? {
+        key: JSON.stringify([dialogGen, state.dialog.values['auth.type'], state.dialog.values['auth.saved_oauth_app_id'], state.dialog.values['auth.client_id']]),
+        route: 'direct', ...(helpIssuer ? { issuer: helpIssuer } : {}),
+        ...(state.dialog.values['auth.type'] === 'oauth2_client_credentials' ? { flow: 'client_credentials' as const }
+          : { callbackUrl: state.dialog.oauthCallbackUrl ?? resolveOAuthCallbackUrlForThisPwa() }),
+        savedApp: Boolean(selectedSavedOAuthAppIssuer(state.dialog)), pending: state.dialog.saving || state.dialog.oauthInFlight || credentialRotationOwnershipLease !== null,
+      } : null);
+    const directImpact = host.querySelector<HTMLElement>('[data-direct-oauth-impact]');
+    if (directImpact && state.dialog.directAuthenticationReview) {
+      const review = state.dialog.directAuthenticationReview;
+      directImpact.innerHTML = renderManagedOAuthImpact(review.impact);
+      const permissions = doc.createElement('p');
+      permissions.textContent = 'Required permissions: ' + (review.required_scopes.join(', ') || (review.impact.file_source ? 'No additional named scopes; file metadata was checked separately' : 'No scope list is available'))
+        + '. ' + review.warnings.join(' ');
+      directImpact.appendChild(permissions);
+    }
     if (
       serverUpdateProgress !== null
       && typeof host.querySelector === 'function'
     ) {
       host.querySelector(SUBMIT_SELECTOR)?.setAttribute('disabled', '');
+    }
+    const restore = (dataset: Record<string, string | undefined> | undefined) => dataset
+      ? [...host.querySelectorAll?.<HTMLElement>('[data-action],[data-conn-field],[data-conn-inventory-filter],[data-connection-dialog-heading],[data-manage-authentication-heading]') ?? []]
+        .find(node => Object.entries(dataset).every(([key, value]) => node.dataset[key] === value) && !node.hasAttribute('disabled')) : undefined;
+    if (stageChanged) {
+      if (state.dialog.stage !== 'closed') { const heading = host.querySelector<HTMLElement>('[data-connection-dialog-heading]'); heading?.focus(); heading?.scrollIntoView?.({ block: 'nearest' }); }
+      else (restore(returnControlFocus) ?? host.querySelector<HTMLElement>('[data-action="connections-open-add"]'))?.focus();
+      pendingControlFocus = undefined;
+    } else {
+      const replacement = restore(pendingControlFocus) as HTMLInputElement | undefined;
+      if (replacement) {
+        replacement.focus({ preventScroll: true });
+        if (typeof selectionStart === 'number' && typeof selectionEnd === 'number') {
+          try { replacement.setSelectionRange?.(selectionStart, selectionEnd); } catch { /* selects and URL fields have no caret API */ }
+        }
+        pendingControlFocus = undefined;
+      }
     }
   };
 
@@ -2202,6 +2350,7 @@ export const mountConnectionsEnrollPanel = (
     if (disposed || p.dialogGen !== dialogGen) return;
     state.dialog.oauthInFlight = false;
     if ('error' in outcome) {
+      oauthHelp.observePopup('error', outcome.error);
       if (
         p.credentialSafeStop !== undefined
         && state.dialog.credentialCorrection === null
@@ -2270,10 +2419,28 @@ export const mountConnectionsEnrollPanel = (
 
   /** Async half of the click handler: start the flow, cache the jwks, navigate
    *  the (already-open) popup, and arm the completion timeout. */
+  const loadSavedOAuthApps = async (): Promise<void> => {
+    if (!opts.runGetOAuthAppConfig || disposed) return;
+    const current = ++savedOAuthAppsGeneration;
+    savedOAuthApps = { ...savedOAuthApps,loading: true };renderPreservingActiveField();
+    try {
+      const config = await opts.runGetOAuthAppConfig();
+      if (disposed || current !== savedOAuthAppsGeneration) return;
+      savedOAuthApps = { loading: false,config };
+
+    } catch {
+      if (disposed || current !== savedOAuthAppsGeneration) return;
+      savedOAuthApps = { ...savedOAuthApps,loading: false,error: 'Saved apps could not be loaded. Try Refresh saved apps.' };
+    }
+    renderPreservingActiveField();
+  };
+
   const driveVendorOAuth = async (ctx: {
     vendor: string;
     client_id: string;
     client_secret: string;
+    oauth_app_id?: string;
+    oauth_app_issuer?: import('@recued/contracts').OAuthAppIssuer;
     sandbox: boolean;
     popup: VendorOAuthPopupHandle;
     dialogGen: number;
@@ -2295,6 +2462,7 @@ export const mountConnectionsEnrollPanel = (
         vendor: ctx.vendor,
         client_id: ctx.client_id,
         ...(ctx.client_secret ? { client_secret: ctx.client_secret } : {}),
+        ...(ctx.oauth_app_issuer ? { oauth_app_issuer: ctx.oauth_app_issuer, ...(ctx.oauth_app_id ? { oauth_app_id: ctx.oauth_app_id } : {}) } : {}),
         /** ⛔⛔⛔ RESOLVED FROM THIS PWA'S ORIGIN, never the cloud constant.
          *  Hardcoding the cloud URL here made the flow UNUSABLE on a loopback
          *  webclient: the cloud relay shares `sessionStorage` with
@@ -2316,6 +2484,7 @@ export const mountConnectionsEnrollPanel = (
       closePopupQuietly(ctx.popup);
       if (!disposed && ctx.dialogGen === dialogGen) {
         state.dialog.oauthInFlight = false;
+        oauthHelp.observeFailure(err);
         if (
           ctx.credentialSafeStop !== undefined
           && state.dialog.credentialCorrection === null
@@ -2450,6 +2619,8 @@ export const mountConnectionsEnrollPanel = (
     const token_endpoint = (values['auth.token_endpoint'] ?? '').trim();
     const client_id = (values['auth.client_id'] ?? '').trim();
     const client_secret = (values['auth.client_secret'] ?? '').trim();
+    const oauth_app_issuer = selectedSavedOAuthAppIssuer({ vendor: state.dialog.vendor,values });
+    const oauth_app_id = oauth_app_issuer ? values['auth.saved_oauth_app_id'] : undefined;
     const scopes = (values['auth.scopes'] ?? '').trim();
     const registered = getVendorProvider(vendor);
     const sandbox = isVendorSandboxSelected(values);
@@ -2490,6 +2661,14 @@ export const mountConnectionsEnrollPanel = (
             ...(code_challenge === undefined ? {} : { code_challenge }),
           });
         }
+        if (oauth_app_issuer) {
+          const provider = withSavedOAuthAppProvider(buildGenericVendorProvider({
+            authorize_url: authorizeBase,token_endpoint,scopes: scopes.split(/\s+/).filter(Boolean),vendor,
+          }),oauth_app_issuer);
+          code_verifier = mintPkceVerifier();
+          return buildVendorAuthorizeUrl({ provider,client_id,redirect_uri,sandbox,state: oauthState,
+            code_challenge: await pkceS256Challenge(code_verifier) });
+        }
         const url = new URL(authorizeBase);
         url.searchParams.set('response_type', 'code');
         url.searchParams.set('client_id', client_id);
@@ -2502,6 +2681,7 @@ export const mountConnectionsEnrollPanel = (
     if (disposed || gen !== dialogGen) return;
     if (!outcome.ok) {
       state.dialog.oauthInFlight = false;
+      oauthHelp.observePopup(outcome.reason, outcome.detail);
       setOAuthCorrection({
         message: outcome.reason === 'popup_blocked'
           ? 'Your browser blocked the pop-up. Allow pop-ups for this Recued address, then try again. What you typed is unchanged.'
@@ -2521,6 +2701,7 @@ export const mountConnectionsEnrollPanel = (
         redirect_uri,
         client_id,
         ...(client_secret.length > 0 ? { client_secret } : {}),
+        ...(oauth_app_issuer ? { oauth_app_issuer, ...(oauth_app_id ? { oauth_app_id } : {}) } : {}),
         ...(registered !== null
           // The server reads a registered vendor's endpoints from its registry;
           // it needs the environment the flow ran in, and the PKCE proof.
@@ -2528,6 +2709,7 @@ export const mountConnectionsEnrollPanel = (
           : {
               ...(authorizeBase.length > 0 ? { authorize_url: authorizeBase } : {}),
               ...(token_endpoint.length > 0 ? { token_endpoint } : {}),
+              ...(code_verifier === undefined ? {} : { code_verifier }),
             }),
       });
       if (disposed || gen !== dialogGen) return;
@@ -2552,6 +2734,7 @@ export const mountConnectionsEnrollPanel = (
     } catch (err) {
       if (disposed || gen !== dialogGen) return;
       state.dialog.oauthInFlight = false;
+      oauthHelp.observeFailure(err);
       setOAuthCorrection(oauthCorrection(humanizeRpcError(err)));
       render();
       focusOAuthCorrection(null);
@@ -2559,6 +2742,9 @@ export const mountConnectionsEnrollPanel = (
   };
 
   const startVendorOAuthFromClick = (): void => {
+    if (state.dialog.directAuthenticationReview && !hasInFlightWork()) {
+      retireDirectAuthenticationReview();
+    }
     const dialog = state.dialog;
     const vendor = dialog.vendor;
     // R14 — a generic oauth2_refresh form (no registered vendor) runs the dance
@@ -2643,6 +2829,7 @@ export const mountConnectionsEnrollPanel = (
     // async driver navigates this blank window to the authorize URL.
     const popup = oauthEnv.open('', '_blank');
     if (popup === null) {
+      oauthHelp.observePopup('popup_blocked');
       setOAuthCorrection({
         message: 'Your browser blocked the pop-up. Allow pop-ups for this Recued address, then try again. What you typed is unchanged.',
         fieldKey: null,
@@ -2687,6 +2874,8 @@ export const mountConnectionsEnrollPanel = (
       vendor: vendor ?? GENERIC_OAUTH_VENDOR,
       client_id,
       client_secret,
+      ...(selectedSavedOAuthAppIssuer(dialog) ? { oauth_app_issuer: selectedSavedOAuthAppIssuer(dialog)!,
+        ...(dialog.values['auth.saved_oauth_app_id'] ? { oauth_app_id: dialog.values['auth.saved_oauth_app_id'] } : {}) } : {}),
       sandbox,
       popup,
       dialogGen,
@@ -2862,6 +3051,8 @@ export const mountConnectionsEnrollPanel = (
 
   // ── Dialog transitions ────────────────────────────────────────
   const resetDialog = (): void => {
+    activePermissionRepair = undefined;
+    retireDirectAuthenticationReview();
     // A lease retained for an uncertain request stays boot-scoped until its
     // continuity marker reaches a terminal receipt. Draft-only/available
     // ownership is yielded when the owner closes the editor.
@@ -2904,6 +3095,7 @@ export const mountConnectionsEnrollPanel = (
    *  wedges every later submit). `resetDialog` / `edit` instead REPLACE the
    *  dialog with a fresh `saving:false` object, so they don't need this. */
   const beginDialogNavigation = (): void => {
+    if (activePermissionRepair) resetDialog();
     hasPackEnrollmentContext = false;
     releaseCredentialRotationOwnership(true);
     retireProviderSetupContinuity();
@@ -4939,6 +5131,12 @@ export const mountConnectionsEnrollPanel = (
       name: vendor, display_name: pack?.name ?? vendor, 'config.vendor': vendor,
       'config.base_url': '', 'auth.type': 'managed_oauth',
     } : seed.values;
+    if (!source && opts.initialAccountSetup?.vendor === vendor) {
+      const setup = opts.initialAccountSetup;
+      state.dialog.vendor = null;
+      state.dialog.values = { name: setup.name.slice(0, 64), display_name: setup.name,
+        'config.vendor': vendor, 'config.base_url': setup.base_url, 'auth.type': 'managed_oauth', 'auth.scopes': setup.scopes.join(' ') };
+    }
     state.dialog.hintedFields = Object.fromEntries(
       seed.hints.map(({ key, publisher }) => [key, publisher]),
     );
@@ -6863,8 +7061,19 @@ export const mountConnectionsEnrollPanel = (
     if (dialog.oauthGrantedScopes && dialog.oauthGrantedScopes.length > 0) {
       payload.granted_scopes = [...dialog.oauthGrantedScopes];
     }
+    const savedIssuer = selectedSavedOAuthAppIssuer(dialog);
+    if (dialog.mode === 'create' && savedIssuer) {
+      payload.oauth_app_issuer = savedIssuer;
+      if (dialog.values['auth.saved_oauth_app_id']) payload.oauth_app_id = dialog.values['auth.saved_oauth_app_id'];
+    }
     const isEdit = dialog.mode === 'edit';
     const switching = Boolean(dialog.authenticationSwitch);
+    const permissionRepair = activePermissionRepair;
+    if (permissionRepair && (payload.name !== permissionRepair.name
+      || payload.auth.type !== (permissionRepair.authentication === 'broker' ? 'managed_oauth' : 'oauth2_refresh'))) {
+      dialog.error = 'This permission repair keeps the selected connection and authentication type. Return to the pack to choose another connection.';
+      render(); return;
+    }
     const verificationUrl = switching
       ? managedOAuthVerificationUrl(dialog.values['config.base_url'] ?? '', dialog.values['switch.verification_url'] ?? '') : undefined;
     if (switching && !verificationUrl) {
@@ -6928,6 +7137,7 @@ export const mountConnectionsEnrollPanel = (
     let ownershipBacksExistingContinuity = false;
     try {
       let probeStatus: string | undefined;
+      let probeDetail: string | undefined; let probedAt: number | undefined;
       let credentialVerification: ConnectionCredentialVerification | undefined;
       // The saved connection's CANONICAL name (the server trims / canonicalizes
       // on enroll) — used for the trigger write so a padded create name can't
@@ -6944,6 +7154,7 @@ export const mountConnectionsEnrollPanel = (
           try {
             const { health } = await opts.runProbe({ name: savedName, kind: payload.kind });
             probeStatus = health.status;
+            probeDetail = health.last_error; probedAt = health.last_probed_at;
           } catch (err) { probeStatus = errMessage(err); }
         } else if (patch.auth !== undefined) {
           if (opts.runRotateCredentials === undefined) {
@@ -7023,12 +7234,15 @@ export const mountConnectionsEnrollPanel = (
           );
           let result: { connection: ConnectionView; verification: ConnectionCredentialVerification };
           if (switching) {
-            if (!opts.runManagedOAuth || patch.auth.type !== 'managed_oauth' || expectedUpdatedAt === undefined || !verificationUrl) {
+            if (!opts.runManagedOAuth || expectedUpdatedAt === undefined || !verificationUrl
+              || patch.auth.type !== 'managed_oauth' && !(patch.auth.type === 'oauth2_refresh' && dialog.directAuthenticationReview)) {
               throw new Error('Refresh this connection before switching authentication.');
             }
+            const authorization = patch.auth.type === 'managed_oauth' ? patch.auth : dialog.directAuthenticationReview!.auth;
+            const impactFingerprint = patch.auth.type === 'managed_oauth' ? managedOAuthPanel.impactFingerprint() : dialog.directAuthenticationReview!.impact.fingerprint;
             const response = await opts.runManagedOAuth({ action: 'apply_authentication_switch', attempt_id: attemptId,
-              ...(managedOAuthPanel.impactFingerprint() ? { impact_fingerprint: managedOAuthPanel.impactFingerprint() } : {}),
-              name: payload.name, expected_updated_at: expectedUpdatedAt, auth: patch.auth, verification_url: verificationUrl });
+              ...(impactFingerprint ? { impact_fingerprint: impactFingerprint } : {}),
+              name: payload.name, expected_updated_at: expectedUpdatedAt, auth: authorization, verification_url: verificationUrl });
             if (response.action !== 'apply_authentication_switch') throw new Error('Authentication switch could not be confirmed. Recheck this attempt before retrying.');
             result = response;
           } else result = await opts.runRotateCredentials({
@@ -7085,6 +7299,7 @@ export const mountConnectionsEnrollPanel = (
             kind: payload.kind,
           });
           probeStatus = health.status;
+          probeDetail = health.last_error; probedAt = health.last_probed_at;
         } catch (err) {
           probeStatus = errMessage(err);
         }
@@ -7110,6 +7325,8 @@ export const mountConnectionsEnrollPanel = (
       if (submittedRotationAttemptId !== null) {
         opts.credentialRotationContinuity?.retire(submittedRotationAttemptId);
       }
+      const reconnectCollections = switching ? (managedOAuthPanel.impactPreview() ?? dialog.directAuthenticationReview?.impact)?.connections
+        .filter(c => c.name === savedName).flatMap(c => c.uses.filter(u => u.kind === 'mail' || u.kind === 'calendar')) : undefined;
       resetDialog();
       const postSaveDialogGen = dialogGen;
       if (credentialVerification !== undefined) {
@@ -7121,6 +7338,7 @@ export const mountConnectionsEnrollPanel = (
           purpose: 'credential_rotation',
           verified_at: credentialVerification.verified_at,
           auth_type: credentialVerification.auth_type,
+          ...(reconnectCollections?.length ? { reconnect_collections: reconnectCollections } : {}),
           ...(credentialVerification.access_expires_at !== undefined
             ? { access_expires_at: credentialVerification.access_expires_at }
             : {}),
@@ -7130,10 +7348,20 @@ export const mountConnectionsEnrollPanel = (
           kind: payload.kind,
           name: savedName,
           status: probeStatus ?? 'unknown',
+          ...(probeDetail ? { last_error: probeDetail } : {}),
+          ...(probedAt !== undefined ? { checked_at: probedAt } : {}),
         };
       }
       // Re-list so the new / patched row appears with its server view.
       await doRefresh();
+      if (!disposed && dialogGen === postSaveDialogGen && permissionRepair && credentialVerification?.status === 'verified') {
+        activePermissionRepair = undefined; submitInFlight = false;
+        if (reconnectCollections?.length) opts.onPermissionRepairReturn?.(true, reconnectCollections.map(use => ({
+          kind: use.kind === 'mail' ? 'mail' : 'calendar', id: use.id, label: use.label,
+        })));
+        else opts.onPermissionRepairReturn?.(true);
+        return;
+      }
       // D-320 slice 2i — a newly set-up API connection asks which packs of its
       // sign-in may use it (when any could), every one ticked.
       if (!disposed && dialogGen === postSaveDialogGen && !isEdit && payload.kind === 'api') {
@@ -7460,7 +7688,9 @@ export const mountConnectionsEnrollPanel = (
     try {
       const { health } = await opts.runProbe({ name, kind });
       if (disposed) return;
-      state.dialog.recentProbe = { kind, name, status: health.status };
+      state.dialog.recentProbe = { kind, name, status: health.status,
+        ...(health.last_error ? { last_error: health.last_error } : {}),
+        ...(health.last_probed_at !== undefined ? { checked_at: health.last_probed_at } : {}) };
     } catch (err) {
       if (disposed) return;
       // Surface as a non-ok/unknown recent-probe → the renderer styles it
@@ -7650,10 +7880,12 @@ export const mountConnectionsEnrollPanel = (
   };
 
   const openEditConnection = (kind: ConnectionKind, name: string): void => {
+    retireDirectAuthenticationReview();
     const view = state.connections.find(
       (connection) => connection.kind === kind && connection.name === name,
     );
     if (view === undefined) return;
+    activePermissionRepair = undefined;
     const rotationMarker = opts.credentialRotationContinuity?.read() ?? null;
     if (
       credentialRotationOwnershipLease !== null
@@ -7711,25 +7943,121 @@ export const mountConnectionsEnrollPanel = (
   };
 
   /** D-322 §23 — start from a current safe row and leave the saved credential untouched. */
-  const beginAuthenticationSwitch = async (): Promise<void> => {
+  let authenticationManagementPreparing = false;
+  const beginAuthenticationSwitch = async (intent: 'reauthorize' | 'app' | 'method' = 'method', canChangeSavedApp = false): Promise<void> => {
+    if (authenticationManagementPreparing) return;
     const dialog = state.dialog;
     if (dialog.mode !== 'edit' || dialog.kind !== 'api' || dialog.authenticationSwitch || hasInFlightWork()) return;
     if (!opts.runManagedOAuth) throw new Error('Managed OAuth is unavailable. Update the connected server to switch authentication.');
-    const gen = dialogGen; const name = dialog.values.name;
-    const response = await opts.runList();
-    if (disposed || gen !== dialogGen || hasInFlightWork()) return;
-    const latest = response.connections.find(row => row.kind === 'api' && row.name === name);
-    if (!latest || latest.updated_at === undefined) throw new Error('The saved connection is unavailable. Refresh before switching authentication.');
-    if (!confirmDiscardConnectionDraft()) return;
-    state.connections = [...response.connections]; openEditConnection('api', latest.name);
-    state.dialog.authenticationSwitch = latest;
-    for (const key of Object.keys(state.dialog.values)) if (key.startsWith('auth.')) delete state.dialog.values[key];
-    state.dialog.values['auth.type'] = 'managed_oauth';
-    state.dialog.values['auth.scopes'] = (latest.managed_oauth?.required_scopes ?? latest.managed_oauth?.requested_scopes ?? []).join(' ');
-    state.dialog.values['auth.broker_profile_id'] = latest.managed_oauth?.broker_profile_id ?? '';
-    state.dialog.values['auth.integration_id'] = latest.managed_oauth?.integration_id ?? '';
-    state.dialog.values['switch.verification_url'] = managedOAuthDefaultVerificationUrl(state.dialog.values['config.base_url'] ?? '');
-    render();
+    authenticationManagementPreparing = true; let managementDialog = dialog;
+    try {
+      const gen = dialogGen; const name = dialog.values.name;
+      let response = await opts.runList();
+      if (disposed || gen !== dialogGen) return;
+      let latest = response.connections.find(row => row.kind === 'api' && row.name === name);
+      if (!latest || latest.updated_at === undefined) throw new Error('The saved connection is unavailable. Refresh before switching authentication.');
+      const fileProvider = fileSourceOAuthProvider(latest.vendor ?? (isRecordValue(latest.config) ? latest.config.vendor : undefined), latest.base_url ?? (isRecordValue(latest.config) ? latest.config.base_url : undefined));
+      if (!confirmDiscardConnectionDraft()) return;
+      if (fileProvider) {
+        dialog.oauthInFlight = true; render();
+        try {
+          const selection = await fileDownloadPicker.choose(latest.name,latest.updated_at,() => !disposed && gen === dialogGen);
+          if (disposed || gen !== dialogGen || selection === null) return;
+          filePreparationGeneration = gen; render();
+          const proof = await opts.runManagedOAuth({ action: 'file_authentication_prepare', name: latest.name, expected_updated_at: latest.updated_at,
+            ...(selection.fileId ? { verification_file_id:selection.fileId } : {}) });
+          if (disposed || gen !== dialogGen) return;
+          if (proof.action !== 'file_authentication_prepare' || proof.name !== name || !Number.isSafeInteger(proof.updated_at)
+            || proof.file_source === null || !isFileSourceAuthenticationPreview(proof.file_source)
+            || proof.file_source.connection_name !== name || proof.file_source.provider !== fileProvider
+            || selection.fileId !== undefined && proof.file_source.download?.remote_id !== selection.fileId) {
+            throw new Error('The existing file source could not be verified. Refresh Recued or repair the source before switching.');
+          }
+          // Normal renewal can advance the editor revision during preparation.
+          response = await opts.runList();
+          if (disposed || gen !== dialogGen) return;
+          latest = response.connections.find(row => row.kind === 'api' && row.name === name);
+          if (!latest || latest.updated_at !== proof.updated_at) throw new Error('The file connection changed during preparation. Refresh and retry.');
+        } finally { if (filePreparationGeneration === gen) filePreparationGeneration = undefined; if (!disposed && gen === dialogGen) { dialog.oauthInFlight = false; render(); } }
+      }
+      state.connections = [...response.connections]; openEditConnection('api', latest.name); managementDialog = state.dialog;
+      state.dialog.authenticationSwitch = latest;
+      for (const key of Object.keys(state.dialog.values)) if (key.startsWith('auth.')) delete state.dialog.values[key];
+      if (intent === 'reauthorize' && !['oauth2_refresh', 'managed_oauth'].includes(latest.auth_type ?? '')) intent = 'method';
+      state.dialog.authenticationManagement = intent;
+      state.dialog.authenticationManagementCanChangeApp = !latest.managed_oauth && canChangeSavedApp;
+      state.dialog.values['auth.type'] = intent === 'reauthorize' ? latest.managed_oauth ? 'managed_oauth' : 'oauth2_refresh'
+        : intent === 'app' || latest.managed_oauth || fileProvider ? 'oauth2_refresh' : 'managed_oauth';
+      if (state.dialog.values['auth.type'] === 'oauth2_refresh') {
+        const seed = vendorEnrollSeed(state.dialog.vendor);
+        for (const [key, value] of Object.entries(seed.values)) if (key.startsWith('auth.') && key !== 'auth.type') state.dialog.values[key] = value;
+      }
+      state.dialog.values['auth.scopes'] = [...new Set([...latest.granted_scopes ?? [],
+        ...latest.managed_oauth?.required_scopes ?? [], ...latest.managed_oauth?.requested_scopes ?? []])].sort().join(' ');
+      state.dialog.values['auth.broker_profile_id'] = latest.managed_oauth?.broker_profile_id ?? '';
+      state.dialog.values['auth.integration_id'] = latest.managed_oauth?.integration_id ?? '';
+      if (intent === 'reauthorize') state.dialog.values['auth.connection_id'] = latest.managed_oauth?.connection_id ?? '';
+      if (!latest.managed_oauth && latest.auth_type === 'oauth2_refresh' && intent !== 'method') {
+        state.dialog.oauthInFlight = true; render();
+        const setupGen = dialogGen;
+        try {
+          const context = await opts.runManagedOAuth({ action: 'reauthorization_context', name: latest.name, expected_updated_at: latest.updated_at! });
+          if (disposed || setupGen !== dialogGen) return;
+          if (context.action !== 'reauthorization_context' || context.auth_type !== 'oauth2_refresh' || context.name !== latest.name
+            || context.updated_at !== latest.updated_at || !context.client_id || !context.token_endpoint) throw new Error('The saved OAuth app could not be confirmed. Refresh this connection.');
+          state.dialog.authenticationManagementCurrentAppId = context.saved_oauth_app?.id;
+          state.dialog.authenticationManagementCurrentClientId = context.client_id;
+          state.dialog.values['auth.client_id'] = context.client_id;
+          state.dialog.values['auth.token_endpoint'] = context.token_endpoint;
+          if (!state.dialog.values['auth.authorize_url']) {
+            if (context.token_endpoint === 'https://oauth2.googleapis.com/token') state.dialog.values['auth.authorize_url'] = 'https://accounts.google.com/o/oauth2/v2/auth';
+            else if (/^https:\/\/login\.microsoftonline\.com\/[^/?#]+\/oauth2\/v2\.0\/token$/.test(context.token_endpoint)) state.dialog.values['auth.authorize_url'] = context.token_endpoint.replace(/\/token$/, '/authorize');
+          }
+          state.dialog.values['auth.scopes'] = [...new Set([...(state.dialog.values['auth.scopes'] ?? '').split(/\s+/).filter(Boolean), ...context.required_scopes ?? []])].sort().join(' ');
+          if (savedOAuthApps?.loading) await loadSavedOAuthApps();
+          if (disposed || setupGen !== dialogGen) return;
+          const issuer = compatibleSavedOAuthAppIssuer(state.dialog);
+          state.dialog.authenticationManagementCanChangeApp = issuer !== null;
+          const matches = issuer ? savedOAuthAppsForIssuer(savedOAuthApps?.config, issuer).filter(app => app.has_secret && app.client_id === context.client_id
+            && (!context.saved_oauth_app || context.saved_oauth_app.issuer === issuer && context.saved_oauth_app.id === app.id)) : [];
+          if (intent === 'reauthorize' && issuer && matches.length === 1) {
+            state.dialog.values['auth.saved_oauth_app'] = issuer; state.dialog.values['auth.saved_oauth_app_id'] = matches[0]!.id;
+          }
+        } finally { if (!disposed && setupGen === dialogGen) state.dialog.oauthInFlight = false; }
+      }
+      state.dialog.values['switch.verification_url'] = managedOAuthDefaultVerificationUrl(state.dialog.values['config.base_url'] ?? '');
+      captureDialogDraftBaseline(); render();
+    } catch (error) { if (!disposed && state.dialog === managementDialog) throw error; }
+    finally { authenticationManagementPreparing = false; }
+  };
+
+  const reviewDirectAuthentication = async (): Promise<void> => {
+    const dialog = state.dialog;
+    if (!dialog.authenticationSwitch || dialog.values['auth.type'] !== 'oauth2_refresh' || hasInFlightWork()) return;
+    const schema = activeSchema(); const revision = editorRevision?.updatedAt;
+    if (!schema || !opts.runManagedOAuth || revision === undefined) throw new Error('Refresh this connection before reviewing direct OAuth.');
+    const payload = projectConnectionPayload(schema, dialog.values, 'api', null);
+    if (payload.auth.type !== 'oauth2_refresh') throw new Error('Authorize a direct OAuth app before reviewing.');
+    const gen = dialogGen; retireDirectAuthenticationReview(); dialog.oauthInFlight = true; dialog.error = null; render();
+    try {
+      const response = await opts.runManagedOAuth({ action: 'review_direct_authentication',
+        selections: [{ name: payload.name, expected_updated_at: revision }], auth: payload.auth,
+        ...(selectedSavedOAuthAppIssuer(dialog) ? { oauth_app_issuer: selectedSavedOAuthAppIssuer(dialog)!,
+        ...(dialog.values['auth.saved_oauth_app_id'] ? { oauth_app_id: dialog.values['auth.saved_oauth_app_id'] } : {}) } : {}),
+        scopes: [...new Set([...(dialog.values['auth.scopes'] ?? '').split(/\s+/).filter(Boolean),
+          ...activePermissionRepair?.required_scopes ?? []])].sort() });
+      if (disposed || gen !== dialogGen) {
+        if (response.action === 'review_direct_authentication' && isDirectOAuthAuthenticationReview(response)) {
+          void opts.runManagedOAuth({ action: 'retire_direct_authentication', auth: response.auth }).catch(() => {});
+        }
+        return;
+      }
+      if (response.action !== 'review_direct_authentication' || !isDirectOAuthAuthenticationReview(response)) {
+        throw new Error('The direct OAuth account review could not be confirmed. Review again before switching.');
+      }
+      dialog.directAuthenticationReview = response;
+      dialog.values['auth.authorization_receipt'] = response.auth.authorization_receipt;
+    } finally { if (!disposed && gen === dialogGen) { dialog.oauthInFlight = false; render(); } }
   };
 
   /** Close the acknowledgement journey with one result bound to the exact
@@ -8652,6 +8980,32 @@ export const mountConnectionsEnrollPanel = (
         reclaimFocus: doc.activeElement === element,
       });
     },
+    'connections-manage-authentication': () => {
+      void beginAuthenticationSwitch('reauthorize').catch(error => {
+        if (disposed) return; state.dialog.error = errMessage(error); render();
+      });
+    },
+    'connections-manage-row-authentication': dataset => {
+      if (dataset.kind !== 'api' || !dataset.name || hasInFlightWork() || !confirmDiscardConnectionDraft()) return;
+      const row = state.connections.find(row => row.kind === 'api' && row.name === dataset.name);
+      if (!row || !['oauth2_refresh', 'bearer', 'managed_oauth'].includes(row.auth_type ?? '')) return;
+      openEditConnection('api', row.name);
+      void beginAuthenticationSwitch('reauthorize').catch(error => {
+        if (!disposed) { state.dialog.error = errMessage(error); render(); }
+      });
+    },
+    'connections-authentication-choice': (dataset) => {
+      const original = state.dialog.authenticationSwitch;
+      const intent = dataset.choice;
+      if (!original || activePermissionRepair || hasInFlightWork() || !['reauthorize', 'app', 'method'].includes(intent ?? '')
+        || intent === 'app' && !state.dialog.authenticationManagementCanChangeApp
+        || intent === 'reauthorize' && !['oauth2_refresh', 'managed_oauth'].includes(original.auth_type ?? '') || !confirmDiscardConnectionDraft()) return;
+      const canChangeApp = state.dialog.authenticationManagementCanChangeApp === true;
+      retireDirectAuthenticationReview(); openEditConnection('api', original.name);
+      void beginAuthenticationSwitch(intent as 'reauthorize' | 'app' | 'method', canChangeApp).catch(error => {
+        if (disposed) return; state.dialog.error = errMessage(error); render();
+      });
+    },
     'connections-switch-authentication': () => {
       const gen = dialogGen;
       void beginAuthenticationSwitch().catch(error => {
@@ -8662,6 +9016,12 @@ export const mountConnectionsEnrollPanel = (
       const original = state.dialog.authenticationSwitch;
       if (!original || hasInFlightWork() || !confirmDiscardConnectionDraft()) return;
       openEditConnection('api', original.name);
+    },
+    'connections-review-direct-authentication': () => {
+      const gen = dialogGen;
+      void reviewDirectAuthentication().catch(error => {
+        if (disposed || gen !== dialogGen) return; state.dialog.error = errMessage(error); render();
+      });
     },
     'connections-open-add': () => {
       if (!confirmDiscardConnectionDraft()) return;
@@ -8746,9 +9106,15 @@ export const mountConnectionsEnrollPanel = (
       if (!confirmDiscardConnectionDraft()) return;
       const refreshSafeStopQueue =
         state.dialog.credentialSafeStopClosureNotice !== null;
+      const permissionRepair = activePermissionRepair;
       resetDialog();
       render();
       if (refreshSafeStopQueue) void doRefresh();
+      if (permissionRepair) opts.onPermissionRepairReturn?.(false);
+    },
+    'connections-return-to-pack-repair': () => {
+      if (hasInFlightWork() || !confirmDiscardConnectionDraft()) return;
+      activePermissionRepair = undefined; resetDialog(); opts.onPermissionRepairReturn?.(false);
     },
     'connections-submit-form': () => {
       void submitForm();
@@ -9167,9 +9533,10 @@ export const mountConnectionsEnrollPanel = (
     'connections-reload-stale-editor': () => {
       void reloadStaleEditor();
     },
-    'connections-probe': (dataset) => {
+    'connections-probe': (dataset, _event, element) => {
       const kind = asKind(dataset.kind);
       if (kind === null || dataset.name === undefined) return;
+      element?.focus?.({ preventScroll: true });
       void probeRow(kind, dataset.name);
     },
     'connections-delete': (dataset) => {
@@ -9189,6 +9556,32 @@ export const mountConnectionsEnrollPanel = (
     // D-165 slice 3 — vendor OAuth popup. Runs the real Model-B dance when the
     // callers + bus + a browser env are wired; otherwise (test host / pre-slice
     // server) it degrades to the honest manual-token message inside the handler.
+    'connections-use-saved-oauth-app': (dataset) => {
+      if (state.dialog.mode !== 'create' && !state.dialog.authenticationSwitch || state.dialog.kind !== 'api' || state.dialog.saving || state.dialog.oauthInFlight || savedOAuthApps?.loading || savedOAuthApps?.error) return;
+      const issuer = compatibleSavedOAuthAppIssuer(state.dialog);
+      if (!issuer || issuer !== dataset.issuer) return;
+      const choices = savedOAuthAppsForIssuer(savedOAuthApps?.config, issuer).filter(app => app.has_secret);
+      const id = state.dialog.values['auth.saved_oauth_app_choice'] ?? state.dialog.values['auth.saved_oauth_app_id'] ?? choices[0]?.id;
+      const status = choices.find(app => app.id === id);
+      if (!status?.client_id || !status.has_secret) return;
+      clearSavedOAuthApp();state.dialog.values['auth.saved_oauth_app'] = issuer;
+      state.dialog.values['auth.saved_oauth_app_id'] = status.id;
+      state.dialog.values['auth.client_id'] = status.client_id;
+      state.dialog.values['auth.scopes'] = savedOAuthAppRequestedScopes(issuer,(state.dialog.values['auth.scopes'] ?? '').split(/\s+/).filter(Boolean)).join(' ');
+      state.dialog.oauthError = null;render();
+      host.querySelector<HTMLElement>(OAUTH_AUTHORIZE_SELECTOR)?.focus();
+    },
+    'connections-manage-oauth-apps': () => {
+      if (!state.dialog.saving && !state.dialog.oauthInFlight) opts.onManageOAuthApps?.();
+    },
+    'connections-enter-oauth-app': () => {
+      if (state.dialog.saving || state.dialog.oauthInFlight || !selectedSavedOAuthAppIssuer(state.dialog)) return;
+      clearSavedOAuthApp();state.dialog.oauthError = null;render();
+      host.querySelector<HTMLElement>('[data-conn-field="auth.client_id"]')?.focus();
+    },
+    'connections-refresh-saved-oauth-apps': () => {
+      if (!state.dialog.saving && !state.dialog.oauthInFlight) void loadSavedOAuthApps();
+    },
     'connections-authorize-vendor': () => {
       if (state.dialog.externalChange !== null) return;
       startVendorOAuthFromClick();
@@ -9226,9 +9619,10 @@ export const mountConnectionsEnrollPanel = (
     'connections-guide-resume': () => {
       resumeProviderSetup();
     },
-    'connections-engagement-toggle': (dataset) => {
+    'connections-engagement-toggle': (dataset, _event, element) => {
       const kind = asKind(dataset.kind);
       if (kind === null || dataset.name === undefined) return;
+      element?.focus?.({ preventScroll: true });
       const key = connectionRowKey(kind, dataset.name);
       const { expanded } = state.engagementHealth;
       if (expanded.has(key)) {
@@ -9311,6 +9705,11 @@ export const mountConnectionsEnrollPanel = (
   const onFieldEvent = (event: Event): void => {
     const target = event.target as FieldElement | null;
     if (target === null) return;
+    const filter = target.closest?.('[data-conn-inventory-filter]') as FieldElement | null;
+    if (filter?.dataset.connInventoryFilter && host.contains(filter)) {
+      if ((filter.tagName === 'SELECT' ? 'change' : 'input') !== event.type) return;
+      state.inventoryFilters = { ...state.inventoryFilters, [filter.dataset.connInventoryFilter]: filter.value ?? '' }; render(); return;
+    }
     const guideUrlEl = (
       typeof target.closest === 'function'
         ? target.closest('[data-connection-guide-url]')
@@ -9341,7 +9740,10 @@ export const mountConnectionsEnrollPanel = (
     ) as FieldElement | null;
     if (el === null || !host.contains(el)) return;
     const key = el.dataset.connField;
+    if (selectedSavedOAuthAppIssuer(state.dialog) && (key === 'auth.client_id' || key === 'auth.client_secret')) return;
     if (key === undefined) return;
+    if (state.dialog.authenticationManagement === 'reauthorize' && ['auth.client_id', 'auth.token_endpoint', 'auth.saved_oauth_app_choice', 'auth.saved_oauth_app', 'auth.saved_oauth_app_id'].includes(key)) return;
+    if (key === 'auth.type' && state.dialog.authenticationManagement && state.dialog.authenticationManagement !== 'method') return;
     // A `<select>` fires both `input` and `change`; act on `change` so the
     // visibility re-render runs once. Text/secret inputs act on `input`.
     const isSelect = el.tagName === 'SELECT';
@@ -9361,6 +9763,9 @@ export const mountConnectionsEnrollPanel = (
     const previousValue = state.dialog.values[key] ?? '';
     const nextValue = el.value ?? '';
     const valueChanged = previousValue !== nextValue;
+    if (valueChanged && (key.startsWith('auth.') || key.startsWith('config.')) && state.dialog.directAuthenticationReview) {
+      retireDirectAuthenticationReview();
+    }
     if (valueChanged) state.dialog.credentialSafeStopClosureNotice = null;
     const credentialCorrectionBeforeEdit = state.dialog.credentialCorrection;
     const crossTabSafeStopCorrection = state.dialog.kind !== null
@@ -9416,6 +9821,16 @@ export const mountConnectionsEnrollPanel = (
       [key]: nextValue,
       ...(invalidatedOAuthResult ? { 'auth.refresh_token': '' } : {}),
     };
+    if (state.dialog.values['auth.saved_oauth_app'] && !selectedSavedOAuthAppIssuer(state.dialog)) clearSavedOAuthApp();
+    if (key === 'auth.type' && valueChanged && state.dialog.authenticationSwitch) {
+      const scopes = state.dialog.values['auth.scopes'] ?? '';
+      for (const authKey of Object.keys(state.dialog.values)) if (authKey.startsWith('auth.') && authKey !== 'auth.type') delete state.dialog.values[authKey];
+      if (nextValue === 'oauth2_refresh') {
+        const seed = vendorEnrollSeed(state.dialog.vendor);
+        for (const [authKey, value] of Object.entries(seed.values)) if (authKey.startsWith('auth.') && authKey !== 'auth.type') state.dialog.values[authKey] = value;
+      }
+      state.dialog.values['auth.scopes'] = scopes;
+    }
     // Direct-app defaults can include another service of the same vendor. Let
     // managed discovery prefill its service's requirements; preserve owner edits
     // and the explicitly selected pack's scope seed.
@@ -9710,6 +10125,7 @@ export const mountConnectionsEnrollPanel = (
   // Pre-warm the email send-from picker so it's populated by the time the
   // user reaches the email-notification form (silent — no email form open yet).
   void hydrateMailOptions();
+  void loadSavedOAuthApps();
 
   // A packs "Set up" deep link still waits for the best-effort pack fetch so
   // its new vendor form receives the normal installed-pack scope prefill.
@@ -9722,6 +10138,21 @@ export const mountConnectionsEnrollPanel = (
     });
   }
 
+  if (opts.initialFileAuthenticationSwitch && CONNECTION_NAME_REGEX.test(opts.initialFileAuthenticationSwitch.name)) {
+    const name = opts.initialFileAuthenticationSwitch.name;
+    void pendingLoad.then(async () => {
+      if (disposed || dialogGen !== 0 || state.dialog.stage !== 'closed' || loadGeneration !== initialLoadGeneration || state.error !== null || hasInFlightWork()) return;
+      const row = state.connections.find(c => c.kind === 'api' && c.name === name);
+      if (!row || !fileSourceOAuthProvider(row.vendor ?? (isRecordValue(row.config) ? row.config.vendor : undefined), row.base_url ?? (isRecordValue(row.config) ? row.config.base_url : undefined))) {
+        state.error = 'This cloud file source is no longer available for authentication migration.'; render(); return;
+      }
+      openEditConnection('api', name); render();
+      try { await beginAuthenticationSwitch('reauthorize'); }
+      // Preparation opens a fresh editor. Its own guard drops errors after
+      // navigation, while current-app failures belong to that new editor.
+      catch (error) { if (!disposed) { state.dialog.error = errMessage(error); render(); } }
+    });
+  }
   if (opts.initialConnectionAccessReview && CONNECTION_NAME_REGEX.test(opts.initialConnectionAccessReview.name)) {
     const name = opts.initialConnectionAccessReview.name;
     void pendingLoad.then(() => {
@@ -9733,6 +10164,81 @@ export const mountConnectionsEnrollPanel = (
       }
       openEditConnection('api', name);
       render();
+      const row = state.connections.find(connection => connection.kind === 'api' && connection.name === name);
+      if (row && ['oauth2_refresh', 'managed_oauth'].includes(row.auth_type ?? '')) void beginAuthenticationSwitch('reauthorize').catch(error => {
+        if (!disposed) { state.dialog.error = errMessage(error); render(); }
+      });
+    });
+  }
+  if (opts.initialPermissionRepair) {
+    const repair = opts.initialPermissionRepair;
+    void pendingLoad.then(async () => {
+      if (disposed || dialogGen !== 0 || state.dialog.stage !== 'closed' || state.error !== null) return;
+      try {
+        if (!opts.runManagedOAuth) throw new Error('Update the connected server to reconnect from the permission review.');
+        if (repair.expires_at <= Date.now()) throw new Error('This repair expired. Return to the pack and reconnect again.');
+        let required: string[];
+        if (isWorklistRepair(repair)) {
+          if (!opts.runPermissionRepairWorklist) throw new Error('Update the connected server to use Reconnect later.');
+          const worklist = await opts.runPermissionRepairWorklist({ action: 'list' });
+          if (disposed || dialogGen !== 0 || state.dialog.stage !== 'closed') return;
+          required = validateWorklistRepair(repair, worklist);
+        } else {
+          if (!opts.runPermissionRepairPreview) throw new Error('Update the connected server to reconnect from the pack review.');
+          const preview = await opts.runPermissionRepairPreview({ manifest: repair.resume.pack.manifest,
+            ...(repair.resume.marketplace ? { marketplace: true } : {}) });
+          if (disposed || dialogGen !== 0 || state.dialog.stage !== 'closed') return;
+          required = validatePackPermissionRepair(repair, preview);
+        }
+        const row = state.connections.find(connection => connection.kind === 'api' && connection.name === repair.name);
+        if (!row || row.updated_at === undefined || (row.managed_oauth ? 'broker' : row.auth_type === 'oauth2_refresh' ? 'direct_oauth' : 'other') !== repair.authentication) {
+          throw new Error('The selected OAuth connection changed. Return to the pack and review again.');
+        }
+        const nativeContext = !row.managed_oauth
+          ? await opts.runManagedOAuth({ action: 'reauthorization_context', name: row.name, expected_updated_at: row.updated_at }) : undefined;
+        if (disposed || dialogGen !== 0 || state.dialog.stage !== 'closed') return;
+        if (nativeContext && (nativeContext.action !== 'reauthorization_context' || nativeContext.auth_type !== 'oauth2_refresh'
+          || nativeContext.name !== row.name || nativeContext.updated_at !== row.updated_at || !nativeContext.client_id || !nativeContext.token_endpoint)) {
+          throw new Error('The current OAuth app could not be confirmed. Return to the pack and review again.');
+        }
+        if (nativeContext && savedOAuthApps?.loading) await loadSavedOAuthApps();
+        if (disposed || dialogGen !== 0 || state.dialog.stage !== 'closed') return;
+        if (nativeContext && isWorklistRepair(repair)) {
+          const latest = await opts.runPermissionRepairWorklist!({ action: 'list' });
+          if (disposed || dialogGen !== 0 || state.dialog.stage !== 'closed') return;
+          validateWorklistRepair(repair, latest);
+        }
+        if (JSON.stringify(state.connections.find(connection => connection.kind === 'api' && connection.name === repair.name)) !== JSON.stringify(row)) {
+          throw new Error('The selected OAuth connection changed. Return to the pack and review again.');
+        }
+        openEditConnection('api', repair.name); state.dialog.authenticationSwitch = row; state.dialog.authenticationRepair = true; activePermissionRepair = repair; state.dialog.authenticationManagement = 'reauthorize';
+        const granted = row.granted_scopes ?? [];
+        state.dialog.values['auth.scopes'] = [...new Set([...required, ...granted,
+          ...nativeContext?.action === 'reauthorization_context' ? nativeContext.required_scopes ?? [] : [],
+          ...row.managed_oauth?.required_scopes ?? [], ...row.managed_oauth?.requested_scopes ?? []])].sort().join(' ');
+        state.dialog.values['switch.verification_url'] = managedOAuthDefaultVerificationUrl(state.dialog.values['config.base_url'] ?? '');
+        if (!row.managed_oauth) {
+          if (nativeContext?.action !== 'reauthorization_context') throw new Error('The current OAuth app could not be confirmed.');
+          const context = nativeContext;
+          state.dialog.values['auth.client_id'] = context.client_id!;
+          state.dialog.values['auth.token_endpoint'] = context.token_endpoint!;
+          if (!state.dialog.values['auth.authorize_url']) {
+            const endpoint = context.token_endpoint!;
+            if (endpoint === 'https://oauth2.googleapis.com/token') state.dialog.values['auth.authorize_url'] = 'https://accounts.google.com/o/oauth2/v2/auth';
+            else if (/^https:\/\/login\.microsoftonline\.com\/[^/?#]+\/oauth2\/v2\.0\/token$/.test(endpoint)) state.dialog.values['auth.authorize_url'] = endpoint.replace(/\/token$/, '/authorize');
+          }
+          const issuer = compatibleSavedOAuthAppIssuer(state.dialog);
+          const matches = issuer ? savedOAuthAppsForIssuer(savedOAuthApps?.config, issuer).filter(app => app.has_secret && app.client_id === state.dialog.values['auth.client_id']) : [];
+          if (issuer && matches.length === 1) {
+            state.dialog.values['auth.saved_oauth_app'] = issuer;
+            state.dialog.values['auth.saved_oauth_app_id'] = matches[0]!.id;
+          }
+        }
+        captureDialogDraftBaseline(); render();
+      } catch (error) {
+        if (disposed || dialogGen !== 0 || state.dialog.stage !== 'closed') return;
+        state.error = error instanceof Error ? error.message : 'The permission repair could not be loaded.'; render();
+      }
     });
   }
 
@@ -9854,7 +10360,7 @@ export const mountConnectionsEnrollPanel = (
     });
   }
 
-  const hasInFlightWork = (): boolean => managedOAuthPanel.busy() || submitInFlight
+  function hasInFlightWork(): boolean { return managedOAuthPanel.busy() || submitInFlight || authenticationManagementPreparing
     || pendingOAuth !== null
     || guideInFlight
     || credentialRotationActivityCheck !== null
@@ -9867,6 +10373,7 @@ export const mountConnectionsEnrollPanel = (
     || state.probeInFlight.size > 0
     || state.deleteConfirm?.deleting === true
     || state.engagementHealth.reprobing.size > 0;
+  }
 
   return {
     getState: () => state,
@@ -9892,6 +10399,7 @@ export const mountConnectionsEnrollPanel = (
       return true;
     },
     refresh: async () => {
+      void loadSavedOAuthApps();
       // Re-pull the send-from options too (a mail account may have been
       // enrolled elsewhere since mount); list settle drives the returned promise.
       void hydrateMailOptions();
@@ -9927,9 +10435,12 @@ export const mountConnectionsEnrollPanel = (
     setMcpPackInstallAudience: setMcpPackGrantAudience,
     dispose: () => {
       if (disposed) return;
+      retireDirectAuthenticationReview();
       disposed = true;
       signInGrid.dispose();
+      fileDownloadPicker.dispose();
       managedOAuthPanel.dispose();
+      oauthHelp.dispose();
       invalidateCredentialRotationSafeStopCheck();
       invalidateCredentialSafeStopAcknowledgement();
       if (

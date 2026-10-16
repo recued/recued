@@ -9,7 +9,8 @@
  *      body_html upgrades to `multipart/alternative`.
  *    - threading headers (In-Reply-To / References / Reply-To)
  *      flow into the RFC 5322 verbatim.
- *    - status mapping: 401/403 → MAIL_SEND_AUTH_FAILED,
+ *    - status mapping: 401/403 → MAIL_SEND_AUTH_FAILED (a 403 only for a
+ *      credential's reason; 429 and a quota 403 → MAIL_SEND_NETWORK_FAILED),
  *      4xx other → MAIL_SEND_RECIPIENT_INVALID,
  *      5xx → MAIL_SEND_NETWORK_FAILED.
  *    - 401 once → token refresh → retry succeeds.
@@ -355,7 +356,9 @@ describe('D-127 P1.3 — send() error taxonomy', () => {
   it('403 → MAIL_SEND_AUTH_FAILED (scope downgrade / permission revocation)', async () => {
     const log: SendCall[] = [];
     const fetcher = makeSendFetcher(
-      { status: 403, body: { error: { code: 403, message: 'insufficient scope' } } },
+      // Gmail's own shape for a missing scope: the reason names the credential.
+      { status: 403, body: { error: { code: 403, message: 'Request had insufficient authentication scopes.',
+        errors: [{ message: 'Insufficient Permission', domain: 'global', reason: 'insufficientPermissions' }] } } },
       log,
     );
     const provider = newSender({}, fetcher);
@@ -365,6 +368,20 @@ describe('D-127 P1.3 — send() error taxonomy', () => {
       expect.fail('expected MAIL_SEND_AUTH_FAILED');
     } catch (err) {
       expect((err as IngredientError).code).toBe('MAIL_SEND_AUTH_FAILED');
+    }
+  });
+
+  it('a throttled send is transient: 429, and a quota 403, not auth or a recipient', async () => {
+    for (const refusal of [
+      { status: 429, body: { error: { code: 429, message: 'Too many requests', errors: [{ reason: 'rateLimitExceeded' }] } } },
+      { status: 403, body: { error: { code: 403, message: 'User-rate limit exceeded', errors: [{ reason: 'userRateLimitExceeded' }] } } },
+    ]) {
+      const provider = newSender({}, makeSendFetcher(refusal, []));
+      assertSendCapable(provider);
+      const err = await provider.send(minimalMsg).then(() => null, (caught: unknown) => caught);
+      expect((err as IngredientError).code, String(refusal.status)).toBe('MAIL_SEND_NETWORK_FAILED');
+      // Refused, so nothing went: a fenced send may try again.
+      expect((err as IngredientError).details).toMatchObject({ status: refusal.status, not_sent: true });
     }
   });
 

@@ -189,7 +189,7 @@ describe('D-132 P5 — renderHousekeepingDetailDrawer', () => {
     expect(html).not.toContain('housekeeping-mcp-visibility-toggle');
   });
 
-  it('disables the Model pool radios while a write is in flight', () => {
+  it('marks pending Model pool radios unavailable while keeping them focusable', () => {
     const html = renderHousekeepingDetailDrawer({
       task: aiTask(),
       scopeRead: [],
@@ -201,9 +201,10 @@ describe('D-132 P5 — renderHousekeepingDetailDrawer', () => {
       writeError: null,
       now: NOW,
     });
-    // Three Model-pool radios; each carries a disabled attribute.
-    const matches = html.match(/<input[^>]*type="radio"[^>]*disabled/g) ?? [];
+    const matches = html.match(/<input[^>]*type="radio"[^>]*aria-disabled="true"/g) ?? [];
     expect(matches.length).toBe(3);
+    expect(html).toContain('aria-busy="true"');
+    expect(html).not.toMatch(/<input[^>]*\sdisabled(?:\s|=|\/?>)/);
   });
 
   it('renders the inline error block when a write failed', () => {

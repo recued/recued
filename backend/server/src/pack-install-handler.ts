@@ -1,3 +1,5 @@
+import { buildPackVendorPermissionReview, preparePackVendorPermissionReview } from './pack-vendor-permissions.js';
+import { createPackReconnectWorklist } from './pack-reconnect-worklist.js';
 /** D-145 PA10 follow-on — `packs.install` rpc handler.
  *
  *  Bulk-pack install over the Settings → Packs UI flow. Accepts a raw
@@ -194,6 +196,10 @@ export interface PackInstallBroadcastEmitter {
 }
 
 export interface PackInstallRpcDeps {
+  /** Read-only saved account metadata; never renews credentials or starts consent. */
+  getVendorPermissionConnections?: () => Promise<readonly import('@recued/contracts').ConnectionView[]>;
+  getVendorPermissionSourceId?(name: string): string | undefined;
+  getVendorPermissionSnapshot?(): string;
   /** D-320 slice 2j (ruling 16) — the connections a pack being installed shares
    *  with its sign-in (`sharedSignInConnections`), for the preview's
    *  `shared_connections` and to check an install's `also_connections`. Absent
@@ -382,6 +388,7 @@ export interface PackInstallRpcDeps {
 }
 
 type PacksInstallArgs = {
+  vendor_permission_consent?: import('@recued/contracts').PackVendorPermissionConsent;
   manifest: unknown;
   granted_permissions: ReadonlyArray<string>;
   /** D-182 §7.1 — the install grant dialog's selection (Access × Scope) for a
@@ -431,7 +438,22 @@ type InternalInstallContext = {
   visiting: Set<string>;
   installed: Set<string>;
   recipeKeysByPack: Map<string, ReadonlySet<string>>;
+  checkVendorPermissions?: (manifest: BulkPackManifest) => Promise<boolean>;
 };
+
+const assertVendorPermissionConsent = (method: string, value: unknown): void => {
+  if (value === undefined) return;
+  if (value === null || typeof value !== 'object' || Array.isArray(value)
+    || Object.keys(value).sort().join(',') !== 'fingerprint,reconnect_later'
+    || !('fingerprint' in value) || typeof value.fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(value.fingerprint)
+    || !('reconnect_later' in value) || typeof value.reconnect_later !== 'boolean') {
+    throw new RpcError('bad_request', `${method}: vendor_permission_consent must carry a SHA-256 fingerprint and reconnect_later boolean`);
+  }
+};
+
+const staleVendorPermissionReview = (): BulkPackInstallResultLike => dependencyPreflightFailure(
+  'review_stale', 'Vendor permissions or saved connections changed. Refresh the permission review before installing.',
+);
 
 const INSTALL_SCOPE_ERROR =
   'install_scope must carry access plus either legacy scope or the D-196 audience checklist';
@@ -917,6 +939,7 @@ const parsePacksInstallArgs = (args: PacksInstallArgs): { manifest: BulkPackMani
     );
   }
   assertAlsoConnections('packs.install', args.also_connections);
+  assertVendorPermissionConsent('packs.install', args.vendor_permission_consent);
   assertDependencyInstallScopes('packs.install', args.dependency_install_scopes);
   assertMailTemplateChoices('packs.install', args.mail_template_choices);
   if (args.expected_manifest_hash !== undefined
@@ -1290,6 +1313,7 @@ const installSinglePack = async (
     omitRecipeKeys?: ReadonlySet<string>;
     verifiedPublisher?: string;
     recordsReviewFence?: RecordsUpdateReviewFence;
+    checkVendorPermissions?: (manifest: BulkPackManifest) => Promise<boolean>;
   } = {},
 ): Promise<{ result: BulkPackInstallResultLike }> => {
   const { manifest } = parsePacksInstallArgs(requestArgs);
@@ -1668,6 +1692,12 @@ const installSinglePack = async (
       ? []
       : [[entry.recipe.recipe.recipe_id, deps.recipeStore.get(entry.recipe.recipe.recipe_id)] as const]),
   );
+  // Resolve shared accounts before the fence too; this lookup can await IO.
+  const alsoConnections = canProvisionComposition && !recordsComposition
+    ? await sharedAlsoConnections(deps, args, manifest) : [];
+  if (options.checkVendorPermissions && !await options.checkVendorPermissions(manifest)) {
+    return { result: staleVendorPermissionReview() };
+  }
   let recordsAtomic = false;
   let result: BulkPackInstallResultLike;
   if (recordsComposition) {
@@ -1815,7 +1845,6 @@ const installSinglePack = async (
     // Only by-ref `ingredient` contents become marketplace inventory rows; the
     // composition catalog is recorded by the provisioner with its own kind.
     const byRefContents = plan.contents.filter((c) => c.type === 'ingredient');
-    const alsoConnections = await sharedAlsoConnections(deps, args, manifest);
     const provisioned = provisionPackCompositionForBulkInstall(
       {
         // Non-null by `canProvisionComposition` (all three checked present).
@@ -2316,6 +2345,7 @@ const handlePacksInstallInternal = async (
     omitRecipeKeys: dependencyRecipeKeys,
     ...(verifiedPublisher !== undefined ? { verifiedPublisher } : {}),
     ...(recordsReviewFence !== undefined ? { recordsReviewFence } : {}),
+    ...(context.checkVendorPermissions ? { checkVendorPermissions: context.checkVendorPermissions } : {}),
   });
   context.visiting.delete(manifest.slug);
   if (!ownInstall.result.ok) {
@@ -2788,10 +2818,22 @@ export const handlePacksInstall = async (
   if (missingPacks !== undefined && missingPacks.length > 0) {
     return { result: missingPacksRefusal(missingPacks) };
   }
+  const preparedVendorPermissions = await preparePackVendorPermissionReview(deps, installTouchedManifests(deps, manifest), manifest);
+  const vendorPermissions = preparedVendorPermissions?.review;
+  if (vendorPermissions && (vendorPermissions.changes.length > 0 || !vendorPermissions.resolved)) {
+    const consent = args.vendor_permission_consent;
+    if (!consent || consent.fingerprint !== vendorPermissions.fingerprint) {
+      return { result: staleVendorPermissionReview() };
+    }
+    if (consent.reconnect_later !== true) {
+      return { result: dependencyPreflightFailure('permission_denied', 'Review vendor permissions and choose whether to install and reconnect later.') };
+    }
+  }
   const { result } = await handlePacksInstallInternal(
     deps,
     args,
-    { visiting: new Set(), installed: new Set(), recipeKeysByPack: new Map() },
+    { visiting: new Set(), installed: new Set(), recipeKeysByPack: new Map(),
+      ...(preparedVendorPermissions ? { checkVendorPermissions: preparedVendorPermissions.checkBeforeWrite } : {}) },
     effectiveVerifiedPublisher,
     recordsReviewFence,
   );
@@ -2850,6 +2892,7 @@ export const defaultMarketplaceFetch: typeof globalThis.fetch = async (input, in
 };
 
 type PacksInstallBySlugArgs = {
+  vendor_permission_consent?: PacksInstallArgs['vendor_permission_consent'];
   slug: string;
   granted_permissions: ReadonlyArray<string>;
   /** Exact manifest rendered by `packs.resolveBySlug`; mandatory when this
@@ -3194,6 +3237,7 @@ export const installPackBySlug = async (
   if (typeof args.slug !== 'string' || args.slug.length === 0) {
     throw new RpcError('bad_request', 'packs.installBySlug: slug must be a non-empty string');
   }
+  assertVendorPermissionConsent('packs.installBySlug', args.vendor_permission_consent);
   if (
     !Array.isArray(args.granted_permissions)
     || !args.granted_permissions.every((p): p is string => typeof p === 'string')
@@ -3375,6 +3419,7 @@ export const installPackBySlug = async (
       },
       {
         manifest,
+        ...(args.vendor_permission_consent ? { vendor_permission_consent: args.vendor_permission_consent } : {}),
         granted_permissions: args.granted_permissions,
         ...(args.install_scope !== undefined ? { install_scope: args.install_scope } : {}),
         ...(args.chosen_connection !== undefined ? { chosen_connection: args.chosen_connection } : {}),
@@ -3884,6 +3929,7 @@ export const installRecipeBySlug = async (
 };
 
 type PackInstallMethods =
+  | 'packs.reconnect_later'
   | 'packs.install'
   | 'packs.install_preview'
   | 'packs.installBySlug'
@@ -3894,12 +3940,15 @@ export const makePackInstallHandlers = (
   deps: PackInstallRpcDeps | undefined,
 ): HandlerSlice<ServerRpcRegistry, PackInstallMethods, WsClient> | undefined => {
   if (!deps) return undefined;
+  const reconnectLater = createPackReconnectWorklist(deps);
   return {
     methods: [
+      'packs.reconnect_later',
       'packs.install', 'packs.install_preview', 'packs.installBySlug',
       'packs.resolveBySlug', 'recipe.installBySlug',
     ],
     handlers: {
+      'packs.reconnect_later': async args => reconnectLater(args),
       'packs.install': async (args) =>
         handlePacksInstall(
           deps,
@@ -3924,6 +3973,7 @@ export const makePackInstallHandlers = (
           : deps;
         // D-320 slice 2j — the connections its sign-in shares, offered ticked.
         const sharedConnections = await deps.sharedSignInConnections?.(manifest).catch(() => []) ?? [];
+        const vendorPermissions = await buildPackVendorPermissionReview(previewDeps, installTouchedManifests(previewDeps, manifest), manifest);
         const preview = await buildPackInstallPreview(manifest, {
           recipeStore: previewDeps.recipeStore,
           ...(previewDeps.resolveMarketplaceRecipe
@@ -4012,6 +4062,7 @@ export const makePackInstallHandlers = (
         return {
           resolved: preview.resolved,
           hidden_count: preview.hidden_count,
+          ...(vendorPermissions ? { vendor_permissions: vendorPermissions } : {}),
           ...(sharedConnections.length > 0 ? { shared_connections: sharedConnections } : {}),
           ...(webhookPlan !== undefined ? { webhook_plan: webhookPlan } : {}),
           ...(dependencyRequires !== undefined ? { dependency_requires: dependencyRequires } : {}),

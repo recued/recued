@@ -123,6 +123,7 @@ import {
 import { makeServerTimeZoneHandlers } from './server-timezone-handler.js';
 import { makeNotificationKindPolicyHandlers } from './notification-kind-policy-handler.js';
 import { makeQuietHoursHandlers } from './quiet-hours-handler.js';
+import { makeReminderHandlers } from './reminders/reminder-rpc-handler.js';
 import {
   makeHostnameHandlers,
   type HostnameRpcDeps,
@@ -1139,6 +1140,9 @@ export interface AttachWebSocketOptions {
   notificationKindPolicyDeps?: import('./notification-kind-policy-handler.js').NotificationKindPolicyRpcDeps;
   /** D-269 step 3 — `notification.quiet_hours.*`. */
   quietHoursDeps?: import('./quiet-hours-handler.js').QuietHoursRpcDeps;
+  /** D-324 — `reminder.*`, the Data → Reminders list. `reminder.` is an MCP
+   *  reserved prefix. Absent → those methods return `not_configured`. */
+  reminderDeps?: { dispatchers: import('./reminders/reminder-service.js').ReminderDispatchers };
   /** Supervision feature — owner-only `supervision.*` rpc deps (cli-daemon
    *  keep-alive). `supervision.` is in `MCP_RESERVED_RPC_PREFIXES`. Absent →
    *  those methods return `not_configured` (db-less harnesses). */
@@ -1556,6 +1560,7 @@ const buildWsBinding = (
     serverTimeZoneDeps,
     notificationKindPolicyDeps,
     quietHoursDeps,
+    reminderDeps,
     supervisionDeps,
     hostnameDeps,
     networkDeps,
@@ -1912,6 +1917,8 @@ const buildWsBinding = (
     makeNotificationKindPolicyHandlers(notificationKindPolicyDeps),
     // D-269 step 3 — the one quiet-hours window.
     makeQuietHoursHandlers(quietHoursDeps),
+    // D-324 — the owner's reminders list.
+    makeReminderHandlers(reminderDeps),
     // D-152 — Settings → Reachability hostname registry CRUD +
     // ownership-proof transitions. Same store as the listener SNI
     // binding lookup, so a verified/enabled RPC mutation is the state

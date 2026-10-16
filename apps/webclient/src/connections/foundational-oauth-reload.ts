@@ -7,7 +7,7 @@
  * distinguish a clean restart from an exchange whose server outcome must be
  * checked first. */
 
-import type { OAuthAppIssuer } from '@recued/contracts';
+import { OAUTH_APP_ID, type OAuthAppIssuer } from '@recued/contracts';
 import type { AccountFormValues, AccountLaneId } from '@recued/ui-shared';
 
 export type FoundationalOAuthReloadPhase =
@@ -51,6 +51,7 @@ const SAFE_VALUE_KEYS = new Set([
   'name',
   'send_enabled',
   'calendar_enabled',
+  'oauth_app_id',
 ]);
 
 /** Defense-in-depth allowlist shared by in-memory continuity and the durable
@@ -60,6 +61,7 @@ export const retainFoundationalOAuthAccountValues = (
 ): AccountFormValues => {
   const out: AccountFormValues = {};
   for (const [key, value] of Object.entries(values)) {
+    if (key === 'oauth_app_id' && !OAUTH_APP_ID.test(value)) continue;
     if (SAFE_VALUE_KEYS.has(key)) out[key] = value;
   }
   return out;

@@ -1,3 +1,6 @@
+import { createCollectionAuthenticationService } from '../collection-authentication-service.js';
+import { createCollectionOAuthAppSwitchService } from '../collection-oauth-app-switch.js';
+import { createOAuthPermissionCleanupService } from '../oauth-permission-cleanup.js';
 import { dirname, resolve } from 'node:path';
 
 import type Database from 'better-sqlite3';
@@ -40,6 +43,16 @@ import {
   type LateEmailAnswerHook,
 } from '../composition/bin/wire-inbound-email-answer.js';
 import { createMailFactAnnouncer } from '../mail-facts/announcer.js';
+import { createMailChatDoorStore, type MailChatDoorStore } from '../storage/mail-chat-door-store.js';
+import { createMailChatSentProof, type MailChatSentProof } from '../mail-chat-door/sent-proof.js';
+import { createMailChatConversations, type MailChatConversations } from '../mail-chat-door/conversations.js';
+import {
+  createMailChatConversationMail,
+  MAIL_CHAT_OWNER_ROWS_SQL,
+  type MailChatConversationMail,
+} from '../mail-chat-door/conversation-mail.js';
+import { collectionTableName, setCollectionReaderExclusion } from '../collections/table.js';
+import { createMailSendClaimStore } from '../storage/mail-send-claim-store.js';
 import { createMailFactWriter, sweepGoneEmails, type MailFactWriter } from '../mail-facts/fact-writer.js';
 import { createHeldMailFactEvents, type HeldMailFactEvents } from '../mail-facts/held-events.js';
 import { createInstanceStore } from '../collections/instance-store.js';
@@ -64,7 +77,9 @@ import type { VaultStateBus } from '../vault-state-bus.js';
 import type { ManifestRegistry } from '../manifest-loader.js';
 import type { OAuthClientConfigDeps } from '../oauth-client-config-handler.js';
 import { createOAuthAppConfigStore } from '../oauth-app-config-store.js';
-import type { OAuthAppConfigHandlerDeps } from '../oauth-app-config-handler.js';
+import { oauthAppUses, type OAuthAppConfigHandlerDeps } from '../oauth-app-config-handler.js';
+import { createOAuthPermissionService } from '../oauth-permission-consolidation.js';
+import { createOAuthAppUsageService } from '../oauth-app-usage-service.js';
 import type { OAuthProviderConfig } from '../collections/mail/oauth.js';
 import { oauthAppIssuerForProvider, resolveServerTimeZone } from '@recued/contracts';
 import { createServerTimeZoneStore } from '../storage/server-timezone-store.js';
@@ -97,6 +112,9 @@ type WatcherDispatcher = ReturnType<typeof createWatcherDispatcher>;
 type WorkEntityDispatchers = ReturnType<typeof createWorkEntityDispatchers>;
 
 export interface ComposeCollectionContextOptions {
+  oauthAppNativePermissionNeeds?: (row: import('../collections/instance-store.js').CollectionInstanceRecord) => import('@recued/contracts').OAuthPermissionNeeds;
+  oauthAppPermissionNeeds?: (name: string) => import('@recued/contracts').OAuthPermissionNeeds;
+  oauthAppConnectionUses?: (name: string) => { uses: readonly import('@recued/contracts').ManagedOAuthConnectionUse[]; complete: boolean };
   managedOAuthConsumers?: import('../managed-oauth-consumers.js').ManagedOAuthConsumers;
   db: Database.Database | undefined;
   dbPath: string;
@@ -141,6 +159,8 @@ export interface ComposeCollectionContextOptions {
 }
 
 export interface CollectionContext extends ConnectionNotificationBundle {
+  collectionAuthentication?: import('../collection-authentication-service.js').CollectionAuthenticationService;
+  collectionOAuthAppSwitch?: import('../collection-oauth-app-switch.js').CollectionOAuthAppSwitchService;
   inboundFileCollection: InboundFileCollection | undefined;
   // D-172 resumable uploads — the webclient upload service (chunk-core + finalize
   // policy). Present iff `inboundFileCollection` + CAS are wired; backs the
@@ -176,6 +196,30 @@ export interface CollectionContext extends ConnectionNotificationBundle {
    *  notification block exists, and until then it keeps the approval-tagged
    *  mail a boot scan reads. */
   emailAnswerHook: LateEmailAnswerHook;
+  /** D-318 step 1 — the email chat door's settings, which name the chat mailbox.
+   *  ONE store per server: the mail stack, the trigger dispatcher and the rpc
+   *  read this one. Undefined on a dbless boot. */
+  mailChatDoor: MailChatDoorStore | undefined;
+  /** D-318 step 2 — proof (a): each message in the chat mailbox checked against
+   *  the owner's own Sent record. The mail stack records them as they land; the
+   *  listeners' composition binds the owner's notice and starts the checks,
+   *  once every mailbox is registered. Undefined on a dbless boot. */
+  mailChatProof: MailChatSentProof | undefined;
+  /** D-318 §4.13 — the door's conversations, Recued's own ids by Message-ID:
+   *  the proof asks whether a reply continues one (step 4), the turns record
+   *  each request in one (step 3). One store per server. Undefined on a dbless
+   *  boot. */
+  mailChatConversations: MailChatConversations | undefined;
+  /** D-318 step 5 — what in the owner's other mailboxes is the conversation
+   *  with the chat mailbox (answers, and the Sent copies of requests): left out
+   *  of contacts, mail facts, mail recipes and housekeeping, as the chat
+   *  mailbox's own mail is. Undefined on a dbless boot. */
+  mailChatConversationMail: MailChatConversationMail | undefined;
+  /** D-318 audit — did Recued send mail under this reconciliation id (its send
+   *  claims)? Only then is a message carrying one Recued's own: the mail facts
+   *  and the conversation leave out what this says, never what a header says.
+   *  Undefined on a dbless boot. */
+  isOwnSend: ((reconciliation_id: string) => boolean) | undefined;
   /** D-315 §6.3 — resolves once no AI call holding news waits on an email,
    *  with the events its answers told: a backfill that runs recipes waits
    *  for it before the next email. With no AI pass, at once. */
@@ -363,11 +407,11 @@ export const composeCollectionContext = (
    *  `not_configured`, which the Accounts UI renders as its setup step. */
   const resolveOAuthProviderConfig = (
     provider: 'gmail' | 'gcal' | 'graph',
-    tokenUrl: string,
+    tokenUrl: string, appId?: string,
   ): OAuthProviderConfig | null => {
     const issuer = oauthAppIssuerForProvider(provider);
-    const storedId = oauthAppConfigStore?.getClientId(issuer) ?? null;
-    const storedSecret = storedId ? oauthAppConfigStore!.getClientSecret(issuer) : null;
+    const storedId = oauthAppConfigStore?.getClientId(issuer, appId) ?? null;
+    const storedSecret = storedId ? oauthAppConfigStore!.getClientSecret(issuer, appId) : null;
     // A stored issuer is used ONLY when BOTH id + secret are present (Codex F2):
     // a half-written row (id-without-secret — only reachable if a write failed)
     // must not post a secretless code-exchange against the real provider. The
@@ -393,8 +437,8 @@ export const composeCollectionContext = (
     isVaultUnlocked,
     // Per-use credential resolver (store-only). The calendar factories always
     // register; this decides availability at enroll + on each refresh.
-    resolveOAuthConfig: (adapter) =>
-      resolveOAuthProviderConfig(adapter, adapter === 'gcal' ? GCAL_TOKEN_URL : GRAPH_CAL_TOKEN_URL),
+    resolveOAuthConfig: (adapter, appId) =>
+      resolveOAuthProviderConfig(adapter, adapter === 'gcal' ? GCAL_TOKEN_URL : GRAPH_CAL_TOKEN_URL, appId),
   });
 
   // D-315 — the fact writer: the mail ingest reads every upsert through it and
@@ -434,6 +478,51 @@ export const composeCollectionContext = (
     : undefined;
 
   const emailAnswerHook = createLateEmailAnswerHook();
+  const mailChatDoor = db !== undefined ? createMailChatDoorStore(db) : undefined;
+  const mailChatConversations = db !== undefined ? createMailChatConversations(db) : undefined;
+  // D-318 audit — every reader of the owner's mail that lists the mail tables
+  // (housekeeping producers, the contact backfill, the CRM twin join) leaves out
+  // the chat mailbox's table — its mail is the conversation, strangers' too —
+  // and, in the owner's other mailboxes, the rows marked as the conversation.
+  if (db !== undefined && mailChatDoor !== undefined) {
+    setCollectionReaderExclusion(db, {
+      tables: (platform, table) => {
+        const chat = mailChatDoor.get().chat_mailbox;
+        return platform === 'mail' && chat !== null && table === collectionTableName('mail', chat);
+      },
+      rows: { mail: MAIL_CHAT_OWNER_ROWS_SQL },
+    });
+  }
+  // D-318 audit — what Recued itself sent: a reconciliation id its own send
+  // claims hold, never a header any sender can write.
+  const isOwnSend = db !== undefined
+    ? (() => {
+        const claims = createMailSendClaimStore(db);
+        return (reconciliation_id: string): boolean => claims.get(reconciliation_id) !== null;
+      })()
+    : undefined;
+  const mailChatConversationMail = mailChatDoor !== undefined
+    ? createMailChatConversationMail({
+        door: mailChatDoor,
+        mailbox: (slug) => collectionRegistry.get('mail', slug) as MailCollection | undefined,
+        ...(isOwnSend ? { isOwnAnswer: isOwnSend } : {}),
+      })
+    : undefined;
+  const mailChatProof = db !== undefined && mailChatDoor !== undefined
+    ? createMailChatSentProof({
+        db,
+        door: mailChatDoor,
+        ...(mailChatConversations ? { conversations: mailChatConversations } : {}),
+        mailboxes: () => collectionRegistry.list()
+          .filter((collection): collection is MailCollection => collection.platform === 'mail'),
+        ...(auditLog ? { auditLog } : {}),
+        isUnlocked: isVaultUnlocked,
+        log: (level, msg, data) => {
+          const fn = level === 'warn' ? console.warn : console.log;
+          fn(`[mail-chat] ${msg}`, data ?? '');
+        },
+      })
+    : undefined;
   const mailStack = composeMailBoot({
     ...(options.managedOAuthConsumers ? { managedOAuth: options.managedOAuthConsumers } : {}),
     db,
@@ -445,6 +534,19 @@ export const composeCollectionContext = (
     ...(mailFactWriter ? { mailFactWriter } : {}),
     // D-318 P23 — and checked for a proven reply to an emailed ask.
     emailAnswerHook: (msg, ctx) => emailAnswerHook.run(msg, ctx),
+    // D-318 step 1 — the chat mailbox's mail is the conversation: no contacts, no facts.
+    ...(mailChatDoor ? { isChatMailbox: (slug: string) => mailChatDoor.isChatMailbox(slug) } : {}),
+    // Step 5 — nor its answers and requests in the owner's other mailboxes.
+    ...(mailChatConversationMail ? { isChatConversationMail: mailChatConversationMail.isConversationMessage } : {}),
+    // The audit — Recued's own mail is known by its send claims.
+    ...(isOwnSend ? { isOwnSend } : {}),
+    // D-318 step 2 — and each message that lands in it recorded, to be proven
+    // the owner's by their own Sent record.
+    ...(mailChatProof ? { chatRequestHook: mailChatProof.onMessageStored } : {}),
+    // Step 4 — and its files recorded once stored, so its turn carries them.
+    ...(mailChatProof ? { chatFilesHook: mailChatProof.onMessageUpserted } : {}),
+    // The audit — a deleted mailbox is forgotten by the door.
+    ...(mailChatDoor ? { onMailboxDeleted: (slug: string) => { mailChatDoor.forgetMailbox(slug); } } : {}),
     gateRegistry,
     ...(accountStore ? { accountStore } : {}),
     isVaultUnlocked,
@@ -456,8 +558,8 @@ export const composeCollectionContext = (
     getCollectionRegistry: () => collectionRegistry,
     // Per-use credential resolver (store-only), for the initial exchange
     // (enroll) + token refresh (via buildProvider's per-use resolver).
-    resolveOAuthConfig: (provider) =>
-      resolveOAuthProviderConfig(provider, provider === 'gmail' ? GMAIL_TOKEN_URL : GRAPH_TOKEN_URL),
+    resolveOAuthConfig: (provider, appId) =>
+      resolveOAuthProviderConfig(provider, provider === 'gmail' ? GMAIL_TOKEN_URL : GRAPH_TOKEN_URL, appId),
     // D-172 P2 — lazy file-read deps so MailCollection.send can resolve
     // outbound `attachments` refs into bytes via the Gateway-gated
     // file.read (handleFileRead). Lazy because `collectionRegistry` is
@@ -599,7 +701,15 @@ export const composeCollectionContext = (
   // on a db-less boot (no store) → that rpc slice stays unwired. The store is
   // the only credential source, so the handler derives `source` from it alone.
   const oauthAppConfigDeps: OAuthAppConfigHandlerDeps | undefined = oauthAppConfigStore
-    ? { store: oauthAppConfigStore }
+    ? { ...(db && connectionStore ? { permissions: createOAuthPermissionService({ apps: oauthAppConfigStore, instances: createInstanceStore({ db }),
+      rows: () => connectionStore.list(), ...(accountStore ? { accountStore } : {}), ...(keys ? { key: keys.keyProvider('connection') } : {}),
+      ...(options.oauthAppConnectionUses ? { connectionUses: options.oauthAppConnectionUses } : {}),
+      ...(options.oauthAppPermissionNeeds ? { requirements: options.oauthAppPermissionNeeds } : {}),
+      ...(options.oauthAppNativePermissionNeeds ? { nativeRequirements: options.oauthAppNativePermissionNeeds } : {}) }) } : {}),
+      store: oauthAppConfigStore, uses: (issuer, id) => oauthAppUses(createInstanceStore({ db: db! }), issuer, id),
+      ...(db && connectionStore ? { usage: createOAuthAppUsageService({ db, apps: oauthAppConfigStore, connections: connectionStore,
+        instances: createInstanceStore({ db }), ...(keys ? { key: keys.keyProvider('connection') } : {}),
+        ...(options.oauthAppConnectionUses ? { connectionUses: options.oauthAppConnectionUses } : {}) }) } : {}) }
     : undefined;
 
   const startCollectionAdapters = async (): Promise<void> => {
@@ -656,6 +766,18 @@ export const composeCollectionContext = (
     }
   };
 
+  const collectionAuthentication = db && mailStack && calendarStack && options.managedOAuthConsumers?.authentication
+    ? createCollectionAuthenticationService({ db, instances: createInstanceStore({ db }), sources: options.managedOAuthConsumers.authentication,
+      mail: mailStack.enrollDeps, calendar: calendarStack.enrollDeps }) : undefined;
+  const collectionOAuthAppSwitch = db && mailStack && calendarStack && oauthAppConfigStore && accountStore
+    ? createCollectionOAuthAppSwitchService({ db, instances: createInstanceStore({ db }), apps: oauthAppConfigStore,
+      accountStore, mail: mailStack.enrollDeps, calendar: calendarStack.enrollDeps }) : undefined;
+  if (db && mailStack && calendarStack && oauthAppConfigStore && accountStore && keys && oauthAppConfigDeps?.permissions) {
+    oauthAppConfigDeps.cleanup = createOAuthPermissionCleanupService({ db, instances: createInstanceStore({ db }), apps: oauthAppConfigStore,
+      permissions: oauthAppConfigDeps.permissions, accountStore, mail: mailStack.enrollDeps, calendar: calendarStack.enrollDeps,
+      key: keys.keyProvider('server-data'), ...(connectionStore ? { connections: connectionStore, connectionKey: keys.keyProvider('connection') } : {}) });
+  }
+
   return {
     inboundFileCollection,
     uploadService,
@@ -664,9 +786,16 @@ export const composeCollectionContext = (
     uploadStagingRegistry,
     calendarStack,
     mailStack,
+    ...(collectionAuthentication ? { collectionAuthentication } : {}),
+    ...(collectionOAuthAppSwitch ? { collectionOAuthAppSwitch } : {}),
     mailFactWriter,
     mailFactTriggerRoom,
     emailAnswerHook,
+    mailChatDoor,
+    mailChatProof,
+    mailChatConversations,
+    mailChatConversationMail,
+    isOwnSend,
     mailFactAiSettled: (email: MailFactEmailRef) => mailFactAi?.untilSettled(email) ?? Promise.resolve(0),
     mailFactEvents,
     bootEvents,

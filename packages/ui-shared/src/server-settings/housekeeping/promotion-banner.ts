@@ -34,10 +34,13 @@ export interface HousekeepingPromotionBannerProps {
   /** Active suggestions keyed by topic — one banner per entry,
    *  rendered in object insertion order. Empty object → no output. */
   suggestions: Record<string, HousekeepingPromotionSuggestion>;
-  /** Per-topic in-flight flag; disables both buttons for that topic
+  /** Per-topic in-flight flag; marks both buttons aria-disabled for that topic
    *  while a `housekeeping.trust.{write,dismiss_promotion}` rpc is
    *  pending. */
   writing: Record<string, boolean>;
+  /** The shared trust-row write lock also covers Run policy and Model pool.
+   *  Block banner activation while either setting is saving for this topic. */
+  trustWriting?: Record<string, boolean>;
   /** Per-topic last write error. Cleared on next successful write. */
   writeError: Record<string, string>;
 }
@@ -51,9 +54,11 @@ const renderOne = (
   suggestion: HousekeepingPromotionSuggestion,
   writing: boolean,
   writeError: string | undefined,
+  trustWriting: boolean,
 ): string => {
   const { topic, manual_run_count, estimated_idle_cycle_cost_tokens } = suggestion;
   const errorBlock = writeError ? inlineError(writeError) : '';
+  const busy = writing || trustWriting;
   return `
     <div class="housekeeping-promotion-banner"
          role="status"
@@ -75,7 +80,8 @@ const renderOne = (
           size: 'sm',
           action: 'housekeeping-promotion-dismiss',
           data: { topic },
-          disabled: writing,
+          ariaDisabled: busy,
+          ariaBusy: busy,
         })}
         ${button({
           label: writing ? 'Promoting…' : 'Promote',
@@ -83,7 +89,8 @@ const renderOne = (
           size: 'sm',
           action: 'housekeeping-promotion-promote',
           data: { topic },
-          disabled: writing,
+          ariaDisabled: busy,
+          ariaBusy: busy,
         })}
       </div>
     </div>
@@ -103,6 +110,7 @@ export const renderHousekeepingPromotionBanner = (
             props.suggestions[topic]!,
             props.writing[topic] ?? false,
             props.writeError[topic],
+            props.trustWriting?.[topic] ?? false,
           ),
         )
         .join('')}

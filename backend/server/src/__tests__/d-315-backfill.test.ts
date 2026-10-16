@@ -21,6 +21,7 @@ import { createMailFactAiRunner, type MailFactAiRunner } from '../mail-facts/ai-
 import { createMailFactBackfill, type MailFactBackfill } from '../mail-facts/backfill.js';
 import { createMailFactWriter, type MailFactWriteInput, type MailFactWriter } from '../mail-facts/fact-writer.js';
 import { createMailFactIngest } from '../mail-facts/mail-ingest.js';
+import { mailFactScreensRpcDeps } from '../mail-facts/screens-wiring.js';
 import { createBlobStore, type BlobStore } from '../storage/blob-store.js';
 import { createMailFactStore, type MailFactStore } from '../storage/mail-fact-store.js';
 import { createEventTriggerDispatcher } from '../triggers/dispatcher.js';
@@ -155,6 +156,55 @@ const definition: MailTemplateDefinition = {
 };
 
 describe('a backfill (§6.3)', () => {
+  it('D-318 audit — leaves out the email chat door’s conversation in the owner’s mailbox, as the ingest does', async () => {
+    const box = await mailbox([ups('m1', 3), ups('m2', 4)]);
+    const conversation = recordIdOf(box, 'm2');
+    const template = store.createTemplate({ definition, origin: { kind: 'owner' } });
+    const backfill = createMailFactBackfill({
+      store, writer, mailboxes: () => [box], blobs, retentionDays: () => 90, now: () => NOW, mintId: () => 'mbf_1',
+      skip: (record) => record.record_id === conversation,
+    });
+    backfill.start({ template_id: template.template_id, days: 30 });
+    await backfill.settled();
+    expect(written).toEqual([recordIdOf(box, 'm1')]);
+  });
+
+  it('D-318 audit — leaves out what Recued sent by its send claims; the same header with none behind it is read', async () => {
+    const box = await mailbox([
+      ups('m1', 3, { reconciliation_id: 'rcd_sent_by_recued_0001' }),
+      ups('m2', 4, { reconciliation_id: 'rcd_forged_by_anyone_01' }),
+    ]);
+    const template = store.createTemplate({ definition, origin: { kind: 'owner' } });
+    const backfill = createMailFactBackfill({
+      store, writer, mailboxes: () => [box], blobs, retentionDays: () => 90, now: () => NOW, mintId: () => 'mbf_1',
+      isOwnSend: (id) => id === 'rcd_sent_by_recued_0001',
+    });
+    backfill.start({ template_id: template.template_id, days: 30 });
+    await backfill.settled();
+    expect(written).toEqual([recordIdOf(box, 'm2')]);
+  });
+
+  it('D-318 audit — and the screens’ own backfill is handed both checks', async () => {
+    const box = await mailbox([ups('m1', 3), ups('m2', 4), ups('m3', 5, { reconciliation_id: 'rcd_sent_by_recued_0001' })]);
+    const template = store.createTemplate({ definition, origin: { kind: 'owner' } });
+    const deps = mailFactScreensRpcDeps({
+      store,
+      recipeStore: { get: () => undefined } as never,
+      writer,
+      mail: {
+        registry: { list: () => [box], get: (platform: string, slug: string) => (platform === 'mail' && slug === 'work' ? box : undefined) } as never,
+        instances: createInstanceStore({ db }),
+        blobs,
+      },
+      isConversationMail: (fields) => fields.rfc_message_id === 'm2@ups.example',
+      isOwnSend: (id) => id === 'rcd_sent_by_recued_0001',
+      now: () => NOW,
+    });
+    deps.backfill!.start({ template_id: template.template_id, days: 30 });
+    await deps.backfill!.settled();
+    expect(written).toEqual([recordIdOf(box, 'm1')]);
+  });
+
   it('reads the period’s mail that meets the conditions, oldest first, storing facts and firing nothing', async () => {
     const box = await mailbox([
       ups('m1', 3),

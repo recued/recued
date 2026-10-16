@@ -833,3 +833,26 @@ describe('P2/F2 change feed route seam', () => {
     route.dispose();
   });
 });
+
+
+describe('Exact Records handoffs from customer work',()=>{
+  const mount=(missing?:'owner'|'kind'|'record')=>{
+    const root=fakeElement();const requested=namespace('publisher-a');
+    const get=vi.fn(async()=>({record:missing==='record'?null:{...record,id:'picked/1'},diagnostics:null}));
+    const search=vi.fn(async()=>({records:[{...record,id:'distractor'}]}));
+    const route=bootstrapDataRoute({root:root as unknown as HTMLElement,document:fakeDocument(),initialTab:'records',
+      initialRecordsTarget:{owner:requested.owner,entity:missing==='kind'?'invoice':'job',id:'picked/1'},
+      recordsNamespaceListCaller:async()=>({namespaces:missing==='owner'?[namespace('publisher-b')]:[namespace('publisher-b'),requested],global_quota:globalQuota}),
+      recordsKindListCaller:async()=>({kinds:[{kind:'job',rows:1,payload_bytes:42}]}),recordsSearchCaller:search,recordsGetCaller:get});
+    return{root,route,get,search,requested};
+  };
+  it('fetches the requested record directly in its exact owner and kind',async()=>{
+    const h=mount();await h.route.whenLoaded();expect(h.get).toHaveBeenCalledWith({owner:h.requested.owner,entity:'job',id:'picked/1'});expect(h.root.children[0]!.innerHTML).toContain('picked/1');h.route.dispose();
+  });
+  it.each(['owner','kind'] as const)('keeps a missing %s explicit instead of opening unrelated data',async missing=>{
+    const h=mount(missing);await h.route.whenLoaded();expect(h.get).not.toHaveBeenCalled();expect(h.search).not.toHaveBeenCalled();expect(h.root.children[0]!.innerHTML).toContain(missing==='owner'?'The Pack you picked is gone':'requested Records kind is unavailable');h.route.dispose();
+  });
+  it('does not replace a missing record with a search result',async()=>{
+    const h=mount('record');await h.route.whenLoaded();expect(h.get).toHaveBeenCalledTimes(1);expect(h.root.children[0]!.innerHTML).toContain('This record no longer exists');h.route.dispose();
+  });
+});

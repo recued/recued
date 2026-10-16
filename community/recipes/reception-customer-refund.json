@@ -1,0 +1,48 @@
+{
+  "recipe_id": "reception-customer-refund",
+  "version": 1,
+  "chat_exposed": false,
+  "ttl": 0,
+  "metadata": {
+    "name": "Review a customer refund",
+    "description": "Use \u201cReview a customer refund\u201d in Recued. Issue a credit against paid money, or record a refund made outside Recued. Review the exact amount, linked payment and bill balance first.",
+    "author": "recued-core",
+    "supported_platforms": [],
+    "recipe_bundle": "recued-core/reception-approval",
+    "tags": [
+      "pack:reception",
+      "payments"
+    ],
+    "budget_ms": 30000
+  },
+  "variables": {
+    "expected_plan_hash": {
+      "label": "Reviewed refund digest",
+      "type": "string"
+    },
+    "summary": {
+      "label": "Credit, refund and balance change",
+      "type": "string"
+    },
+    "action_id": {
+      "label": "Saved refund review",
+      "type": "string"
+    }
+  },
+  "steps": [
+    {
+      "id": "refund",
+      "op": "core.work-entity.customer-refund.apply",
+      "args": {
+        "action_id": "{{config.action_id}}",
+        "expected_plan_hash": "{{config.expected_plan_hash}}",
+        "summary": "{{config.summary}}"
+      }
+    }
+  ],
+  "output": {
+    "render": []
+  },
+  "prefetch_steps": [],
+  "requires": []
+}

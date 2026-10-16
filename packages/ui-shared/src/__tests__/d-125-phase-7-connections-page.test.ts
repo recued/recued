@@ -80,11 +80,12 @@ describe('D-125 P7.1 — list view', () => {
     expect(html).toContain('data-action="connections-delete"');
   });
 
-  it('marks per-row probe in flight as "Probing…" and disables the button', () => {
+  it('keeps the testing action focusable while exposing its busy state', () => {
     const html = renderConnectionsPage(
       baseState({ probeInFlight: new Set(['api/hubspot']) }),
     );
-    expect(html).toContain('Probing…');
+    expect(html).toContain('Testing…');
+    expect(html).toContain('aria-busy="true"');
   });
 
   it('shows + Add Connection button on the list view', () => {
@@ -816,7 +817,7 @@ describe('D-125 P7.1 — dialog stages', () => {
       expect(html).toContain(`<option value="${mode}" selected>${option}</option>`);
       expect(html).toContain(`${portal} (new tab) <span aria-hidden="true">↗</span>`);
       expect(html).toContain('target="_blank" rel="noopener noreferrer"');
-      expect(html).toContain('What Save and probe checks:');
+      expect(html).toContain('What Save and test checks:');
       expect(html).toContain('arrive or get read');
       expect(html).toContain(`data-field-key="${localField}"`);
       expect(html).not.toContain('data-field-key="auth.type"');
@@ -2450,7 +2451,7 @@ describe('D-129 P1.3 — vendor-flavored form', () => {
       }),
     );
     expect(html).toContain('Not saved yet');
-    expect(html).toContain('Save and probe');
+    expect(html).toContain('Save and test');
     // The probe's job, named as distinct from the exchange's.
     expect(html).toContain('the token actually reaches');
     expect(html).toContain('https://api.hubapi.com');

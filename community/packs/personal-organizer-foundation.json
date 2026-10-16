@@ -3,8 +3,8 @@
   "slug": "personal-organizer-foundation",
   "publisher": "recued-core",
   "name": "Personal Organizer Foundation",
-  "description": "Use Personal Organizer Foundation in Recued for tasks, commitments, projects, and notes. It includes 9 ready-to-run workflows.",
-  "version": 8,
+  "description": "Use Personal Organizer Foundation in Recued for tasks, commitments, projects, notes, reminders, and saving files into folders. It includes 13 ready-to-run workflows.",
+  "version": 9,
   "bundled": true,
   "recipes": [],
   "contents": [
@@ -53,18 +53,42 @@
     {
       "type": "recipe",
       "slug": "remind-me-of",
+      "version": 2,
+      "visible": true
+    },
+    {
+      "type": "recipe",
+      "slug": "list-reminders",
       "version": 1,
       "visible": true
     },
     {
       "type": "recipe",
-      "slug": "reminder-due-notifier",
+      "slug": "change-reminder",
+      "version": 1,
+      "visible": true
+    },
+    {
+      "type": "recipe",
+      "slug": "cancel-reminder",
+      "version": 1,
+      "visible": true
+    },
+    {
+      "type": "recipe",
+      "slug": "list-folders",
+      "version": 1,
+      "visible": true
+    },
+    {
+      "type": "recipe",
+      "slug": "save-file-to-folder",
       "version": 1,
       "visible": true
     }
   ],
   "requires": ["install_bulk_pack", "notification_send"],
-  "tags": ["pack:personal-organizer", "foundation", "d-145", "tasks", "commitments", "projects", "notes", "calendar", "mail"],
+  "tags": ["pack:personal-organizer", "foundation", "d-145", "tasks", "commitments", "projects", "notes", "reminders", "calendar", "mail"],
   "service_kind": "workflow",
   "pack_kind": "recipe_pack"
 }

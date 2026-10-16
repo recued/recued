@@ -8,6 +8,11 @@
 
 import {
   getVendorProvider,
+  resolveVendorOAuthEndpoints,
+  savedOAuthAppIssuerForEndpoints,
+  savedOAuthAppRequestedScopes,
+  OAUTH_APP_ID,
+  type OAuthAppIssuer,
   isValidOAuthEndpointUrl,
   type ConnectionKind,
 } from '@recued/contracts';
@@ -99,6 +104,27 @@ export const invalidatesConnectionOAuthResult = (fieldKey: string): boolean =>
   (fieldKey.startsWith('auth.') && fieldKey !== 'auth.refresh_token')
   || fieldKey === 'config.sandbox';
 
+/** A form marker selects server-held app credentials; it is never a secret. */
+export const selectedSavedOAuthAppIssuer = (args: {
+  vendor: string | null;values: ConnectionFormValues;
+}): OAuthAppIssuer | null => {
+  const issuer = args.values['auth.saved_oauth_app'];
+  if (args.values['auth.type'] !== 'oauth2_refresh' || issuer !== 'google' && issuer !== 'microsoft') return null;
+  if (!OAUTH_APP_ID.test(args.values['auth.saved_oauth_app_id'] ?? 'default')) return null;
+  return compatibleSavedOAuthAppIssuer(args) === issuer ? issuer : null;
+};
+export const compatibleSavedOAuthAppIssuer = (args: {
+  vendor: string | null;values: ConnectionFormValues;
+}): OAuthAppIssuer | null => {
+  if (args.values['auth.type'] !== 'oauth2_refresh') return null;
+  const provider = args.vendor ? getVendorProvider(args.vendor) : null;
+  const endpoints = provider ? resolveVendorOAuthEndpoints(provider,{ sandbox: args.values['config.sandbox'] === 'true' })
+    : { token_endpoint: args.values['auth.token_endpoint'] ?? '',authorize_url: args.values['auth.authorize_url']?.trim() || undefined };
+  // The form's saved token destination must agree with the effective provider.
+  if (provider && args.values['auth.token_endpoint']?.trim() && args.values['auth.token_endpoint'].trim() !== endpoints.token_endpoint) return null;
+  return savedOAuthAppIssuerForEndpoints(endpoints);
+};
+
 const present = (values: ConnectionFormValues, key: string): boolean =>
   (values[key] ?? '').trim().length > 0;
 
@@ -138,7 +164,8 @@ export const connectionOAuthCredentialReadiness = (args: {
   const providerLabel = provider?.display_name
     ?? (args.vendor === null ? 'Provider' : args.vendor);
   const clientIdPresent = present(args.values, 'auth.client_id');
-  const clientSecretPresent = present(args.values, 'auth.client_secret');
+  const clientSecretPresent = present(args.values, 'auth.client_secret')
+    || args.kind === 'api' && selectedSavedOAuthAppIssuer(args) !== null;
   const secretRequired = provider?.oauth.client_secret_required ?? false;
   const tokenEndpointIssue = args.vendor === null
     ? connectionOAuthHttpsEndpointIssue(args.values, 'auth.token_endpoint', 'Token Endpoint')
@@ -248,10 +275,8 @@ export const connectionOAuthCredentialReadiness = (args: {
   }
   const issue = refreshIssue ?? (args.vendor === null ? authorizeUrlIssue : null);
 
-  const scopes = (args.values['auth.scopes'] ?? '')
-    .trim()
-    .split(/\s+/u)
-    .filter(Boolean);
+  const scopes = savedOAuthAppRequestedScopes(selectedSavedOAuthAppIssuer(args),(args.values['auth.scopes'] ?? '')
+    .trim().split(/\s+/u).filter(Boolean));
   return {
     providerLabel,
     requirements,

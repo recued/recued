@@ -1,3 +1,5 @@
+import { collectionOAuthBinding } from '../../collection-oauth-sources.js';
+import { managedOAuthFetcherFor } from '../../managed-oauth-consumers.js';
 /** D-127 wire-up — mail-collection composition helper.
  *
  *  Parallel to `composeCalendarStack` / `composeFileStack`: assembles
@@ -75,6 +77,7 @@ import {
 } from './graph-provider.js';
 import {
   getGrantedScopes,
+  readOAuthAppId,
   type HttpFetcher,
   type OAuthAccountStore,
   type OAuthProvider,
@@ -116,6 +119,12 @@ export interface MailStackStorageDeps {
    *  across a move. */
   onRecordsRemoved?: CreateMailCollectionOptions['onRecordsRemoved'];
   onRecordRekeyed?: CreateMailCollectionOptions['onRecordRekeyed'];
+  /** D-318 audit — a mailbox was deleted (after it stopped): the email chat
+   *  door forgets it. */
+  onMailboxDeleted?: (slug: string) => void;
+  /** D-318 audit — forwarded to `createMailCollection.isChatConversation`: the
+   *  email chat door's conversation is marked as it is stored. */
+  isChatConversation?: CreateMailCollectionOptions['isChatConversation'];
   /** D-172 P2 — lazy provider of the `file.read` deps for resolving
    *  outbound `attachments` refs. Forwarded verbatim to
    *  `createMailCollection.fileReadDeps`. Lazy because the collection
@@ -162,7 +171,7 @@ export interface MailAdapterBundle {
    *  absent (harness / db-less) there is nothing behind it, so every provider
    *  reads `not_configured`. It used to fall back to the process-env-driven
    *  `GMAIL_OAUTH_CONFIG` / `GRAPH_OAUTH_CONFIG` — deleted 2026-07-28. */
-  oauthConfig?: (provider: 'gmail' | 'graph') => OAuthProviderConfig | null;
+  oauthConfig?: (provider: 'gmail' | 'graph', appId?: string) => OAuthProviderConfig | null;
   /** Test-friendly HTTP fetcher hook. */
   fetcher?: HttpFetcher;
   /** SMTP transport factory for imap-adapter sends. Absent ⇒
@@ -270,6 +279,7 @@ export const composeMailStack = (
   const instances = createInstanceStore({ db });
   const live = new Map<string, MailCollection>();
   const starts = new Map<string, Promise<void>>();
+  const authenticationPaused = new Set<string>();
   let closed = false;
   let disposePromise: Promise<void> | null = null;
 
@@ -283,9 +293,9 @@ export const composeMailStack = (
   );
 
   const oauthConfigFor = (
-    provider: 'gmail' | 'graph',
+    provider: 'gmail' | 'graph', appId?: string,
   ): OAuthProviderConfig | null =>
-    bundle.oauthConfig ? bundle.oauthConfig(provider) : null;
+    bundle.oauthConfig ? bundle.oauthConfig(provider, appId) : null;
 
   const buildProvider = async (
     row: CollectionInstanceRecord,
@@ -319,9 +329,9 @@ export const composeMailStack = (
     }
     if (row.adapter_type === 'gmail' || row.adapter_type === 'graph') {
       const provider = row.adapter_type;
-      const managedBinding = cfg.managed_oauth;
+      const managedBinding = collectionOAuthBinding(cfg);
       const managed = managedBinding !== undefined;
-      const providerConfig = managed ? null : oauthConfigFor(provider);
+      const providerConfig = managed ? null : oauthConfigFor(provider, readOAuthAppId(cfg.oauth_app_id));
       if ((!managed && !providerConfig) || (managed && !bundle.managedOAuth) || !bundle.accountStore) {
         log(
           'warn',
@@ -356,7 +366,7 @@ export const composeMailStack = (
       // synchronous from construction onward.
       if (!managed) await ensureScopes();
       const managedOptions = managed ? {
-        managedFetcher: bundle.managedOAuth!.fetch(provider, managedBinding),
+        managedFetcher: managedOAuthFetcherFor(bundle.managedOAuth, provider, managedBinding)!,
         managedSendEnabled: cfg.managed_send_enabled === true,
         managedMutationEnabled: cfg.managed_mutation_enabled === true,
       } : {};
@@ -377,12 +387,14 @@ export const composeMailStack = (
         });
         return createGmailProvider({
           ...managedOptions,
+          nativeSendEnabled: cfg.native_send_enabled !== false,
+          nativeMutationEnabled: cfg.native_mutation_enabled !== false,
           slug,
           config: gmailConfig,
           accountStore,
           // Per-use resolver — token refresh re-fetches the (store-then-env)
           // credential so a UI-updated secret applies without a restart.
-          providerConfig: () => oauthConfigFor(provider),
+          providerConfig: () => oauthConfigFor(provider, readOAuthAppId(cfg.oauth_app_id)),
           ...(bundle.fetcher ? { fetcher: bundle.fetcher } : {}),
           ...(bundle.now ? { now: bundle.now } : {}),
           log: (level, msg, data) => log(level, msg, data),
@@ -404,10 +416,12 @@ export const composeMailStack = (
       });
       return createGraphProvider({
         ...managedOptions,
+        nativeSendEnabled: cfg.native_send_enabled !== false,
+        nativeMutationEnabled: cfg.native_mutation_enabled !== false,
         slug,
         config: graphConfig,
         accountStore,
-        providerConfig: () => oauthConfigFor(provider),
+        providerConfig: () => oauthConfigFor(provider, readOAuthAppId(cfg.oauth_app_id)),
         ...(bundle.fetcher ? { fetcher: bundle.fetcher } : {}),
         ...(bundle.now ? { now: bundle.now } : {}),
         log: (level, msg, data) => log(level, msg, data),
@@ -417,7 +431,10 @@ export const composeMailStack = (
     return null;
   };
 
-  const runStartLive = async (row: CollectionInstanceRecord): Promise<void> => {
+  const runStartLive = async (
+    row: CollectionInstanceRecord,
+    firstSync: 'wait' | 'background',
+  ): Promise<void> => {
     if (closed) return;
     if (live.has(row.slug)) return;
     let provider: MailProvider | null;
@@ -452,6 +469,9 @@ export const composeMailStack = (
           : {}),
         ...(storage.onMessageStored
           ? { onMessageStored: storage.onMessageStored }
+          : {}),
+        ...(storage.isChatConversation
+          ? { isChatConversation: storage.isChatConversation }
           : {}),
         ...(storage.onRecordsRemoved
           ? { onRecordsRemoved: storage.onRecordsRemoved }
@@ -509,23 +529,30 @@ export const composeMailStack = (
       return;
     }
 
-    try {
-      await collection.sync.start();
-    } catch (err) {
+    const syncing = collection.sync.start().catch((err: unknown) => {
       log('warn', `mail-stack: sync.start failed for '${row.slug}'`, {
         err: err instanceof Error ? err.message : String(err),
       });
       // Collection still lives — its `send` rpc still works against the
       // provider, and a future resync can restart the inbound loop.
-    }
+    });
+    // Enrollment acknowledges the saved, registered mailbox. Its first scan
+    // can take minutes, well beyond the webclient's 30-second RPC deadline.
+    // MailCollection owns this start promise: sync.stop()/close() invalidate
+    // its callbacks and drain it before deletion or database teardown. Sync
+    // outcomes still update the instance row for the UI's first-sync polling.
+    if (firstSync === 'wait') await syncing;
   };
 
-  const startLive = (row: CollectionInstanceRecord): Promise<void> => {
-    if (closed) return Promise.resolve();
+  const startLive = (
+    row: CollectionInstanceRecord,
+    firstSync: 'wait' | 'background' = 'wait',
+  ): Promise<void> => {
+    if (closed || authenticationPaused.has(row.slug)) return Promise.resolve();
     const existing = starts.get(row.slug);
     if (existing) return existing;
     let task: Promise<void>;
-    task = runStartLive(row).finally(() => {
+    task = runStartLive(row, firstSync).finally(() => {
       if (starts.get(row.slug) === task) starts.delete(row.slug);
     });
     starts.set(row.slug, task);
@@ -570,14 +597,25 @@ export const composeMailStack = (
     onEnrolled: async (row: CollectionInstanceRow) => {
       if (closed) return;
       const full = instances.get('mail', row.slug);
-      if (full) await startLive(full);
+      if (full) await startLive(full, 'background');
     },
-    onDeleted: (slug) => stopLive(slug),
+    onDeleted: async (slug) => {
+      await stopLive(slug);
+      storage.onMailboxDeleted?.(slug);
+    },
+    authenticationChange: {
+      running: (slug) => live.has(slug),
+      async stop(slug) { authenticationPaused.add(slug); await starts.get(slug); await stopLive(slug, true); },
+      async restart(slug) { authenticationPaused.delete(slug); const row = instances.get('mail', slug);
+        if (!row || closed) throw new Error('Mail collection is unavailable.');
+        await startLive(row, 'background'); if (!live.has(slug)) throw new Error('Mail collection did not restart.'); },
+    },
     // D-264 — the listing's draft axis, answered by the running collection
     // rather than re-derived from config/scopes at the rpc layer. A slug with
     // no live collection (never started, auth broken, stopped) returns
     // `undefined` and the row reports `draft_capable: false`.
     draftCapable: (slug) => live.get(slug)?.draftCapable,
+    mailboxAccessVerified: (slug) => live.get(slug)?.mailboxAccessVerified,
   };
 
   const startAll = async (): Promise<void> => {

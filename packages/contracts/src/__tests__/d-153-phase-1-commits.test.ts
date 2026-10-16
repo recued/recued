@@ -31,6 +31,11 @@ import {
   type ContractSnapshot,
   type ExecutionSource,
 } from '../commits.js';
+import {
+  isDeclaredMessengerVendor,
+  isMessengerSourceVendor,
+  MESSENGER_DOOR_VENDORS,
+} from '../messenger-vendors.js';
 
 // ────────────────────────────────────────────────────────────────
 // CommitKind
@@ -233,10 +238,19 @@ describe('messenger ExecutionSource vendor (D-192 CORE #6)', () => {
     }
   });
 
-  it('rejects `email` — a notification channel, never a chat transport (category-error fix)', () => {
+  it('accepts `email` only as D-318\'s chat door — still never a declared chat transport', () => {
+    // D-318 §4.5 (ruling 4): an email request runs with Slack's and Telegram's
+    // authority, as `vendor: 'email'`. It is a door, not a transport: the
+    // registry still has no `email`, and the notification channel is untouched.
     expect(isExecutionSource({
-      channel: 'messenger', actor: 'user_self', vendor: 'email', from: 'u',
-    })).toBe(false);
+      channel: 'messenger', actor: 'user_self', vendor: 'email', from: 'me@owner.example',
+    })).toBe(true);
+    expect(isDeclaredMessengerVendor('email')).toBe(false);
+    expect(MESSENGER_DOOR_VENDORS).toEqual(['email']);
+    expect(isMessengerSourceVendor('email')).toBe(true);
+    expect(isMessengerSourceVendor('slack')).toBe(true);
+    expect(isMessengerSourceVendor('sms')).toBe(false);
+    expect(isMessengerSourceVendor(undefined)).toBe(false);
   });
 
   it('rejects an undeclared vendor — fails closed until a declaration lands', () => {

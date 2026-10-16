@@ -1,3 +1,4 @@
+import { collectionOAuthBinding } from '../../collection-oauth-sources.js';
 import { managedOAuthFetcherFor, type ManagedOAuthConsumers } from '../../managed-oauth-consumers.js';
 /** D-117 Phase 4 — Microsoft Graph calendar adapter.
  *
@@ -46,10 +47,12 @@ import {
   readProviderStringContinuation,
 } from '../../provider-pagination-guard.js';
 
+import { calendarSyncFailureOf } from './provider.js';
 import type {
   CalendarProvider,
   CalendarProviderHealth,
   CalendarSyncCallback,
+  CalendarSyncOutcome,
   CreateEventInput,
   InitialScanOptions,
   ProbedCalendarCaps,
@@ -67,6 +70,7 @@ import {
   keyPrefix,
   OAuthError,
   requireProviderConfig,
+  bindOAuthProviderConfig,
   type HttpFetcher,
   type OAuthAccountStore,
   type OAuthProviderConfigSource,
@@ -398,6 +402,17 @@ export const createGraphCalProvider = (
   let pendingQueueSize = 0;
   let accessToken = '';
   let pollStop: ProviderPollStop | null = null;
+  /** `onSyncOutcome` listeners: told of each poll's outcome. */
+  const outcomeListeners = new Set<(outcome: CalendarSyncOutcome) => void>();
+  const reportOutcome = (outcome: CalendarSyncOutcome): void => {
+    for (const listener of outcomeListeners) {
+      try { listener(outcome); } catch { /* a listener never breaks a sync */ }
+    }
+  };
+  const markSynced = (): void => {
+    lastSuccessfulSyncAt = nowOf();
+    reportOutcome({ ok: true, at: lastSuccessfulSyncAt });
+  };
 
   const deltaLinkKey = (calendarId: string): string =>
     `${keyPrefix('graph', opts.config.account_slug)}.cal_delta_link.${calendarIdKeySuffix(calendarId)}`;
@@ -652,6 +667,9 @@ export const createGraphCalProvider = (
   };
 
   const runSyncTick = async (cb: CalendarSyncCallback): Promise<void> => {
+    // Clean until a failure is swallowed: only a tick that read every calendar
+    // and delivered every change says the calendar is synced.
+    let clean = true;
     const calendars = await selectedCalendars();
     const now = nowOf();
     const startDateTime = new Date(
@@ -676,7 +694,7 @@ export const createGraphCalProvider = (
           // No cached link — seed from the current window without
           // emitting (same as mail graph's seed behaviour).
           const seeded = await seedDeltaLink(cal, startDateTime, endDateTime);
-          if (!seeded) break;
+          if (!seeded) { clean = false; break; }
           link = seeded;
           break;
         }
@@ -718,6 +736,7 @@ export const createGraphCalProvider = (
                 link = seeded;
               } catch (recoveryErr) {
                 markError(`graph delta recovery failed calendar=${cal.id}`, recoveryErr);
+                clean = false;
               }
               retry = false;
               break;
@@ -725,7 +744,7 @@ export const createGraphCalProvider = (
             throw err;
           }
           for (const event of page.value ?? []) {
-            if (!(await emitDeltaEvent(cal, event, cb))) deliveryFailed = true;
+            if (!(await emitDeltaEvent(cal, event, cb))) { deliveryFailed = true; clean = false; }
           }
           const rawDeltaLink = readProviderStringContinuation(
             page['@odata.deltaLink'],
@@ -755,6 +774,19 @@ export const createGraphCalProvider = (
         }
         break;
       }
+    }
+    if (clean) markSynced();
+    else reportOutcome({ ok: false, failure: 'transient', at: nowOf() });
+  };
+
+  /** A poll tick that reports a thrown failure too: `auth` for a rejected
+   *  credential, else `transient`. Rethrows, so it is logged as before. */
+  const runReportedTick = async (cb: CalendarSyncCallback): Promise<void> => {
+    try {
+      await runSyncTick(cb);
+    } catch (err) {
+      reportOutcome({ ok: false, failure: calendarSyncFailureOf(err), at: nowOf() });
+      throw err;
     }
   };
 
@@ -934,8 +966,8 @@ export const createGraphCalProvider = (
       const intervalMs = Math.max(1, opts.config.poll_seconds) * 1000;
       // Fire an immediate tick so downstream consumers don't wait on
       // the first interval.
-      await runSyncTick(cb);
-      pollStop = scheduler(() => runSyncTick(cb), intervalMs);
+      await runReportedTick(cb);
+      pollStop = scheduler(() => runReportedTick(cb), intervalMs);
       return async () => {
         const stop = pollStop;
         pollStop = null;
@@ -947,6 +979,11 @@ export const createGraphCalProvider = (
       const stop = pollStop;
       pollStop = null;
       await stop?.();
+    },
+
+    onSyncOutcome(listener) {
+      outcomeListeners.add(listener);
+      return () => { outcomeListeners.delete(listener); };
     },
 
     health(): CalendarProviderHealth {
@@ -1133,9 +1170,10 @@ export const createGraphCalAdapterFactory = (
   kind: 'graph',
   async probeCaps(ctx: CalendarAdapterContext) {
     const cfg = parseGraphCalConfig(ctx.config);
-    const managedFetcher = managedOAuthFetcherFor(opts.managedOAuth, 'graph', ctx.config.managed_oauth);
-    const caps = await probeGraphCalCaps(cfg, { ...opts, ...(managedFetcher ? { managedFetcher } : {}) });
-    if (managedFetcher && ctx.config.managed_write_enabled !== true) {
+    const managedFetcher = managedOAuthFetcherFor(opts.managedOAuth, 'graph', collectionOAuthBinding(ctx.config));
+    const providerConfig = bindOAuthProviderConfig(opts.providerConfig, ctx.config.oauth_app_id);
+    const caps = await probeGraphCalCaps(cfg, { ...opts, providerConfig, ...(managedFetcher ? { managedFetcher } : {}) });
+    if (ctx.config.native_write_enabled === false || managedFetcher && ctx.config.managed_write_enabled !== true) {
       return { ...caps, create_event: 'no', update_event: 'no', delete_event: 'no', rsvp: 'no' };
     }
     return caps;
@@ -1146,9 +1184,9 @@ export const createGraphCalAdapterFactory = (
       slug: ctx.slug,
       config: cfg,
       accountStore: opts.accountStore,
-      providerConfig: opts.providerConfig,
+      providerConfig: bindOAuthProviderConfig(opts.providerConfig, ctx.config.oauth_app_id),
       fetcher: opts.fetcher,
-      managedFetcher: managedOAuthFetcherFor(opts.managedOAuth, 'graph', ctx.config.managed_oauth) ?? opts.managedFetcher,
+      managedFetcher: managedOAuthFetcherFor(opts.managedOAuth, 'graph', collectionOAuthBinding(ctx.config)) ?? opts.managedFetcher,
       now: opts.now,
       log: opts.log ?? ctx.log,
       scheduler: opts.scheduler,

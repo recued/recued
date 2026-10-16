@@ -22,6 +22,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
+import * as ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 const SRC = join(import.meta.dirname, '..');
@@ -154,16 +155,26 @@ export const setStateSites = (
   return out;
 };
 
-/** Nearest preceding FUNCTION definition — not merely the nearest `const`,
- *  which reported locals like `captured` as writers. */
-export const enclosingFunction = (src: string, at: number): string => {
-  const head = src.slice(0, at);
-  const names = [
-    ...head.matchAll(
-      /(?:^|\n)\s*(?:const|let)\s+([A-Za-z_][A-Za-z0-9_]*)[^=\n]*=\s*(?:async\s*)?\(|(?:^|\n)\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_][A-Za-z0-9_]*)/g,
-    ),
-  ].map((x) => x[1] ?? x[2]);
-  return names.length > 0 ? names[names.length - 1]! : '<top level>';
+/** The innermost function containing the write. A completed helper must not
+ *  steal the outer load's write; a helper's own write must not credit the load.
+ *  Anonymous callbacks stay unnamed rather than borrowing an outer name. */
+export const enclosingFunction = (src: string | ts.SourceFile, at: number): string => {
+  const file = typeof src === 'string'
+    ? ts.createSourceFile('broadcast-state.ts', src, ts.ScriptTarget.Latest, true)
+    : src;
+  let name = '<top level>';
+  const visit = (node: ts.Node): void => {
+    if (at < node.getStart(file) || at >= node.end) return;
+    if (ts.isFunctionLike(node)) {
+      const parent = node.parent;
+      name = ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)
+        ? parent.name.text
+        : node.name?.getText(file) ?? '<anonymous>';
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return name;
 };
 
 interface FieldWriters { kinds: Set<string>; byFunction: Set<string> }
@@ -173,12 +184,13 @@ const analyse = (raw: string): Map<string, FieldWriters> => {
   const ranges = subscribeRanges(src);
   const out = new Map<string, FieldWriters>();
   if (ranges.length === 0) return out;
+  const file = ts.createSourceFile('broadcast-state.ts', src, ts.ScriptTarget.Latest, true);
   for (const site of setStateSites(src)) {
     const inBroadcast = ranges.find((r) => site.start > r.start && site.start < r.end);
     for (const field of site.keys) {
       const e = out.get(field) ?? { kinds: new Set<string>(), byFunction: new Set<string>() };
       if (inBroadcast) e.kinds.add(inBroadcast.kind);
-      else e.byFunction.add(enclosingFunction(src, site.start));
+      else e.byFunction.add(enclosingFunction(file, site.start));
       out.set(field, e);
     }
   }
@@ -273,6 +285,91 @@ describe('the detector can tell the two cases apart', () => {
       opts.subscribe('thing_happened', () => { setState({ things: 1 }); });
     `);
     expect([...w.get('things')!.byFunction]).toEqual(['doLoadThings']);
+  });
+
+  it.each([
+    ['expression arrow', 'const keepCurrent = (topic: string): boolean => false;'],
+    ['block arrow', 'const keepCurrent = (topic: string): boolean => { return false; };'],
+    ['async arrow', 'const keepCurrent = async (topic: string): Promise<boolean> => false;'],
+    ['function declaration', 'function keepCurrent(topic: string): boolean { return false; }'],
+    ['function expression', 'const keepCurrent = function pick(topic: string): boolean { return false; };'],
+    ['parenthesized read', 'const rows = (await opts.runRead());'],
+  ])('attributes the load after a completed %s to its containing function', (_name, helper) => {
+    const w = analyse(`
+      const doLoadThings = async (): Promise<void> => {
+        ${helper}
+        setState({ things: 1 });
+      };
+      opts.subscribe('thing_happened', () => { setState({ things: 2 }); });
+    `);
+    expect([...w.get('things')!.byFunction]).toEqual(['doLoadThings']);
+  });
+
+  it('returns to the enclosing function after several levels of helpers end', () => {
+    const w = analyse(`
+      const doLoadThings = async (): Promise<void> => {
+        const keepCurrent = () => {
+          function nested() { return true; }
+          return nested();
+        };
+        setState({ things: 1 });
+      };
+      opts.subscribe('thing_happened', () => { setState({ things: 2 }); });
+    `);
+    expect([...w.get('things')!.byFunction]).toEqual(['doLoadThings']);
+  });
+
+  it('does not credit an uncalled writing helper to the enclosing load', () => {
+    const w = analyse(`
+      const doLoadThings = async (): Promise<void> => {
+        const neverCalled = () => { setState({ things: 1 }); };
+      };
+      opts.subscribe('thing_happened', () => { setState({ things: 2 }); });
+    `);
+    expect([...w.get('things')!.byFunction]).toEqual(['neverCalled']);
+    expect(w.get('things')!.byFunction.has('doLoadThings')).toBe(false);
+  });
+
+  it('does not credit an anonymous callback to the enclosing load', () => {
+    const w = analyse(`
+      const doLoadThings = async (): Promise<void> => {
+        rows.forEach(() => { setState({ things: 1 }); });
+      };
+      opts.subscribe('thing_happened', () => { setState({ things: 2 }); });
+    `);
+    expect([...w.get('things')!.byFunction]).toEqual(['<anonymous>']);
+  });
+
+  it('does not credit a top-level write to an already closed function', () => {
+    const w = analyse(`
+      const doLoadThings = async (): Promise<void> => {};
+      setState({ things: 1 });
+      opts.subscribe('thing_happened', () => { setState({ things: 2 }); });
+    `);
+    expect([...w.get('things')!.byFunction]).toEqual(['<top level>']);
+  });
+
+  it('names a function expression by the binding used to invoke it', () => {
+    const w = analyse(`
+      const doLoadThings = async function internalName(): Promise<void> {
+        setState({ things: 1 });
+      };
+      opts.subscribe('thing_happened', () => { setState({ things: 2 }); });
+    `);
+    expect([...w.get('things')!.byFunction]).toEqual(['doLoadThings']);
+  });
+
+  it('keeps the named nested helper as owner of its own write', () => {
+    const w = analyse(`
+      function doLoadThings() {
+        function writeThings() {
+          const keepCurrent = (topic: string) => false;
+          setState({ things: 1 });
+        }
+      }
+      opts.subscribe('thing_happened', () => { setState({ things: 2 }); });
+    `);
+    expect([...w.get('things')!.byFunction]).toEqual(['writeThings']);
   });
 
   it('finds nothing when nothing subscribes — no false alarm on a plain mount', () => {

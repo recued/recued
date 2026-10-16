@@ -329,6 +329,13 @@ export const TRANSFORM_SCHEMAS: Record<string, TransformSchema> = {
     // Source of truth: EVENT_WHEN_PARTS in ../date.ts
     part: OPT_ENUM(['start', 'end', 'day', 'time', 'date_time', 'text']),
   },
+  // D-315 slice 7 — the time an English phrase names (../time-phrase.ts).
+  date_from_text: {
+    input: REQ('any'),
+    time_zone: OPT('string'),
+    // "HH:MM", for a day named without a time; 09:00 when absent.
+    default_time: OPT('string'),
+  },
 
   // ── Logic ─────────────────────────────────────────────────
   compare: {

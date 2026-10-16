@@ -1,3 +1,7 @@
+import { encodeAuthForStorage, decodeAuthFromStorage } from './connection-auth-storage.js';
+export { encodeAuthForStorage, decodeAuthFromStorage } from './connection-auth-storage.js';
+import { resolveConnectionOAuthApp,assertConnectionOAuthAppCurrent } from './connection-saved-oauth-app.js';
+import type { OAuthAppConfigStore } from './oauth-app-config-store.js';
 /** D-125 Phase 2.1 — rpc handlers for `collection.connection.*`.
  *  D-125 Phase 2.2 — at-rest auth encryption swapped to AEAD via the
  *  `connection` HKDF sub-DEK; the pair-sync WS rpc ships the same
@@ -49,6 +53,8 @@ import {
   connectionViewFromRow,
   connectionRowKey,
   getVendorProvider,
+  resolveVendorOAuthEndpoints,
+  withSavedOAuthAppProvider,
   buildGenericVendorProvider,
   vendorOAuthRequestedScopes,
   vendorOAuthRedirectChoices,
@@ -120,14 +126,6 @@ import type {
   ServerRpcRegistry,
 } from '@recued/contracts';
 import type { AuditLogStore } from '@recued/storage';
-import {
-  encrypt,
-  decrypt,
-  encodeCiphertext,
-  decodeCiphertext,
-  bytesToBase64,
-  base64ToBytes,
-} from '@recued/crypto';
 import type { WsClient } from './ws-server.js';
 import type { RecipeRunnabilityBroadcaster } from './recipe-runnability-handler.js';
 import {
@@ -199,10 +197,16 @@ import {
 import { makeConnectionRuntimeBaseIssueSink } from './connection-runtime-base-issue.js';
 import type { ManagedOAuthService } from './managed-oauth-service.js';
 import { managedOAuthVerificationUrl } from '@recued/contracts';
-import { verifyManagedOAuthAccess } from './managed-oauth-verification.js';
+import { verifyManagedOAuthAccess, verifyDirectOAuthAccess } from './managed-oauth-verification.js';
 import { createManagedOAuthMigration } from './managed-oauth-migration.js';
+import { createDirectOAuthSwitch } from './direct-oauth-switch.js';
+import { persistNativeOAuthRenewal } from './native-oauth-renewal.js';
 
 export interface ConnectionRpcDeps {
+  authenticationRepairs?: () => Promise<import('@recued/contracts').AuthenticationRepairWorklist>;
+  collectionAuthentication?: import('./collection-authentication-service.js').CollectionAuthenticationService;
+  collectionOAuthAppSwitch?: import('./collection-oauth-app-switch.js').CollectionOAuthAppSwitchService;
+  oauthAppConfig?: OAuthAppConfigStore;
   /** D-322 — the same broker service used by native API execution. */
   managedOAuth?: ManagedOAuthService;
   /** First-class collections may reference a saved managed API account. */
@@ -975,7 +979,7 @@ const ensureSigningAuthKind = (
   );
 };
 
-const ensureAuth = (where: string, auth: unknown): ConnectionAuth => {
+const ensureAuth = (where: string, auth: unknown, allowSavedAppOrigin = false): ConnectionAuth => {
   if (!isRecord(auth) || typeof auth.type !== 'string') {
     throw new RpcError(
       'bad_request',
@@ -1058,6 +1062,17 @@ const ensureAuth = (where: string, auth: unknown): ConnectionAuth => {
       break;
     case 'oauth2_refresh':
       requireStringField(where, auth, 'refresh_token');
+      if (auth.permission_cleanup_pending !== undefined) throw new RpcError('bad_request', 'Permission cleanup pauses are managed by Recued. Resume the saved cleanup.');
+      if (auth.saved_oauth_app !== undefined && !allowSavedAppOrigin) throw new RpcError('bad_request', 'Saved app origins are recorded by Recued. Select the app separately.');
+      if (auth.native_credential_id !== undefined && (typeof auth.native_credential_id !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(auth.native_credential_id))) {
+        throw new RpcError('bad_request', `${where}: native credential identity must be server-issued`);
+      }
+      if (auth.required_scopes !== undefined) {
+        if (!Array.isArray(auth.required_scopes) || auth.required_scopes.length > 256
+          || auth.required_scopes.some(scope => typeof scope !== 'string' || !scope.trim() || scope.length > 2048 || /[\r\n\0]/.test(scope))) {
+          throw new RpcError('bad_request', `${where}: required_scopes must be a bounded list of scope names`);
+        }
+      }
       requireStringField(where, auth, 'client_id');
       requireOAuthEndpointField(where, auth, 'token_endpoint');
       ensureOptionalStringField(where, auth, 'client_secret');
@@ -1211,79 +1226,6 @@ const ensureMessengerWebhookVerificationMaterial = (
       `${where}: webhook mode requires config.${field ?? 'verification_material'}`,
     );
   }
-};
-
-/** AAD binding domain — separates connection-row ciphertext from
- *  every other AEAD blob on the server, AND ties each ciphertext to
- *  its (kind, name) row so an attacker who reorders rows in the SQLite
- *  file cannot move an `auth_ciphertext` between rows. The label
- *  doubles as a versioned sentinel — bumping `v1` lets a future format
- *  re-encode in place without confusion. */
-const aadFor = (identity: { kind: ConnectionKind; name: string }): Uint8Array =>
-  new TextEncoder().encode(`recued/v1/connection/${identity.kind}/${identity.name}`);
-
-const requireConnectionKey = (
-  getEncryptionKey: () => Uint8Array | null,
-): Uint8Array => {
-  const key = getEncryptionKey();
-  if (!key) {
-    throw new RpcError(
-      'locked',
-      'connection: server FileVault is locked, cannot encrypt or decrypt auth',
-    );
-  }
-  return key;
-};
-
-/** Encode a `ConnectionAuth` for at-rest storage. AEAD-encrypts under
- *  the connection sub-DEK with AAD = `recued/v1/connection/${kind}/${name}`
- *  when a keyProvider is wired through. Falls back to the P2.1
- *  base64-JSON placeholder when none is supplied — covers dbless
- *  harnesses + the FileVault-uninitialized state per the existing
- *  `blob-store` / `sqlite-cache-store` discipline.
- *
- *  Exported so the D-125 P4.1 api handler's boot-site `persistAuth`
- *  callback can re-encode after an OAuth2 refresh — same crypto +
- *  AAD as enrollment, so a refreshed token round-trips through the
- *  sync wire alongside enrollments without divergence. */
-export const encodeAuthForStorage = async (
-  auth: ConnectionAuth,
-  identity: { kind: ConnectionKind; name: string },
-  getEncryptionKey?: () => Uint8Array | null,
-): Promise<string> => {
-  // D-322 — one-use consent proofs never enter storage, even transient ciphertext.
-  const storedAuth = auth.type === 'managed_oauth' ? {
-    type: auth.type, broker_profile_id: auth.broker_profile_id, integration_id: auth.integration_id,
-    connection_id: auth.connection_id, target_origin: auth.target_origin, requested_scopes: auth.requested_scopes,
-    ...(auth.required_scopes === undefined ? {} : { required_scopes: auth.required_scopes }),
-    ...(auth.imported === true ? { imported: true } : {}),
-  } : auth;
-  const plaintext = new TextEncoder().encode(JSON.stringify(storedAuth));
-  if (!getEncryptionKey) {
-    return bytesToBase64(plaintext);
-  }
-  const key = requireConnectionKey(getEncryptionKey);
-  const ct = await encrypt(key, plaintext, aadFor(identity));
-  return encodeCiphertext(ct);
-};
-
-/** Decode an at-rest ciphertext blob back to a `ConnectionAuth`. The P3
- *  adapter calls this at invoke time; the list path also uses it narrowly to
- *  project the non-secret `type` discriminant needed for compatible pack
- *  reuse. No credential field enters a view. Mirrors the encode policy on
- *  `getEncryptionKey`: encrypted when wired, base64-JSON when not. */
-export const decodeAuthFromStorage = async (
-  blob: string,
-  identity: { kind: ConnectionKind; name: string },
-  getEncryptionKey?: () => Uint8Array | null,
-): Promise<ConnectionAuth> => {
-  if (!getEncryptionKey) {
-    return JSON.parse(new TextDecoder().decode(base64ToBytes(blob))) as ConnectionAuth;
-  }
-  const key = requireConnectionKey(getEncryptionKey);
-  const ct = decodeCiphertext(blob);
-  const plaintext = await decrypt(key, ct, aadFor(identity));
-  return JSON.parse(new TextDecoder().decode(plaintext)) as ConnectionAuth;
 };
 
 export const handleConnectionList = async (
@@ -1757,6 +1699,8 @@ export const handleConnectionEnroll = async (
     publisher_id?: string;
     config: Record<string, unknown>;
     auth: ConnectionAuth;
+    oauth_app_id?: string;
+    oauth_app_issuer?: import('@recued/contracts').OAuthAppIssuer;
     subresource_path?: string;
     /** granted-scopes — the vendor-granted OAuth scopes from the just-
      *  completed dance (the dialog claims them off `completeVendorOAuth`).
@@ -1796,7 +1740,15 @@ export const handleConnectionEnroll = async (
   );
   ensureValidMatchPatterns('collection.connection.enroll', config);
   ensureValidPeerAdmission('collection.connection.enroll', config);
-  const auth = ensureAuth('collection.connection.enroll', a.auth);
+  let auth = ensureAuth('collection.connection.enroll', a.auth);
+  if (a.oauth_app_issuer !== undefined || a.oauth_app_id !== undefined) {
+    if (kind !== 'api' || auth.type !== 'oauth2_refresh') throw new RpcError('bad_request','Saved OAuth apps can be used with API OAuth refresh connections.');
+    const app = resolveConnectionOAuthApp({ store: deps.oauthAppConfig,issuer: a.oauth_app_issuer, app_id: a.oauth_app_id,
+      client_id: auth.client_id,client_secret: auth.client_secret,token_endpoint: auth.token_endpoint });
+    auth = { ...auth,...app, saved_oauth_app: { issuer: a.oauth_app_issuer as import('@recued/contracts').OAuthAppIssuer,
+      id: typeof a.oauth_app_id === 'string' ? a.oauth_app_id : 'default' } };
+  }
+  if (auth.type === 'oauth2_refresh' && auth.native_credential_id !== undefined) throw new RpcError('bad_request', 'Native credential families are assigned by Recued.');
   ensureSigningAuthKind('collection.connection.enroll', kind, auth);
   ensureMessengerAuthDeliverable('collection.connection.enroll', subtype, auth);
   ensureMessengerIngressCredentials('collection.connection.enroll', subtype, config, auth);
@@ -1875,6 +1827,10 @@ export const handleConnectionEnroll = async (
       effectiveAuth, String(effectiveConfig.base_url ?? ''), name, deps.store.get(kind, name) ?? undefined,
     );
     granted_scopes_json = verified.granted_scopes === undefined ? undefined : JSON.stringify(verified.granted_scopes);
+  }
+  if (a.oauth_app_issuer !== undefined && auth.type === 'oauth2_refresh') {
+    assertConnectionOAuthAppCurrent({ store: deps.oauthAppConfig,issuer: a.oauth_app_issuer, app_id: a.oauth_app_id,
+      client_id: auth.client_id,token_endpoint: auth.token_endpoint },auth);
   }
   const row = deps.store.upsert({
     name,
@@ -2012,7 +1968,7 @@ export const handleConnectionUpdate = async (
   }
   let auth =
     patch.auth !== undefined
-      ? ensureAuth('collection.connection.update', patch.auth)
+      ? ensureAuth('collection.connection.update', patch.auth, internal.allowCredentialCandidate === true && internal.managedSwitchCandidate === true)
       : undefined;
   ensureSigningAuthKind('collection.connection.update', kind, auth);
   // The same gate on the patch path — otherwise a row enrolls as `bearer` and is
@@ -2215,6 +2171,7 @@ export const handleConnectionDelete = async (
   // `subtype` is the fallback for older / non-vendor api flavors.
   // Non-api kinds skip vendor cleanup entirely.
   const existing = deps.store.get(kind, name);
+  if (kind === 'api' && deps.store.permissionCleanupId?.(name)) throw new RpcError('conflict', 'Finish the saved permission cleanup before deleting this API connection.');
   if (kind === 'api') deps.assertCollectionUnreferenced?.(name);
   const vendor =
     kind === 'api' ? resolveVendorFromConnection(existing) : undefined;
@@ -2382,7 +2339,7 @@ export const handleConnectionPreviewPurge = async (
   };
 };
 
-export const handleConnectionProbe = async (
+const probeConnection = async (
   deps: ConnectionRpcDeps,
   args: {
     name: string;
@@ -2428,12 +2385,12 @@ export const handleConnectionProbe = async (
         ),
       }
     : null;
-  const probeSnapshot = connectionRowFingerprint(existing);
+  let probeSnapshot = connectionRowFingerprint(existing);
   const now = deps.now?.() ?? Date.now();
   // A probe is a durable row write. Keep the row revision strictly monotonic
   // without changing the provider-check timestamp used by token expiry and
   // the verification receipt.
-  const connectionUpdatedAt = Math.max(now, existing.updated_at + 1);
+  let connectionUpdatedAt = Math.max(now, existing.updated_at + 1);
   const maxErrorLen = 256;
   const probeTimeoutMs = 10_000;
   // Production composition does not inject a fetcher. Keep the probe's
@@ -2752,13 +2709,12 @@ export const handleConnectionProbe = async (
 
   const classifyHttpReachability = (status: number): ConnectionHealth => {
     // API probe table: 2xx/3xx => ok; 401/403 => auth_failed; any
-    // other HTTP response proves reachability, so keep ok + stamp the
-    // status for the Settings surface.
+    // other HTTP response proves reachability, but not usable access.
     if (status === 401 || status === 403) {
       return healthOf('auth_failed', `http_status_${status}`);
     }
     if (status >= 200 && status < 400) return healthOf('ok');
-    return healthOf('ok', `http_status_${status}`);
+    return healthOf('unknown', `http_status_${status}`);
   };
   const jsonRpc = async (
     endpoint: string,
@@ -3370,6 +3326,8 @@ export const handleConnectionProbe = async (
    *  when it could not read them, `undefined` when this check does not own the
    *  row's scopes (they came from a sign-in, or nothing reads them). */
   let probedGrantedScopes: string[] | null | undefined;
+  let nativeRenewed = false;
+  let nativeRenewalFailed = false;
   if (!deps.getEncryptionKey) {
     health = healthOf('unknown');
   } else {
@@ -3386,7 +3344,7 @@ export const handleConnectionProbe = async (
         );
         probedAuthType = auth.type;
         const ensureFreshAuth = createEnsureFreshAuth({
-          fetchImpl: deps.resolveFetch ?? globalThis.fetch.bind(globalThis),
+          fetchImpl: deps.resolveFetch ?? globalThis.fetch,
           now: () => now,
           ...(deps.auditLog
             ? {
@@ -3397,6 +3355,22 @@ export const handleConnectionProbe = async (
               }
             : {}),
           persistAuth: async (_row, newAuth, configPatch) => {
+            if (newAuth.type === 'oauth2_refresh' && newAuth.native_credential_id && deps.store.persistRefreshedAuth) {
+              try {
+                await persistNativeOAuthRenewal({ store: deps.store, encode: encodeAuthForStorage, decode: decodeAuthFromStorage,
+                  key: deps.getEncryptionKey, now: deps.now ?? Date.now, onRenewal: changes => {
+                    const change = changes.find(c => c.previous.pk === existing.pk);
+                    if (change && connectionRowFingerprint(change.previous) === probeSnapshot) {
+                      probeSnapshot = connectionRowFingerprint(change.current); connectionUpdatedAt = change.current.updated_at;
+                    }
+                  } }, existing, newAuth, configPatch);
+                nativeRenewed = true;
+              } catch (error) { nativeRenewalFailed = true; throw error; }
+              // Persist before the refresh flight ends, even if a later health
+              // check fails. The final row fence still rejects owner edits.
+              if (configPatch !== undefined) configJson = JSON.stringify({ ...readConfig(), base_url: configPatch.base_url });
+              return;
+            }
             authCiphertext = await encodeAuthForStorage(
               newAuth,
               { kind, name },
@@ -3507,6 +3481,7 @@ export const handleConnectionProbe = async (
       }
     }
   }
+  if (nativeRenewalFailed) health = healthOf('unknown', 'native_oauth_renewal_not_saved');
   const currentBeforeWrite = deps.store.get(kind, name);
   if (
     currentBeforeWrite === null
@@ -3538,7 +3513,11 @@ export const handleConnectionProbe = async (
       );
     }
   }
-  deps.store.upsert({
+  if (nativeRenewed) {
+    const latest = deps.store.get(kind, name)!;
+    deps.store.upsert({ ...latest, health_json: JSON.stringify(health),
+      ...(probedGrantedScopes === undefined ? {} : { granted_scopes_json: probedGrantedScopes === null ? undefined : JSON.stringify(probedGrantedScopes) }) });
+  } else deps.store.upsert({
     name,
     kind,
     ...(existing.subtype !== undefined ? { subtype: existing.subtype } : {}),
@@ -3578,6 +3557,17 @@ export const handleConnectionProbe = async (
       : {}),
     ...(capturedDescriptors !== undefined ? { descriptors: capturedDescriptors } : {}),
   };
+};
+
+/** A probe can renew a rotating token, then persist it after its access check.
+ * Keep that entire interval under the same lease as saved-app rotation. */
+export const handleConnectionProbe: typeof probeConnection = async (deps, args) => {
+  const a = ensureRecordArgs('collection.connection.probe', args);
+  const name = ensureName('collection.connection.probe', a.name);
+  const kind = ensureKind('collection.connection.probe', a.kind);
+  return kind === 'api' && deps.store.withCredentialLease
+    ? deps.store.withCredentialLease([name], () => probeConnection(deps, args))
+    : probeConnection(deps, args);
 };
 
 /** D-225 Slice 2 — is this connection's generated pack still current?
@@ -4116,6 +4106,7 @@ const credentialCandidateFromOwnerInput = (auth: ConnectionAuth): ConnectionAuth
     case 'oauth2_refresh':
       return {
         type: 'oauth2_refresh',
+        ...(auth.required_scopes !== undefined ? { required_scopes: [...auth.required_scopes] } : {}),
         refresh_token: auth.refresh_token,
         client_id: auth.client_id,
         ...(auth.client_secret !== undefined ? { client_secret: auth.client_secret } : {}),
@@ -4493,7 +4484,8 @@ export const handleConnectionRotateCredentials = async (
      * the isolated candidate and commits in the credential's single swap. */
     match_patterns?: MessageMatchPattern[];
   },
-  internal: { managedSwitch?: { verificationUrl: string; impactFingerprint?: string; beforeSwap?(): void } } = {},
+  internal: { authenticationSwitch?: { verificationUrl: string; impactFingerprint?: string; beforeSwap?(): void;
+    direct?: { verify(): Promise<void>; beforeSwap(): void; consume(): void } } } = {},
 ): Promise<{
   connection: ConnectionView;
   verification: ConnectionCredentialVerification;
@@ -4513,9 +4505,13 @@ export const handleConnectionRotateCredentials = async (
   }
   // Validate before constructing the candidate so malformed auth and unsafe
   // OAuth destinations fail without ever entering a network path.
-  const auth = credentialCandidateFromOwnerInput(ensureAuth(method, a.patch.auth));
-  if (auth.type === 'managed_oauth' && !internal.managedSwitch) throw new RpcError('bad_request', 'Use managed OAuth reauthorization to replace this broker credential.');
-  if (internal.managedSwitch && (kind !== 'api' || auth.type !== 'managed_oauth')) throw new RpcError('bad_request', 'A managed API authorization is required for this switch.');
+  const checkedAuth = ensureAuth(method, a.patch.auth, internal.authenticationSwitch?.direct !== undefined);
+  let auth = internal.authenticationSwitch?.direct && checkedAuth.type === 'oauth2_refresh'
+    ? checkedAuth : credentialCandidateFromOwnerInput(checkedAuth);
+  if (auth.type === 'managed_oauth' && !internal.authenticationSwitch) throw new RpcError('bad_request', 'Use managed OAuth reauthorization to replace this broker credential.');
+  if (internal.authenticationSwitch && (kind !== 'api' || auth.type !== 'managed_oauth' && !(auth.type === 'oauth2_refresh' && internal.authenticationSwitch.direct))) {
+    throw new RpcError('bad_request', 'A reviewed OAuth authorization is required for this switch.');
+  }
   // ⚠ NO kind gate here, deliberately. An earlier draft added one and no
   // mutation could make it bite: this handler reaches the credential store
   // through `handleConnectionUpdate`, which already runs `ensureSigningAuthKind`
@@ -4535,6 +4531,10 @@ export const handleConnectionRotateCredentials = async (
       404,
       method,
     );
+  }
+  if (auth.type === 'oauth2_refresh' && auth.required_scopes === undefined) {
+    const previous = await decodeAuthFromStorage(existing.auth_ciphertext, { kind, name }, deps.getEncryptionKey);
+    if (previous.type === 'oauth2_refresh' && previous.required_scopes !== undefined) auth = { ...auth, required_scopes: [...previous.required_scopes] };
   }
   let candidateConfig = a.patch.config;
   if (a.match_patterns !== undefined) {
@@ -4566,7 +4566,7 @@ export const handleConnectionRotateCredentials = async (
       : ensureConfig(method, candidateConfig),
     auth,
   );
-  const snapshot = connectionRowFingerprint(existing, internal.managedSwitch !== undefined);
+  const snapshot = connectionRowFingerprint(existing, internal.authenticationSwitch !== undefined);
   const recoveryStore = credentialRotationRecoveryStore(method, deps.store);
   // A repeated attempt id resolves its durable outcome even though a
   // successful first attempt necessarily advanced the row revision beyond the
@@ -4600,7 +4600,15 @@ export const handleConnectionRotateCredentials = async (
       );
     }
     if (claim.attempt.status === 'succeeded') {
-      if (internal.managedSwitch && auth.type === 'managed_oauth') {
+      if (internal.authenticationSwitch?.direct && auth.type === 'oauth2_refresh') {
+        const savedAuth = await decodeAuthFromStorage(existing.auth_ciphertext, { kind, name }, deps.getEncryptionKey);
+        if (claim.attempt.verification.auth_type !== 'oauth2_refresh' || savedAuth.type !== 'oauth2_refresh'
+          || savedAuth.native_credential_id !== auth.native_credential_id
+          || JSON.stringify(credentialCandidateFromOwnerInput(savedAuth)) !== JSON.stringify(credentialCandidateFromOwnerInput(auth))) {
+          throw new RpcError('conflict', 'This switch attempt already completed for another authentication. Reopen the current connection before starting a new attempt.');
+        }
+      }
+      if (internal.authenticationSwitch && auth.type === 'managed_oauth') {
         const savedAuth = await decodeAuthFromStorage(existing.auth_ciphertext, { kind, name }, deps.getEncryptionKey);
         if (claim.attempt.verification.auth_type !== 'managed_oauth' || savedAuth.type !== 'managed_oauth'
           || savedAuth.broker_profile_id !== auth.broker_profile_id || savedAuth.integration_id !== auth.integration_id
@@ -4654,12 +4662,13 @@ export const handleConnectionRotateCredentials = async (
       kind,
       name,
       snapshot,
-      internal.managedSwitch !== undefined,
+      internal.authenticationSwitch !== undefined,
     );
-    if (internal.managedSwitch?.impactFingerprint !== undefined && auth.type === 'managed_oauth') {
+    await internal.authenticationSwitch?.direct?.verify();
+    if (internal.authenticationSwitch?.impactFingerprint !== undefined && auth.type === 'managed_oauth') {
       const service = requireManagedOAuth(deps);
       if (!service.verifyImpact) throw new RpcError('not_configured', 'Account impact review is unavailable.');
-      await service.verifyImpact(auth, internal.managedSwitch.impactFingerprint);
+      await service.verifyImpact(auth, internal.authenticationSwitch.impactFingerprint);
     }
     const isolated = isolatedConnectionStore(existing);
     await handleConnectionUpdate(
@@ -4677,14 +4686,17 @@ export const handleConnectionRotateCredentials = async (
           auth,
         },
       },
-      { allowCredentialCandidate: true, ...(internal.managedSwitch ? { managedSwitchCandidate: true as const } : {}) },
+      { allowCredentialCandidate: true, ...(internal.authenticationSwitch ? { managedSwitchCandidate: true as const } : {}) },
     );
-    const health = internal.managedSwitch && auth.type === 'managed_oauth'
+    const fileHealth = internal.authenticationSwitch ? await deps.managedOAuth?.verifyFileSourceSwitch?.(name, auth) : undefined;
+    const health = fileHealth ?? (internal.authenticationSwitch?.direct && auth.type === 'oauth2_refresh'
+      ? await verifyDirectOAuthAccess({ fetchImpl: deps.resolveFetch ?? globalThis.fetch.bind(globalThis), now: deps.now ?? Date.now }, auth, internal.authenticationSwitch.verificationUrl)
+      : internal.authenticationSwitch && auth.type === 'managed_oauth'
       ? await verifyManagedOAuthAccess({ broker: requireManagedOAuth(deps),
           fetchImpl: deps.resolveFetch ?? globalThis.fetch.bind(globalThis), now: deps.now ?? Date.now,
-        }, auth, internal.managedSwitch.verificationUrl)
-      : (await handleConnectionProbe({ ...deps, store: isolated.store }, { name, kind })).health;
-    if (internal.managedSwitch) isolated.store.setHealth(kind, name, JSON.stringify(health));
+        }, auth, internal.authenticationSwitch.verificationUrl)
+      : (await handleConnectionProbe({ ...deps, store: isolated.store }, { name, kind })).health);
+    if (internal.authenticationSwitch) isolated.store.setHealth(kind, name, JSON.stringify(health));
     // Ordinary health treats any non-auth HTTP response as "reachable" and
     // records e.g. `http_status_500` alongside status=ok. That is useful for a
     // row probe but is not strong enough to authorize a credential swap: only a
@@ -4740,6 +4752,7 @@ export const handleConnectionRotateCredentials = async (
     }
 
     let candidate = isolated.current();
+    if (internal.authenticationSwitch?.direct) candidate = { ...candidate, granted_scopes_json: undefined };
     if (grantedScopes !== undefined) {
       candidate = {
         ...candidate,
@@ -4759,22 +4772,25 @@ export const handleConnectionRotateCredentials = async (
       { kind, name },
       deps.getEncryptionKey,
     );
-    if (internal.managedSwitch && auth.type === 'managed_oauth') {
-      if (internal.managedSwitch.impactFingerprint !== undefined) {
+    if (internal.authenticationSwitch && auth.type === 'managed_oauth') {
+      if (internal.authenticationSwitch.impactFingerprint !== undefined) {
         const service = requireManagedOAuth(deps);
         if (!service.verifyImpact) throw new RpcError('not_configured', 'Upgrade the server to review the account impact before switching.');
-        await service.verifyImpact(auth, internal.managedSwitch.impactFingerprint);
+        await service.verifyImpact(auth, internal.authenticationSwitch.impactFingerprint);
       }
       await requireManagedOAuth(deps).verifySwitchAccount(auth);
     }
-    internal.managedSwitch?.beforeSwap?.();
+    await internal.authenticationSwitch?.direct?.verify();
+    internal.authenticationSwitch?.direct?.beforeSwap();
+    if (internal.authenticationSwitch) deps.managedOAuth?.assertFileSourceSwitchCurrent?.(name);
+    internal.authenticationSwitch?.beforeSwap?.();
     assertCredentialRotationSnapshotIsCurrent(
       method,
       deps.store,
       kind,
       name,
       snapshot,
-      internal.managedSwitch !== undefined,
+      internal.authenticationSwitch !== undefined,
     );
 
     const expiresAt = 'expires_at' in verifiedAuth
@@ -4788,9 +4804,11 @@ export const handleConnectionRotateCredentials = async (
       ...(expiresAt !== undefined ? { access_expires_at: expiresAt } : {}),
     };
     let consumeSwitchReceipt: (() => void) | undefined;
-    if (internal.managedSwitch && auth.type === 'managed_oauth') {
+    if (internal.authenticationSwitch && auth.type === 'managed_oauth') {
       consumeSwitchReceipt = requireManagedOAuth(deps).authorizeForSave(auth, String(parseStoredConfig(existing.config_json).base_url ?? ''),
         name, deps.store.get(kind, name) ?? undefined, { consume: false, switchAuthentication: true }).consume;
+    }
+    if (internal.authenticationSwitch) {
       const currentUse = deps.store.get(kind, name)?.last_used_at;
       if (currentUse !== undefined) candidate = { ...candidate, last_used_at: currentUse };
     }
@@ -4801,6 +4819,7 @@ export const handleConnectionRotateCredentials = async (
     });
     committed = true;
     consumeSwitchReceipt?.();
+    internal.authenticationSwitch?.direct?.consume();
     if (kind === 'api') {
       try {
         deps.recipeRunnabilityBroadcast?.recomputeAndEmit();
@@ -5044,6 +5063,8 @@ export const handleConnectionCompleteVendorOAuth = async (
     redirect_uri: string;
     client_id: string;
     client_secret?: string;
+    oauth_app_id?: string;
+    oauth_app_issuer?: import('@recued/contracts').OAuthAppIssuer;
     /** D-130 — sandbox-mode flag. When `true` and the vendor
      *  declares sandbox OAuth URLs (Salesforce), the code
      *  exchange POSTs to the sandbox token endpoint. Vendors
@@ -5152,9 +5173,13 @@ export const handleConnectionCompleteVendorOAuth = async (
     );
   }
 
+  if (a.oauth_app_issuer === 'google' || a.oauth_app_issuer === 'microsoft') provider = withSavedOAuthAppProvider(provider,a.oauth_app_issuer);
+  const app = resolveConnectionOAuthApp({ store: deps.oauthAppConfig,issuer: a.oauth_app_issuer, app_id: a.oauth_app_id,
+    client_id: a.client_id,client_secret: a.client_secret,
+    ...resolveVendorOAuthEndpoints(provider,{ sandbox: a.sandbox === true }) });
   if (
     provider.oauth.client_secret_required &&
-    (typeof a.client_secret !== 'string' || !a.client_secret.trim())
+    (typeof app.client_secret !== 'string' || !app.client_secret.trim())
   ) {
     throw new RpcError(
       'bad_request',
@@ -5163,12 +5188,12 @@ export const handleConnectionCompleteVendorOAuth = async (
   }
 
   try {
-    return await completeVendorOAuth({
+    const result = await completeVendorOAuth({
       provider,
       code: a.code,
       redirect_uri: a.redirect_uri,
-      client_id: a.client_id,
-      ...(a.client_secret !== undefined ? { client_secret: a.client_secret } : {}),
+      client_id: app.client_id,
+      ...(app.client_secret !== undefined ? { client_secret: app.client_secret } : {}),
       ...(a.sandbox !== undefined ? { sandbox: a.sandbox } : {}),
       // Only the vendor whose authorize URL carried a challenge proves it.
       ...(a.code_verifier !== undefined && provider.oauth.supports_pkce === true
@@ -5176,6 +5201,9 @@ export const handleConnectionCompleteVendorOAuth = async (
         : {}),
       ...(deps.fetcher !== undefined ? { fetcher: deps.fetcher } : {}),
     });
+    assertConnectionOAuthAppCurrent({ store: deps.oauthAppConfig,issuer: a.oauth_app_issuer, app_id: a.oauth_app_id,
+      client_id: app.client_id,...resolveVendorOAuthEndpoints(provider,{ sandbox: a.sandbox === true }) },app);
+    return result;
   } catch (e) {
     if (e instanceof VendorOAuthError) {
       throw new RpcError(
@@ -5331,9 +5359,13 @@ const handleConnectionStartVendorOAuth = async (
       `collection.connection.startVendorOAuth: unknown vendor '${a.vendor}'`,
     );
   }
+  if (a.oauth_app_issuer === 'google' || a.oauth_app_issuer === 'microsoft') provider = withSavedOAuthAppProvider(provider,a.oauth_app_issuer);
+  const app = resolveConnectionOAuthApp({ store: deps.oauthAppConfig,issuer: a.oauth_app_issuer, app_id: a.oauth_app_id,
+    client_id: a.client_id,client_secret: a.client_secret,
+    ...resolveVendorOAuthEndpoints(provider,{ sandbox: a.sandbox === true }) });
   if (
     provider.oauth.client_secret_required &&
-    (typeof a.client_secret !== 'string' || !a.client_secret.trim())
+    (typeof app.client_secret !== 'string' || !app.client_secret.trim())
   ) {
     throw new RpcError(
       'bad_request',
@@ -5390,8 +5422,8 @@ const handleConnectionStartVendorOAuth = async (
   const code_verifier = (wiring.newCodeVerifier ?? defaultCodeVerifier)();
   const { authorize_url, record } = startVendorOAuth({
     provider,
-    client_id: a.client_id,
-    ...(a.client_secret !== undefined ? { client_secret: a.client_secret } : {}),
+    client_id: app.client_id,
+    ...(app.client_secret !== undefined ? { client_secret: app.client_secret } : {}),
     redirect_uri: a.redirect_uri,
     sandbox: a.sandbox === true,
     server_url: serverUrl,
@@ -5405,14 +5437,16 @@ const handleConnectionStartVendorOAuth = async (
   // record so `/oauth/complete` can exchange against it without a registry
   // lookup. Registered-vendor flows store nothing extra (the strict
   // record-shape tests assert that).
+  const boundRecord: import('./connection-vendor-oauth-flow.js').VendorOAuthFlowRecord = { ...record,...(a.oauth_app_issuer === 'google' || a.oauth_app_issuer === 'microsoft'
+    ? { oauth_app_issuer: a.oauth_app_issuer, ...(typeof a.oauth_app_id === 'string' ? { oauth_app_id: a.oauth_app_id } : {}) } : {}) };
   wiring.flowStore.put(
     isFormSupplied
       ? {
-          ...record,
+          ...boundRecord,
           token_endpoint: formTokenEndpoint,
           ...(formScopes.length > 0 ? { scopes: formScopes } : {}),
         }
-      : record,
+      : boundRecord,
   );
   return {
     authorize_url,
@@ -5809,14 +5843,47 @@ export const makeConnectionHandlers = (
   // already prevents duplicate clicks in one tab; this closes the cross-tab /
   // direct-paired-client cost race around a slow model call.
   let setupGuideInFlight = false;
+  const directSwitch = deps.managedOAuth?.migrationCandidates && deps.managedOAuth.directMigrationSignature && deps.managedOAuth.previewDirectImpact
+    ? createDirectOAuthSwitch({ rows: () => deps.store.list(),
+        withSourceLease: (row, run) => deps.store.withCredentialLease ? deps.store.withCredentialLease([row.name], run) : run(),
+        decode: r => decodeAuthFromStorage(r.auth_ciphertext, r, deps.getEncryptionKey),
+        encode: (auth, name) => encodeAuthForStorage(auth, { kind: 'api', name }, deps.getEncryptionKey),
+        decrypt: async (ciphertext, name) => {
+          const auth = await decodeAuthFromStorage(ciphertext, { kind: 'api', name }, deps.getEncryptionKey);
+          if (auth.type !== 'oauth2_refresh') throw new RpcError('conflict', 'The native OAuth review is unavailable.');
+          return auth;
+        },
+        persistRefresh: async (previous, auth) => {
+          const changes: import('./native-oauth-renewal.js').NativeOAuthRenewal[] = [];
+          await persistNativeOAuthRenewal({ store: deps.store, encode: encodeAuthForStorage, decode: decodeAuthFromStorage,
+            key: deps.getEncryptionKey, now: deps.now ?? Date.now, onRenewal: next => { changes.push(...next); } }, previous, auth);
+          return changes;
+        },
+        candidates: names => deps.managedOAuth!.migrationCandidates!(names),
+        signature: names => deps.managedOAuth!.directMigrationSignature!(names),
+        impact: (name, auth, members) => deps.managedOAuth!.previewDirectImpact!(name, auth, members),
+        fetch: deps.resolveFetch ?? globalThis.fetch, now: deps.now ?? Date.now }) : undefined;
+  const applyAuthenticationSwitch = async (input: {
+    auth: import('@recued/contracts').AuthenticationSwitchAuthorization; name: string; revision: number; url: string;
+    attempt_id: string; impact_fingerprint?: string; beforeSwap?(): void;
+  }) => {
+    if (input.auth.type === 'direct_oauth' && !directSwitch) throw new RpcError('not_configured', 'Upgrade the server to switch to direct OAuth.');
+    if (deps.managedOAuth?.isFileSourceSwitch?.(input.name) && !input.impact_fingerprint) {
+      throw new RpcError('bad_request', 'Review the matching file source and permissions before switching authentication.');
+    }
+    const direct = input.auth.type === 'direct_oauth'
+      ? await directSwitch!.resolve(input.auth, input.name, input.revision, input.impact_fingerprint) : undefined;
+    return handleConnectionRotateCredentials(deps, { attempt_id: input.attempt_id, name: input.name, kind: 'api',
+      expected_updated_at: input.revision, patch: { auth: input.auth.type === 'managed_oauth' ? input.auth : direct!.auth },
+      ...(direct?.granted_scopes !== undefined ? { granted_scopes: [...direct.granted_scopes] } : {}) },
+    { authenticationSwitch: { verificationUrl: input.url, impactFingerprint: input.impact_fingerprint,
+        ...(direct ? { direct } : {}), ...(input.beforeSwap ? { beforeSwap: input.beforeSwap } : {}) } });
+  };
   const migration = deps.managedOAuth ? createManagedOAuthMigration({
     broker: deps.managedOAuth, rows: () => deps.store.list(),
+    ...(directSwitch ? { direct: directSwitch } : {}),
     fetchImpl: deps.resolveFetch ?? globalThis.fetch.bind(globalThis), now: deps.now ?? Date.now,
-    apply: async input => {
-      await handleConnectionRotateCredentials(deps, { attempt_id: input.attempt_id, name: input.name, kind: 'api',
-        expected_updated_at: input.revision, patch: { auth: input.auth } },
-      { managedSwitch: { verificationUrl: input.url, impactFingerprint: input.impact_fingerprint, beforeSwap: input.beforeSwap } });
-    },
+    apply: async input => { await applyAuthenticationSwitch(input); },
   }) : undefined;
   return {
     methods: [
@@ -5846,6 +5913,57 @@ export const makeConnectionHandlers = (
     ],
     handlers: {
       'collection.connection.managedOAuth': async (args) => {
+        if (args?.action === 'authentication_worklist') {
+          if (!deps.authenticationRepairs) throw new RpcError('not_configured', 'Authentication repairs are unavailable on this server. Update the server and refresh.');
+          return { action: args.action, worklist: await deps.authenticationRepairs() };
+        }
+        if (args?.action === 'reauthorization_context') {
+          const name = ensureName('managedOAuth.reauthorization_context', args.name);
+          const revision = ensureExpectedConnectionUpdatedAt('managedOAuth.reauthorization_context', args.expected_updated_at);
+          const row = deps.store.get('api', name);
+          if (!row || revision === undefined || row.updated_at !== revision) throw new RpcError('conflict', 'The saved connection changed. Return to the pack and review again.');
+          const snapshot = JSON.stringify(row);
+          const requirementsSignature = deps.managedOAuth?.directMigrationSignature?.([name]);
+          const requiredScopes = deps.managedOAuth?.reauthorizationScopes?.(name) ?? [];
+          const auth = await decodeAuthFromStorage(row.auth_ciphertext, row, deps.getEncryptionKey);
+          if (snapshot !== JSON.stringify(deps.store.get('api', name))
+            || requirementsSignature !== deps.managedOAuth?.directMigrationSignature?.([name])) throw new RpcError('conflict', 'The saved connection or its required permissions changed while reading its OAuth app.');
+          if (auth.type !== 'oauth2_refresh' && auth.type !== 'managed_oauth') throw new RpcError('bad_request', 'Choose a saved OAuth connection to reconnect.');
+          return { action: 'reauthorization_context', name, updated_at: revision, auth_type: auth.type,
+            ...(auth.type === 'oauth2_refresh' ? { client_id: auth.client_id, token_endpoint: auth.token_endpoint,
+              required_scopes: [...new Set([...requiredScopes, ...auth.required_scopes ?? []])].sort(),
+              ...(auth.saved_oauth_app ? { saved_oauth_app: auth.saved_oauth_app } : {}) } : {}) };
+        }
+        if (args && typeof args.action === 'string' && args.action.startsWith('collection_authentication_app_')) {
+          if (!deps.collectionOAuthAppSwitch) throw new RpcError('not_configured', 'Switching saved OAuth apps is unavailable. Update the server.');
+          return deps.collectionOAuthAppSwitch.handle(args as import('@recued/contracts').CollectionOAuthAppSwitchRequest);
+        }
+        if (args && typeof args.action === 'string' && args.action.startsWith('collection_authentication_')) {
+          if (!deps.collectionAuthentication) throw new RpcError('not_configured', 'Collection authentication migration is unavailable. Upgrade the server.');
+          return deps.collectionAuthentication.handle(args as import('@recued/contracts').CollectionAuthenticationRequest);
+        }
+        if (args?.action === 'retire_direct_authentication') {
+          directSwitch?.retire(args.auth); return { action: 'retire_direct_authentication' };
+        }
+        if (args?.action === 'review_direct_authentication') {
+          if (!directSwitch) throw new RpcError('not_configured', 'Upgrade the server to review direct OAuth authentication.');
+          const auth = args.auth === undefined ? undefined : credentialCandidateFromOwnerInput(ensureAuth('managedOAuth.review_direct_authentication', args.auth));
+          if (auth && auth.type !== 'oauth2_refresh') throw new RpcError('bad_request', 'A native OAuth refresh credential is required.');
+          if (args.oauth_app_id !== undefined && (args.oauth_app_issuer === undefined || !auth)) throw new RpcError('bad_request', 'Choose a saved app and authorize its direct OAuth credentials.');
+          const appInput = auth ? { store: deps.oauthAppConfig, issuer: args.oauth_app_issuer, app_id: args.oauth_app_id,
+            client_id: auth.client_id, token_endpoint: auth.token_endpoint } : undefined;
+          const app = appInput ? resolveConnectionOAuthApp({ ...appInput,
+            ...(args.oauth_app_issuer === undefined && auth?.client_secret !== undefined ? { client_secret: auth.client_secret } : {}) }) : undefined;
+          if (args.oauth_app_issuer !== undefined && (!auth || auth.client_secret)) throw new RpcError('bad_request', 'Choose a saved OAuth app or enter its credentials.');
+          const review = await directSwitch.review({
+            selections: args.selections, ...(auth ? { auth: { ...auth, ...(app?.client_secret !== undefined ? { client_secret: app.client_secret } : {}),
+              ...(args.oauth_app_issuer ? { saved_oauth_app: { issuer: args.oauth_app_issuer, id: args.oauth_app_id ?? 'default' } } : {}) } } : {}),
+            ...(args.source_name !== undefined ? { source_name: args.source_name } : {}),
+            ...(args.scopes !== undefined ? { scopes: args.scopes } : {}) });
+          try { if (appInput && app) assertConnectionOAuthAppCurrent(appInput, app); }
+          catch (error) { directSwitch.retire(review.auth); throw error; }
+          return { action: 'review_direct_authentication', ...review };
+        }
         if (args && typeof args.action === 'string' && args.action.startsWith('migration_')) {
           if (!migration) throw new RpcError('not_configured', 'Managed OAuth is unavailable.');
           return migration.handle(args as import('@recued/contracts').ManagedOAuthMigrationRequest);
@@ -5859,8 +5977,9 @@ export const makeConnectionHandlers = (
           const base = String(parseStoredConfig(existing.config_json).base_url ?? '');
           const url = typeof args.verification_url === 'string' ? managedOAuthVerificationUrl(base, args.verification_url) : undefined;
           if (!url) throw new RpcError('bad_request', 'Enter a read-only access check URL within this connection’s saved vendor API.');
-          const result = await handleConnectionRotateCredentials(deps, { attempt_id: args.attempt_id, name, kind: 'api',
-            expected_updated_at: revision, patch: { auth: args.auth } }, { managedSwitch: { verificationUrl: url, impactFingerprint: args.impact_fingerprint } });
+          if (!args.auth || !['managed_oauth', 'direct_oauth'].includes(args.auth.type)) throw new RpcError('bad_request', 'A reviewed OAuth authorization is required.');
+          const result = await applyAuthenticationSwitch({ attempt_id: args.attempt_id, name, revision,
+            auth: args.auth, url, impact_fingerprint: args.impact_fingerprint });
           return { action: 'apply_authentication_switch', ...result };
         }
         if (args !== null && typeof args === 'object' && args.action === 'save_reauthorization') {

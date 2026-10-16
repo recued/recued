@@ -95,6 +95,9 @@ const makeFakeElement = (tag: string): FakeElement => {
       }
     },
     contains: (): boolean => true,
+    closest: ()=>null,
+    querySelector: ()=>null,
+    append: (...nodes)=>{for(const node of nodes)if(typeof node!=='string')(el as FakeElement).appendChild(node);},
     querySelectorAll: (() => [] as unknown as NodeListOf<Element>) as HTMLElement['querySelectorAll'],
     replaceChildren: (): void => { childList.splice(0); },
     setAttribute: (name: string, value: string): void => {
@@ -105,6 +108,7 @@ const makeFakeElement = (tag: string): FakeElement => {
     removeAttribute: (name: string): void => {
       attrs.delete(name);
     },
+    insertBefore: ((child:FakeElement,reference:FakeElement|null)=>{child.remove();const index=reference===null?childList.length:childList.indexOf(reference);if(index<0)throw new Error('Reference not found');childList.splice(index,0,child);child.parentRef=el as FakeElement;return child;}) as HTMLElement['insertBefore'],
     appendChild: ((child: FakeElement): FakeElement => {
       childList.push(child);
       child.parentRef = el as FakeElement;
@@ -352,7 +356,7 @@ describe('D-149 follow-on — bootstrapReceptionRoute: route chrome + sections (
     const header = routeRoot.childList[0]!;
     expect(header.childList.map((node) => node.textContent)).toEqual([
       'Reception',
-      'Review incoming requests, protect public access, and manage every visitor-facing endpoint.',
+      'Review requests, manage customer work, and maintain your public endpoints.',
     ]);
     const tabBar = routeRoot.childList[1]!;
     expect(tabBar.attrs.has('data-recued-reception-route-tabs')).toBe(true);
@@ -363,17 +367,13 @@ describe('D-149 follow-on — bootstrapReceptionRoute: route chrome + sections (
       '#reception/inbox',
       '#reception/jobs',
       '#reception/records',
-      '#reception/signoffs',
-      '#reception/abuse',
       '#reception/endpoints',
     ]);
     expect(tabBar.childList.map((a) => a.textContent)).toEqual([
       'Inbox',
-      'Customer jobs',
+      'Customer work',
       'Records',
-      'Customer sign-offs',
-      'Abuse',
-      'Endpoints',
+      'Manage',
     ]);
     expect(route.hasInFlightWork()).toBe(false);
     expect(route.inFlightWorkPrompt()).toBe(
@@ -419,7 +419,7 @@ describe('D-149 follow-on — bootstrapReceptionRoute: route chrome + sections (
       initialSection: 'endpoints',
     });
     expect(route.activeSection()).toBe('endpoints');
-    const content = root.childList[0]!.childList[2]!;
+    const content = root.childList[0]!.childList.find(n=>n.attrs.has('data-recued-reception-route-content'))!;
     expect(content.childList.length).toBe(3);
     expect(content.childList[0]!.attrs.has('data-reception-shell-page-main')).toBe(true);
     expect(content.childList[1]!.attrs.get('data-reception-shell-slot')).toBe('modal');
@@ -483,7 +483,7 @@ describe('R19 Slice 2 — bootstrapReceptionRoute: routed authoring', () => {
       initialKind: 'scheduling_link',
     });
     expect(route.activeSection()).toBe('endpoints');
-    const content = root.childList[0]!.childList[2]!;
+    const content = root.childList[0]!.childList.find(n=>n.attrs.has('data-recued-reception-route-content'))!;
     // The authoring page mounted — NOT the spine's page/modal/prompts triad.
     expect(content.childList[0]!.attrs.get('data-reception-authoring-section')).toBe('new');
     expect(content.childList.some((c) => c.attrs.has('data-reception-shell-page-main'))).toBe(false);
@@ -504,7 +504,7 @@ describe('R19 Slice 2 — bootstrapReceptionRoute: routed authoring', () => {
       initialSubview: 'edit',
       initialKind: 'reception_page',
     });
-    const content = root.childList[0]!.childList[2]!;
+    const content = root.childList[0]!.childList.find(n=>n.attrs.has('data-recued-reception-route-content'))!;
     expect(content.childList[0]!.attrs.get('data-reception-authoring-section')).toBe('edit');
     await flush();
     // Edit mode re-reads the live singleton (fetch-before-seed).
@@ -522,7 +522,7 @@ describe('R19 Slice 2 — bootstrapReceptionRoute: routed authoring', () => {
       initialSection: 'endpoints',
       initialSubview: 'ep-some-id', // not new|edit|setup → an endpoint-detail id
     });
-    const content = root.childList[0]!.childList[2]!;
+    const content = root.childList[0]!.childList.find(n=>n.attrs.has('data-recued-reception-route-content'))!;
     // The spine mounted (detail is a spine sub-view), NOT the authoring page.
     expect(content.childList[0]!.attrs.has('data-reception-shell-page-main')).toBe(true);
     expect(content.childList[0]!.attrs.has('data-reception-authoring-section')).toBe(false);
@@ -542,7 +542,7 @@ describe('R19 Slice 2 — bootstrapReceptionRoute: routed authoring', () => {
       initialSubview: 'edit',
       initialKind: 'scheduling_link', // a link kind — not editable
     });
-    const content = root.childList[0]!.childList[2]!;
+    const content = root.childList[0]!.childList.find(n=>n.attrs.has('data-recued-reception-route-content'))!;
     expect(content.childList[0]!.attrs.has('data-reception-shell-page-main')).toBe(true);
     expect(content.childList[0]!.attrs.has('data-reception-authoring-section')).toBe(false);
     // `edit` is an authoring verb (excluded from the detail-id set), so the
@@ -562,7 +562,7 @@ describe('R19 Slice 2 — bootstrapReceptionRoute: routed authoring', () => {
       initialSubview: 'new',
       initialKind: 'status_link',
     });
-    const content = root.childList[0]!.childList[2]!;
+    const content = root.childList[0]!.childList.find(n=>n.attrs.has('data-recued-reception-route-content'))!;
     expect(content.childList[0]!.attrs.has('data-reception-shell-page-main')).toBe(true);
     // `new` is an authoring verb — the list, not a detail.
     expect(fns.openDetail).not.toHaveBeenCalled();
@@ -581,7 +581,7 @@ describe('R19 Slice 2 — bootstrapReceptionRoute: routed authoring', () => {
       navigate,
     });
     // The spine's page-main slot carries the page mount's click dispatcher.
-    const content = root.childList[0]!.childList[2]!;
+    const content = root.childList[0]!.childList.find(n=>n.attrs.has('data-recued-reception-route-content'))!;
     const pageMain = content.childList[0]!;
     // Synthesize a "New scheduling link" click — the page host's
     // onEnterAuthoring seam (wired by the bootstrap) navigates instead of
@@ -633,7 +633,7 @@ describe('R19 Slice 2 — bootstrapReceptionRoute: routed authoring', () => {
       navigate,
       onHashSync,
     });
-    const formHost = root.childList[0]!.childList[2]!
+    const formHost = root.childList[0]!.childList.find(n=>n.attrs.has('data-recued-reception-route-content'))!
       .childList[0]!.childList[1]!;
 
     fireAction(formHost, { action: 'reception-form-submit' });
@@ -663,7 +663,7 @@ describe('R19 Slice 3 — bootstrapReceptionRoute: routed wizard', () => {
       initialSubview: 'setup',
     });
     expect(route.activeSection()).toBe('endpoints');
-    const content = root.childList[0]!.childList[2]!;
+    const content = root.childList[0]!.childList.find(n=>n.attrs.has('data-recued-reception-route-content'))!;
     // The wizard page mounted — NOT the spine's page/modal/prompts triad.
     expect(content.childList[0]!.attrs.has('data-reception-wizard-section')).toBe(true);
     expect(content.childList.some((c) => c.attrs.has('data-reception-shell-page-main'))).toBe(false);
@@ -685,7 +685,7 @@ describe('R19 Slice 3 — bootstrapReceptionRoute: routed wizard', () => {
       navigate,
     });
     // The spine's page-main slot carries the page mount's click dispatcher.
-    const content = root.childList[0]!.childList[2]!;
+    const content = root.childList[0]!.childList.find(n=>n.attrs.has('data-recued-reception-route-content'))!;
     const pageMain = content.childList[0]!;
     // Synthesize a "Start the Launch Wizard" click — the page host's
     // onEnterWizard seam (wired by the bootstrap) navigates instead of
@@ -705,7 +705,7 @@ describe('R19 Slice 3 — bootstrapReceptionRoute: routed wizard', () => {
       initialSection: 'endpoints',
       initialSubview: 'setup',
     });
-    const content = root.childList[0]!.childList[2]!;
+    const content = root.childList[0]!.childList.find(n=>n.attrs.has('data-recued-reception-route-content'))!;
     expect(content.childList.length).toBe(1);
     route.dispose();
     expect(content.childList.length).toBe(0);
@@ -763,7 +763,7 @@ describe('R19 Slice 4 — bootstrapReceptionRoute: routed endpoint detail', () =
       initialSection: 'endpoints',
       navigate,
     });
-    const content = root.childList[0]!.childList[2]!;
+    const content = root.childList[0]!.childList.find(n=>n.attrs.has('data-recued-reception-route-content'))!;
     const pageMain = content.childList[0]!;
     // A per-row "Detail" click navigates to the deep link instead of the
     // in-place shell open.
@@ -784,7 +784,7 @@ describe('R19 Slice 4 — bootstrapReceptionRoute: routed endpoint detail', () =
       initialSection: 'endpoints',
       navigate,
     });
-    const content = root.childList[0]!.childList[2]!;
+    const content = root.childList[0]!.childList.find(n=>n.attrs.has('data-recued-reception-route-content'))!;
     const pageMain = content.childList[0]!;
     // `closeDetail` is called once by the mount reconcile; the click must NOT
     // add a second in-place call — it navigates instead.
@@ -817,7 +817,7 @@ describe('R19 Slice 4 — bootstrapReceptionRoute: routed endpoint detail', () =
       initialAddress: { kind: 'section', section: 'endpoints' },
       onHashSync,
     });
-    const pageMain = root.childList[0]!.childList[2]!.childList[0]!;
+    const pageMain = root.childList[0]!.childList.find(n=>n.attrs.has('data-recued-reception-route-content'))!.childList[0]!;
 
     fireAction(pageMain, { action: 'reception-open-detail', endpointId: 'ep-7' });
     fireAction(pageMain, { action: 'reception-close-detail' });
@@ -852,7 +852,7 @@ describe('R19 Slice 4 — bootstrapReceptionRoute: routed endpoint detail', () =
       initialAddress: { kind: 'section', section: 'endpoints' },
       onHashSync: vi.fn(),
     });
-    const pageMain = root.childList[0]!.childList[2]!.childList[0]!;
+    const pageMain = root.childList[0]!.childList.find(n=>n.attrs.has('data-recued-reception-route-content'))!.childList[0]!;
 
     fireAction(pageMain, {
       action: 'reception-open-detail',
@@ -886,7 +886,7 @@ describe('D-200 Slice 6g.4 — bootstrapReceptionRoute: pair selector', () => {
     });
     await flush();
 
-    const content = root.childList[0]!.childList[2]!;
+    const content = root.childList[0]!.childList.find(n=>n.attrs.has('data-recued-reception-route-content'))!;
     expect(content.innerHTML).toContain(
       'data-reception-intake-recipe-pair-section="intake-1"',
     );
@@ -918,7 +918,7 @@ describe('D-200 Slice 6g.4 — bootstrapReceptionRoute: pair selector', () => {
       initialSection: 'endpoints',
       navigate,
     });
-    const content = root.childList[0]!.childList[2]!;
+    const content = root.childList[0]!.childList.find(n=>n.attrs.has('data-recued-reception-route-content'))!;
     const pageMain = content.childList[0]!;
 
     fireAction(pageMain, {

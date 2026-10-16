@@ -36,8 +36,8 @@
  *  coverage panel only show when `registry.describe` populated coverage;
  *  the banners only show once a broadcast lands.
  *
- *  Mirrors `llm-result-cache-card-mount.ts`: closure state +
- *  `host.innerHTML = render(state)` + a delegated click/change listener
+ *  Mirrors `llm-result-cache-card-mount.ts`: closure state + a string-rendered
+ *  panel (retaining live schedule inputs on passive updates) + delegated listeners
  *  + broadcast subscriptions (`housekeeping_cycle` reloads status;
  *  `enrichment_promotion_suggested` / `enrichment_drift_detected` feed
  *  the banners).
@@ -159,8 +159,8 @@ export type HousekeepingTopicResetCaller = (args: {
 }) => Promise<HousekeepingTopicResetResult>;
 
 export interface MountHousekeepingPanelOptions {
-  /** Host element — owned wholesale (`innerHTML` rewrites on every
-   *  state transition; `dispose()` clears it + drops the listeners). */
+  /** Host element — owned wholesale. Passive updates retain live schedule
+   *  inputs; `dispose()` clears the DOM and drops the listeners. */
   host: HTMLElement;
   /** `housekeeping.config.read` — fired on mount. */
   runConfigRead: HousekeepingConfigReadCaller;
@@ -250,7 +250,11 @@ const ACTION_RESET_RETRY = 'housekeeping-reset-retry';
 const ACTION_RESET_TOGGLE_PSI = 'housekeeping-reset-toggle-psi';
 
 type HousekeepingFocusIntent =
-  | { kind: 'action'; action: string; taskId?: string; topic?: string }
+  | {
+      kind: 'action'; action: string; taskId?: string; topic?: string;
+      radioValue?: string; cost?: string;
+      selection?: { start: number; end: number; direction: 'forward' | 'backward' | 'none' };
+    }
   | { kind: 'dialog'; dialog: 'run-now' | 'reset' };
 
 export const mountHousekeepingPanel = (
@@ -259,11 +263,19 @@ export const mountHousekeepingPanel = (
   const now = opts.now ?? Date.now;
 
   let state: HousekeepingPanelState = initialHousekeepingPanelState();
+  let customInputDraft: Partial<Record<'cycle_budget_ms' | 'cycle_interval_minutes', string>> = {};
+  let configWriteVersion = 0;
+  const scheduleDirty = (): boolean => state.config !== null && (
+    (state.draftPreset !== null && state.draftPreset !== state.config.preset)
+    || ((state.draftPreset ?? state.config.preset) === 'custom'
+      && (Object.keys(state.customDraft).length > 0 || Object.keys(customInputDraft).length > 0))
+  );
   // Mount-local AI-producer filters (search string + cost axis). Kept off
   // the shared state shape — they're pure view filters with no rpc churn,
   // and the producer section derives the visible list from them.
   let producerSearch = '';
   let producerCostFilter: HousekeepingProducerCostFilter = 'all';
+  const openPromptBiasTopics = new Set<string>();
   // Set on the frame we mutate `producerSearch` so the post-render pass
   // restores focus + caret to the search box (a full innerHTML rewrite
   // would otherwise drop focus mid-keystroke). `searchCaret` carries the
@@ -279,6 +291,15 @@ export const mountHousekeepingPanel = (
   // leave the panel stuck with no config/trust).
   let loadGeneration = 0;
   let statusGeneration = 0;
+  const trustVersions = new Map<string, number>();
+  const promotionReadGenerations = new Map<string, number>();
+  const pendingTrustWrites = new Map<string, { promotion?: HousekeepingPromotionSuggestion }>();
+  const trustVersion = (topic: string): number => trustVersions.get(topic) ?? 0;
+  const advanceTrustVersion = (topic: string): void => {
+    trustVersions.set(topic, trustVersion(topic) + 1);
+  };
+  // The same topic can be reopened while an earlier preview is pending.
+  let resetGeneration = 0;
 
   opts.host.setAttribute(HOUSEKEEPING_PANEL_HOST_ATTR, '');
 
@@ -297,13 +318,35 @@ export const mountHousekeepingPanel = (
     </div>
   `;
 
+  const renderSchedule = (): string => {
+    const config = state.config;
+    if (!config) return '';
+    const showCustom = (state.draftPreset ?? config.preset) === 'custom';
+    return `
+      <section class="housekeeping-schedule" aria-label="Idle schedule">
+        <h3>Idle schedule</h3>
+        ${renderHousekeepingPresetPicker({ active: config.preset, draft: state.draftPreset, saving: state.saving })}
+        ${showCustom ? renderHousekeepingCustomWindowFields({
+          config, draft: state.customDraft, inputDraft: customInputDraft, saving: state.saving,
+        }) : ''}
+        ${state.saveError ? `<p class="housekeeping-error" role="alert">${e(state.saveError)}</p>` : ''}
+        <div class="housekeeping-actions">
+          ${button({ label: state.saving ? 'Saving…' : 'Save', variant: 'primary', size: 'sm', action: ACTION_SAVE,
+            ariaDisabled: !scheduleDirty() || state.saving, ariaBusy: state.saving })}
+          <span class="housekeeping-current-summary">Currently ${e(config.preset)}</span>
+        </div>
+      </section>
+    `;
+  };
+  let lastScheduleHtml = '';
+
   const renderPanel = (): string => {
     if (state.loading && !state.config) {
       return renderPanelFrame(
         `<p class="housekeeping-loading">Loading housekeeping…</p>`,
       );
     }
-    if (state.error) {
+    if (state.error && !state.config) {
       return renderPanelFrame(
         `<p class="housekeeping-error">${e(state.error)}</p>`,
       );
@@ -313,13 +356,6 @@ export const mountHousekeepingPanel = (
         '<p class="housekeeping-error">Housekeeping config unavailable.</p>',
       );
     }
-    const config = state.config;
-    const draftPreset = state.draftPreset ?? config.preset;
-    const showCustom = draftPreset === 'custom';
-    const dirty =
-      state.draftPreset !== null && state.draftPreset !== config.preset;
-    const dirtyCustom = showCustom && Object.keys(state.customDraft).length > 0;
-    const canSave = (dirty || dirtyCustom) && !state.saving;
     const runNowTask = state.tasks.find(
       (t) => t.meta.id === state.runNow.task_id,
     );
@@ -328,9 +364,11 @@ export const mountHousekeepingPanel = (
     // list. The 11 core maintenance tasks graduated to Settings ▸ Server ▸
     // Maintenance (ops/status), so the panel is config-only.
     return renderPanelFrame(`
+        ${state.error ? `<p class="housekeeping-error" role="alert">${e(state.error)}</p>` : ''}
         ${renderHousekeepingPromotionBanner({
           suggestions: state.promotionSuggestions,
           writing: state.promotionWriting,
+          trustWriting: state.trustWriting,
           writeError: state.promotionWriteError,
         })}
 
@@ -340,37 +378,7 @@ export const mountHousekeepingPanel = (
           writeError: state.driftWriteError,
         })}
 
-        <section class="housekeeping-schedule" aria-label="Idle schedule">
-          <h3>Idle schedule</h3>
-          ${renderHousekeepingPresetPicker({
-            active: config.preset,
-            draft: state.draftPreset,
-            saving: state.saving,
-          })}
-
-          ${
-            showCustom
-              ? renderHousekeepingCustomWindowFields({
-                  config,
-                  draft: state.customDraft,
-                  saving: state.saving,
-                })
-              : ''
-          }
-
-          ${state.saveError ? `<p class="housekeeping-error">${e(state.saveError)}</p>` : ''}
-
-          <div class="housekeeping-actions">
-            ${button({
-              label: state.saving ? 'Saving…' : 'Save',
-              variant: 'primary',
-              size: 'sm',
-              action: ACTION_SAVE,
-              disabled: !canSave,
-            })}
-            <span class="housekeeping-current-summary">Currently ${e(config.preset)}</span>
-          </div>
-        </section>
+        ${renderSchedule()}
 
         ${renderHousekeepingEnrichmentProducerSection({
           tasks: state.tasks,
@@ -416,6 +424,8 @@ export const mountHousekeepingPanel = (
     action: string,
     taskId?: string,
     topic?: string,
+    radioValue?: string,
+    cost?: string,
   ): HTMLElement | null => {
     const nodes = (opts.host as HTMLElement & {
       querySelectorAll?: (selector: string) => ArrayLike<HTMLElement>;
@@ -424,6 +434,8 @@ export const mountHousekeepingPanel = (
     for (let i = 0; i < nodes.length; i += 1) {
       const node = nodes[i] as HTMLElement;
       if (node.getAttribute('data-action') !== action) continue;
+      if (radioValue !== undefined && node.getAttribute('value') !== radioValue) continue;
+      if (cost !== undefined && node.getAttribute('data-cost') !== cost) continue;
       if (node.classList?.contains('housekeeping-reset-modal-backdrop')) {
         continue;
       }
@@ -432,7 +444,9 @@ export const mountHousekeepingPanel = (
           || node.getAttribute('data-task-id') === taskId)
         && (topic === undefined
           || node.getAttribute('data-topic') === topic
-          || node.closest?.('[data-topic]')?.getAttribute('data-topic') === topic)
+          || node.closest?.('[data-topic]')?.getAttribute('data-topic') === topic
+          || node.getAttribute('data-source-topic') === topic
+          || node.closest?.('[data-source-topic]')?.getAttribute('data-source-topic') === topic)
       ) {
         return node;
       }
@@ -451,13 +465,13 @@ export const mountHousekeepingPanel = (
         : '.housekeeping-reset-modal',
     ) ?? null;
 
-  const focusElement = (element: HTMLElement | null): void => {
+  const focusElement = (element: HTMLElement | null, preventScroll = true): void => {
     (element as (HTMLElement & {
       focus?: (options?: FocusOptions) => void;
-    }) | null)?.focus?.({ preventScroll: true });
+    }) | null)?.focus?.({ preventScroll });
   };
 
-  const modalFocusIntentFromActiveElement = (): HousekeepingFocusIntent | null => {
+  const focusIntentFromActiveElement = (): HousekeepingFocusIntent | null => {
     const host = opts.host as HTMLElement & {
       contains?: (node: Node | null) => boolean;
       ownerDocument?: Document;
@@ -466,16 +480,27 @@ export const mountHousekeepingPanel = (
     if (!active || host.contains?.(active) !== true) return null;
     const resetDialog = active.closest?.('.housekeeping-reset-modal');
     const runNowDialog = active.closest?.('.housekeeping-runnow-dialog');
-    if (!resetDialog && !runNowDialog) return null;
     const action = active.closest?.('[data-action]')?.getAttribute('data-action');
     if (action) {
-      const topic = resetDialog?.getAttribute('data-topic');
+      const topic = active.closest?.('[data-topic]')?.getAttribute('data-topic')
+        ?? active.closest?.('[data-source-topic]')?.getAttribute('data-source-topic');
+      const taskId = active.getAttribute('data-task-id');
+      const radioValue = active.getAttribute('type') === 'radio' ? active.getAttribute('value') : null;
+      const cost = active.getAttribute('data-cost');
+      const input = active as HTMLInputElement;
       return {
         kind: 'action',
         action,
         ...(topic ? { topic } : {}),
+        ...(taskId ? { taskId } : {}),
+        ...(radioValue !== null ? { radioValue } : {}),
+        ...(cost !== null ? { cost } : {}),
+        ...(typeof input.selectionStart === 'number' && typeof input.selectionEnd === 'number'
+          ? { selection: { start: input.selectionStart, end: input.selectionEnd, direction: input.selectionDirection ?? 'none' } }
+          : {}),
       };
     }
+    if (!resetDialog && !runNowDialog) return null;
     return {
       kind: 'dialog',
       dialog: resetDialog ? 'reset' : 'run-now',
@@ -484,17 +509,73 @@ export const mountHousekeepingPanel = (
 
   const applyFocusIntent = (intent: HousekeepingFocusIntent | null): void => {
     if (intent === null) return;
-    focusElement(
-      intent.kind === 'dialog'
-        ? dialogElement(intent.dialog)
-        : findAction(intent.action, intent.taskId, intent.topic),
-    );
+    let target = intent.kind === 'dialog'
+      ? dialogElement(intent.dialog)
+      : findAction(intent.action, intent.taskId, intent.topic, intent.radioValue, intent.cost);
+    const removedBanner = !target && intent.kind === 'action' && intent.topic !== undefined
+      && [ACTION_PROMOTION_PROMOTE, ACTION_PROMOTION_DISMISS, ACTION_DRIFT_REVIEW, ACTION_DRIFT_DISMISS].includes(intent.action);
+    if (removedBanner && intent.kind === 'action') {
+      // Only a removed banner's current focus owner takes this fallback.
+      // A reply must leave a newer search, navigation or dialog owner alone.
+      target = findAction(ACTION_DRAWER_TOGGLE, undefined, intent.topic)
+        ?? findAction(HOUSEKEEPING_PRODUCER_SEARCH_ACTION);
+    }
+    focusElement(target, !removedBanner);
+    if (intent.kind === 'action' && intent.selection && target) {
+      const input = target as HTMLInputElement;
+      const { start, end, direction } = intent.selection;
+      input.setSelectionRange?.(start, end, direction);
+    }
+  };
+
+  const promptBiasDisclosures = (): HTMLDetailsElement[] => Array.from(
+    opts.host.querySelectorAll?.<HTMLDetailsElement>('details.housekeeping-drawer-coverage-bias') ?? [],
+  );
+
+  const rememberPromptBiasDisclosures = (): void => {
+    for (const details of promptBiasDisclosures()) {
+      const topic = details.closest('[data-topic]')?.getAttribute('data-topic');
+      if (!topic) continue;
+      if (details.open) openPromptBiasTopics.add(topic);
+      else openPromptBiasTopics.delete(topic);
+    }
+  };
+
+  const restorePromptBiasDisclosures = (): void => {
+    for (const details of promptBiasDisclosures()) {
+      const topic = details.closest('[data-topic]')?.getAttribute('data-topic');
+      if (topic && openPromptBiasTopics.has(topic)) details.open = true;
+    }
   };
 
   const render = (focusIntent?: HousekeepingFocusIntent): void => {
     if (disposed) return;
-    const intent = focusIntent ?? modalFocusIntentFromActiveElement();
-    opts.host.innerHTML = renderPanel();
+    const intent = focusIntent ?? focusIntentFromActiveElement();
+    // Read the current native choice before replacing the drawer. Keeping it
+    // per topic also preserves it while a drawer is collapsed or filtered out.
+    rememberPromptBiasDisclosures();
+    const html = renderPanel();
+    const scheduleHtml = renderSchedule();
+    const schedule = opts.host.querySelector?.<HTMLElement>('.housekeeping-schedule');
+    const frame = schedule?.parentElement;
+    if (schedule && frame && scheduleHtml === lastScheduleHtml) {
+      // Passive producer/status updates leave the schedule's live inputs in
+      // place, preserving native number-input caret and incomplete text.
+      const template = opts.host.ownerDocument.createElement('template');
+      template.innerHTML = html;
+      const nextFrame = template.content.firstElementChild;
+      if (nextFrame) {
+        for (const child of Array.from(frame.children)) if (child !== schedule) child.remove();
+        let afterSchedule = false;
+        for (const child of Array.from(nextFrame.children)) {
+          if (child.matches('.housekeeping-schedule')) afterSchedule = true;
+          else if (afterSchedule) frame.appendChild(child);
+          else frame.insertBefore(child, schedule);
+        }
+      }
+    } else opts.host.innerHTML = html;
+    lastScheduleHtml = scheduleHtml;
+    restorePromptBiasDisclosures();
     // Restore focus + caret to the search box after a keystroke-driven
     // re-render (full innerHTML rewrite drops focus otherwise).
     if (refocusSearch) {
@@ -552,6 +633,8 @@ export const mountHousekeepingPanel = (
   const doLoad = async (): Promise<void> => {
     if (disposed) return;
     const captured = ++loadGeneration;
+    const capturedWrite = configWriteVersion;
+    const capturedTrust = new Map(trustVersions);
     setState({ loading: true, error: null });
     try {
       const [config, status, trust] = await Promise.all([
@@ -561,23 +644,61 @@ export const mountHousekeepingPanel = (
       ]);
       if (disposed || captured !== loadGeneration) return;
       const trustRows: Record<string, EnrichmentTrustRow> = {};
-      for (const row of trust.rows) trustRows[row.topic] = row;
+      const keepCurrent = (topic: string): boolean => state.trustWriting[topic] === true
+        || trustVersion(topic) !== (capturedTrust.get(topic) ?? 0);
+      // A promotion refresh or save may have settled a topic since these
+      // reads began. Retain that row, including one absent from this snapshot.
+      for (const [topic, row] of Object.entries(state.trustRows)) {
+        if (keepCurrent(topic)) trustRows[topic] = row;
+      }
+      for (const row of trust.rows) {
+        if (!keepCurrent(row.topic)) trustRows[row.topic] = row;
+      }
       setState({
         loading: false,
         error: null,
-        config,
+        ...(capturedWrite === configWriteVersion && !state.saving ? { config } : {}),
         tasks: status.tasks,
         trustRows,
-        // A live suggestion carries the cost estimate, so it wins over the
-        // restored one; a restored entry only fills a gap the reload left.
-        promotionSuggestions: {
-          ...restoredPromotions(trust.rows),
-          ...state.promotionSuggestions,
-        },
+        promotionSuggestions: reconcilePromotions(state.promotionSuggestions, Object.values(trustRows)),
       });
     } catch (err) {
       if (disposed || captured !== loadGeneration) return;
-      setState({ loading: false, error: messageOf(err) });
+      setState({ loading: false, ...(capturedWrite === configWriteVersion ? { error: messageOf(err) } : {}) });
+    }
+  };
+
+  const doRefreshPromotion = async (suggestion: HousekeepingPromotionSuggestion): Promise<void> => {
+    const { topic } = suggestion;
+    const generation = (promotionReadGenerations.get(topic) ?? 0) + 1;
+    promotionReadGenerations.set(topic, generation);
+    // The pending save's effective row will settle this topic. A read taken
+    // during that write must not roll it back, even when the write fails.
+    if (state.trustWriting[topic]) return;
+    const capturedLoad = loadGeneration;
+    const capturedTrust = trustVersion(topic);
+    try {
+      const { rows } = await opts.runTrustRead();
+      if (disposed || capturedLoad !== loadGeneration
+        || generation !== promotionReadGenerations.get(topic)
+        || capturedTrust !== trustVersion(topic) || state.trustWriting[topic]) return;
+      const row = rows.find((candidate) => candidate.topic === topic);
+      // Older servers may omit the row. Keep the event hint and any known
+      // owner choice rather than treating absence as permission to re-arm.
+      if (!row) return;
+      advanceTrustVersion(topic);
+      setState({
+        trustRows: { ...state.trustRows, [topic]: row },
+        promotionSuggestions: reconcilePromotions(
+          row.promotion_suggested_at === null
+            ? omitKey(state.promotionSuggestions, topic)
+            : { ...state.promotionSuggestions, [topic]: suggestion },
+          [row],
+        ),
+      });
+    } catch {
+      // A secondary read failure leaves the current hint or settled choice
+      // intact; it must not blank the panel or retry an owner action.
     }
   };
 
@@ -640,11 +761,16 @@ export const mountHousekeepingPanel = (
 
   const doSave = async (): Promise<void> => {
     if (disposed || state.saving) return;
+    if (!scheduleDirty()) return;
     const config = state.config;
     if (!config) return;
     const preset = state.draftPreset ?? config.preset;
     const args: Parameters<HousekeepingConfigWriteCaller>[0] = { preset };
     if (preset === 'custom') {
+      if (Object.values(customInputDraft).some((raw) => raw.trim() === '' || !Number.isFinite(Number(raw)))) {
+        setState({ saveError: 'Enter a cycle budget and interval before saving.' });
+        return;
+      }
       const d = state.customDraft;
       const budget = d.cycle_budget_ms ?? config.cycle_budget_ms;
       const interval = d.cycle_interval_minutes ?? config.cycle_interval_minutes;
@@ -655,13 +781,17 @@ export const mountHousekeepingPanel = (
       if (startHour !== undefined) args.custom_window_start_hour = startHour;
       if (endHour !== undefined) args.custom_window_end_hour = endHour;
     }
+    configWriteVersion += 1;
     setState({ saving: true, saveError: null });
     try {
       const res = await opts.runConfigWrite(args);
       if (disposed) return;
+      configWriteVersion += 1;
+      customInputDraft = {};
       setState({
         saving: false,
         saveError: null,
+        error: null,
         config: res.effective,
         draftPreset: null,
         customDraft: {},
@@ -690,8 +820,9 @@ export const mountHousekeepingPanel = (
         { runNow: { task_id: null, running: false, error: null } },
         returnFocus,
       );
+      // The dialog returns focus when it closes; a later status reply must
+      // preserve whichever control the user has moved to in the meantime.
       await doRefreshStatus();
-      applyFocusIntent(returnFocus);
     } catch (err) {
       if (disposed) return;
       setState(
@@ -720,7 +851,10 @@ export const mountHousekeepingPanel = (
     topic: string,
     patch: { trust_state?: EnrichmentTrustState; pool_policy?: EnrichmentPoolPolicy },
   ): Promise<void> => {
-    if (disposed || !opts.runTrustWrite) return;
+    if (disposed || !opts.runTrustWrite || state.trustWriting[topic]) return;
+    const pendingWrite: { promotion?: HousekeepingPromotionSuggestion } = {};
+    pendingTrustWrites.set(topic, pendingWrite);
+    advanceTrustVersion(topic);
     setState({
       trustWriting: { ...state.trustWriting, [topic]: true },
       trustWriteError: omitKey(state.trustWriteError, topic),
@@ -730,6 +864,15 @@ export const mountHousekeepingPanel = (
       if (disposed) return;
       setState({
         trustRows: { ...state.trustRows, [topic]: res.effective },
+        // A live estimate may have arrived while the saved row still said
+        // Auto. Keep it only when this reply confirms a suggested topic;
+        // reconciliation still honors effective Auto and dismissal choices.
+        promotionSuggestions: reconcilePromotions(
+          pendingWrite.promotion && res.effective.promotion_suggested_at !== null
+            ? { ...state.promotionSuggestions, [topic]: pendingWrite.promotion }
+            : state.promotionSuggestions,
+          [res.effective],
+        ),
         trustWriting: omitKey(state.trustWriting, topic),
       });
     } catch (err) {
@@ -738,6 +881,8 @@ export const mountHousekeepingPanel = (
         trustWriting: omitKey(state.trustWriting, topic),
         trustWriteError: { ...state.trustWriteError, [topic]: messageOf(err) },
       });
+    } finally {
+      pendingTrustWrites.delete(topic);
     }
   };
 
@@ -745,13 +890,13 @@ export const mountHousekeepingPanel = (
   // Promote flips trust to `auto` via `trust.write`; Don't-ask-again
   // fires `trust.dismiss_promotion`. Both drain the suggestion on
   // success + patch the resulting trust row so the drawer radio reflects
-  // it. `promotionWriting` disables both buttons for the topic while in
-  // flight.
+  // it. Trust-row actions share `trustWriting` so a late row
+  // response cannot replace another choice made while it was pending.
   const doPromotion = async (
     topic: string,
     kind: 'promote' | 'dismiss',
   ): Promise<void> => {
-    if (disposed) return;
+    if (disposed || state.trustWriting[topic]) return;
     const caller =
       kind === 'promote'
         ? opts.runTrustWrite
@@ -761,7 +906,9 @@ export const mountHousekeepingPanel = (
           ? () => opts.runDismissPromotion!({ topic })
           : null;
     if (!caller) return;
+    advanceTrustVersion(topic);
     setState({
+      trustWriting: { ...state.trustWriting, [topic]: true },
       promotionWriting: { ...state.promotionWriting, [topic]: true },
       promotionWriteError: omitKey(state.promotionWriteError, topic),
     });
@@ -771,11 +918,13 @@ export const mountHousekeepingPanel = (
       setState({
         trustRows: { ...state.trustRows, [topic]: res.effective },
         promotionSuggestions: omitKey(state.promotionSuggestions, topic),
+        trustWriting: omitKey(state.trustWriting, topic),
         promotionWriting: omitKey(state.promotionWriting, topic),
       });
     } catch (err) {
       if (disposed) return;
       setState({
+        trustWriting: omitKey(state.trustWriting, topic),
         promotionWriting: omitKey(state.promotionWriting, topic),
         promotionWriteError: {
           ...state.promotionWriteError,
@@ -786,12 +935,9 @@ export const mountHousekeepingPanel = (
   };
 
   // ── Drift banner (D-133 §A.7) ────────────────────────────────────
-  // Dismiss is client-side only: stamp `dismissed_at` on the in-memory
-  // signal so `isBannerEligible` collapses the banner. There is no
-  // dismissal-persistence rpc; the banner re-arms naturally on the next
-  // `enrichment_drift_detected` broadcast (state-transition fire only,
-  // server-gated). Review expands the topic's drawer for trust controls.
-  /** ⛔ D-285 follow-up — hide optimistically, then PERSIST.
+  // Dismiss stamps the local signal and persists it when supported.
+  // Review expands the topic's drawer for trust controls.
+  /** D-285 follow-up — stamp locally, then persist.
    *
    *  Local-only was the pre-D-285 behaviour and it held while the banner was
    *  live-broadcast-only: nothing re-delivered the signal, so a dismissal
@@ -799,10 +945,12 @@ export const mountHousekeepingPanel = (
    *  every mount, the same code made the banner undismissable — measured
    *  live: dismiss, reload, back again.
    *
-   *  ⚠ A failed write REVERTS the hide and says so. Leaving it hidden would
+   *  The banner stays visible and focusable while the write is pending.
+   *  A failed write REVERTS the dismissal and says so. Leaving it hidden would
    *  be the friendlier lie: the banner returns on the next load anyway, and a
    *  user who was told "dismissed" would meet it again with no idea why. */
   const doDriftDismiss = (sourceTopic: string): void => {
+    if (disposed || state.driftWriting[sourceTopic]) return;
     const signal = state.driftSignals[sourceTopic];
     if (!signal) return;
     const dismissed_at = now();
@@ -821,9 +969,12 @@ export const mountHousekeepingPanel = (
       .then((res) => {
         if (disposed) return;
         setState({
-          // The server's timestamp wins: an idempotent re-dismiss keeps the
-          // FIRST one, and the local guess would otherwise slide it forward.
-          driftSignals: { ...state.driftSignals, [sourceTopic]: res.effective },
+          // A late reply must leave a newer computation intact. Within one
+          // computation, the server's first dismissal timestamp wins.
+          driftSignals: {
+            ...state.driftSignals,
+            [sourceTopic]: mergeDriftSignal(state.driftSignals[sourceTopic], res.effective),
+          },
           driftWriting: omitKey(state.driftWriting, sourceTopic),
         });
       })
@@ -831,16 +982,18 @@ export const mountHousekeepingPanel = (
         if (disposed) return;
         const restored = state.driftSignals[sourceTopic];
         setState({
-          ...(restored
+          // The failed attempt belongs to the computation the user dismissed,
+          // so it must not roll back or annotate a newer verdict.
+          ...(restored && restored.computed_at === signal.computed_at
             ? {
                 driftSignals: {
                   ...state.driftSignals,
                   [sourceTopic]: omitDismissal(restored),
                 },
+                driftWriteError: { ...state.driftWriteError, [sourceTopic]: messageOf(err) },
               }
             : {}),
           driftWriting: omitKey(state.driftWriting, sourceTopic),
-          driftWriteError: { ...state.driftWriteError, [sourceTopic]: messageOf(err) },
         });
       });
   };
@@ -857,6 +1010,7 @@ export const mountHousekeepingPanel = (
     resetPsiBaselines: boolean | null,
   ): Promise<void> => {
     if (disposed || !opts.runTopicReset) return;
+    const captured = ++resetGeneration;
     setState(
       {
         reset: {
@@ -875,7 +1029,7 @@ export const mountHousekeepingPanel = (
           ? { reset_psi_baselines: resetPsiBaselines }
           : {}),
       });
-      if (disposed || state.reset.topic !== topic) return;
+      if (disposed || captured !== resetGeneration || state.reset.topic !== topic) return;
       setState(
         {
           reset: {
@@ -892,7 +1046,7 @@ export const mountHousekeepingPanel = (
         { kind: 'action', action: ACTION_RESET_CANCEL },
       );
     } catch (err) {
-      if (disposed || state.reset.topic !== topic) return;
+      if (disposed || captured !== resetGeneration || state.reset.topic !== topic) return;
       setState(
         {
           reset: { ...state.reset, phase: 'error', error: messageOf(err) },
@@ -906,6 +1060,7 @@ export const mountHousekeepingPanel = (
     if (disposed || !opts.runTopicReset) return;
     const { topic, confirmation_token, resetPsiBaselines } = state.reset;
     if (!topic || !confirmation_token) return;
+    const captured = ++resetGeneration;
     setState(
       { reset: { ...state.reset, phase: 'confirming', error: null } },
       { kind: 'dialog', dialog: 'reset' },
@@ -918,7 +1073,7 @@ export const mountHousekeepingPanel = (
           ? { reset_psi_baselines: resetPsiBaselines }
           : {}),
       });
-      if (disposed || state.reset.topic !== topic) return;
+      if (disposed || captured !== resetGeneration || state.reset.topic !== topic) return;
       setState(
         {
           reset: {
@@ -935,7 +1090,7 @@ export const mountHousekeepingPanel = (
       // affected producer's status reflects the pending work.
       await doRefreshStatus();
     } catch (err) {
-      if (disposed || state.reset.topic !== topic) return;
+      if (disposed || captured !== resetGeneration || state.reset.topic !== topic) return;
       setState(
         {
           reset: { ...state.reset, phase: 'error', error: messageOf(err) },
@@ -947,6 +1102,7 @@ export const mountHousekeepingPanel = (
 
   const closeReset = (): void => {
     const topic = state.reset.topic;
+    resetGeneration += 1;
     setState(
       { reset: initialHousekeepingResetModalState() },
       topic === null
@@ -962,6 +1118,10 @@ export const mountHousekeepingPanel = (
     if (!actionEl) return;
     const action = actionEl.getAttribute('data-action');
     switch (action) {
+      case ACTION_TRUST_PICK:
+      case ACTION_POOL_PICK:
+        if (state.trustWriting[topicOf(actionEl) ?? '']) ev.preventDefault();
+        return;
       case ACTION_SAVE:
         void doSave();
         return;
@@ -1014,7 +1174,7 @@ export const mountHousekeepingPanel = (
         // source_topic IS the producer topic). The trust controls there
         // are how the user responds to drift.
         const sourceTopic = actionEl.getAttribute('data-source-topic');
-        if (sourceTopic) setState({ expandedTopic: sourceTopic });
+        if (sourceTopic && !state.driftWriting[sourceTopic]) setState({ expandedTopic: sourceTopic });
         return;
       }
       case ACTION_DRIFT_DISMISS: {
@@ -1070,19 +1230,22 @@ export const mountHousekeepingPanel = (
         return;
       }
       case ACTION_PRESET_PICK:
+        if (state.saving) return;
         setState({ draftPreset: value as HousekeepingPreset, saveError: null });
         return;
-      case ACTION_TRUST_PICK: {
-        const topic = topicOf(el);
-        if (topic && value) {
-          void doTrustWrite(topic, { trust_state: value as EnrichmentTrustState });
-        }
-        return;
-      }
+      case ACTION_TRUST_PICK:
       case ACTION_POOL_PICK: {
         const topic = topicOf(el);
         if (topic && value) {
-          void doTrustWrite(topic, { pool_policy: value as EnrichmentPoolPolicy });
+          if (state.trustWriting[topic]) {
+            // A change dispatched without the guarded click/keydown must
+            // still restore the saved selection and avoid a second write.
+            render();
+            return;
+          }
+          void doTrustWrite(topic, action === ACTION_TRUST_PICK
+            ? { trust_state: value as EnrichmentTrustState }
+            : { pool_policy: value as EnrichmentPoolPolicy });
         }
         return;
       }
@@ -1107,6 +1270,7 @@ export const mountHousekeepingPanel = (
     field: keyof HousekeepingPanelState['customDraft'],
     raw: string,
   ): void => {
+    if (state.saving) return;
     const next = { ...state.customDraft };
     if (raw === '') {
       delete next[field];
@@ -1118,7 +1282,7 @@ export const mountHousekeepingPanel = (
     setState({ customDraft: next });
   };
 
-  // ── Input delegation (the AI-producer search box) ─────────────────
+  // ── Live schedule drafts + AI-producer search ─────────────────────
   // Live substring filter on each keystroke. Separate from `onChange`
   // (which fires on blur) so the list narrows as the user types; the
   // post-render pass restores focus + caret (full innerHTML rewrite).
@@ -1128,6 +1292,24 @@ export const mountHousekeepingPanel = (
       | (HTMLElement & { value?: string; selectionStart?: number | null })
       | null;
     if (!el?.getAttribute) return;
+    const action = el.getAttribute('data-action');
+    if (action === ACTION_CUSTOM_BUDGET || action === ACTION_CUSTOM_INTERVAL) {
+      if (state.saving) return;
+      const field = action === ACTION_CUSTOM_BUDGET ? 'cycle_budget_ms' : 'cycle_interval_minutes';
+      const raw = el.value ?? '';
+      customInputDraft[field] = raw;
+      const draft = { ...state.customDraft };
+      if (raw.trim() !== '' && Number.isFinite(Number(raw))) draft[field] = Number(raw);
+      else delete draft[field];
+      state = { ...state, customDraft: draft, saveError: null };
+      // Typing must leave the live input in place. Only Save's state changes;
+      // a later repaint reads both the numeric draft and its original text.
+      const save = findAction(ACTION_SAVE);
+      save?.setAttribute('aria-disabled', scheduleDirty() ? 'false' : 'true');
+      opts.host.querySelector?.('.housekeeping-schedule .housekeeping-error')?.remove();
+      lastScheduleHtml = renderSchedule();
+      return;
+    }
     if (el.getAttribute('data-action') === HOUSEKEEPING_PRODUCER_SEARCH_ACTION) {
       // Capture the caret off the live (pre-render) input so the
       // post-render refocus restores the exact position, not the end.
@@ -1139,6 +1321,13 @@ export const mountHousekeepingPanel = (
   const onKeyDown = (ev: KeyboardEvent): void => {
     if (disposed) return;
     const target = ev.target as HTMLElement | null;
+    const action = target?.getAttribute?.('data-action');
+    if (target && (action === ACTION_TRUST_PICK || action === ACTION_POOL_PICK)
+      && state.trustWriting[topicOf(target) ?? '']
+      && [' ', 'Enter', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(ev.key)) {
+      ev.preventDefault();
+      return;
+    }
     const resetDialog = target?.closest?.('.housekeeping-reset-modal') as
       | HTMLElement
       | null;
@@ -1210,29 +1399,36 @@ export const mountHousekeepingPanel = (
       // has been manually run past the threshold under `manual` trust.
       opts.subscribe('enrichment_promotion_suggested', (event) => {
         if (disposed) return;
+        const suggestion: HousekeepingPromotionSuggestion = {
+          topic: event.topic,
+          manual_run_count: event.manual_run_count,
+          estimated_idle_cycle_cost_tokens: event.estimated_idle_cycle_cost_tokens,
+        };
+        const pendingWrite = pendingTrustWrites.get(event.topic);
+        if (pendingWrite) pendingWrite.promotion = suggestion;
+        const row = state.trustRows[event.topic];
         setState({
-          promotionSuggestions: {
-            ...state.promotionSuggestions,
-            [event.topic]: {
-              topic: event.topic,
-              manual_run_count: event.manual_run_count,
-              estimated_idle_cycle_cost_tokens:
-                event.estimated_idle_cycle_cost_tokens,
-            },
-          },
+          promotionSuggestions: reconcilePromotions(
+            { ...state.promotionSuggestions, [event.topic]: suggestion }, row ? [row] : [],
+          ),
         });
+        // A replay cannot undo a known choice. A fresh read can still reveal
+        // a genuinely eligible suggestion after a change on another client.
+        void doRefreshPromotion(suggestion);
       }),
       // D-133 §A.7 — a drift signal fires on a confidence-distribution
-      // severity transition. The broadcast is narrow (no windows); the
-      // banner only needs source_topic / psi / severity, so the
-      // constructed signal's window/distribution fields are placeholders
-      // (never rendered — the drawer drift section stays unfed).
+      // severity transition. Its narrow payload must not replace a stored
+      // result for the same or a newer computation, including its dismissal
+      // and distributions. A genuinely newer event starts as a placeholder
+      // until the follow-up read supplies its analysis.
       opts.subscribe('enrichment_drift_detected', (event) => {
         if (disposed) return;
         setState({
           driftSignals: {
             ...state.driftSignals,
-            [event.source_topic]: driftSignalFromEvent(event),
+            [event.source_topic]: mergeDriftSignal(
+              state.driftSignals[event.source_topic], driftSignalFromEvent(event),
+            ),
           },
         });
         // D-285 — paint from the event immediately (it is the whole point of
@@ -1257,6 +1453,7 @@ export const mountHousekeepingPanel = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      openPromptBiasTopics.clear();
       for (const u of unsubscribers) {
         try {
           u();
@@ -1331,20 +1528,16 @@ const driftSignalFromEvent = (event: {
 const hasDistributions = (s: ConfidenceDriftSignal): boolean =>
   s.baseline_distribution.length > 0;
 
-/** D-285 — reconcile a stored row against whatever is already in hand.
+/** D-285 — reconcile a stored row or narrow event with the current signal.
  *
  *  Newer computation wins. On a TIE — the normal case, since the read is
  *  kicked off by the very broadcast that announced the same computation —
  *  the row with distributions wins, because it is the same verdict with the
  *  analysis attached.
  *
- *  ⛔ A local dismissal is carried across, but ONLY within one computation.
- *  Dismissal is client-side state (nothing persists it yet), so without this
- *  the next read would hand back the same verdict undismissed and re-raise a
- *  banner the owner had just closed — the read would have made the surface
- *  NAGGIER than the bug it fixes. A newer `computed_at` deliberately drops
- *  the dismissal: that is the "re-arms on the next transition" rule the
- *  banner already documents. */
+ *  Preserve a dismissal within its computation, whether it is optimistic,
+ *  persisted, or local on an older server. A newer `computed_at` deliberately
+ *  drops it so the next transition can raise a new alert. */
 const mergeDriftSignal = (
   prev: ConfidenceDriftSignal | undefined,
   next: ConfidenceDriftSignal,
@@ -1415,6 +1608,24 @@ const restoredPromotions = (
     };
   }
   return out;
+};
+
+/** Keep live cost estimates while the suggestion still applies. An effective
+ *  Auto choice or persisted dismissal settles the question, including when
+ *  it arrives through a drawer save or a refresh rather than a banner action.
+ *  Rows absent from this read leave live suggestions alone: a broadcast can
+ *  arrive while an earlier trust read is still pending. */
+const reconcilePromotions = (
+  current: Record<string, HousekeepingPromotionSuggestion>,
+  rows: ReadonlyArray<EnrichmentTrustRow>,
+): Record<string, HousekeepingPromotionSuggestion> => {
+  const next = { ...restoredPromotions(rows), ...current };
+  for (const row of rows) {
+    if (row.trust_state === 'auto' || row.promotion_dismissed_at !== null) {
+      delete next[row.topic];
+    }
+  }
+  return next;
 };
 
 /** Drop a dismissal so the banner comes back — used when the write failed. */
@@ -1559,7 +1770,8 @@ export const HOUSEKEEPING_PANEL_STYLES = `
 .housekeeping-producer-runpolicy-seg input { position: absolute; opacity: 0; width: 0; height: 0; }
 .housekeeping-producer-runpolicy-seg[data-active="true"] span { background: var(--accent); color: var(--on-accent); font-weight: 600; }
 .housekeeping-producer-runpolicy-seg input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: -2px; }
-.housekeeping-producer-runpolicy-seg input:disabled + span { cursor: not-allowed; opacity: 0.5; }
+.housekeeping-producer-runpolicy-seg input:disabled + span,
+.housekeeping-producer-runpolicy-seg input[aria-disabled="true"] + span { cursor: not-allowed; opacity: 0.5; }
 .housekeeping-producer-runpolicy-error { margin-top: 4px; }
 .housekeeping-drawer-toggle-button { box-sizing: border-box; min-width: 36px; min-height: 36px; }
 
@@ -1569,6 +1781,7 @@ export const HOUSEKEEPING_PANEL_STYLES = `
 .housekeeping-drawer-radios { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; border: 0; }
 .housekeeping-drawer-radio { box-sizing: border-box; min-height: 36px; display: grid; grid-template-columns: auto 1fr; align-items: baseline; gap: 2px 8px; }
 .housekeeping-drawer-radio input { grid-row: span 2; }
+.housekeeping-drawer-radio input[aria-disabled="true"] { cursor: not-allowed; opacity: 0.5; }
 .housekeeping-drawer-radio-label { font-weight: 600; }
 .housekeeping-drawer-radio-desc { grid-column: 2; color: var(--fg-muted); font-size: 11px; }
 .housekeeping-drawer-empty { color: var(--fg-muted); margin: 0; }

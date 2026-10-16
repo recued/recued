@@ -52,7 +52,7 @@ const EXPECTED_DOMAIN_COUNTS: Record<string, number> = {
   // D-210 added the 3 `core.work-entity.booking.*` CRUD ops (16 → 19).
   // D-221 added the list/get backing ingredients for pack-owned Records
   // reachability (19 → 21).
-  'work-entity': 24,
+  'work-entity': 32,
   // D-198 follow-on — `core.memory.audit.read` moved OUT of `memory` (13→12)
   // into its own `audit` domain: run history is not the knowledge pool.
   // 12 → 10 on 2026-09-23: `core.memory.annotate` / `core.memory.link` retired
@@ -74,6 +74,9 @@ const EXPECTED_DOMAIN_COUNTS: Record<string, number> = {
    *  id — the two are different stores and an id saying `memory` would re-conflate
    *  them. One op: the grant handle that finally makes `recall.search` revocable. */
   recall: 1,
+  // D-324 — a NEW closed-kind domain: the owner's reminders, their own store
+  // (a reminder was a task until D-324). create / list / update / cancel.
+  reminder: 4,
   // D-210 closeout — + form-response-list. 18 → 16 on 2026-10-10:
   // core.data.webhook.get / .list went with the Phase D webhook collection.
   data: 16,
@@ -85,7 +88,9 @@ const EXPECTED_DOMAIN_COUNTS: Record<string, number> = {
   // 26 → 27 on 2026-09-28: shared.patch, the field-level update of one record.
   // 27 → 28 on 2026-10-07: ics.read, a stored calendar file read as an invite
   // (D-315 slice 7).
-  storage: 28,
+  // 28 → 30 on 2026-10-15: file.folders and file.save-to-folder, so chat files an
+  // emailed attachment into a folder the owner names (D-318 follow-up 11).
+  storage: 30,
   schedule: 1,
   // D-207 §4.5 — 14 offer/order + the 4 D-196 `customer-access` ops merged in
   // from their retired top-level domain (`core.seller.customer-access.*`), + the
@@ -297,6 +302,13 @@ describe('D-182 slice 3a — kernel op registry', () => {
       // view, so no door gains it. Adding it to `TIER1_TOOL_NAMES` would have bought
       // the row by also exposing it, which inverts D-213.
       'core.recall.search|recall|(native)|read',
+      // D-324 — `create` is `read`, as `core.notification.send` is: its only
+      // effect is a notification to the owner, later. Moving or withdrawing one
+      // changes what the owner asked for, so those two are `write`.
+      'core.reminder.cancel|reminder|reminder-cancel|write',
+      'core.reminder.create|reminder|reminder-create|read',
+      'core.reminder.list|reminder|reminder-list|read',
+      'core.reminder.update|reminder|reminder-update|write',
       // NATIVE since 2026-10-05 — no recipe step may schedule another recipe; chat
       // schedules through its own Tier-1 `recipe.schedule` tool, granted by this id.
       'core.schedule.recipe|schedule|(native)|write',
@@ -343,6 +355,8 @@ describe('D-182 slice 3a — kernel op registry', () => {
       // deliberately NOT a second `core.storage.file.read`: that op's local/remote
       // branch is chosen by the ARG, and an op gate fires before the arg is known.
       'core.storage.file.fetch-remote|storage|(native)|read',
+      // D-318 follow-up 11 — the owner's folders, and a save into one.
+      'core.storage.file.folders|storage|file-folders|read',
       'core.storage.file.get|storage|file-get|read',
       'core.storage.file.list|storage|file-list|read',
       'core.storage.file.move|storage|file-move|destructive',
@@ -352,6 +366,7 @@ describe('D-182 slice 3a — kernel op registry', () => {
       'core.storage.file.read-temp|storage|file-read-temp|read',
       'core.storage.file.read|storage|file-read|read',
       'core.storage.file.render-markdown-template|storage|file-render-markdown-template|write',
+      'core.storage.file.save-to-folder|storage|file-save-to-folder|write',
       'core.storage.file.set-scan-status|storage|file-set-scan-status|write',
       'core.storage.file.stat|storage|file-stat|read',
       'core.storage.file.write|storage|file-write|write',
@@ -380,6 +395,13 @@ describe('D-182 slice 3a — kernel op registry', () => {
       // D-192 F1 — the always-held proposal surface (all-actor approval lift).
       'core.work-entity.commitment.propose|work-entity|commitment-propose|write',
       'core.work-entity.commitment.update|work-entity|commitment-update|write',
+      'core.work-entity.customer-account-payment.apply|work-entity|customer-account-payment-apply|destructive',
+      'core.work-entity.customer-account-payment.correct|work-entity|customer-account-payment-correct|destructive',
+      'core.work-entity.customer-invoice.credit.correct|work-entity|customer-invoice-credit-correct|destructive',
+      'core.work-entity.customer-invoice.credit|work-entity|customer-invoice-credit|destructive',
+      'core.work-entity.customer-payment.correct|work-entity|customer-payment-correct|destructive',
+      'core.work-entity.customer-refund.apply|work-entity|customer-refund-apply|destructive',
+      'core.work-entity.customer-refund.correct|work-entity|customer-refund-correct|destructive',
       'core.work-entity.get|work-entity|work-entity-get|read',
       'core.work-entity.list|work-entity|work-entity-list|read',
       'core.work-entity.note.create|work-entity|note-create|write',
@@ -397,6 +419,7 @@ describe('D-182 slice 3a — kernel op registry', () => {
       'core.work-entity.task.create|work-entity|task-create|write',
       'core.work-entity.task.delete|work-entity|task-delete|destructive',
       'core.work-entity.task.mark-done|work-entity|task-mark-done|write',
+      'core.work-entity.task.mark-reminder-fired|work-entity|task-mark-reminder-fired|read',
       'core.work-entity.task.update|work-entity|task-update|write',
     ];
     const actual = KERNEL_OP_REGISTRY.map(

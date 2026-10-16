@@ -1,3 +1,4 @@
+import { collectionOAuthBinding } from '../../collection-oauth-sources.js';
 import { managedOAuthFetcherFor, type ManagedOAuthConsumers } from '../../managed-oauth-consumers.js';
 /** D-117 Phase 3 — Google Calendar adapter.
  *
@@ -40,10 +41,12 @@ import {
   readProviderStringContinuation,
 } from '../../provider-pagination-guard.js';
 
+import { calendarSyncFailureOf } from './provider.js';
 import type {
   CalendarProvider,
   CalendarProviderHealth,
   CalendarSyncCallback,
+  CalendarSyncOutcome,
   CalendarSyncEvent,
   CreateEventInput,
   DeleteEventInput,
@@ -63,6 +66,7 @@ import {
   keyPrefix,
   OAuthError,
   requireProviderConfig,
+  bindOAuthProviderConfig,
   type HttpFetcher,
   type OAuthAccountStore,
   type OAuthProviderConfigSource,
@@ -419,6 +423,17 @@ export const createGcalProvider = (
   let pendingQueueSize = 0;
   let accessToken = '';
   let pollStop: ProviderPollStop | null = null;
+  /** `onSyncOutcome` listeners: told of each poll's outcome. */
+  const outcomeListeners = new Set<(outcome: CalendarSyncOutcome) => void>();
+  const reportOutcome = (outcome: CalendarSyncOutcome): void => {
+    for (const listener of outcomeListeners) {
+      try { listener(outcome); } catch { /* a listener never breaks a sync */ }
+    }
+  };
+  const markSynced = (): void => {
+    lastSuccessfulSyncAt = nowOf();
+    reportOutcome({ ok: true, at: lastSuccessfulSyncAt });
+  };
 
   const syncTokenKey = (calendarId: string): string =>
     `${keyPrefix('gcal', opts.config.account_slug)}.sync_token.${calendarIdKeySuffix(calendarId)}`;
@@ -616,6 +631,9 @@ export const createGcalProvider = (
 
   // ── incremental sync tick ───────────────────────────────────
   const runSyncTick = async (cb: CalendarSyncCallback): Promise<void> => {
+    // Clean until a failure is swallowed: only a tick that read every calendar
+    // and delivered every change says the calendar is synced.
+    let clean = true;
     const calendars = await selectedCalendars();
     const now = nowOf();
     const timeMin = new Date(
@@ -694,6 +712,7 @@ export const createGcalProvider = (
             } catch (err) {
               markError(`gcal dispatch failed id=${event.id}`, err);
               deliveryFailed = true;
+              clean = false;
             } finally {
               pendingQueueSize = Math.max(0, pendingQueueSize - 1);
             }
@@ -720,6 +739,19 @@ export const createGcalProvider = (
         }
         break;
       }
+    }
+    if (clean) markSynced();
+    else reportOutcome({ ok: false, failure: 'transient', at: nowOf() });
+  };
+
+  /** A poll tick that reports a thrown failure too: `auth` for a rejected
+   *  credential, else `transient`. Rethrows, so it is logged as before. */
+  const runReportedTick = async (cb: CalendarSyncCallback): Promise<void> => {
+    try {
+      await runSyncTick(cb);
+    } catch (err) {
+      reportOutcome({ ok: false, failure: calendarSyncFailureOf(err), at: nowOf() });
+      throw err;
     }
   };
 
@@ -883,8 +915,8 @@ export const createGcalProvider = (
       const intervalMs = Math.max(1, opts.config.poll_seconds) * 1000;
       // Run an immediate tick so downstream consumers don't have to
       // wait for the first interval.
-      await runSyncTick(cb);
-      pollStop = scheduler(() => runSyncTick(cb), intervalMs);
+      await runReportedTick(cb);
+      pollStop = scheduler(() => runReportedTick(cb), intervalMs);
       return async () => {
         const stop = pollStop;
         pollStop = null;
@@ -896,6 +928,11 @@ export const createGcalProvider = (
       const stop = pollStop;
       pollStop = null;
       await stop?.();
+    },
+
+    onSyncOutcome(listener) {
+      outcomeListeners.add(listener);
+      return () => { outcomeListeners.delete(listener); };
     },
 
     health(): CalendarProviderHealth {
@@ -1124,9 +1161,10 @@ export const createGcalAdapterFactory = (
   kind: 'gcal',
   async probeCaps(ctx: CalendarAdapterContext) {
     const cfg = parseGcalConfig(ctx.config);
-    const managedFetcher = managedOAuthFetcherFor(opts.managedOAuth, 'gcal', ctx.config.managed_oauth);
-    const caps = await probeGcalCaps(cfg, { ...opts, ...(managedFetcher ? { managedFetcher } : {}) });
-    if (managedFetcher && ctx.config.managed_write_enabled !== true) {
+    const managedFetcher = managedOAuthFetcherFor(opts.managedOAuth, 'gcal', collectionOAuthBinding(ctx.config));
+    const providerConfig = bindOAuthProviderConfig(opts.providerConfig, ctx.config.oauth_app_id);
+    const caps = await probeGcalCaps(cfg, { ...opts, providerConfig, ...(managedFetcher ? { managedFetcher } : {}) });
+    if (ctx.config.native_write_enabled === false || managedFetcher && ctx.config.managed_write_enabled !== true) {
       return { ...caps, create_event: 'no', update_event: 'no', delete_event: 'no', rsvp: 'no' };
     }
     return caps;
@@ -1137,9 +1175,9 @@ export const createGcalAdapterFactory = (
       slug: ctx.slug,
       config: cfg,
       accountStore: opts.accountStore,
-      providerConfig: opts.providerConfig,
+      providerConfig: bindOAuthProviderConfig(opts.providerConfig, ctx.config.oauth_app_id),
       fetcher: opts.fetcher,
-      managedFetcher: managedOAuthFetcherFor(opts.managedOAuth, 'gcal', ctx.config.managed_oauth) ?? opts.managedFetcher,
+      managedFetcher: managedOAuthFetcherFor(opts.managedOAuth, 'gcal', collectionOAuthBinding(ctx.config)) ?? opts.managedFetcher,
       now: opts.now,
       log: opts.log ?? ctx.log,
       scheduler: opts.scheduler,
