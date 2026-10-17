@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { createAuthenticationIncidentStore } from '../authentication-incident-store.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GOOGLE_TOKEN_URL, MICROSOFT_TOKEN_URL, isOAuthAppUsageReview, isOAuthAppSecretRotationOutcome,
   type ConnectionAuth, type OAuthAppsRequest, type ManagedOAuthConnectionUse, type CollectionCaps } from '@recued/contracts';
@@ -57,6 +58,22 @@ const fixture = async () => {
     uses: (next: ManagedOAuthConnectionUse[]) => { uses = next; } };
 };
 describe('saved app usage and coordinated secret rotation', () => {
+  it('journals only the selected credential copies and native accounts, preserving unverified rotation and retry identity', async () => {
+    const f = await fixture(); const review = await f.usage(); const result = await f.rotate(review);
+    const history = createAuthenticationIncidentStore(f.db); const page = history.history({ scope: { kind: 'connection', name: 'confirmed' } }, 1_001);
+    expect(page.repairs).toHaveLength(1); expect(page.repairs![0]).toMatchObject({ action: 'rotate_secret', status: 'applied', to: { app_id: f.app.id, label: 'Work' } });
+    expect(page.repairs![0]!.recovery_confirmed_at).toBeUndefined();
+    expect(history.history({ scope: { kind: 'connection', name: 'excluded' } }, 1_001).repairs).toEqual([]);
+    expect(history.history({ scope: { kind: 'collection', platform: 'mail', slug: 'work' } }, 1_001).repairs).toHaveLength(1);
+    expect(JSON.stringify(page)).not.toMatch(/fixture-new-secret|fixture-old-secret|client_secret/);
+    expect(await f.rotate(review)).toEqual(result); expect(history.history({ scope: { kind: 'all' } }, 1_001).repairs).toHaveLength(1);
+  });
+  it('rolls back a coordinated secret rotation when its applied history cannot be saved', async () => {
+    const f = await fixture(); const review = await f.usage(); const before = f.connections.list(); const app = f.apps.getApp('google', f.app.id);
+    f.db.exec("CREATE TRIGGER reject_repair BEFORE UPDATE ON authentication_incident_history WHEN NEW.kind = 'repair' AND json_extract(NEW.data, '$.status') = 'applied' BEGIN SELECT RAISE(ABORT, 'fixture history failure'); END");
+    expect(await f.rotate(review)).toMatchObject({ rotation_outcome: { status: 'failed' } }); expect(f.connections.list()).toEqual(before); expect(f.apps.getApp('google', f.app.id)).toEqual(app);
+    expect(createAuthenticationIncidentStore(f.db).history({ scope: { kind: 'all' } }, 1_001).repairs![0]).toMatchObject({ status: 'failed' });
+  });
   it.each([undefined, null, '2027-11-14'])('replaces the old expiry atomically with the rotation date %s', async expiry => {
     const f = await fixture(); const current = f.apps.getApp('google', f.app.id)!;
     f.apps.saveApp({ ...current, expected_revision: current.revision, secret_expires_on: '2026-10-15' });

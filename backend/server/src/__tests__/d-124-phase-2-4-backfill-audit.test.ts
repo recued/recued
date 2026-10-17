@@ -27,7 +27,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   ActivityEntry,
   AppendOptions,
@@ -42,6 +42,7 @@ import { createInstanceStore } from '../collections/instance-store.js';
 import { createMailCollection } from '../collections/mail/mail-collection.js';
 import { createCalendarCollection } from '../collections/calendar/calendar-collection.js';
 import { composeFileStack } from '../collections/file/compose.js';
+import type { FileAdapterContext } from '../collections/file/adapter-registry.js';
 import { createCollectionRegistry } from '../collections/registry.js';
 import type {
   CanonicalMessage,
@@ -542,6 +543,15 @@ describe('D-124 Phase 2.4 — file stack wiring', () => {
 
     const fa = newFakeAuditLog();
     const stack = composeFileStack(db, { auditLog: fa.store });
+    // Keep the real initial walk and ingestion, then await an adapter event.
+    // Audit accounting must not depend on the OS delivering a watch event.
+    let deliver: FileAdapterContext['onEvent'] | undefined;
+    const factory = stack.adapters.get('fs')!;
+    const create = factory.create.bind(factory);
+    const createAdapter = vi.spyOn(factory, 'create').mockImplementationOnce((context) => {
+      deliver = context.onEvent;
+      return create(context);
+    });
     const registry = createCollectionRegistry();
     stack.attachWatchedFolders({
       registry,
@@ -553,12 +563,12 @@ describe('D-124 Phase 2.4 — file stack wiring', () => {
     });
     stack.instances.upsert({
       platform: 'file', slug: 'docs', adapter_type: 'fs',
-      config: { path: tmpRoot }, caps: fileCaps(),
+      config: { path: tmpRoot }, caps: { ...fileCaps(), watch: 'none' },
       auth_state: 'healthy', last_synced_at: null,
     });
 
-    await stack.startAll();
     try {
+      await stack.startAll();
       const backfillRows = () => fa.activities.filter((a) => a.action === COLLECTION_BACKFILL_ACTION);
       expect(backfillRows()).toHaveLength(1);
       expect(backfillRows()[0].target).toBe('file:docs');
@@ -570,19 +580,18 @@ describe('D-124 Phase 2.4 — file stack wiring', () => {
       expect(typeof detail.latest_record_event_at).toBe('number');
       expect(detail.run_mode).toBe('backfill');
 
-      // A file written after the walk is a record (the watch delivered it) …
+      // A file delivered after the walk is a record …
       await writeFile(join(tmpRoot, 'c.txt'), 'later');
+      if (!deliver) throw new Error('The file adapter did not start');
+      await deliver({ type: 'change', path: join(tmpRoot, 'c.txt') });
       const paths = () => (registry.get('file', 'docs')?.list({ platform: 'file', slug: 'docs', limit: 10 }) ?? [])
         .map((r) => r.hot_fields.path);
-      const deadline = Date.now() + 30_000;
-      while (!paths().includes('c.txt') && Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 50));
-      }
-      expect(paths(), 'the live file must land, or the next check proves nothing').toContain('c.txt');
+      expect(paths(), 'the post-walk file must be stored before checking the audit row').toContain('c.txt');
       // … and the drain's one row is unchanged.
       expect(backfillRows()).toHaveLength(1);
       expect(decodeDetail(backfillRows()[0]).records_imported).toBe(2);
     } finally {
+      createAdapter.mockRestore();
       await stack.disposeAll();
     }
   });

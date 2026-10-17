@@ -7,17 +7,21 @@ import { RpcError, type AuthenticationCollectionPlatform, type CollectionAuthent
 import type { CollectionInstanceRecord, CollectionInstanceStore } from './collections/instance-store.js';
 import type { MailEnrollDeps } from './collections/mail/enroll.js';
 import type { CalendarEnrollDeps } from './collections/calendar/enroll.js';
-import { getAccessToken, type HttpFetcher } from './collections/mail/oauth.js';
+import { getAccessToken, getGrantedScopes, keyPrefix, assertNoPermissionCleanup, type HttpFetcher } from './collections/mail/oauth.js';
 import { readOAuthAppId } from './collections/mail/oauth.js';
 import { collectionAuthenticationLocks } from './collection-authentication-locks.js';
 import { makeBoundedOriginHttpFetcher } from './bounded-origin-http-fetcher.js';
+import { createAuthenticationRepairActionStore } from './authentication-repair-action-store.js';
 import { collectionOAuthBinding, collectionOAuthSourceName, type CollectionOAuthSources, type CollectionOAuthTransport } from './collection-oauth-sources.js';
 import { collectionProvider, collectionIdentityUrl, collectionAbilities, collectionSelections, collectionScopesCover,
   readCollectionIdentity, matchingCollectionAccount, verifyCollectionReads, collectionPermissionChoices, requestedCollectionAbilities,
   collectionPermissionCaps, type CollectionAbilities } from './collection-authentication-checks.js';
 
 export interface CollectionAuthenticationLifecycle { stop(slug: string): Promise<void>; restart(slug: string): Promise<void>; running?(slug: string): boolean }
-export interface CollectionAuthenticationService { handle(request: CollectionAuthenticationRequest): Promise<CollectionAuthenticationResponse> }
+export interface CollectionAuthenticationService {
+  handle(request: CollectionAuthenticationRequest): Promise<CollectionAuthenticationResponse>;
+  prepareSavedAccess?(platform: 'mail' | 'calendar', slug: string): Promise<import('./authentication-access-verification.js').PreparedAuthenticationAccess>;
+}
 const hash = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const rowMaterial = (row: CollectionInstanceRecord): string => hash([row.platform, row.slug, row.created_at, row.adapter_type, row.config, row.caps]);
 const bindingMaterial = (row: CollectionInstanceRecord): string => hash([row.adapter_type, row.config.account_slug ?? row.slug, collectionOAuthBinding(row.config) ?? 'original_native']);
@@ -32,6 +36,7 @@ export const createCollectionAuthenticationService = (deps: {
   mail: MailEnrollDeps; calendar: CalendarEnrollDeps; now?(): number; anonymous?: HttpFetcher;
 }): CollectionAuthenticationService => {
   const now = deps.now ?? Date.now;
+  const repairs = createAuthenticationRepairActionStore(deps.db);
   const anonymous = deps.anonymous ?? makeBoundedOriginHttpFetcher({ timeoutMs: 15_000, redirectPolicy: 'error' });
   deps.db.exec(`CREATE TABLE IF NOT EXISTS collection_authentication_attempts (
     attempt_id TEXT PRIMARY KEY, review_id TEXT NOT NULL, fingerprint TEXT NOT NULL, outcome_json TEXT NOT NULL);
@@ -44,7 +49,12 @@ export const createCollectionAuthenticationService = (deps: {
     return row ? { review_id: row.review_id, fingerprint: row.fingerprint, outcome: JSON.parse(row.outcome_json) as CollectionAuthenticationOutcome } : null;
   };
   const saveOutcome = (id: string, outcome: CollectionAuthenticationOutcome): void => {
-    deps.db.prepare('UPDATE collection_authentication_attempts SET outcome_json = ? WHERE attempt_id = ?').run(JSON.stringify(outcome), id);
+    deps.db.transaction(() => {
+      deps.db.prepare('UPDATE collection_authentication_attempts SET outcome_json = ? WHERE attempt_id = ?').run(JSON.stringify(outcome), id);
+      if (outcome.status !== 'checking') repairs.finish('collection_authentication', id, outcome.status === 'applied'
+        ? { status: 'applied', restart_required: outcome.restart_needed === true }
+        : { status: 'failed', reason: outcome.reason === 'unavailable' ? 'unreachable' : outcome.reason ?? 'server_error' }, now());
+    })();
   };
   // An interrupted read/check never silently resumes after a server restart.
   for (const row of deps.db.prepare('SELECT attempt_id, outcome_json FROM collection_authentication_attempts').all() as { attempt_id: string; outcome_json: string }[]) {
@@ -112,7 +122,55 @@ export const createCollectionAuthenticationService = (deps: {
     if (control.status !== 401 && control.status !== 403) throw new RpcError('bad_request', 'The account check did not prove protected vendor access.');
     await review.transport.assertCurrent(); assertRow(review);
   };
-  return { async handle(request) {
+  const prepareSavedAccess = async (platform: 'mail' | 'calendar', slug: string): Promise<import('./authentication-access-verification.js').PreparedAuthenticationAccess> => {
+    const row = lookup(platform, slug); const provider = collectionProvider(row); const native = collectionOAuthBinding(row.config) === undefined;
+    const owner = enroll(row); const grantSlug = typeof row.config.account_slug === 'string' ? row.config.account_slug : row.slug;
+    const appConfig = () => row.platform === 'mail' ? deps.mail.oauthConfig?.(provider as 'gmail' | 'graph', readOAuthAppId(row.config.oauth_app_id))
+      : deps.calendar.oauthConfig?.(provider as 'gcal' | 'graph', readOAuthAppId(row.config.oauth_app_id));
+    const prefix = keyPrefix(provider, grantSlug);
+    const revision = hash([rowMaterial(row), native ? [appConfig(), await owner.accountStore.get(prefix + '.grant_generation'),
+      await owner.accountStore.get(prefix + '.granted_scopes'), await owner.accountStore.get(prefix + '.permission_cleanup_pending')] : 'saved_api_binding']);
+    const assertCurrent = async () => {
+      if ((await prepareSavedAccess(platform, slug)).descriptor.authentication_revision !== revision) throw changed();
+      if (active.has(platform + ':' + slug)) throw changed();
+    };
+    return { descriptor: { label: (platform === 'mail' ? 'Mail: ' : 'Calendar: ') + slug, authentication_revision: revision, check: 'collection_read' },
+      async run(_choice, signal) {
+        const assertActive = async () => { if (signal?.aborted) throw new Error('Access check cancelled'); await assertCurrent(); };
+        await assertActive(); let fetcher: HttpFetcher; let grants: readonly string[] | null;
+        if (native) {
+          await assertNoPermissionCleanup({ provider, slug: grantSlug, accountStore: owner.accountStore });
+          const config = appConfig(); if (!config) throw new RpcError('not_configured', 'The saved OAuth app is unavailable.');
+          const token = await getAccessToken({ provider, slug: grantSlug, providerConfig: config, accountStore: owner.accountStore,
+            ...(owner.fetcher ? { fetcher: owner.fetcher } : {}), now });
+          const raw = owner.fetcher ?? anonymous;
+          fetcher = (url, init) => raw(url, { ...init, headers: { ...init?.headers, Authorization: 'Bearer ' + token } });
+          grants = await getGrantedScopes(owner.accountStore, provider, grantSlug);
+        } else {
+          fetcher = deps.sources.fetch(provider, collectionOAuthBinding(row.config), { requirePersistedOAuth: true });
+          // Read evidence is sufficient here. No write permission is inferred from it.
+          grants = await deps.sources.savedGrantScopes?.(provider, collectionOAuthBinding(row.config)) ?? null;
+        }
+        const authenticated: HttpFetcher = async (url, init) => {
+          await assertActive(); const response = await fetcher(url, init);
+          if (response.status === 401 || response.status === 403) throw new RpcError('credential_verification_failed', 'Saved authentication could not read this collection.',
+            422, 'collection.connection.managedOAuth', { verification_status: 'auth_failed' });
+          return response;
+        };
+        const identity = await readCollectionIdentity(row, authenticated);
+        const recorded = deps.db.prepare('SELECT created_at, binding_hash, identity_json FROM collection_authentication_identities WHERE platform = ? AND slug = ?')
+          .get(platform, slug) as { created_at: number; binding_hash: string; identity_json: string } | undefined;
+        if (recorded && recorded.created_at === row.created_at && recorded.binding_hash === bindingMaterial(row)
+          && !matchingCollectionAccount(JSON.parse(recorded.identity_json) as ManagedOAuthAccountIdentity, identity)) throw changed();
+        await verifyCollectionReads(row, authenticated, grants);
+        await assertActive(); const control = await anonymous(collectionIdentityUrl(row), { method: 'GET' });
+        if (control.status !== 401 && control.status !== 403) throw new RpcError('credential_verification_failed', 'This check did not prove protected account access.',
+          422, 'collection.connection.managedOAuth', { verification_status: 'unknown' });
+        await assertActive();
+        return [{ kind: 'collection_read', status: 'passed' }, { kind: 'write_permissions', status: 'unconfirmed', reason: 'not_executed' }];
+      } };
+  };
+  return { prepareSavedAccess, async handle(request) {
     if (request.action === 'collection_authentication_candidates') {
       const row = lookup(request.platform, request.slug);
       return { action: request.action, sources: await deps.sources.candidates(collectionProvider(row)), provider: collectionProvider(row),
@@ -179,7 +237,17 @@ export const createCollectionAuthenticationService = (deps: {
     let outcome: CollectionAuthenticationOutcome = { attempt_id: request.attempt_id, platform: review.public.platform, slug: review.row.slug,
       status: 'checking', connection_name: review.public.source.name, authentication: review.public.source.authentication,
       ...(review.public.intent ? { intent: review.public.intent } : {}) };
-    deps.db.prepare('INSERT INTO collection_authentication_attempts VALUES (?, ?, ?, ?)').run(request.attempt_id, request.review_id, request.fingerprint, JSON.stringify(outcome));
+    deps.db.transaction(() => {
+      deps.db.prepare('INSERT INTO collection_authentication_attempts VALUES (?, ?, ?, ?)').run(request.attempt_id, request.review_id, request.fingerprint, JSON.stringify(outcome));
+      const binding = collectionOAuthBinding(review.row.config);
+      repairs.begin('collection_authentication', request.attempt_id, {
+        action: review.public.intent === 'permissions' ? 'change_permissions' : 'switch_authentication',
+        from: { type: binding === undefined || binding && typeof binding === 'object' && 'type' in binding && binding.type === 'direct_oauth' ? 'direct_oauth' : 'broker',
+          ...(collectionOAuthSourceName(review.row.config) ? { connection_name: collectionOAuthSourceName(review.row.config) } : {}) },
+        to: { type: review.public.source.authentication, connection_name: review.public.source.name, label: review.public.source.display_name },
+        targets: [{ kind: 'collection', platform: review.public.platform, slug: review.row.slug }],
+      }, now());
+    })();
     active.add(key);
     const lifecycle = enroll(review.row).authenticationChange!; let stopped = false; let committed = false;
     try {
@@ -210,6 +278,7 @@ export const createCollectionAuthenticationService = (deps: {
     } catch (error) {
       if (committed) throw error;
       outcome = { ...outcome, status: 'failed', reason: error instanceof RpcError && error.code === 'conflict' ? 'changed' : 'access_failed' };
+      delete outcome.restart_needed; delete outcome.applied_at;
       saveOutcome(request.attempt_id, outcome);
       if (stopped) { try { await lifecycle.restart(review.row.slug); } catch { /* The original config remains; health is reported by the adapter. */ } }
     } finally { reviews.delete(request.review_id); active.delete(key); }

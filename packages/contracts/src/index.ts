@@ -6945,6 +6945,8 @@ export * from './managed-oauth.js';
 export * from './file-source-authentication.js';
 export * from './file-download-verification.js';
 export * from './authentication-repair-worklist.js';
+export * from './authentication-incident-history.js';
+export * from './authentication-access-verification.js';
 export * from './pack-access.js';
 export type { PackConnectionChange, PackConnectionsView } from './pack-connections.js';
 
@@ -6965,6 +6967,7 @@ export * from './collection-oauth-app-switch.js';
 export * from './collection-permissions.js';
 
 export * from './oauth-app-usage.js';
+export * from './oauth-app-renewal.js';
 
 export * from './customer-account-payments.js';
 export * from './customer-account-payment-corrections.js';

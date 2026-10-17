@@ -20,8 +20,9 @@
  *  layer on top of. */
 
 import type Database from 'better-sqlite3';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { initializePreapprovalConnections, mutatePreapprovalConnection } from './preapproval-connections.js';
+import { createAuthenticationRepairActionStore, type AuthenticationRepairStart, type AuthenticationRepairActionStore } from '../authentication-repair-action-store.js';
 import {
   RpcError,
   type ConnectionAuthType,
@@ -168,6 +169,7 @@ export const ensureConnectionSchema = (db: Database.Database): void => {
     db.exec(`ALTER TABLE ${CREDENTIAL_ROTATION_ATTEMPT_TABLE}
       ADD COLUMN safe_stop_acknowledged_at INTEGER`);
   }
+  if (!attemptCols.some(c => c.name === 'repair_history_key')) db.exec(`ALTER TABLE ${CREDENTIAL_ROTATION_ATTEMPT_TABLE} ADD COLUMN repair_history_key TEXT`);
   allowManagedOAuthAttempts(db);
 };
 
@@ -377,6 +379,8 @@ const dbRowToCredentialRotationAttempt = (
 };
 
 export interface ConnectionStoreSqlite {
+  /** Host-only secret-free history; never a client mutation surface. */
+  authenticationRepairHistory?: AuthenticationRepairActionStore;
   permissionCleanupId?(name: string): string | undefined;
   /** Host-only, atomic grant pause/replacement with the saved cleanup and native tokens. */
   replacePermissionCleanupAuth?(updates: readonly { previous: ConnectionRow; auth_ciphertext: string; granted_scopes_json: string; updated_at: number }[],
@@ -386,7 +390,7 @@ export interface ConnectionStoreSqlite {
   /** Upsert by composite key. Fully replaces the row when present.
    *  LWW semantics live one layer up at the sync wire (P2.2); this
    *  store always honors the caller's `updated_at`. */
-  upsert(input: ConnectionUpsert): ConnectionRow;
+  upsert(input: ConnectionUpsert, commit?: () => void): ConnectionRow;
   /** D-322 — consent changes a shared credential. Clear only its grant evidence. */
   clearGrantedScopes(names: readonly string[]): void;
   /** Host-only automatic credential renewal. CAS against the credential and
@@ -432,6 +436,7 @@ export interface ConnectionStoreSqlite {
     kind: ConnectionKind;
     name: string;
     started_at: number;
+    repair?: AuthenticationRepairStart;
   }): { claimed: boolean; attempt: ConnectionCredentialRotationAttemptRow };
   getCredentialRotationAttempt?(
     attempt_id: string,
@@ -485,6 +490,8 @@ export interface ConnectionStoreSqlite {
     attempt_id: string;
     connection: ConnectionUpsert;
     verification: ConnectionCredentialVerification;
+    /** Commit clock, separate from the earlier access-check clock. */
+    finished_at?: number;
   }): ConnectionRow;
   /** Close a claimed attempt after a safe pre-commit failure. */
   failCredentialRotationAttempt?(input: {
@@ -531,6 +538,7 @@ export const createConnectionStore = (
   db: Database.Database,
 ): ConnectionStoreSqlite => {
   ensureConnectionSchema(db);
+  const repairHistory = createAuthenticationRepairActionStore(db);
   initializePreapprovalConnections(db);
   db.exec('CREATE TABLE IF NOT EXISTS connection_permission_cleanup_pauses (name TEXT PRIMARY KEY, job_id TEXT NOT NULL)');
   const cleanupId = (name: string): string | undefined => db.prepare<[string], { job_id: string }>(
@@ -563,6 +571,8 @@ export const createConnectionStore = (
            auth_rejection_resolution = NULL
      WHERE status = 'pending'
   `).run(Date.now());
+  repairHistory.interrupt('connection_credentials', Date.now());
+  repairHistory.interrupt('managed_reauthorization', Date.now());
 
   // Older builds allowed distinct attempt ids for the same connection to be
   // pending concurrently. Boot has just closed every orphaned pending row, so
@@ -851,11 +861,14 @@ export const createConnectionStore = (
     ) as CredentialRotationAttemptDbRow | undefined;
     return row === undefined ? null : dbRowToCredentialRotationAttempt(row);
   };
+  const repairKey = (attemptId: string): string | undefined => db.prepare<[string], { repair_history_key: string | null }>(
+    `SELECT repair_history_key FROM ${CREDENTIAL_ROTATION_ATTEMPT_TABLE} WHERE attempt_id = ?`).get(attemptId)?.repair_history_key ?? undefined;
   const claimCredentialRotation = db.transaction((input: {
     attempt_id: string;
     kind: ConnectionKind;
     name: string;
     started_at: number;
+    repair?: AuthenticationRepairStart;
   }): { claimed: boolean; attempt: ConnectionCredentialRotationAttemptRow } => {
     const sameAttempt = readCredentialRotationAttempt(input.attempt_id);
     if (sameAttempt !== null) return { claimed: false, attempt: sameAttempt };
@@ -881,12 +894,20 @@ export const createConnectionStore = (
     if (attempt === null) {
       throw new Error('credential rotation claim was not durable');
     }
+    if (claimed && input.repair) {
+      // Rotation receipts are deleted with their connection; retained history
+      // survives. A genuinely new claim must not reuse that old history entry.
+      const key = randomUUID();
+      db.prepare(`UPDATE ${CREDENTIAL_ROTATION_ATTEMPT_TABLE} SET repair_history_key = ? WHERE attempt_id = ?`).run(key, input.attempt_id);
+      repairHistory.begin('connection_credentials', key, input.repair, input.started_at);
+    }
     return { claimed, attempt };
   });
   const completeCredentialRotation = db.transaction((input: {
     attempt_id: string;
     connection: ConnectionUpsert;
     verification: ConnectionCredentialVerification;
+    finished_at?: number;
   }): ConnectionRow => {
     assertNotPaused(input.connection.kind, input.connection.name);
     const completed = completeCredentialRotationStmt.run({
@@ -903,6 +924,8 @@ export const createConnectionStore = (
     mutatePreapprovalConnection(db, input.connection.kind, input.connection.name,
       () => readConnection(input.connection.kind, input.connection.name),
       () => upsertStmt.run(upsertParams(input.connection)));
+    const key = repairKey(input.attempt_id);
+    if (key) repairHistory.finish('connection_credentials', key, { status: 'applied' }, input.finished_at ?? Date.now());
     return dbRowToConnectionRow(
       getStmt.get(input.connection.kind, input.connection.name) as ConnectionDbRow,
     );
@@ -952,6 +975,9 @@ export const createConnectionStore = (
     if (failed.changes !== 1) {
       throw new Error('credential rotation attempt is no longer pending');
     }
+    const key = repairKey(input.attempt_id);
+    if (key) repairHistory.finish('connection_credentials', key, { status: 'failed', reason: input.reason === 'auth_failed' ? 'access_failed'
+      : input.reason === 'conflict' ? 'changed' : input.reason }, input.finished_at);
     const attempt = readCredentialRotationAttempt(input.attempt_id);
     if (attempt === null) {
       throw new Error('credential rotation failure was not durable');
@@ -1011,6 +1037,7 @@ export const createConnectionStore = (
     return row ? dbRowToConnectionRow(row) : null;
   };
   return {
+    authenticationRepairHistory: repairHistory,
     permissionCleanupId: cleanupId,
     replacePermissionCleanupAuth(updates, jobId, phase, commit) {
       const changed = db.transaction(() => {
@@ -1059,10 +1086,13 @@ export const createConnectionStore = (
         for (const name of names) clear.run('api', name);
       }).immediate();
     },
-    upsert(input) {
+    upsert(input, commit) {
       assertNotPaused(input.kind, input.name);
-      mutatePreapprovalConnection(db, input.kind, input.name,
-        () => readConnection(input.kind, input.name), () => upsertStmt.run(upsertParams(input)));
+      db.transaction(() => {
+        mutatePreapprovalConnection(db, input.kind, input.name,
+          () => readConnection(input.kind, input.name), () => upsertStmt.run(upsertParams(input)));
+        commit?.();
+      })();
       const row = dbRowToConnectionRow(
         getStmt.get(input.kind, input.name) as ConnectionDbRow,
       );

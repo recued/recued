@@ -3,13 +3,17 @@ import { isPackReconnectWorklist, type PackReconnectGroup, type PackReconnectReq
 import { isAuthenticationRepairWorklist, CONNECTION_NAME_REGEX, type AuthenticationRepairCaller, type AuthenticationRepairWorklist, type AuthenticationRepairGroup, type AuthenticationRepairTarget } from '@recued/contracts';
 import { connectionsAccountAddress, connectionsReviewAccessAddress, connectionsOAuthAppsAddress } from '../connections/connections-navigation.js';
 import { cloudFileSourceSlug } from '../data/cloud-file-explorer.js';
+import { authenticationIncidentHistoryHref } from '@recued/ui-shared';
 import type { ReconnectWorklistReturn } from './reconnect-worklist-continuity.js';
+import { createAuthenticationAccessPanel, appendAuthenticationAccessSummary, AUTHENTICATION_ACCESS_STYLES } from '../connections/authentication-access-panel.js';
+import type { ManagedOAuthCaller } from './managed-oauth-panel.js';
 export type PackReconnectCaller = (args: PackReconnectRequest) => Promise<PackReconnectResponse>;
 
 export const createReconnectWorklistPanel = (deps: {
   document: Document;
   call?: PackReconnectCaller;
   repairs?: AuthenticationRepairCaller;
+  verify?: ManagedOAuthCaller;
   onReconnect?(group: PackReconnectGroup): void;
   returned?: ReconnectWorklistReturn;
 }) => {
@@ -57,6 +61,10 @@ export const createReconnectWorklistPanel = (deps: {
     section.appendChild(node('h2', deps.repairs ? 'Authentication repairs' : 'Reconnect later'));
     section.appendChild(node('p', deps.repairs ? 'Review saved account problems and Pack permission reminders in one place. Opening or refreshing this list reads local status; it does not contact vendors or change authentication.' : 'Review vendor permissions for installed Packs. This list uses their declared permission needs.'));
     section.appendChild(button('Refresh', 'refresh', () => { void refresh(); }));
+    if (deps.repairs) {
+      const history = node('a', 'Connection incident history'); history.href = authenticationIncidentHistoryHref();
+      history.setAttribute('href', history.href); history.setAttribute('data-authentication-history-link', 'all'); section.appendChild(history);
+    }
     const reviewed = data?.groups.filter(g => g.reviewed).length ?? 0;
     if (reviewed) {
       const toggle = button(`${showReviewed ? 'Hide' : 'Show'} reviewed (${reviewed})`, 'toggle-reviewed', () => { showReviewed = !showReviewed; render(); });
@@ -68,6 +76,7 @@ export const createReconnectWorklistPanel = (deps: {
     for (const message of repairs?.unavailable ?? []) { const p = node('p', message); p.setAttribute('role', 'status'); section.appendChild(p); }
     if (repairs) section.appendChild(node('p', 'Local status read: ' + new Date(repairs.observed_at).toLocaleString() + '. Vendor permissions and access are confirmed only by the existing authorization and access checks.'));
     if (notice) { const p = node('p', notice); p.setAttribute('role', 'status'); section.appendChild(p); }
+    if (accessPanel) { section.appendChild(accessHost); accessPanel.mount(accessHost); }
     if (data || repairs) {
       const packData = data ?? { groups: [], unresolved_packs: [] };
       const visible = packData.groups.filter(g => !g.reviewed || showReviewed);
@@ -109,9 +118,20 @@ export const createReconnectWorklistPanel = (deps: {
       const claimed = new Set<string>();
       for (const account of repairs?.groups ?? []) {
         const permissions = account.kind === 'account' ? visible.filter(g => g.name && account.connection_names.includes(g.name)) : [];
-        if (!account.issues.length && !permissions.length) continue;
+        if (!account.issues.length && !permissions.length && !account.access_verification) continue;
         const article = node('article'); article.setAttribute('data-authentication-repair-group', account.id);
         article.appendChild(node('h3', account.label)); article.appendChild(node('p', authLabel(account)));
+        const history = node('a', 'Incident history'); history.href = authenticationIncidentHistoryHref({ kind: 'group', id: account.id });
+        history.setAttribute('href', history.href); history.setAttribute('data-authentication-history-link', account.id); article.appendChild(history);
+        if (account.access_verification) {
+          const details = node('details'); details.appendChild(node('summary', 'Latest access check')); appendAuthenticationAccessSummary(doc, details, account.access_verification); article.appendChild(details);
+        }
+        if (accessPanel) {
+          const verify = button(account.access_verification?.status === 'checking' ? 'View access check' : 'Verify access', 'verify-' + account.id,
+            () => { accessPanel.open({ kind: 'group', id: account.id }, account.access_verification,
+              () => host?.querySelector<HTMLElement>('[data-reconnect-worklist-action="verify-' + account.id + '"]')?.focus()); accessHost.scrollIntoView?.({ block: 'nearest' }); });
+          article.appendChild(verify);
+        }
         for (const issue of account.issues) {
           const p = node('p', issue.message + (issue.observed_at === undefined ? '' : ' Recorded ' + new Date(issue.observed_at).toLocaleString() + '.'));
           p.setAttribute('data-authentication-repair-issue', issue.code); article.appendChild(p);
@@ -187,12 +207,14 @@ export const createReconnectWorklistPanel = (deps: {
     })();
     return pending;
   };
+  const accessHost = doc.createElement('div');
+  const accessPanel = deps.verify ? createAuthenticationAccessPanel({ document: doc, call: deps.verify, updated: () => { void refresh(); } }) : undefined;
   return {
     mount(element: HTMLElement): void { host = element; render(); if (!data && !loading) void refresh(); },
     refresh,
     whenLoaded: (): Promise<void> => pending,
     busy: (): boolean => writing,
-    dispose(): void { disposed = true; generation += 1; host = null; },
+    dispose(): void { disposed = true; generation += 1; accessPanel?.dispose(); host = null; },
   };
 };
-export const RECONNECT_WORKLIST_STYLES = `.reconnect-worklist{border:1px solid var(--border);border-radius:10px;padding:16px;margin:12px 0;overflow-wrap:anywhere}.reconnect-worklist h2{margin-top:0}.reconnect-worklist article{border-top:1px solid var(--border);padding:12px 0}.reconnect-worklist button,.reconnect-worklist article>a{margin:4px 8px 4px 0}.reconnect-worklist button{font:inherit;border:1px solid var(--border);background:var(--surface);color:var(--fg);border-radius:6px;min-height:36px;padding:7px 12px;cursor:pointer}.reconnect-worklist [data-authentication-repair-link]{display:block;min-height:32px;padding:6px 0;width:fit-content;max-width:100%}.reconnect-worklist button:disabled{opacity:.6;cursor:default}.reconnect-worklist [role=alert]{color:var(--danger,#b42318)}.reconnect-worklist summary{cursor:pointer}`;
+export const RECONNECT_WORKLIST_STYLES = `.reconnect-worklist{border:1px solid var(--border);border-radius:10px;padding:16px;margin:12px 0;overflow-wrap:anywhere}.reconnect-worklist h2{margin-top:0}.reconnect-worklist article{border-top:1px solid var(--border);padding:12px 0}.reconnect-worklist button,.reconnect-worklist article>a{margin:4px 8px 4px 0}.reconnect-worklist button{font:inherit;border:1px solid var(--border);background:var(--surface);color:var(--fg);border-radius:6px;min-height:36px;padding:7px 12px;cursor:pointer}.reconnect-worklist [data-authentication-repair-link]{display:block;min-height:32px;padding:6px 0;width:fit-content;max-width:100%}.reconnect-worklist button:disabled{opacity:.6;cursor:default}.reconnect-worklist [role=alert]{color:var(--danger,#b42318)}.reconnect-worklist summary{cursor:pointer}` + AUTHENTICATION_ACCESS_STYLES;

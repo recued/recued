@@ -171,6 +171,38 @@ const promptYesNo = async (question: string): Promise<boolean> => {
   }
 };
 
+/** What `recued update apply` prints when the owner's yes is missing. */
+export const APPLY_DECLINED_MESSAGE = 'Nothing installed.';
+export const APPLY_NO_TERMINAL_MESSAGE =
+  'There is no terminal to confirm on, so nothing was installed.\n'
+  + '  Pass --yes to install it without asking.';
+
+/** The owner's yes to an update the server would not take by itself.
+ *
+ *  ⛔ ONE QUESTION, AND NOTHING ABOUT THE ROLLOUT. `rollout_pct` is 0 for good
+ *  (the owner, 2026-10-16: "we will always have 0% rollout policy"), so no
+ *  install is ever in the cohort and every apply comes here. This used to print
+ *  that the release was in staged rollout and this install not in the cohort,
+ *  then ask whether to install it anyway: words that told the owner nothing and
+ *  called every ordinary update an early one. Settings → Updates dropped the
+ *  same wording on 2026-09-28. The consent itself is unchanged: `--yes`, or a
+ *  yes on the terminal, and the apply records it (`rolloutBypass`). With no
+ *  terminal and no `--yes`, nothing is installed, because nobody could have
+ *  said no. */
+export const takeApplyConsent = async (input: {
+  yes: boolean;
+  isTTY: boolean;
+  fromVersion: string;
+  toVersion: string;
+  ask: (question: string) => Promise<boolean>;
+}): Promise<'confirmed' | 'declined' | 'no-terminal'> => {
+  if (input.yes) return 'confirmed';
+  if (!input.isTTY) return 'no-terminal';
+  return (await input.ask(`Update ${input.fromVersion} → ${input.toVersion}? [y/N] `))
+    ? 'confirmed'
+    : 'declined';
+};
+
 /** ⚠ SAYS "STAGED", NOT "UPDATED". `runApply` returns `restarting` because on
  *  the server that is what happens next; here nothing restarts, and the swap is
  *  only half the operation — `boot-reconcile` COMMITS it on the first
@@ -628,47 +660,34 @@ export async function runUpdateProfile(options: UpdateProfileOptions): Promise<v
         return;
       }
 
-      // ── Staged rollout: say so, and let a human decline ──────────────────
-      // The spec calls an out-of-cohort manual apply "an EXPLICIT, confirmed,
-      // audited act". It was none of the three: the wire did not carry
-      // `rollout_pct`, nothing rendered cohort state, and `trigger: 'manual'` was
-      // the whole record.
+      // ── The owner's yes ──────────────────────────────────────────────────
+      // The spec calls an apply the server would not take by itself "an
+      // EXPLICIT, confirmed, audited act": `takeApplyConsent` asks (or reads
+      // `--yes`) and `rolloutBypass` below records it. With `rollout_pct` at 0
+      // for good, every real apply comes here, so it asks in plain words and
+      // says nothing about cohorts (see `takeApplyConsent`).
       //
-      // ⚠ ASKED, NOT REFUSED — and that is deliberate, permanently. `rollout_pct` is 0 on the
-      // live stable channel today, so EVERY install is outside the cohort; a hard
-      // gate here would stop every owner from updating. So: state it, ask when a
-      // human is there to answer, and audit it either way.
+      // ⚠ ASKED, NOT REFUSED — permanently. A hard gate here would stop every
+      // owner from updating.
       if (!resolved.inRolloutCohort) {
-        console.log(
-          `This release is in staged rollout (${resolved.rolloutPct}%) and this install `
-          + 'is not in the cohort yet.',
-        );
-        if (getFlag(options.args, 'yes')) {
-          console.log('  --yes given — installing early and recording it as a bypass.');
-        } else if (process.stdin.isTTY === true) {
-          const answer = await promptYesNo('Install it anyway? [y/N] ');
-          if (!answer) {
-            console.log('Nothing installed. It will be offered automatically once the rollout reaches this install.');
-            return;
-          }
-        } else {
+        const consent = await takeApplyConsent({
+          yes: getFlag(options.args, 'yes'),
+          isTTY: process.stdin.isTTY === true,
+          fromVersion: resolved.fromVersion,
+          toVersion: resolved.toVersion,
+          ask: promptYesNo,
+        });
+        if (consent === 'declined') {
+          console.log(APPLY_DECLINED_MESSAGE);
+          return;
+        }
+        if (consent === 'no-terminal') {
           // ⛔ NO TERMINAL AND NO `--yes` IS A REFUSAL, NOT A PROCEED. This used
           // to print a note and carry on, which meant the one caller that CANNOT
           // be asked — cron, a pipeline — was the one that never confirmed
-          // anything. The spec calls the bypass "an EXPLICIT, confirmed" act, and
-          // a confirmation nobody can decline is neither.
-          //
-          // ⚠ THIS CAN BREAK AN EXISTING UNATTENDED UPDATE, and that is the
-          // point: with `rollout_pct` at 0 every install is outside the cohort,
-          // so an unattended `recued update apply` today IS an unreviewed early
-          // adoption of every release. The flag is named in the message so the
-          // fix is one word.
-          console.error(
-            'This release is in staged rollout and this install is not in the cohort. '
-            + 'There is no terminal to confirm on, so nothing was installed.\n'
-            + '  Pass --yes to take it early on purpose (it is recorded as a bypass), '
-            + 'or wait for the rollout to reach this install.',
-          );
+          // anything. A confirmation nobody can decline is not one. The flag is
+          // named in the message so the fix is one word.
+          console.error(APPLY_NO_TERMINAL_MESSAGE);
           process.exitCode = 1;
           return;
         }

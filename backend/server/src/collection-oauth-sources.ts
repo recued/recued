@@ -8,7 +8,7 @@ import { makeBoundedOriginHttpFetcher } from './bounded-origin-http-fetcher.js';
 import type { HttpFetcher } from './collections/mail/oauth.js';
 import type { ConnectionStoreSqlite } from './storage/connection-store.js';
 import type { ManagedOAuthService } from './managed-oauth-service.js';
-import { persistNativeOAuthRenewal, withCurrentConnectionRenewal } from './native-oauth-renewal.js';
+import { persistNativeOAuthRenewal, withCurrentConnectionRenewal, assertPersistedOAuthAccess } from './native-oauth-renewal.js';
 import type { ManagedOAuthCollectionBinding } from './managed-oauth-consumers.js';
 
 export type CollectionOAuthBinding =
@@ -21,9 +21,10 @@ export interface CollectionOAuthTransport {
   beforeSwap(): void;
 }
 export interface CollectionOAuthSources {
+  savedGrantScopes?(provider: CollectionAuthenticationProvider, binding: unknown): Promise<readonly string[] | null>;
   candidates(provider: CollectionAuthenticationProvider): Promise<CollectionAuthenticationSource[]>;
   prepare(provider: CollectionAuthenticationProvider, name: string, needs: readonly string[]): Promise<CollectionOAuthTransport>;
-  fetch(provider: CollectionAuthenticationProvider, binding: unknown): HttpFetcher;
+  fetch(provider: CollectionAuthenticationProvider, binding: unknown, options?: { requirePersistedOAuth: true }): HttpFetcher;
   previousBrokerFetch(provider: CollectionAuthenticationProvider, binding: unknown): HttpFetcher;
 }
 export const collectionOAuthBinding = (config: Record<string, unknown>): unknown => config.oauth_connection ?? config.managed_oauth;
@@ -84,7 +85,7 @@ export const createCollectionOAuthSources = (deps: {
   const fresh = createEnsureFreshAuth({ fetchImpl, now,
     withAuthRenewal: (row, run) => withCurrentConnectionRenewal(deps.store, row, run),
     persistAuth: (row, auth, patch) => persistNativeOAuthRenewal({ store: deps.store, decode: deps.decode, encode: deps.encode, key: deps.key, now }, row, auth, patch) });
-  const sourceFetch = (p: CollectionAuthenticationProvider, raw: unknown): HttpFetcher => makeBoundedOriginHttpFetcher({
+  const sourceFetch = (p: CollectionAuthenticationProvider, raw: unknown, options?: { requirePersistedOAuth: true }): HttpFetcher => makeBoundedOriginHttpFetcher({
     timeoutMs: 15_000, redirectPolicy: 'error', fetchImpl: async (url, init) => {
       if (!raw || typeof raw !== 'object' || Array.isArray(raw) || !('connection_name' in raw) || typeof raw.connection_name !== 'string') throw changed();
       const live = await read(p, raw.connection_name); const expected = raw as CollectionOAuthBinding;
@@ -97,10 +98,17 @@ export const createCollectionOAuthSources = (deps: {
       const latest = await read(p, raw.connection_name);
       if (!bindingMatches(bindingFor(raw.connection_name, latest.auth, p), expected)
         || material(latest.row, latest.auth) !== material(live.row, live.auth)) throw changed();
+      if (options?.requirePersistedOAuth) assertPersistedOAuthAccess(auth, latest.auth);
       const headers = new Headers(init?.headers); injectConnectionApiAuth(auth, headers, destination, { method: init?.method ?? 'GET', nowMs: now() });
       return fetchImpl(destination, { ...init, headers, credentials: 'omit', redirect: 'error' });
     } });
   return {
+    async savedGrantScopes(p, raw) {
+      if (!raw || typeof raw !== 'object' || !('connection_name' in raw) || typeof raw.connection_name !== 'string') throw changed();
+      const live = await read(p, raw.connection_name);
+      if (!bindingMatches(bindingFor(raw.connection_name, live.auth, p), raw)) throw changed();
+      return grantList(live.row);
+    },
     async candidates(p) {
       const results: CollectionAuthenticationSource[] = [];
       for (const row of deps.store.list({ kind: 'api' })) {

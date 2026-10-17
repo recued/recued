@@ -57,6 +57,7 @@ export {
 } from './connection.js';
 export {
   createConnectionApiHandler,
+  connectionApiAccessKey,
   injectConnectionApiAuth,
   describeConnectionApiRequest, describeConnectionApiUpload,
   buildConnectionApiBody,

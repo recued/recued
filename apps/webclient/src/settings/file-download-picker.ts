@@ -5,6 +5,7 @@ export const createFileDownloadPicker = (deps: {
   document: Document;
   call(args: ManagedOAuthRequest): Promise<ManagedOAuthResponse>;
   changed(): void;
+  mode?: 'saved';
 }) => {
   const doc = deps.document; let host: HTMLElement | null = null; let disposed = false; let generation = 0;
   let request: { name:string; revision:number; current():boolean; resolve(value:{fileId?:string}|null):void } | undefined;
@@ -32,7 +33,9 @@ export const createFileDownloadPicker = (deps: {
     const live = (node:HTMLElement):boolean => !disposed && request===context && context.current() && host?.contains(node) === true;
     const section = element('section'); section.className='file-download-picker';section.tabIndex=-1;section.setAttribute('aria-label','Choose a file to verify');section.setAttribute('data-file-download-picker','');section.setAttribute('aria-busy',String(loading));
     section.appendChild(element('h3','Check a file download or export'));
-    section.appendChild(element('p','Choose one file from this source. Recued will read it with the current and selected authentication before switching. The file is not saved or sent to an AI service.'));
+    section.appendChild(element('p',deps.mode === 'saved'
+      ? 'Choose one file from this source. Recued will check its download or export using the saved authentication. The file is not saved or sent to an AI service.'
+      : 'Choose one file from this source. Recued will read it with the current and selected authentication before switching. The file is not saved or sent to an AI service.'));
     section.appendChild(element('p','Checks allow up to 10 MiB. Google documents use their normal Office export. A metadata-only check remains available.'));
     const label=element('label','Find a file by name or path');label.htmlFor='file-download-picker-search';section.appendChild(label);
     const input=element('input');input.type='search';input.maxLength=200;input.id='file-download-picker-search';input.value=query;input.disabled=loading;
@@ -63,7 +66,7 @@ export const createFileDownloadPicker = (deps: {
     }
     if(selected)section.appendChild(element('p','Selected: '+selected.filename+(selected.mode==='export'?' → '+selected.output_filename:'')));
     const actions=element('div');actions.className='file-download-picker-actions';
-    actions.appendChild(button('Verify this file and continue','verify',loading||!selected,()=>finish({fileId:selected!.remote_id})));
+    actions.appendChild(button(deps.mode === 'saved' ? 'Use this file for verification' : 'Verify this file and continue','verify',loading||!selected,()=>finish({fileId:selected!.remote_id})));
     actions.appendChild(button('Continue with metadata only','metadata-only',false,()=>finish({})));
     actions.appendChild(button('Cancel','cancel',false,()=>finish(null)));section.appendChild(actions);
     section.appendChild(element('p','A successful check covers this file and format. It does not prove writes or every file’s access.'));

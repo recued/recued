@@ -37,6 +37,8 @@ const switchAccountRefused = (message: string, unavailable = false): RpcError =>
   },
 );
 export interface ManagedOAuthService {
+  verifySavedFileAccess?(name: string, fileId?: string, signal?: AbortSignal): Promise<import('@recued/contracts').AuthenticationAccessCheck[]>;
+  profileLabel?(id: string): string | undefined;
   handle(args: ManagedOAuthRequest): Promise<ManagedOAuthResponse>;
   /** Verify after encryption. Deferred consumption follows the durable switch commit. */
   authorizeForSave(auth: ManagedOAuthAuth, baseUrl: string, name: string, existing?: ConnectionRow,
@@ -59,6 +61,7 @@ export interface ManagedOAuthService {
   /** D-322 §24 — read-only diagnostic fences, independent of consent receipts. */
   diagnosticProfileSignature?(): string;
   collectionProfileSignature?(id: string): string;
+  savedAccessProfileSignature?(id: string): string;
   inspectAccount?(auth: ManagedOAuthAuth): Promise<{ identity?: string; profile_revision: number; auth_error: boolean }>;
   fetch(auth: ManagedOAuthAuth, target: string, init: RequestInit): Promise<Response>;
 }
@@ -967,6 +970,11 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
   };
 
   return {
+    verifySavedFileAccess: async (name, fileId, signal) => {
+      if (!fileSources) throw new RpcError('not_configured', 'File-source checks are unavailable.');
+      return fileSources.verifySaved(name, fileId, signal);
+    },
+    profileLabel: id => deps.profiles.list().find(profile => profile.id === id)?.label,
     handle, authorizeForSave, verifySwitchAccount, migrationCandidates, migrationSignature, claimMigration,
     isFileSourceSwitch: name => fileSources?.supported(name) ?? false,
     assertFileSourceSwitchCurrent: name => { fileSources?.assertCurrent(name); },
@@ -995,6 +1003,8 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
     },
     collectionProfileSignature: id => { const p = profile(id);
       return createHash('sha256').update(JSON.stringify([p.id, p.broker, p.base_url])).digest('hex'); },
+    savedAccessProfileSignature: id => { const p = profile(id);
+      return createHash('sha256').update(JSON.stringify([p.id, p.broker, p.base_url, p.revision])).digest('hex'); },
     diagnosticProfileSignature: () => JSON.stringify(deps.profiles.list().map(p => [p.id, p.revision]).sort()),
     inspectAccount: async (auth) => {
       const saved = profile(auth.broker_profile_id);

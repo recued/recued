@@ -7,6 +7,7 @@ const nonce = (): string => btoa(String.fromCharCode(...crypto.getRandomValues(n
   .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 export const createOAuthAppUsagePanel = (deps: {
   host: HTMLElement; call: OAuthAppsCaller; changed(): void; now?(): number; id?(): string;
+  verifyRenewal?(app: SavedOAuthApp): void;
   storage?: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 }) => {
   let review: OAuthAppUsageReview | undefined; let app: SavedOAuthApp | undefined;
@@ -14,6 +15,7 @@ export const createOAuthAppUsagePanel = (deps: {
   let expiryDate = ''; let expiryInvalid = false; let supportsExpiry = false;
   let requestedExpiry: string | null | undefined; let expiryUnconfirmed = false;
   let attempt: string | undefined; let outcome: OAuthAppSecretRotationOutcome | undefined; let error = ''; let pending = Promise.resolve();
+  let renewalApp: SavedOAuthApp | undefined;
   let poll: ReturnType<typeof setTimeout> | undefined; let polls = 0; let visible = true;
   const now = deps.now ?? Date.now;
   const storage = () => { try { return deps.storage ?? deps.host.ownerDocument?.defaultView?.sessionStorage; } catch { return undefined; } };
@@ -62,6 +64,7 @@ export const createOAuthAppUsagePanel = (deps: {
         : 'No secret changes from this attempt were saved. ' + (outcome.reason === 'changed' ? 'The app or local usage changed; start a fresh review.' : outcome.reason === 'locked' ? 'Unlock Recued, then start a fresh review.' : outcome.reason === 'interrupted' ? 'The server restarted before the update committed. Start a fresh review.' : 'The update could not be committed. Start a fresh review.')) + '</p>' : '')
       + (outcome?.status === 'applied' && expiryUnconfirmed ? '<p role="alert">The server did not confirm the requested expiry date. Refresh the saved app before recording its date. The secret rotation was saved; do not repeat it to repair the date.</p>'
         : outcome?.status === 'applied' && supportsExpiry ? '<p>' + (outcome.secret_expires_on ? 'Recorded expiry for the new secret: ' + e(outcome.secret_expires_on) + '.' : 'No expiry date is recorded for the new secret.') + '</p>' : '')
+      + (outcome?.status === 'applied' && renewalApp && deps.verifyRenewal ? button('verify-renewal', 'Verify token renewal') : '')
       + (error ? '<p role="alert">' + e(error) + '</p>' : '')
       + (attempt ? button('status', 'Check rotation result') : '')
       + button('close', 'Close review') + '</section>';
@@ -85,7 +88,10 @@ export const createOAuthAppUsagePanel = (deps: {
         || response.rotation_outcome !== null && (!isOAuthAppSecretRotationOutcome(response.rotation_outcome) || response.rotation_outcome.attempt_id !== id
           || app && (response.rotation_outcome.issuer !== app.issuer || response.rotation_outcome.app_id !== app.id))) throw Error('Invalid result');
       supportsExpiry = response.secret_expiry_supported === true;
-      if (response.rotation_outcome) finish(response.rotation_outcome);
+      if (response.rotation_outcome) {
+        renewalApp = response.apps.find(a => a.issuer === response.rotation_outcome!.issuer && a.id === response.rotation_outcome!.app_id && a.revision === response.rotation_outcome!.app_revision);
+        finish(response.rotation_outcome);
+      }
       else { attempt = undefined; remember(); error = 'No saved result was found. Refresh the app list and start a fresh review.'; }
       if (outcome?.status === 'checking' && polls++ < 60) poll = setTimeout(() => { void check(); }, 2000);
     } catch { if (!disposed && gen === generation) error = 'The result could not be read. Check it again before trying another rotation.'; }
@@ -93,7 +99,7 @@ export const createOAuthAppUsagePanel = (deps: {
   };
   const close = () => {
     if (busy) return;
-    generation++; clearPoll(); retire(); app = undefined; chosen.clear(); secret = ''; expiryDate = ''; expiryInvalid = false; supportsExpiry = false; expiryUnconfirmed = false; confirming = false; outcome = undefined; error = ''; visible = false; render();
+    generation++; clearPoll(); retire(); app = undefined; renewalApp = undefined; chosen.clear(); secret = ''; expiryDate = ''; expiryInvalid = false; supportsExpiry = false; expiryUnconfirmed = false; confirming = false; outcome = undefined; error = ''; visible = false; render();
     if (!attempt) requestedExpiry = undefined;
   };
   const open = (selected: SavedOAuthApp): Promise<void> => {
@@ -132,6 +138,7 @@ export const createOAuthAppUsagePanel = (deps: {
         || response.rotation_outcome.attempt_id !== attempt || response.rotation_outcome.issuer !== checked.app.issuer || response.rotation_outcome.app_id !== checked.app.id
         || JSON.stringify(response.rotation_outcome.selected_names) !== JSON.stringify(selected)) throw Error('Invalid result');
       supportsExpiry = response.secret_expiry_supported === true;
+      renewalApp = response.apps.find(a => a.issuer === checked.app.issuer && a.id === checked.app.id && a.revision === response.rotation_outcome!.app_revision);
       finish(response.rotation_outcome);
     } catch { if (!disposed && gen === generation) error = 'The reply was lost. Check the rotation result before trying again.'; }
     finally { if (!disposed && gen === generation) { busy = false; render(); if (outcome?.status === 'checking') void check(); } }
@@ -141,6 +148,7 @@ export const createOAuthAppUsagePanel = (deps: {
     if (!target || !deps.host.contains(target) || target.hasAttribute('disabled') || busy) return;
     const action = target.dataset.appUsageAction; event.preventDefault(); error = '';
     if (action === 'close') close();
+    else if (action === 'verify-renewal' && outcome?.status === 'applied' && renewalApp) deps.verifyRenewal?.(renewalApp);
     else if (!attempt && action === 'clear-expiry' && review?.can_rotate && supportsExpiry && !confirming) {
       expiryDate = ''; expiryInvalid = false; render(); deps.host.querySelector<HTMLElement>('[data-app-usage-expiry]')?.focus({ preventScroll: true });
     }

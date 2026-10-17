@@ -117,6 +117,7 @@ export const composeCalendarBoot = (
   // enroll rpc.
   const oauthAccountStoreDouble = accountStore
     ? {
+        ...(accountStore.withOAuthGrantLease ? { withOAuthGrantLease: accountStore.withOAuthGrantLease } : {}),
         ...(accountStore.transactionalWrite ? { transactionalWrite: accountStore.transactionalWrite } : {}),
         get: (k: string) => accountStore.get(k),
         set: (k: string, v: string) => accountStore.set(k, v),
@@ -249,6 +250,7 @@ export const composeCalendarBoot = (
       ...(accountStore
         ? {
             accountStore: {
+              ...(accountStore.withOAuthGrantLease ? { withOAuthGrantLease: accountStore.withOAuthGrantLease } : {}),
               ...(accountStore.transactionalWrite ? { transactionalWrite: accountStore.transactionalWrite } : {}),
               get: (k) => accountStore.get(k),
               set: (k, v) => accountStore.set(k, v),

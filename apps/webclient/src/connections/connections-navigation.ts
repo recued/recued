@@ -5,7 +5,8 @@ import {
   hierarchicalLevel,
   type HierarchicalAddress,
 } from '../shell/hierarchical-navigation.js';
-import { CONNECTION_NAME_REGEX } from '@recued/contracts';
+import { CONNECTION_NAME_REGEX, OAUTH_APP_ID, isAuthenticationIncidentScope, isAuthenticationAccessSelection,
+  type AuthenticationIncidentScope, type AuthenticationAccessSelection, type OAuthAppIssuer } from '@recued/contracts';
 import type { ShellRoute } from '../shell/route.js';
 import { PACK_PERMISSION_REPAIR_ID } from '../settings/pack-permission-repair.js';
 
@@ -104,6 +105,64 @@ export const connectionsOAuthAppsAddress = (): HierarchicalAddress => hierarchic
 );
 export const parseConnectionsOAuthApps = (segments: readonly string[]): boolean =>
   segments.length === 2 && segments[0] === 'others' && segments[1] === 'oauth-apps';
+
+export interface ConnectionOAuthAppReview { issuer: OAuthAppIssuer; id: string; view: 'usage' | 'renewal' }
+/** A destination identifies a saved app. Its current metadata is read on arrival. */
+export const connectionsOAuthAppAddress = (app: ConnectionOAuthAppReview): HierarchicalAddress => hierarchicalAddress(
+  'connections', hierarchicalLevel('connections-lane:others', 'others'), hierarchicalLevel('connections-flow:oauth-apps', 'oauth-apps'),
+  hierarchicalLevel('connections-app-issuer:' + app.issuer, app.issuer), hierarchicalLevel('connections-app:' + app.id, app.id),
+  hierarchicalLevel('connections-app-view:' + app.view, app.view),
+);
+export const parseConnectionsOAuthApp = (segments: readonly string[]): ConnectionOAuthAppReview | null =>
+  segments.length === 5 && segments[0] === 'others' && segments[1] === 'oauth-apps'
+    && (segments[2] === 'google' || segments[2] === 'microsoft') && OAUTH_APP_ID.test(segments[3] ?? '')
+    && (segments[4] === 'usage' || segments[4] === 'renewal')
+    ? { issuer: segments[2], id: segments[3]!, view: segments[4] } : null;
+
+export const connectionsAccountAuthenticationAddress = (platform: 'mail' | 'calendar', slug: string): HierarchicalAddress => hierarchicalAddress(
+  'connections', hierarchicalLevel('connections-lane:' + platform, platform), hierarchicalLevel('connections-account:' + slug, slug),
+  hierarchicalLevel('connections-account-action:manage-authentication', 'manage-authentication'),
+);
+export const parseConnectionsAccountAuthentication = (segments: readonly string[]): { platform: 'mail' | 'calendar'; slug: string } | null =>
+  segments.length === 3 && (segments[0] === 'mail' || segments[0] === 'calendar')
+    && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(segments[1] ?? '') && segments[2] === 'manage-authentication'
+    ? { platform: segments[0], slug: segments[1]! } : null;
+
+/** Non-secret return context only. It cannot select credentials or grant consent. */
+export const connectionsRenewalRepairReturn = (hash: string, issuer: OAuthAppIssuer, id: string): string =>
+  hash + '/from-renewal/' + issuer + '/' + encodeURIComponent(id);
+export const parseConnectionsRenewalRepairReturn = (segments: readonly string[]): { segments: readonly string[]; app: ConnectionOAuthAppReview } | null => {
+  if (segments.at(-3) !== 'from-renewal') return null;
+  const issuer = segments.at(-2); const id = segments.at(-1); const base = segments.slice(0, -3);
+  if ((issuer !== 'google' && issuer !== 'microsoft') || !id || !OAUTH_APP_ID.test(id)) return null;
+  const app = parseConnectionsOAuthApp(base);
+  if (!parseConnectionsReviewAccess(base) && !parseConnectionsAccountAuthentication(base)
+    && !(app?.view === 'usage' && app.issuer === issuer && app.id === id)) return null;
+  return { segments: base, app: { issuer, id, view: 'renewal' } };
+};
+
+export const parseConnectionsIncidentHistory = (segments: readonly string[]): AuthenticationIncidentScope | null => {
+  if (segments[0] !== 'others' || segments[1] !== 'incident-history') return null;
+  const kind = segments[2];
+  const scope = segments.length === 2 ? { kind: 'all' }
+    : kind === 'oauth_apps' && segments.length === 3 ? { kind }
+    : kind === 'connection' && segments.length === 4 ? { kind, name: segments[3] }
+    : kind === 'group' && segments.length === 4 ? { kind, id: segments[3] }
+    : kind === 'file_source' && segments.length === 4 ? { kind, source_id: segments[3] }
+    : kind === 'collection' && segments.length === 5 ? { kind, platform: segments[3], slug: segments[4] } : null;
+  return isAuthenticationIncidentScope(scope) ? scope : null;
+};
+
+/** An opaque selection opens a local resource review; no URL or consent comes from navigation. */
+export const connectionsVerifyAccessAddress = (selection: AuthenticationAccessSelection): HierarchicalAddress => hierarchicalAddress(
+  'connections', hierarchicalLevel('connections-lane:others', 'others'), hierarchicalLevel('connections-flow:verify-access', 'verify-access'),
+  hierarchicalLevel('connections-access-kind:' + selection.kind, selection.kind), hierarchicalLevel('connections-access:' + selection.id, selection.id),
+);
+export const parseConnectionsVerifyAccess = (segments: readonly string[]): AuthenticationAccessSelection | null => {
+  if (segments.length !== 4 || segments[0] !== 'others' || segments[1] !== 'verify-access') return null;
+  const selection = { kind: segments[2], id: segments[3] };
+  return isAuthenticationAccessSelection(selection) ? selection : null;
+};
 
 export const parseConnectionsReviewAccess = (segments: readonly string[]): { name: string } | null =>
   segments.length === 4 && segments[0] === 'others' && segments[1] === 'review-access'

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -35,6 +35,30 @@ describe('instance-lock', () => {
     });
     expect(existsSync(lockPath)).toBe(true);
     expect(lock.inspect()).toEqual(info);
+  });
+
+  // `recued status` names the version actually RUNNING from here, because an
+  // update swaps the binary on disk before the server restarts onto it.
+  it('records the holder\'s version when given one, and reads it back', () => {
+    const lock = createInstanceLock({ lockPath, currentPid: () => 1234, isAlive: () => false });
+    const info = lock.claim({ boot_at: 1, bind_port: 7717, version: '26.10.17' });
+    expect(info).toEqual({ pid: 1234, boot_at: 1, bind_port: 7717, version: '26.10.17' });
+    expect(JSON.parse(readFileSync(lockPath, 'utf8'))).toEqual(info);
+    expect(lock.inspect()).toEqual(info);
+  });
+
+  // ⛔ AN OLDER READER MUST STILL SEE A LIVE HOLDER. Before `version`, the parse
+  // checked only the three numbers and passed the rest through, so a lock that
+  // also names a version is still a lock to an older `recued update apply` or
+  // `recued stop`: they refuse or stop rather than reading "no server".
+  it('a lock from before version recording reads without one, and a bad version is dropped', () => {
+    writeFileSync(lockPath, JSON.stringify({ pid: 9999, boot_at: 123, bind_port: 7717 }));
+    const lock = createInstanceLock({ lockPath, currentPid: () => 1234, isAlive: () => true });
+    expect(lock.inspect()).toEqual({ pid: 9999, boot_at: 123, bind_port: 7717 });
+    writeFileSync(lockPath, JSON.stringify({ pid: 9999, boot_at: 123, bind_port: 7717, version: 42 }));
+    expect(lock.inspect()).toEqual({ pid: 9999, boot_at: 123, bind_port: 7717 });
+    writeFileSync(lockPath, JSON.stringify({ pid: 9999, boot_at: 123, bind_port: 7717, version: '26.10.17' }));
+    expect(() => lock.claim({ boot_at: 456, bind_port: 7717, version: '26.10.18' })).toThrow(LockHeldError);
   });
 
   it('creates the parent directory when missing', () => {

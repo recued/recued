@@ -2,6 +2,7 @@ import { encodeAuthForStorage, decodeAuthFromStorage } from './connection-auth-s
 export { encodeAuthForStorage, decodeAuthFromStorage } from './connection-auth-storage.js';
 import { resolveConnectionOAuthApp,assertConnectionOAuthAppCurrent } from './connection-saved-oauth-app.js';
 import type { OAuthAppConfigStore } from './oauth-app-config-store.js';
+import { connectionAccessAuthority, recordConnectionAccessEvidence, type ConnectionAccessCheck } from './connection-access-evidence.js';
 /** D-125 Phase 2.1 — rpc handlers for `collection.connection.*`.
  *  D-125 Phase 2.2 — at-rest auth encryption swapped to AEAD via the
  *  `connection` HKDF sub-DEK; the pair-sync WS rpc ships the same
@@ -164,6 +165,7 @@ import {
   probeMcpStreamTools,
   readMcpHttpEnvelope,
   refreshOAuth2,
+  connectionApiAccessKey,
   resolveStdioMcpLaunchSpec,
 } from '@recued/ingredients';
 import type { StdioSpawn, WsConnect } from '@recued/ingredients';
@@ -201,9 +203,17 @@ import { verifyManagedOAuthAccess, verifyDirectOAuthAccess } from './managed-oau
 import { createManagedOAuthMigration } from './managed-oauth-migration.js';
 import { createDirectOAuthSwitch } from './direct-oauth-switch.js';
 import { persistNativeOAuthRenewal } from './native-oauth-renewal.js';
+import { isAuthenticationIncidentHistoryQuery } from '@recued/contracts';
+import { authenticationRepairMethod } from './authentication-repair-action-store.js';
+const repairMethod = (deps: ConnectionRpcDeps, auth: ConnectionAuth) => authenticationRepairMethod(auth,
+  auth.type === 'managed_oauth' ? deps.managedOAuth?.profileLabel?.(auth.broker_profile_id)
+    : auth.type === 'oauth2_refresh' && auth.saved_oauth_app ? deps.oauthAppConfig?.getApp(auth.saved_oauth_app.issuer, auth.saved_oauth_app.id)?.label : undefined);
 
 export interface ConnectionRpcDeps {
+  authenticationAccess?: import('./authentication-access-verification.js').AuthenticationAccessService;
+  authenticationRepairTargets?(name: string): readonly import('@recued/contracts').AuthenticationRepairTarget[];
   authenticationRepairs?: () => Promise<import('@recued/contracts').AuthenticationRepairWorklist>;
+  authenticationHistory?: import('@recued/contracts').AuthenticationIncidentHistoryCaller;
   collectionAuthentication?: import('./collection-authentication-service.js').CollectionAuthenticationService;
   collectionOAuthAppSwitch?: import('./collection-oauth-app-switch.js').CollectionOAuthAppSwitchService;
   oauthAppConfig?: OAuthAppConfigStore;
@@ -1895,7 +1905,7 @@ export const handleConnectionUpdate = async (
     };
     expected_updated_at?: number;
   },
-  internal: { allowCredentialCandidate?: boolean; allowManagedConsent?: boolean; managedSwitchCandidate?: true } = {},
+  internal: { allowCredentialCandidate?: boolean; allowManagedConsent?: boolean; managedSwitchCandidate?: true; repairReceipt?: string } = {},
 ): Promise<{ connection: ConnectionView }> => {
   const a = ensureRecordArgs('collection.connection.update', args);
   const name = ensureName('collection.connection.update', a.name);
@@ -2087,7 +2097,7 @@ export const handleConnectionUpdate = async (
     // granted-scopes — set at enroll/re-authorize, never via update; preserve
     // verbatim so a config/auth patch can't wipe the coverage set.
     ...(granted_scopes_json === undefined ? {} : { granted_scopes_json }),
-  });
+  }, internal.repairReceipt ? () => deps.store.authenticationRepairHistory?.finish('managed_reauthorization', internal.repairReceipt!, { status: 'applied' }, deps.now?.() ?? Date.now()) : undefined);
   return { connection: connectionViewFromRow(row) };
 };
 
@@ -2407,6 +2417,10 @@ const probeConnection = async (
   // one. `health` is unchanged; a caller that ignores this sees no difference.
   let capturedDescriptors: McpToolDescriptor[] | undefined;
   type PersistedProbeHealth = ConnectionHealth & {
+    access_check_key?: string;
+    access_authority?: string;
+    access_checks?: ConnectionAccessCheck[];
+    access_checks_complete?: boolean;
     /** Server-private causal marker. It is stripped from the probe response;
      * list recovery uses it to bind one acknowledged attempt to the exact row
      * revision checked, even across clock rollback or timestamp collision. */
@@ -2771,6 +2785,8 @@ const probeConnection = async (
     const url = probePath === undefined
       ? new URL(base)
       : composeApiUrl(base, probePath);
+    const unsignedUrl = url.toString();
+    apiAccessCheckKey = connectionApiAccessKey(probePath === undefined ? 'HEAD' : 'GET', unsignedUrl);
     const headers: Record<string, string> = {};
     applyAuth(auth, headers, url);
     try {
@@ -2780,6 +2796,7 @@ const probeConnection = async (
         });
         await response.body?.cancel();
         const classified = classifyHttpReachability(response.status);
+        if (response.status >= 200 && response.status < 300 && probePath !== undefined) classified.access_verified_at = classified.last_probed_at;
         // A public API root cannot prove the credential or required permissions work.
         return classified.status === 'ok' && probePath === undefined
           ? healthOf('unknown', 'managed_oauth_permissions_unverified') : classified;
@@ -2789,10 +2806,13 @@ const probeConnection = async (
       // fallback for APIs without a declared health resource.
       if (probePath !== undefined) {
         const get = await fetchTimed(url.toString(), { method: 'GET', headers });
-        return classifyHttpReachability(get.status);
+        const classified = classifyHttpReachability(get.status);
+        if (get.status >= 200 && get.status < 300) classified.access_verified_at = classified.last_probed_at;
+        return classified;
       }
       const head = await fetchTimed(url.toString(), { method: 'HEAD', headers });
       if (head.status === 405 || head.status === 501) {
+        apiAccessCheckKey = connectionApiAccessKey('GET', unsignedUrl);
         const get = await fetchTimed(url.toString(), { method: 'GET', headers });
         return classifyHttpReachability(get.status);
       }
@@ -3322,6 +3342,8 @@ const probeConnection = async (
   let health: PersistedProbeHealth;
   let authCiphertext = existing.auth_ciphertext;
   let probedAuthType: ConnectionAuth['type'] | undefined;
+  let probedAuth: ConnectionAuth | undefined;
+  let apiAccessCheckKey: string | undefined;
   /** The scopes this check read from a key that reports them: a list, `null`
    *  when it could not read them, `undefined` when this check does not own the
    *  row's scopes (they came from a sign-in, or nothing reads them). */
@@ -3343,6 +3365,7 @@ const probeConnection = async (
           checkedKey,
         );
         probedAuthType = auth.type;
+        probedAuth = auth;
         const ensureFreshAuth = createEnsureFreshAuth({
           fetchImpl: deps.resolveFetch ?? globalThis.fetch,
           now: () => now,
@@ -3389,6 +3412,7 @@ const probeConnection = async (
             if (auth.type === 'atproto_session') {
               try {
                 let liveAuth = await ensureFreshAuth(existing, auth);
+                probedAuth = liveAuth;
                 health = await probeApi(
                   liveAuth,
                   '/xrpc/com.atproto.server.getSession',
@@ -3405,6 +3429,7 @@ const probeConnection = async (
                   const retryAuth = { ...liveAuth };
                   delete retryAuth.current_access_token;
                   liveAuth = await ensureFreshAuth(existing, retryAuth);
+                  probedAuth = liveAuth;
                   health = await probeApi(
                     liveAuth,
                     '/xrpc/com.atproto.server.getSession',
@@ -3430,6 +3455,7 @@ const probeConnection = async (
                 // missing cached access token. The gate's persist callback
                 // restamps the rotated token pair in the row written below.
                 const liveAuth = await ensureFreshAuth(existing, auth);
+                probedAuth = liveAuth;
                 health = await probeApi(liveAuth);
               } catch (err) {
                 health = credentialExchangeFailureHealth(err, 'token_exchange_failed');
@@ -3513,6 +3539,21 @@ const probeConnection = async (
       );
     }
   }
+  if (kind === 'api' && probedAuth) {
+    try {
+      const base = readConfig().base_url;
+      if (typeof base === 'string') {
+        if (!apiAccessCheckKey) {
+          const path = probedAuth.type === 'atproto_session' ? '/xrpc/com.atproto.server.getSession' : vendorProbePath(resolveVendorFromConnection(existing));
+          apiAccessCheckKey = connectionApiAccessKey(path === undefined ? 'HEAD' : 'GET', path === undefined ? base : composeApiUrl(base, path).toString());
+        }
+        const observation = health.status === 'ok' || health.status === 'auth_failed' || health.status === 'unreachable'
+          ? { key: apiAccessCheckKey, status: health.status, at: now, verified: health.access_verified_at !== undefined } : undefined;
+        health = { ...health, access_check_key: apiAccessCheckKey,
+          ...recordConnectionAccessEvidence(currentBeforeWrite.health_json, connectionAccessAuthority(probedAuth, base), observation) };
+      }
+    } catch { /* Malformed setup cannot create resource-level access proof. */ }
+  }
   if (nativeRenewed) {
     const latest = deps.store.get(kind, name)!;
     deps.store.upsert({ ...latest, health_json: JSON.stringify(health),
@@ -3547,6 +3588,10 @@ const probeConnection = async (
     : null;
   const {
     post_safe_stop_verification: _privatePostSafeStopLineage,
+    access_check_key: _privateApiResource,
+    access_authority: _privateAccessAuthority,
+    access_checks: _privateAccessChecks,
+    access_checks_complete: _privateAccessChecksComplete,
     ...publicHealth
   } = health;
   return {
@@ -4575,11 +4620,21 @@ export const handleConnectionRotateCredentials = async (
     assertConnectionEditorIsCurrent(method, expectedUpdatedAt, existing);
   }
   const startedAt = deps.now?.() ?? Date.now();
+  const previousAuth = kind === 'api' && deps.store.authenticationRepairHistory
+    ? await decodeAuthFromStorage(existing.auth_ciphertext, { kind, name }, deps.getEncryptionKey) : undefined;
   const claim = recoveryStore.claimCredentialRotationAttempt({
     attempt_id: attemptId,
     kind,
     name,
     started_at: startedAt,
+    ...(previousAuth ? { repair: {
+      action: internal.authenticationSwitch ? 'switch_authentication' as const : auth.type === 'oauth2_refresh'
+        ? previousAuth.type === 'oauth2_refresh' && auth.saved_oauth_app && previousAuth.saved_oauth_app
+          && (auth.saved_oauth_app.id !== previousAuth.saved_oauth_app.id || auth.saved_oauth_app.issuer !== previousAuth.saved_oauth_app.issuer)
+          ? 'switch_oauth_app' as const : 'reauthorize' as const : 'replace_credentials' as const,
+      from: repairMethod(deps, previousAuth), to: repairMethod(deps, auth),
+      targets: [{ kind: 'connection' as const, name }, ...deps.authenticationRepairTargets?.(name) ?? []],
+    } } : {}),
   });
   if (!claim.claimed) {
     if (claim.attempt.attempt_id !== attemptId) {
@@ -4816,6 +4871,7 @@ export const handleConnectionRotateCredentials = async (
       attempt_id: attemptId,
       connection: connectionUpsertFromRow(candidate),
       verification,
+      finished_at: deps.now?.() ?? Date.now(),
     });
     committed = true;
     consumeSwitchReceipt?.();
@@ -5913,9 +5969,20 @@ export const makeConnectionHandlers = (
     ],
     handlers: {
       'collection.connection.managedOAuth': async (args) => {
+        if (args && typeof args.action === 'string' && args.action.startsWith('authentication_access_')) {
+          if (!deps.authenticationAccess) throw new RpcError('not_configured', 'Verify access is unavailable. Update the server and refresh.');
+          return deps.authenticationAccess.handle(args as import('@recued/contracts').AuthenticationAccessRequest);
+        }
+        if (args?.action === 'authentication_history') {
+          if (!isAuthenticationIncidentHistoryQuery(args)) throw new RpcError('bad_request', 'Choose a valid incident history filter and page.');
+          if (!deps.authenticationHistory) throw new RpcError('not_configured', 'Connection incident history is unavailable. Update the server and refresh.');
+          const history = await deps.authenticationHistory(args);
+          return { action: args.action, history: deps.authenticationAccess ? await deps.authenticationAccess.history(history) : history };
+        }
         if (args?.action === 'authentication_worklist') {
           if (!deps.authenticationRepairs) throw new RpcError('not_configured', 'Authentication repairs are unavailable on this server. Update the server and refresh.');
-          return { action: args.action, worklist: await deps.authenticationRepairs() };
+          const worklist = await deps.authenticationRepairs();
+          return { action: args.action, worklist: deps.authenticationAccess ? await deps.authenticationAccess.worklist(worklist) : worklist };
         }
         if (args?.action === 'reauthorization_context') {
           const name = ensureName('managedOAuth.reauthorization_context', args.name);
@@ -5993,10 +6060,27 @@ export const makeConnectionHandlers = (
             if (!service.verifyImpact) throw new RpcError('not_configured', 'Account impact review is unavailable.');
             await service.verifyImpact(args.patch.auth as unknown as import('@recued/contracts').ManagedOAuthAuth, args.impact_fingerprint);
           }
-          const saved = await handleConnectionUpdate(deps, {
-            name: args.name, kind: 'api', patch: args.patch, expected_updated_at: revision,
-          }, { allowManagedConsent: true });
-          return { action: 'save_reauthorization', connection: saved.connection };
+          const name = ensureName('managedOAuth.save_reauthorization', args.name);
+          const row = deps.store.get('api', name);
+          if (!row) throw new RpcError('not_found', 'The saved connection no longer exists.');
+          assertConnectionEditorIsCurrent('managedOAuth.save_reauthorization', revision, row);
+          const receipt = typeof args.patch.auth.authorization_receipt === 'string' ? args.patch.auth.authorization_receipt : undefined;
+          const history = deps.store.authenticationRepairHistory;
+          if (receipt && history) history.begin('managed_reauthorization', receipt, { action: 'reauthorize',
+            from: repairMethod(deps, await decodeAuthFromStorage(row.auth_ciphertext, row, deps.getEncryptionKey)),
+            to: repairMethod(deps, args.patch.auth as unknown as import('@recued/contracts').ManagedOAuthAuth),
+            targets: [{ kind: 'connection', name }, ...deps.authenticationRepairTargets?.(name) ?? []],
+          }, deps.now?.() ?? Date.now());
+          try {
+            const saved = await handleConnectionUpdate(deps, {
+              name, kind: 'api', patch: args.patch, expected_updated_at: revision,
+            }, { allowManagedConsent: true, ...(receipt ? { repairReceipt: receipt } : {}) });
+            return { action: 'save_reauthorization', connection: saved.connection };
+          } catch (error) {
+            if (receipt) history?.finish('managed_reauthorization', receipt, { status: 'failed', reason: error instanceof RpcError && error.code === 'conflict'
+              ? 'changed' : error instanceof RpcError && error.code === 'locked' ? 'locked' : 'access_failed' }, deps.now?.() ?? Date.now());
+            throw error;
+          }
         }
         return requireManagedOAuth(deps).handle(args);
       },

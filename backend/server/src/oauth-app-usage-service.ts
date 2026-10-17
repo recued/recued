@@ -10,6 +10,7 @@ import type { ConnectionStoreSqlite } from './storage/connection-store.js';
 import type { CollectionInstanceStore } from './collections/instance-store.js';
 import { encodeAuthForStorage, decodeAuthFromStorage } from './connection-auth-storage.js';
 import { collectionAuthenticationLocks } from './collection-authentication-locks.js';
+import { createAuthenticationRepairActionStore, authenticationAppHistoryGroupId } from './authentication-repair-action-store.js';
 
 const nonce = (): string => randomBytes(32).toString('base64url');
 const validNonce = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z0-9_-]{43}$/.test(v);
@@ -27,6 +28,7 @@ export const createOAuthAppUsageService = (deps: {
   connectionUses?(name: string): { uses: readonly ManagedOAuthConnectionUse[]; complete: boolean };
 }): OAuthAppUsageService => {
   const now = deps.now ?? Date.now; const reviews = new Map<string, Review>(); const timers = new Map<string, ReturnType<typeof setTimeout>>();
+  const repairs = createAuthenticationRepairActionStore(deps.db);
   const activeApps = new Set<string>(); const collectionLocks = collectionAuthenticationLocks(deps.db); let pending = 0;
   const rows = () => deps.connections.list({ kind: 'api' });
   const native = (app: SavedOAuthApp) => deps.instances.list().filter(r => (r.platform === 'mail' || r.platform === 'calendar')
@@ -51,7 +53,11 @@ export const createOAuthAppUsageService = (deps: {
   const readAttempt = (id: string) => deps.db.prepare<[string], { review_id: string; fingerprint: string; outcome_json: string }>(
     'SELECT review_id, fingerprint, outcome_json FROM oauth_app_secret_rotation_attempts WHERE attempt_id = ?').get(id);
   const save = (value: OAuthAppSecretRotationOutcome): void => {
-    deps.db.prepare('UPDATE oauth_app_secret_rotation_attempts SET outcome_json = ? WHERE attempt_id = ?').run(JSON.stringify(value), value.attempt_id);
+    deps.db.transaction(() => {
+      deps.db.prepare('UPDATE oauth_app_secret_rotation_attempts SET outcome_json = ? WHERE attempt_id = ?').run(JSON.stringify(value), value.attempt_id);
+      if (value.status !== 'checking') repairs.finish('oauth_app_secret', value.attempt_id, value.status === 'applied'
+        ? { status: 'applied' } : { status: 'failed', reason: value.reason ?? 'server_error' }, now());
+    })();
   };
   for (const row of deps.db.prepare<[], { outcome_json: string }>('SELECT outcome_json FROM oauth_app_secret_rotation_attempts').all()) {
     const outcome = JSON.parse(row.outcome_json) as OAuthAppSecretRotationOutcome;
@@ -162,7 +168,15 @@ export const createOAuthAppUsageService = (deps: {
       status: 'checking', selected_names: selected, skipped_names: copies.filter(c => !selected.includes(c.name)).map(c => c.name),
       native_accounts: review.public.native_accounts, verification: 'not_checked',
       ...(request.secret_expires_on ? { secret_expires_on: request.secret_expires_on } : {}) };
-    deps.db.prepare('INSERT INTO oauth_app_secret_rotation_attempts VALUES (?, ?, ?, ?)').run(request.attempt_id, request.review_id, request.fingerprint, JSON.stringify(outcome));
+    deps.db.transaction(() => {
+      deps.db.prepare('INSERT INTO oauth_app_secret_rotation_attempts VALUES (?, ?, ?, ?)').run(request.attempt_id, request.review_id, request.fingerprint, JSON.stringify(outcome));
+      repairs.begin('oauth_app_secret', request.attempt_id, { action: 'rotate_secret',
+        from: { type: 'direct_oauth', app_id: outcome.app_id, label: review.public.app.label },
+        to: { type: 'direct_oauth', app_id: outcome.app_id, label: review.public.app.label },
+        targets: [{ kind: 'oauth_apps' }, ...selected.map(name => ({ kind: 'connection' as const, name })),
+          ...outcome.native_accounts.map(a => ({ kind: 'collection' as const, platform: a.platform, slug: a.slug }))],
+        group_ids: [authenticationAppHistoryGroupId(outcome.issuer, outcome.app_id)] }, now());
+    })();
     activeApps.add(appKey); locks.forEach(key => collectionLocks.add(key));
     try {
       await deps.connections.withCredentialLease!(selected, async () => {

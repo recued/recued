@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { createAuthenticationIncidentStore } from '../authentication-incident-store.js';
 import { randomBytes } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { isCollectionAuthenticationReview, type ConnectionAuth, type CollectionAuthenticationProvider,
@@ -95,13 +96,75 @@ const fixture = async (platform: AuthenticationCollectionPlatform = 'mail', prov
     if (result.action !== 'collection_authentication_review') throw new Error('review fixture'); return result.review;
   };
   const apply = (r: Awaited<ReturnType<typeof review>>, attempt_id = id()) => rpc({ action: 'collection_authentication_apply', review_id: r.id, fingerprint: r.fingerprint, attempt_id });
-  return { db, deps, instances, connections, data, accountStore, sources, consumers, fetchImpl, fetcher, lifecycle, mail, calendar, native, brokerAuth, put, rpc, review, apply,
+  return { db, key, deps, instances, connections, data, accountStore, sources, consumers, fetchImpl, fetcher, lifecycle, mail, calendar, native, brokerAuth, put, rpc, review, apply,
     target: (s: string) => { targetAccount = s; }, original: (s: string) => { originalAccount = s; }, deny: (s: string) => { denied = s; },
     unknown: () => { unknown = true; }, grant: (s?: string) => { grant = s; }, clock: (v: number) => { clock = v; },
     gate: (p: Promise<void> | undefined) => { resourceGate = p; }, anonymous: (n: number) => { anonymousStatus = n; }, expiry: (n: number) => { cacheExpiry = n; } };
 };
 
+describe('saved Mail and Calendar access verification', () => {
+  it('refuses a connection-backed token whose automatic renewal could not be saved', async () => {
+    const f = await fixture(); await f.apply(await f.review()); const row = f.connections.get('api', 'native')!;
+    const auth = await decodeAuthFromStorage(row.auth_ciphertext, row, f.key);
+    if (auth.type !== 'oauth2_refresh') throw new Error('native');
+    f.connections.upsert({ ...row, auth_ciphertext: await encodeAuthForStorage({ ...auth, expires_at: 900 }, row, f.key) });
+    vi.spyOn(f.connections, 'persistRefreshedAuth').mockReturnValue(false); f.fetchImpl.mockClear();
+    const service = createCollectionAuthenticationService(f.deps); const check = await service.prepareSavedAccess!('mail', 'work');
+    await expect(check.run(undefined)).rejects.toMatchObject({ code: 'credential_verification_failed' });
+    expect(f.fetchImpl.mock.calls.every(([url]) => new URL(String(url)).hostname === 'oauth2.googleapis.com')).toBe(true);
+  });
+  it.each([['mail', 'gmail'], ['mail', 'graph'], ['calendar', 'gcal'], ['calendar', 'graph']] as const)('checks %s/%s without starting sync or altering account data', async (platform, provider) => {
+    const f = await fixture(platform, provider); const row = f.instances.get(platform, 'work'); const data = new Map(f.data);
+    const service = createCollectionAuthenticationService(f.deps); f.fetchImpl.mockClear();
+    const prepared = await service.prepareSavedAccess!(platform, 'work'); expect(f.fetchImpl).not.toHaveBeenCalled();
+    expect(await prepared.run(undefined)).toEqual([{ kind: 'collection_read', status: 'passed' }, { kind: 'write_permissions', status: 'unconfirmed', reason: 'not_executed' }]);
+    expect(f.instances.get(platform, 'work')).toEqual(row); expect(f.data).toEqual(data);
+    expect(f.lifecycle.stop).not.toHaveBeenCalled(); expect(f.lifecycle.restart).not.toHaveBeenCalled();
+    expect(f.fetchImpl.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true);
+  });
+  it.each([false, true])('checks a migrated saved collection with broker=%s using its pinned source', async broker => {
+    const f = await fixture('mail', 'gmail', broker); await f.apply(await f.review());
+    const row = f.instances.get('mail', 'work'); const service = createCollectionAuthenticationService(f.deps);
+    const prepared = await service.prepareSavedAccess!('mail', 'work');
+    expect((await prepared.run(undefined))[0]).toEqual({ kind: 'collection_read', status: 'passed' }); expect(f.instances.get('mail', 'work')).toEqual(row);
+  });
+  it('rejects changed grant generations, cleanup pauses and selected resources without changing the collection', async () => {
+    const f = await fixture(); const service = createCollectionAuthenticationService(f.deps); const row = f.instances.get('mail', 'work');
+    const prepared = await service.prepareSavedAccess!('mail', 'work'); f.data.set('gmail.work.grant_generation', 'another-authorization');
+    await expect(prepared.run(undefined)).rejects.toMatchObject({ code: 'conflict' });
+    const paused = await service.prepareSavedAccess!('mail', 'work'); f.data.set('gmail.work.permission_cleanup_pending', 'cleanup');
+    await expect(paused.run(undefined)).rejects.toMatchObject({ code: 'conflict' }); f.data.delete('gmail.work.permission_cleanup_pending');
+    const denied = await service.prepareSavedAccess!('mail', 'work'); f.deny('/messages');
+    await expect(denied.run(undefined)).rejects.toMatchObject({ code: 'credential_verification_failed', details: { verification_status: 'auth_failed' } });
+    expect(f.instances.get('mail', 'work')).toEqual(row);
+  });
+  it('rejects public identity controls and stops after an aborted check', async () => {
+    const f = await fixture(); const service = createCollectionAuthenticationService(f.deps); const prepared = await service.prepareSavedAccess!('mail', 'work');
+    f.anonymous(200); await expect(prepared.run(undefined)).rejects.toMatchObject({ code: 'credential_verification_failed', status: 422,
+      details: { verification_status: 'unknown' } });
+    f.fetchImpl.mockClear(); const controller = new AbortController(); controller.abort();
+    await expect(prepared.run(undefined, controller.signal)).rejects.toThrow('cancelled'); expect(f.fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
 describe('same-account Mail and Calendar authentication migration', () => {
+  it('journals the collection apply outcome once, including a committed change whose restart needs attention', async () => {
+    const f = await fixture('mail', 'gmail', true); const review = await f.review();
+    f.lifecycle.restart.mockRejectedValue(new Error('fixture restart'));
+    const attempt_id = 'h'.repeat(43); const result = await f.apply(review, attempt_id);
+    expect(result).toMatchObject({ outcome: { status: 'applied', restart_needed: true } });
+    const history = createAuthenticationIncidentStore(f.db); const page = history.history({ scope: { kind: 'collection', platform: 'mail', slug: 'work' } }, 1_001);
+    expect(page.repairs).toHaveLength(1); expect(page.repairs![0]).toMatchObject({ action: 'switch_authentication', status: 'applied', restart_required: true,
+      from: { type: 'direct_oauth' }, to: { type: 'broker', connection_name: 'broker' } });
+    const calls = f.fetchImpl.mock.calls.length; await f.apply(review, attempt_id);
+    expect(f.fetchImpl).toHaveBeenCalledTimes(calls); expect(history.history({ scope: { kind: 'all' } }, 1_001).repairs).toHaveLength(1);
+  });
+  it('rolls back native collection migration when its applied history cannot be saved', async () => {
+    const f = await fixture(); const review = await f.review(); const before = f.instances.get('mail', 'work');
+    f.db.exec("CREATE TRIGGER reject_repair BEFORE UPDATE ON authentication_incident_history WHEN NEW.kind = 'repair' AND json_extract(NEW.data, '$.status') = 'applied' BEGIN SELECT RAISE(ABORT, 'fixture history failure'); END");
+    expect(await f.apply(review)).toMatchObject({ outcome: { status: 'failed' } }); expect(f.instances.get('mail', 'work')).toEqual(before);
+    expect(createAuthenticationIncidentStore(f.db).history({ scope: { kind: 'all' } }, 1_001).repairs![0]).toMatchObject({ status: 'failed' });
+  });
   for (const [platform, provider] of [['mail', 'gmail'], ['mail', 'graph'], ['calendar', 'gcal'], ['calendar', 'graph']] as const) {
     for (const broker of [false, true]) it(`${platform}/${provider} preserves state while selecting ${broker ? 'broker' : 'native'} authentication`, async () => {
       const f = await fixture(platform, provider, broker); const before = f.instances.get(platform, 'work')!; const credentials = new Map(f.data);

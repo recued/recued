@@ -207,6 +207,8 @@ export interface MountAccountsLanePanelOptions {
   /** Deep-link entry — the lane (and optional detail account) to open. */
   initialLane?: AccountLaneId;
   initialDetailSlug?: string;
+  /** Opens the existing review once, after the saved account list is loaded. */
+  initialManageAuthentication?: string;
   /** Fired on lane / detail navigation so the route can sync the hash
    *  (`#connections/<lane>[/<slug>]`). Optional — navigation works
    *  internally without it. */
@@ -1831,15 +1833,15 @@ export const mountAccountsLanePanel = (
     void runRowAction('resync', slug, () => resync({ slug }), 'reload-stay');
   };
 
-  const openAuthenticationManagement = (slug: string): void => {
+  const openAuthenticationManagement = async (slug: string): Promise<void> => {
     const row = state.rows.find(r => r.slug === slug);
     if (!row || state.stage !== 'detail' || state.saving || authenticationPanel?.busy() || oauthAppSwitchPanel?.busy() || bulkAppSwitchPanel?.busy()
       || !['mail', 'calendar'].includes(state.lane) || !['gmail', 'gcal', 'graph'].includes(row.adapterType)) return;
     authenticationPanel?.close(); oauthAppSwitchPanel?.close(); bulkAppSwitchPanel?.close();
     state.authenticationManagement = { slug: row.slug, action: 'reauthorize' }; render();
     host.querySelector<HTMLElement>('[data-manage-authentication-heading]')?.focus();
-    if (!row.managedConnectionName) void oauthAppSwitchPanel?.reauthorize(state.lane as 'mail' | 'calendar', row.slug);
-    else void authenticationPanel?.permissions(state.lane as 'mail' | 'calendar', row.slug, row.managedConnectionName);
+    if (!row.managedConnectionName) await oauthAppSwitchPanel?.reauthorize(state.lane as 'mail' | 'calendar', row.slug);
+    else await authenticationPanel?.permissions(state.lane as 'mail' | 'calendar', row.slug, row.managedConnectionName);
   };
 
   /** Best-effort copy for the exact provider callback URI. The URI remains
@@ -1918,7 +1920,7 @@ export const mountAccountsLanePanel = (
     'accounts-oauth-connect': () => {
       driveOAuth();
     },
-    'accounts-manage-authentication': (dataset) => { if (dataset.slug) openAuthenticationManagement(dataset.slug); },
+    'accounts-manage-authentication': (dataset) => { if (dataset.slug) void openAuthenticationManagement(dataset.slug); },
     'accounts-authentication-choice': (dataset) => {
       const selection = state.authenticationManagement;
       const row = state.rows.find(r => r.slug === selection?.slug);
@@ -2177,6 +2179,17 @@ export const mountAccountsLanePanel = (
       state.values = { ...state.values, ...restoredSetup.values }; render(); focusPanelElement('[data-accounts-form-heading]'); }
   }
   void doRefresh();
+  if (opts.initialManageAuthentication && opts.initialManageAuthentication === opts.initialDetailSlug) {
+    const slug = opts.initialManageAuthentication; const lane = state.lane; const gen = loadGeneration;
+    pendingLoad = pendingLoad.then(async () => {
+      if (disposed || gen !== loadGeneration || state.error || state.lane !== lane || state.stage !== 'detail' || state.detailSlug !== slug || state.authenticationManagement) return;
+      const row = state.rows.find(r => r.slug === slug);
+      if (!row || !['mail', 'calendar'].includes(lane) || !['gmail', 'gcal', 'graph'].includes(row.adapterType) || !opts.runCollectionAuthentication) {
+        state.error = 'This account cannot open an authentication review. Refresh and choose a current Mail or Calendar account.'; render(); return;
+      }
+      await openAuthenticationManagement(slug);
+    });
+  }
   detachOAuthContinuity = oauthContinuity.subscribe(onOAuthContinuity);
 
   return {

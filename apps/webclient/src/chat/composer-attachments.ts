@@ -29,6 +29,7 @@
 
 import { Upload } from '@recued/ui-shared';
 import type { ChatMessageAttachment } from '@recued/contracts';
+import type { ChatInterruptedUpload } from './draft-recovery.js';
 
 export interface ComposerAttachmentsDeps {
   callers?: Upload.UploadCallers;
@@ -51,7 +52,7 @@ export interface ComposerAttachmentRow {
   file_id?: string;
   media_class: string;
   selection_revision?: string;
-  phase: 'uploading' | 'attached' | 'failed';
+  phase: 'uploading' | 'attached' | 'failed' | 'needs-file';
   /** 0–1, for the in-flight bar. */
   progress: number;
   error?: string;
@@ -67,11 +68,18 @@ export interface ComposerAttachments {
   hasDrafts(): boolean;
   hasDraft(draftId: string | null): boolean;
   /** Reuse retained selections, recovered drafts or withdrawn attachments. */
-  restore(files: readonly ChatMessageAttachment[]): void;
+  restore(files: readonly ChatMessageAttachment[], draftId?: string | null): void;
   /** Rows to render, in the order they were added. */
   rows(): readonly ComposerAttachmentRow[];
   /** What rides on `chat.send` — finalized ids only. */
-  payload(): ChatMessageAttachment[];
+  payload(draftId?: string | null): ChatMessageAttachment[];
+  /** Capture unfinished rows for in-memory pairing recovery. */
+  recoveryUploads(draftId?: string | null): ChatInterruptedUpload[];
+  restoreInterrupted(uploads: readonly ChatInterruptedUpload[], draftId?: string | null): void;
+  /** Replace one failed or interrupted row, even if its draft is parked. */
+  retry(id: number, file: File): number | undefined;
+  /** Unfinished files must be chosen again or removed before Send. */
+  hasUnfinished(): boolean;
   /** True while any file is still climbing. Send waits on this. */
   hasInFlight(): boolean;
   remove(id: number): void;
@@ -105,6 +113,7 @@ export const createComposerAttachments = (
   // One engine per file: the engine models a single run, and a composer
   // legitimately climbs two files at once. Keyed by the row's stable id.
   const engines = new Map<number, Upload.UploadEngine>();
+  const recoveryIds = new Map<number, string>();
   let nextId = 1;
 
   const destroyEngine = (id: number): void => {
@@ -116,6 +125,49 @@ export const createComposerAttachments = (
     } catch {
       /* idempotent */
     }
+  };
+
+  const startUpload = (file: File, attachedRows: ComposerAttachmentRow[], retryId?: number): number | undefined => {
+    if (!deps.callers || !deps.connect) return;
+    const id = retryId ?? nextId++;
+    const row: ComposerAttachmentRow = { id, filename: file.name,
+      media_class: mediaClassForBrowserFile(file.type), phase: 'uploading', progress: 0 };
+    if (retryId === undefined) attachedRows.push(row);
+    else {
+      const at = attachedRows.findIndex(candidate => candidate.id === retryId
+        && (candidate.phase === 'needs-file' || candidate.phase === 'failed'));
+      if (at === -1) return;
+      attachedRows[at] = row;
+    }
+    const engine = Upload.createUploadEngine({
+      callers: deps.callers,
+      transport: Upload.createWsUploadTransport({ connect: deps.connect }),
+    });
+    engines.set(id, engine);
+    engine.on('progress', (p) => {
+      if (engines.get(id) !== engine) return; // a retired attempt cannot settle its replacement
+      const row = attachedRows.find((r) => r.id === id);
+      if (row === undefined) return; // removed mid-flight — drop the tick
+
+      row.progress = p.total > 0 ? p.sent / p.total : 0;
+      if (p.error !== undefined) {
+        row.phase = 'failed';
+        row.error = p.error;
+        destroyEngine(id);
+      } else if (p.recordId !== undefined && p.recordId.length > 0) {
+        // ⛔ ATTACHED ONLY ON A RECORD ID. `phase: 'done'` without one would
+        // mean the server has the bytes but named no record — nothing to
+        // send, so it must not read as attached.
+        row.file_id = p.recordId;
+        row.phase = 'attached';
+        row.progress = 1;
+        destroyEngine(id);
+      }
+      if (rows === attachedRows) deps.onChange();
+    });
+    engine.start(file);
+    if (rows === attachedRows) deps.onChange();
+    return id;
   };
 
   return {
@@ -132,7 +184,7 @@ export const createComposerAttachments = (
       if (activeDraftId === from) activeDraftId = to;
     },
     discardDraft(draftId) {
-      for (const row of drafts.get(draftId) ?? []) destroyEngine(row.id);
+      for (const row of drafts.get(draftId) ?? []) { destroyEngine(row.id); recoveryIds.delete(row.id); }
       drafts.delete(draftId);
       if (activeDraftId === draftId) {
         rows = [];
@@ -145,61 +197,52 @@ export const createComposerAttachments = (
       if (!deps.callers || !deps.connect) return;
       const attachedRows = drafts.get(draftId) ?? [];
       drafts.set(draftId, attachedRows);
-      const id = nextId++;
-      attachedRows.push({
-        id,
-        filename: file.name,
-        media_class: mediaClassForBrowserFile(file.type),
-        phase: 'uploading',
-        progress: 0,
-      });
-      const engine = Upload.createUploadEngine({
-        callers: deps.callers,
-        transport: Upload.createWsUploadTransport({ connect: deps.connect }),
-      });
-      engines.set(id, engine);
-      engine.on('progress', (p) => {
-        const row = attachedRows.find((r) => r.id === id);
-        if (row === undefined) return; // removed mid-flight — drop the tick
-
-        row.progress = p.total > 0 ? p.sent / p.total : 0;
-        if (p.error !== undefined) {
-          row.phase = 'failed';
-          row.error = p.error;
-          destroyEngine(id);
-        } else if (p.recordId !== undefined && p.recordId.length > 0) {
-          // ⛔ ATTACHED ONLY ON A RECORD ID. `phase: 'done'` without one would
-          // mean the server has the bytes but named no record — nothing to
-          // send, so it must not read as attached.
-          row.file_id = p.recordId;
-          row.phase = 'attached';
-          row.progress = 1;
-          destroyEngine(id);
-        }
-        if (rows === attachedRows) deps.onChange();
-      });
-      engine.start(file);
-      if (rows === attachedRows) deps.onChange();
-      return id;
+      return startUpload(file, attachedRows);
     },
-    restore(files) {
+    retry(id, file) {
+      const owner = [...drafts.values()].find(draft => draft.some(row => row.id === id));
+      return owner ? startUpload(file, owner, id) : undefined;
+    },
+    restore(files, draftId = activeDraftId) {
+      const restoredRows = drafts.get(draftId) ?? [];
+      drafts.set(draftId, restoredRows);
       for (const file of files) {
-        if (rows.some(row => row.file_id === file.file_id && row.selection_revision === file.selection_revision)) continue;
-        rows.push({ id: nextId++, file_id: file.file_id,
+        if (restoredRows.some(row => row.file_id === file.file_id && row.selection_revision === file.selection_revision)) continue;
+        restoredRows.push({ id: nextId++, file_id: file.file_id,
           filename: file.filename ?? (file.media_class === 'image' ? 'Image attachment'
             : file.media_class === 'voice' ? 'Audio attachment' : 'Attachment'),
           ...(file.selection_revision !== undefined ? { selection_revision: file.selection_revision } : {}),
           media_class: file.media_class, phase: 'attached', progress: 1 });
       }
-      deps.onChange();
+      if (restoredRows === rows) deps.onChange();
     },
     rows: () => rows,
-    payload: () =>
-      rows
+    payload: (draftId = activeDraftId) =>
+      (drafts.get(draftId) ?? [])
         .filter((r): r is ComposerAttachmentRow & { file_id: string } =>
           r.phase === 'attached' && typeof r.file_id === 'string')
         .map((r) => ({ file_id: r.file_id, media_class: r.media_class, filename: r.filename,
           ...(r.selection_revision !== undefined ? { selection_revision: r.selection_revision } : {}) })),
+    recoveryUploads: (draftId = activeDraftId) => (drafts.get(draftId) ?? [])
+      .filter(row => row.phase !== 'attached')
+      .map(row => {
+        const id = recoveryIds.get(row.id) ?? crypto.randomUUID();
+        recoveryIds.set(row.id, id);
+        return { id, filename: row.filename, media_class: row.media_class };
+      }),
+    restoreInterrupted(uploads, draftId = activeDraftId) {
+      const restoredRows = drafts.get(draftId) ?? [];
+      drafts.set(draftId, restoredRows);
+      for (const upload of uploads) {
+        if (restoredRows.some(row => recoveryIds.get(row.id) === upload.id)) continue;
+        const id = nextId++;
+        recoveryIds.set(id, upload.id);
+        restoredRows.push({ id, filename: upload.filename, media_class: upload.media_class,
+          phase: 'needs-file', progress: 0 });
+      }
+      if (restoredRows === rows) deps.onChange();
+    },
+    hasUnfinished: () => rows.some(row => row.phase !== 'attached'),
     hasInFlight: () => rows.some((r) => r.phase === 'uploading'),
     remove(id) {
       const owner = [...drafts.values()].find(draft => draft.some(row => row.id === id));
@@ -208,10 +251,11 @@ export const createComposerAttachments = (
       if (at === -1) return;
       destroyEngine(id);
       owner.splice(at, 1);
+      recoveryIds.delete(id);
       if (owner === rows) deps.onChange();
     },
     clear() {
-      for (const row of rows) destroyEngine(row.id);
+      for (const row of rows) { destroyEngine(row.id); recoveryIds.delete(row.id); }
       rows.length = 0;
       deps.onChange();
     },
@@ -219,6 +263,7 @@ export const createComposerAttachments = (
       for (const id of [...engines.keys()]) destroyEngine(id);
       rows.length = 0;
       drafts.clear();
+      recoveryIds.clear();
     },
   };
 };

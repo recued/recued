@@ -94,6 +94,7 @@ export const assertOAuthProviderConfigCurrent = (resolve: () => OAuthProviderCon
  *  `get/set/delete` directly; we wrap the live `ServerAccountStore`
  *  at composition time so tests can inject an in-memory double. */
 export interface OAuthAccountStore {
+  withOAuthGrantLease?<T>(prefix: string, run: () => Promise<T>): Promise<T>;
   transactionalWrite?(entries: readonly import('../../account-store.js').AccountStoreWrite[], commit?: () => void): void;
   get(key: string): Promise<string | null>;
   set(key: string, value: string): Promise<void>;
@@ -645,14 +646,29 @@ export interface RefreshTokenOptions {
   accountStore: OAuthAccountStore;
   fetcher?: HttpFetcher;
   now?: () => number;
+  /** Owner verification rechecks its reviewed app/grant inside the renewal lease. */
+  beforeRefresh?(): Promise<void> | void;
+  /** Ordinary reads can reuse a token saved while waiting for the renewal lease. */
+  reuseCached?: boolean;
+  /** Explicit checks confirm persistence before another renewal can take the lease. */
+  afterPersist?(result: { access_token: string; expires_at: number; granted_scopes: string[] }): Promise<void> | void;
 }
 
-export const refreshAccessToken = async (
+const refreshAccessTokenUnlocked = async (
   opts: RefreshTokenOptions,
 ): Promise<{ access_token: string; expires_at: number; granted_scopes: string[] }> => {
+  await opts.beforeRefresh?.();
   const fetcher = opts.fetcher ?? defaultHttpFetcher;
   const nowMs = opts.now?.() ?? Date.now();
   await assertNoPermissionCleanup(opts);
+  if (opts.reuseCached) {
+    const token = await opts.accountStore.get(accessTokenKey(opts.provider, opts.slug));
+    const expiry = Number(await opts.accountStore.get(expiresAtKey(opts.provider, opts.slug)));
+    if (token && Number.isFinite(expiry) && expiry - nowMs > REFRESH_SKEW_MS) {
+      await assertNoPermissionCleanup(opts);
+      return { access_token: token, expires_at: expiry, granted_scopes: await getGrantedScopes(opts.accountStore, opts.provider, opts.slug) };
+    }
+  }
   const refreshToken = await opts.accountStore.get(
     refreshTokenKey(opts.provider, opts.slug),
   );
@@ -715,14 +731,21 @@ export const refreshAccessToken = async (
       if (entry.value !== null) await opts.accountStore.set(entry.key, entry.value);
     }
   }
-  return {
+  const result = {
     access_token: parsed.access_token,
     expires_at: expiresAt,
     granted_scopes: parseGrantedScopes(
       parsed.scope ?? (await opts.accountStore.get(grantedScopesKey(opts.provider, opts.slug)) ?? undefined),
     ),
   };
+  await opts.afterPersist?.(result);
+  return result;
 };
+
+export const refreshAccessToken = (opts: RefreshTokenOptions): Promise<{ access_token: string; expires_at: number; granted_scopes: string[] }> =>
+  opts.accountStore.withOAuthGrantLease
+    ? opts.accountStore.withOAuthGrantLease(keyPrefix(opts.provider, opts.slug), () => refreshAccessTokenUnlocked(opts))
+    : refreshAccessTokenUnlocked(opts);
 
 // ────────────────────────────────────────────────────────────────
 // Granted-scopes lookup (D-127 P4.2)
@@ -782,6 +805,7 @@ export const getAccessToken = async (
     accountStore: opts.accountStore,
     fetcher: opts.fetcher,
     now: opts.now,
+    reuseCached: !opts.force,
   });
   return refreshed.access_token;
 };

@@ -278,6 +278,7 @@ export const composeMailBoot = (
       ...(accountStore
         ? {
             accountStore: {
+              ...(accountStore.withOAuthGrantLease ? { withOAuthGrantLease: accountStore.withOAuthGrantLease } : {}),
               ...(accountStore.transactionalWrite ? { transactionalWrite: accountStore.transactionalWrite } : {}),
               get: (k) => accountStore.get(k),
               set: (k, v) => accountStore.set(k, v),

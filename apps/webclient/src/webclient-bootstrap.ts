@@ -364,8 +364,8 @@ import {
   serializeConnectionsCredentialRotationRetry,
   serializeConnectionsPostSafeStopRecovery,
 } from './connections/bootstrap-connections-route.js';
-import { parseConnectionsAddress, parseConnectionsReviewAccess, parseConnectionsFileAuthentication, parseConnectionsPermissionRepair, parseConnectionsOAuthApps,
-  connectionsPermissionRepairAddress } from './connections/connections-navigation.js';
+import { parseConnectionsAddress, parseConnectionsReviewAccess, parseConnectionsFileAuthentication, parseConnectionsPermissionRepair, parseConnectionsOAuthApps, parseConnectionsIncidentHistory,
+  connectionsPermissionRepairAddress, parseConnectionsOAuthApp, parseConnectionsAccountAuthentication, parseConnectionsRenewalRepairReturn, parseConnectionsVerifyAccess } from './connections/connections-navigation.js';
 import { createPackPermissionRepairContinuity } from './settings/pack-permission-repair.js';
 import { createReconnectWorklistContinuity, isWorklistRepair } from './settings/reconnect-worklist-continuity.js';
 import type { SignInGridCallers } from './connections/sign-in-grid-controls.js';
@@ -2730,8 +2730,10 @@ export interface WebclientHandle {
 export interface WebclientRecoverySnapshot {
   /** Exact live hash, including deep-link segments silently written by Chat. */
   readonly returnHash: string;
-  /** Present only when Chat currently holds non-empty unsent composer text. */
+  /** Unsent Chat work, including drafts parked in other conversations. */
   readonly chatDraft?: ChatRouteRecoveryDraft;
+  /** Bind rescued drafts to the paired server that owned them. */
+  readonly chatServer?: { readonly serverUrl: string; readonly serverPublicKey: string };
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -3380,7 +3382,12 @@ export const bootstrapWebclient = async (
     }
     return safeServerSwitchLandingHash(sourceHash);
   };
-  let pendingChatRecovery = options.reauthRecovery;
+  const reauthRecovery: WebclientRecoverySnapshot | undefined = options.reauthRecovery?.chatServer !== undefined
+    && (options.reauthRecovery.chatServer.serverUrl !== pair.serverUrl
+      || options.reauthRecovery.chatServer.serverPublicKey !== pair.serverPublicKey)
+      ? { returnHash: options.reauthRecovery.returnHash }
+      : options.reauthRecovery;
+  let pendingChatRecovery = reauthRecovery;
   let pendingChatFile: { hash: string; file: import('@recued/contracts').FileAttachmentSelection } | undefined;
   let pendingWorkPrompt: { hash: string; prompt: string; repeat?: boolean; mailWork?: import('@recued/contracts').MailWorkReadRequest } | undefined;
   const navigateHash = (hash: string): void => {
@@ -5660,8 +5667,8 @@ export const bootstrapWebclient = async (
             ? serverSwitchArrivalReceiptCopy
             : undefined)
           ?? (deferredRecoveryReturnArrival === undefined
-            && options.reauthRecovery !== undefined
-            ? options.reauthRecovery.chatDraft !== undefined
+            && reauthRecovery !== undefined
+            ? reauthRecovery.chatDraft !== undefined
               ? 'Reconnected. Your Chat draft is ready where you left it.'
               : 'Reconnected. You’re back where you left off.'
             : undefined);
@@ -7051,6 +7058,12 @@ export const bootstrapWebclient = async (
       const result = await rpcConn.call('collection.connection.managedOAuth', { action: 'authentication_worklist' });
       if (result.action !== 'authentication_worklist') throw new Error('Authentication repairs could not be read. Update the server.');
       return result.worklist;
+    };
+  const authenticationIncidentHistoryCaller: import('@recued/contracts').AuthenticationIncidentHistoryCaller | undefined =
+    options.enableConnectionsEnrollPanel === false ? undefined : async query => {
+      const result = await rpcConn.call('collection.connection.managedOAuth', { action: 'authentication_history', ...query });
+      if (result.action !== 'authentication_history') throw new Error('Connection incident history could not be read. Update the server.');
+      return result.history;
     };
   // D-304 — the Delete confirmation's "also removes …". A server predating it
   // rejects the method, which the panel reads as "no line".
@@ -10043,14 +10056,22 @@ export const bootstrapWebclient = async (
       const connectionsAddress = hashSource === null
         ? null
         : parseShellRoute(hashSource.getHash());
-      const connectionsSegments = connectionsAddress?.surface === 'connections'
+      const rawConnectionsSegments = connectionsAddress?.surface === 'connections'
         ? connectionsAddress.segments
         : [];
+      const renewalReturn = parseConnectionsRenewalRepairReturn(rawConnectionsSegments);
+      const connectionsSegments = renewalReturn?.segments ?? rawConnectionsSegments;
       const initialConnectionsAddress = connectionsAddress === null
         ? null
         : parseConnectionsAddress(connectionsAddress);
       const initialConnectionAccessReview = parseConnectionsReviewAccess(connectionsSegments);
       const initialManageOAuthApps = parseConnectionsOAuthApps(connectionsSegments);
+      const initialOAuthAppReview = parseConnectionsOAuthApp(connectionsSegments);
+      const initialAccountAuthentication = parseConnectionsAccountAuthentication(connectionsSegments);
+      const isIncidentHistory = connectionsSegments[0] === 'others' && connectionsSegments[1] === 'incident-history';
+      const initialIncidentHistory = isIncidentHistory ? parseConnectionsIncidentHistory(connectionsSegments) : undefined;
+      const initialAccessVerification = connectionsSegments[0] === 'others' && connectionsSegments[1] === 'verify-access'
+        ? parseConnectionsVerifyAccess(connectionsSegments) : undefined;
       const initialFileAuthenticationSwitch = parseConnectionsFileAuthentication(connectionsSegments);
       const permissionRepairTarget = parseConnectionsPermissionRepair(connectionsSegments);
       const permissionRepair = permissionRepairTarget ? packPermissionRepairs.read(permissionRepairTarget.id, permissionRepairTarget.name)
@@ -10142,6 +10163,12 @@ export const bootstrapWebclient = async (
           : {}),
         ...(initialConnectionAccessReview !== null ? { initialConnectionAccessReview } : {}),
         ...(initialManageOAuthApps ? { initialManageOAuthApps: true } : {}),
+        ...(initialOAuthAppReview ? { initialOAuthAppReview } : {}),
+        ...(initialAccountAuthentication ? { initialAccountAuthentication } : {}),
+        ...(renewalReturn ? { initialRenewalReturn: renewalReturn.app } : {}),
+        ...(initialIncidentHistory !== undefined ? { initialIncidentHistory } : {}),
+        ...(initialAccessVerification !== undefined ? { initialAccessVerification } : {}),
+        ...(authenticationIncidentHistoryCaller ? { authenticationIncidentHistoryCaller } : {}),
         ...(authenticationRepairsCaller ? { authenticationRepairsCaller } : {}),
         ...(initialFileAuthenticationSwitch !== null ? { initialFileAuthenticationSwitch } : {}),
         ...(permissionRepair ? { initialPermissionRepair: permissionRepair } : {}),
@@ -10536,6 +10563,7 @@ export const bootstrapWebclient = async (
         } : {}),
         ...(initialPacksAddress?.kind === 'pack' ? { initialPermissionRepairReturn: packPermissionRepairs.takeReturn(initialPacksAddress.packSlug) } : {}),
         ...(authenticationRepairsCaller ? { authenticationRepairsCaller } : {}),
+        ...(connectionsManagedOAuthCaller ? { authenticationAccessCaller: connectionsManagedOAuthCaller } : {}),
         ...(reconnectWorklistCaller ? { reconnectWorklistCaller, initialWorklistReturn: reconnectWorklistRepairs.takeReturn('packs'),
           ...(connectionsManagedOAuthCaller ? { onWorklistReconnect: (group: import('@recued/contracts').PackReconnectGroup) => {
             const repair = reconnectWorklistRepairs.begin(group, 'packs');
@@ -14675,7 +14703,8 @@ export const bootstrapWebclient = async (
       const chatDraft = mountedRouteHandle.getRecoveryDraft?.() ?? null;
       return {
         returnHash: activeHash,
-        ...(chatDraft !== null ? { chatDraft } : {}),
+        ...(chatDraft !== null ? { chatDraft,
+          chatServer: { serverUrl: pair.serverUrl, serverPublicKey: pair.serverPublicKey } } : {}),
       };
     },
     dispose: async () => {

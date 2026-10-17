@@ -2244,6 +2244,27 @@ describe('BYO OAuth-app credentials, inline on the connect flow', () => {
 });
 
 
+const renewalCalendarCaps = { read: 'yes', list_calendars: 'yes', create_event: 'yes', update_event: 'yes', delete_event: 'yes',
+  rsvp: 'yes', search: 'remote', watch: 'poll', auth: 'oauth', recurrence: 'server' } as const;
+it.each(['mail', 'calendar'] as const)('opens a deep-linked %s reauthorization review once without consent or enrollment', async platform => {
+  const h = makeHost(); const call = vi.fn<import('../settings/managed-oauth-panel.js').ManagedOAuthCaller>(async () => { throw Error('Fixture stops before consent'); });
+  const enroll = vi.fn(async () => ({ slug: 'work' })); const list = async () => ({ instances: [{ slug: 'work', platform, caps: renewalCalendarCaps, last_synced_at: 0,
+    adapter_type: platform === 'mail' ? 'gmail' : 'gcal', auth_state: 'healthy' as const, account_email: 'owner@example.test', send_capable: false }] });
+  const mount = mountAccountsLanePanel({ host: h.host as unknown as HTMLElement, document: {} as Document, initialLane: platform,
+    initialDetailSlug: 'work', initialManageAuthentication: 'work', runCollectionAuthentication: call,
+    mail: { list, enrollImap: async () => ({ slug: 'unused', send_capable: false }), delete: async () => ({ ok: true }) },
+    calendar: { list, enrollOAuth: enroll, delete: async () => ({ ok: true }) } });
+  await mount.whenLoaded(); expect(mount.getState().authenticationManagement).toEqual({ slug: 'work', action: 'reauthorize' });
+  expect(call).toHaveBeenCalledExactlyOnceWith({ action: 'collection_authentication_app_context', platform, slug: 'work', intent: 'reauthorize', scopes: [] });
+  await mount.refresh(); expect(call).toHaveBeenCalledTimes(1); expect(enroll).not.toHaveBeenCalled(); mount.dispose();
+});
+it('does not guess another account when a deep-linked reauthorization target disappeared', async () => {
+  const h = makeHost(); const call = vi.fn<import('../settings/managed-oauth-panel.js').ManagedOAuthCaller>();
+  const mount = mountAccountsLanePanel({ host: h.host as unknown as HTMLElement, document: {} as Document, initialLane: 'calendar',
+    initialDetailSlug: 'gone', initialManageAuthentication: 'gone', runCollectionAuthentication: call,
+    calendar: { list: async () => ({ instances: [{ slug: 'other', platform: 'calendar', caps: renewalCalendarCaps, last_synced_at: 0, adapter_type: 'gcal', auth_state: 'healthy' }] }), delete: async () => ({ ok: true }) } });
+  await mount.whenLoaded(); expect(call).not.toHaveBeenCalled(); expect(mount.getState().error).toContain('current Mail or Calendar account'); mount.dispose();
+});
 it('opens current-app reauthorization from a healthy connected mailbox and routes a broker to its exact saved connection', async () => {
   const h = makeHost(); const open = vi.fn(); const call = vi.fn<import('../settings/managed-oauth-panel.js').ManagedOAuthCaller>(async () => { throw Error('Fixture stops before consent'); });
   let managed = false;

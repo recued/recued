@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { createAuthenticationIncidentStore } from '../authentication-incident-store.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GOOGLE_TOKEN_URL, MICROSOFT_TOKEN_URL, isCollectionOAuthAppContext, isCollectionOAuthAppReview,
   type CollectionCaps, type CollectionPermissionChoices, type CollectionOAuthAppSwitchRequest, type CollectionOAuthAppSwitchResponse } from '@recued/contracts';
@@ -90,6 +91,21 @@ const fixture = async (provider: 'gmail' | 'gcal' | 'graph' = 'gmail', shared = 
     gate: (p?: Promise<void>) => { gate = p; }, tokenGate: (p?: Promise<void>) => { tokenGate = p; }, anonymous: (n: number) => { anonymousStatus = n; } };
 };
 describe('switch saved native OAuth app', () => {
+  it('keeps one app-switch history receipt for shared Mail/Calendar and resolves lost replies without authorizing again', async () => {
+    const f = await fixture('graph', true); const review = await f.review(); const result = await f.apply(review);
+    const history = createAuthenticationIncidentStore(f.db); const page = history.history({ scope: { kind: 'collection', platform: 'calendar', slug: 'work' } }, 1_001);
+    expect(page.repairs).toHaveLength(1); expect(page.repairs![0]).toMatchObject({ action: 'switch_oauth_app', status: 'applied', restart_required: false,
+      from: { type: 'direct_oauth', app_id: 'default' }, to: { type: 'direct_oauth', app_id: f.target.id, label: 'Work app' },
+      targets: expect.arrayContaining([{ kind: 'collection', platform: 'mail', slug: 'work' }, { kind: 'collection', platform: 'calendar', slug: 'work' }]) });
+    const calls = f.fetcher.mock.calls.length; expect(await f.apply(review)).toEqual(result); expect(f.fetcher).toHaveBeenCalledTimes(calls);
+    expect(history.history({ scope: { kind: 'all' } }, 1_001).repairs).toHaveLength(1);
+  });
+  it('rolls back token and app changes when applied history cannot be saved', async () => {
+    const f = await fixture(); const review = await f.review(); const before = f.instances.get('mail', 'work'); const tokens = await f.account.getAll();
+    f.db.exec("CREATE TRIGGER reject_repair BEFORE UPDATE ON authentication_incident_history WHEN NEW.kind = 'repair' AND json_extract(NEW.data, '$.status') = 'applied' BEGIN SELECT RAISE(ABORT, 'fixture history failure'); END");
+    expect(await f.apply(review)).toMatchObject({ outcome: { status: 'failed' } }); expect(f.instances.get('mail', 'work')).toEqual(before); expect(await f.account.getAll()).toEqual(tokens);
+    expect(createAuthenticationIncidentStore(f.db).history({ scope: { kind: 'all' } }, 1_001).repairs![0]).toMatchObject({ status: 'failed' });
+  });
   it.each(['gmail', 'gcal', 'graph'] as const)('reviews and swaps %s without changing mirror state or exposing tokens', async provider => {
     const f = await fixture(provider); const before = f.instances.get(f.platform, 'work')!; const tokens = await f.account.getAll();
     expect(isCollectionOAuthAppContext(await f.context())).toBe(true);

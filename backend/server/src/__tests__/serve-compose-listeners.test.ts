@@ -4,7 +4,11 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import Database from 'better-sqlite3';
+import { createInstanceStore } from '../collections/instance-store.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createAuditLogStore, createInMemoryCollection, type ActivityEntry, type AuditEntry } from '@recued/storage';
+import { createAskStore, createNotificationBlock, createNotificationSettingsStore, createUiChannel,
+  type NotificationSettings, type PendingAsk, type UiNotificationEvent } from '@recued/notification';
 
 import type { ResolvedLanAddress } from '../network/resolve-lan-address.js';
 
@@ -375,6 +379,45 @@ const makeOptions = (
 }) as unknown as ComposeListenersOptions;
 
 describe('composeListeners', () => {
+  it('starts authentication alerts from the real owner inventory and notification block, honors lock, and stops them with listeners', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const base = makeOptions(); const connections = createConnectionStore(storageDb);
+    connections.upsert({ kind: 'api', name: 'work-api', display_name: 'Work API', config_json: '{"base_url":"https://vendor.example.test"}',
+      auth_ciphertext: await encodeAuthForStorage({ type: 'bearer', token: 'fixture-token' }, { kind: 'api', name: 'work-api' }),
+      enrolled_at: 1, updated_at: 2, health_json: JSON.stringify({ status: 'auth_failed', last_probed_at: Date.now() - 1 }) });
+    const events: UiNotificationEvent[] = []; let locked = true;
+    const log = createAuditLogStore(createInMemoryCollection<AuditEntry>(), createInMemoryCollection<ActivityEntry>());
+    const block = createNotificationBlock({ askStore: createAskStore(createInMemoryCollection<PendingAsk>()),
+      settingsStore: createNotificationSettingsStore(createInMemoryCollection<NotificationSettings>()),
+      channels: [createUiChannel({ busSink: event => { events.push(event); } })] });
+    const result = await composeListeners(makeOptions({ storage: { ...base.storage, auditLog: log },
+      app: { ...base.app, connectionStoreRef: connections, isVaultUnlocked: () => !locked },
+      execution: { ...base.execution, notificationBlock: block } }));
+    try {
+      await vi.advanceTimersByTimeAsync(60_000); expect(events).toEqual([]);
+      locked = false; await vi.advanceTimersByTimeAsync(60_000);
+      expect(events).toHaveLength(1); expect(events[0]).toMatchObject({ kind: 'notification.notify',
+        message: expect.objectContaining({ title: 'Connection access was rejected', link_url: '#connections/others/review-access/api/work-api' }) });
+      const config = listenerMocks.createServerHandlerSet.mock.calls[0] as unknown as [{ connectionDeps: import('../connection-handler.js').ConnectionRpcDeps }];
+      const history = await config[0].connectionDeps.authenticationHistory!({ scope: { kind: 'connection', name: 'work-api' } });
+      expect(history.incidents).toHaveLength(1); expect(history.incidents[0]).toMatchObject({ status: 'open', group: { connection_names: ['work-api'] } });
+      expect(JSON.stringify(history)).not.toContain('fixture-token');
+      const worklist = await config[0].connectionDeps.authenticationRepairs!();
+      const group = worklist.groups.find(g => g.connection_names.includes('work-api'))!;
+      const access = await config[0].connectionDeps.authenticationAccess!.handle({ action: 'authentication_access_preview', selection: { kind: 'group', id: group.id } });
+      expect(access).toMatchObject({ action: 'authentication_access_preview', preview: { targets: [{ target: { kind: 'connection', name: 'work-api' }, check: 'api_read' }] } });
+      expect(JSON.stringify(access)).not.toContain('fixture-token');
+      const instances = createInstanceStore({ db: storageDb });
+      instances.upsert({ platform: 'mail', slug: 'borrowed', adapter_type: 'gmail',
+        config: { oauth_connection: { type: 'direct_oauth', connection_name: 'work-api' } }, auth_state: 'healthy', last_synced_at: null,
+        caps: { read: 'yes', write: 'no', delete: 'no', watch: 'realtime', mirror: 'required', auth: 'oauth', path_style: 'uri' } });
+      expect(config[0].connectionDeps.authenticationRepairTargets!('work-api')).toEqual([{ kind: 'collection', platform: 'mail', slug: 'borrowed' }]);
+      expect(config[0].connectionDeps.authenticationRepairTargets!('other')).toEqual([]);
+      await result.server.close(); connections.upsert({ ...connections.get('api', 'work-api')!, enrolled_at: 3 });
+      await vi.advanceTimersByTimeAsync(60_000); expect(events).toHaveLength(1);
+    } finally { await result.server.close(); vi.useRealTimers(); }
+  });
+
   it('reads Chat receive health from the live supervisor and overrides it when paused or locked', async () => {
     const base = makeOptions(); const connectionStore = createConnectionStore(storageDb);
     connectionStore.upsert({ kind: 'notification', name: 'telegram', subtype: 'telegram', display_name: 'Telegram',

@@ -113,6 +113,13 @@ describe('selected-file verification through production download resolvers',()=>
     const f=fixture();let release!:(v:Response)=>void;f.set(()=>new Promise<Response>(r=>{release=r;}));const controller=new AbortController();const timeout=vi.spyOn(AbortSignal,'timeout').mockReturnValue(controller.signal);
     try{const checking=f.check();const rejection=expect(checking).rejects.toThrow('timed out');await vi.waitFor(()=>expect(release).toBeDefined());controller.abort();await rejection;const cancel=vi.fn();release(new Response(new ReadableStream({cancel})));await vi.waitFor(()=>expect(cancel).toHaveBeenCalled());}finally{timeout.mockRestore();}
   });
+  it('propagates the background job cancellation into an in-flight download',async()=>{
+    const f=fixture();let release!:(value:Response)=>void;f.set(()=>new Promise<Response>(resolve=>{release=resolve;}));const controller=new AbortController();
+    const checking=verifyFileSourceDownload({provider:'google',meta:f.meta,cred:f.cred,direct:f.direct,assertActive:f.active,signal:controller.signal});
+    const rejected=expect(checking).rejects.toThrow('timed out');await vi.waitFor(()=>expect(release).toBeDefined());controller.abort();await rejected;
+    const cancel=vi.fn();release(new Response(new ReadableStream({cancel})));await vi.waitFor(()=>expect(cancel).toHaveBeenCalled());
+    expect(f.direct.mock.calls[1]![1].signal?.aborted).toBe(true);
+  });
   it('stops a body read that ignores cancellation',async()=>{
     const f=fixture();const cancel=vi.fn();f.set(()=>new Response(new ReadableStream({pull:()=>new Promise(()=>{}),cancel})));const controller=new AbortController();const timeout=vi.spyOn(AbortSignal,'timeout').mockReturnValue(controller.signal);
     try{const checking=f.check();const rejection=expect(checking).rejects.toThrow('timed out');await vi.waitFor(()=>expect(f.direct).toHaveBeenCalledTimes(2));controller.abort();await rejection;await vi.waitFor(()=>expect(cancel).toHaveBeenCalled());}finally{timeout.mockRestore();}

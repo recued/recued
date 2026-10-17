@@ -1911,6 +1911,56 @@ describe('mountUpdatesPage', () => {
     m.dispose();
   });
 
+  /** The owner, 2026-10-16: hide Automatic for now and keep it. Automatic
+   *  installs only a release inside the rollout, and the rollout is 0% for good,
+   *  so it never installs anything. */
+  it('does not offer Automatic when it is not the saved mode', async () => {
+    const h = host();
+    const m = mountUpdatesPage({
+      host: h.asHost,
+      document: fakeDoc(),
+      runCheck: async () => UP_TO_DATE,
+      runGetMode: async (): Promise<UpdateModeStatus> => ({ ...MODE_AUTO, mode: 'notify', channel_default: 'notify' }),
+      runSetMode: async (a) => ({ ...MODE_AUTO, mode: a.mode, source: 'user', channel_default: 'notify' }),
+    });
+    await flush();
+    const sel = find(h.el, UPDATES_MODE_SELECT_ATTR)!;
+    expect(sel.children.map((option) => option.value)).toEqual(['notify', 'off']);
+    expect(allText(sel)).not.toMatch(/Automatic/);
+    expect(sel.value).toBe('notify');
+    m.dispose();
+  });
+
+  /** ⚠ A server already on `auto` reads as `auto`. A picker without the option
+   *  would show another mode than the server has, and the next save would change
+   *  it without anyone choosing to. Once the owner leaves it, it is gone. */
+  it('keeps Automatic while it is the saved mode, and drops it once the owner leaves it', async () => {
+    const h = host();
+    const runSetMode = vi.fn(async (a: { mode: UpdateMode }): Promise<UpdateModeStatus> => ({
+      ...MODE_AUTO,
+      mode: a.mode,
+      source: 'user',
+    }));
+    const m = mountUpdatesPage({
+      host: h.asHost,
+      document: fakeDoc(),
+      runCheck: async () => UP_TO_DATE,
+      runGetMode: async () => MODE_AUTO,
+      runSetMode,
+    });
+    await flush();
+    const sel = find(h.el, UPDATES_MODE_SELECT_ATTR)!;
+    expect(sel.children.map((option) => option.value)).toEqual(['auto', 'notify', 'off']);
+    expect(sel.value).toBe('auto');
+    sel.value = 'notify';
+    fire(sel, 'change');
+    await flush();
+    expect(runSetMode).toHaveBeenCalledWith({ mode: 'notify' });
+    expect(sel.children.map((option) => option.value)).toEqual(['notify', 'off']);
+    expect(sel.value).toBe('notify');
+    m.dispose();
+  });
+
   it('env-locked mode disables the select', async () => {
     const h = host();
     const m = mountUpdatesPage({

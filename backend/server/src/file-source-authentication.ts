@@ -6,6 +6,7 @@ import { CONNECTION_SOURCE_ID, RpcError, compileImportScope, normalizeScopePath,
 import { buildFileSourceAdapterResolver, defaultFileFetch, type FileConnectionCredential, type FileConnectionResolver,
   type FileFetch } from './file-source-adapters/index.js';
 import { resolveFileBearerTransport } from './file-source-adapters/bearer-transport.js';
+import { assertPersistedOAuthAccess } from './native-oauth-renewal.js';
 import { fetchFileSourceApi } from './file-source-adapters/http-json.js';
 import { projectFileVendorRow } from './file-source-projector.js';
 
@@ -114,14 +115,14 @@ export const createFileSourceAuthentication = (deps: FileSourceAuthenticationDep
     return {...base,available:true,files:page.map(item => fileDownloadChoice(item.meta)),
       ...(result.length > 25 ? {next_cursor:page[24]!.target_id} : {})};
   };
-  const snapshot = async (row: ConnectionRow, cred: FileConnectionCredential, expected?: Snapshot, selectedId?: string, broker?: SourceBroker): Promise<Snapshot> => {
+  const snapshot = async (row: ConnectionRow, cred: FileConnectionCredential, expected?: Snapshot, selectedId?: string, broker?: SourceBroker, signal?: AbortSignal): Promise<Snapshot> => {
     const provider = providerOf(row)!; const c = config(row); const declaration = getFileVendorDeclaration(provider)!;
     // The auth-source ID is a live lookup. Capture it before awaiting any work,
     // rather than recomputing both sides of a comparison after a replacement.
     const expectedMaterial = material(row); const registry = deps.registration(sourceId(row,provider));
     const transport = resolveFileBearerTransport(cred, direct, provider);
     if (!transport) throw refuse('This source needs a compatible direct OAuth or broker credential.');
-    const deadline = AbortSignal.timeout(60_000); let requests = 0; let bytes = 0;
+    const deadline = signal ? AbortSignal.any([signal, AbortSignal.timeout(60_000)]) : AbortSignal.timeout(60_000); let requests = 0; let bytes = 0;
     const bound = (fetchImpl: FileFetch, authenticated: boolean): FileFetch => async (url, init) => {
       if (++requests > 256 || deadline.aborted) throw refuse('The metadata check exceeded its limit.');
       const base = new URL(String(c.base_url)); const target = new URL(url);
@@ -281,6 +282,41 @@ export const createFileSourceAuthentication = (deps: FileSourceAuthenticationDep
         ...(current.public.download ? { download: { ...current.public.download,status:'verified' } } : {}) };
     } catch (error) { if (error instanceof RpcError) throw error; throw refuse('The selected authentication could not verify the existing file source.'); }
   };
-  return { prepare, preview, assertCurrent, supported, files };
+  /** Check the saved source without replacing a migration review or staging a swap. */
+  const verifySaved = async (name: string, selectedId?: string, signal?: AbortSignal): Promise<import('@recued/contracts').AuthenticationAccessCheck[]> => {
+    const row = rowOf(name); const provider = providerOf(row);
+    if (!provider || !supported(name)) throw refuse('This file source does not support access verification.');
+    const originalMaterial = material(row); const registry = deps.registration(sourceId(row, provider))!;
+    if (selectedId !== undefined) {
+      const selected = deps.verificationFiles?.get(sourceId(row, provider), selectedId);
+      if (!text(selectedId) || selectedId.length > 255 || /[\x00-\x1f\x7f]/.test(selectedId) || !selected || selected.scope !== sourceId(row, provider)
+        || selected.target_id !== selectedId || selected.meta.remote_id !== selectedId || selected.meta.provider !== provider
+        || validateFileMetaProjection(selected.meta).length) throw refuseFileDownload('Choose a saved file from this source.');
+      if (deps.admitRemoteFetch?.() !== true) throw refuseFileDownload('Remote file downloads are disabled.');
+    }
+    const cred = await deps.resolveConnection(name); if (!cred) throw refuse('Saved authentication is unavailable.');
+    assertPersistedOAuthAccess(cred.auth, await deps.unlock(rowOf(name)));
+    const broker = cred.auth.type === 'managed_oauth' ? { id: cred.auth.broker_profile_id, signature: deps.brokerSignature?.(cred.auth.broker_profile_id) } : undefined;
+    if (broker && !broker.signature) throw refuse('The saved broker profile is unavailable.');
+    const pinnedBroker = broker?.signature ? { id: broker.id, signature: broker.signature } : undefined;
+    assertSourceCurrent(name, originalMaterial, registry, pinnedBroker);
+    if (signal?.aborted) throw new Error('Access check cancelled');
+    const proof = await snapshot(rowOf(name), cred, undefined, selectedId, pinnedBroker, signal);
+    const checks: import('@recued/contracts').AuthenticationAccessCheck[] = [{ kind: 'file_metadata', status: 'passed' }];
+    if (selectedId && proof.selected) {
+      try {
+        await verifyFileSourceDownload({ provider, meta: proof.selected, cred, direct, ...(signal ? { signal } : {}),
+          assertActive: () => { if (signal?.aborted) throw new Error('Access check cancelled'); return assertDownloadActive(row, registry, originalMaterial, pinnedBroker); } });
+        checks.push({ kind: 'file_download', status: 'passed' });
+      } catch (error) {
+        if (error instanceof RpcError && error.code === 'conflict') throw error;
+        checks.push({ kind: 'file_download', status: 'unconfirmed', reason: 'inconclusive' });
+      }
+    } else checks.push({ kind: 'file_download', status: 'unconfirmed', reason: 'resource_required' });
+    assertSourceCurrent(name, originalMaterial, registry, pinnedBroker);
+    checks.push({ kind: 'write_permissions', status: 'unconfirmed', reason: 'not_executed' });
+    return checks;
+  };
+  return { prepare, preview, assertCurrent, supported, files, verifySaved };
 };
 const cString = (value: unknown): string | undefined => typeof value === 'string' && value.length > 0 && value.length <= 1024 && !/[\r\n\0]/.test(value) ? value : undefined;

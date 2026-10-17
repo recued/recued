@@ -186,6 +186,29 @@ describe('passive unified authentication inventory', () => {
     const f = fixture(); f.deps.decode = async () => { f.rows[0] = { ...f.rows[0]!, auth_ciphertext: 'replacement' }; return native(); };
     await expect(createAuthenticationRepairWorklist(f.deps)()).rejects.toMatchObject({ code: 'conflict' });
   });
+  it('fences an in-place service change while credentials are being read', async () => {
+    const f = fixture(); f.deps.decode = async () => {
+      f.rows[0]!.config_json = '{"base_url":"https://changed.example.test"}'; return native();
+    };
+    await expect(f.read()).rejects.toMatchObject({ code: 'conflict' });
+  });
+  it.each(['api', 'collection'])('reads fresh %s observations after asynchronous credential decoding without a spurious conflict', async lane => {
+    let now = clock;
+    let account: CollectionInstanceRecord = { ...instance('mail', 'inbox', 'graph'), auth_state: 'healthy' };
+    const f = fixture({ instances: () => [account], apps: () => [{ ...app(), secret_expires_on: '2027-12-01' }], now: () => now });
+    f.rows[0] = connection('work', 'ok');
+    f.deps.decode = async () => {
+      now = clock + 5;
+      if (lane === 'api') f.rows[0] = { ...f.rows[0]!, last_used_at: now,
+        health_json: JSON.stringify({ status: 'auth_failed', last_probed_at: now }) };
+      else account = { ...instance('mail', 'inbox', 'graph'), updated_at: now, auth_state: 'expired' };
+      return native();
+    };
+    const result = await createAuthenticationRepairWorklist(f.deps)();
+    expect(result.observed_at).toBe(now);
+    expect(result.groups.flatMap(group => group.issues)).toContainEqual(expect.objectContaining({ code: 'credential_rejected', observed_at: now }));
+    expect(result.unavailable).toEqual([]);
+  });
   it('does not silently truncate a large inventory', async () => {
     const f = fixture({ connections: () => Array.from({ length: 513 }, (_, i) => connection('row-' + i)) });
     const result = await f.read(); expect(result.groups).toEqual([]); expect(result.unavailable).toContain('Saved connection status is unavailable.');

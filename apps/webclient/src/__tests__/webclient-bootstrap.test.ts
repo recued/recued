@@ -1116,6 +1116,35 @@ describe('D-151 — Compose Reception status from hostnames', () => {
 // ══════════════════════════════════════════════════════════════════
 
 describe('D-148 § A.4 — bootstrapWebclient: pair-state hydration', () => {
+  it.each(['same server', 'different endpoint', 'different identity'])(
+    'binds every rescued Chat draft to its source server: %s', async target => {
+      const fixture = buildOpts(); fixture.hashSource.setHash('#chat/new');
+      const recovery = { returnHash: '#chat/new',
+        chatServer: { serverUrl: target === 'different endpoint' ? 'wss://elsewhere.test/ws' : 'wss://alice.recued.cloud:8443/ws',
+          serverPublicKey: target === 'different identity' ? 'replacement-key' : 'spki-base64' },
+        chatDraft: { text: 'Visible draft', protected: true, modelSourceId: null, parkedDrafts: [
+          { sessionId: 'other-chat', draft: { text: 'Parked draft', protected: true, modelSourceId: null,
+            replyTo: { sessionId: 'other-chat', messageId: 'quote' },
+            interruptedUploads: [{ id: 'unfinished', filename: 'Pending.pdf', media_class: 'document' }],
+            attachments: [{ file_id: 'file:quote', media_class: 'document', filename: 'Quote.pdf' }] } },
+        ] },
+      };
+      const handle = await bootstrapWebclient({ ...fixture.opts, reauthRecovery: recovery });
+      try {
+        const captured = handle.captureRecoverySnapshot();
+        if (target === 'same server') {
+          expect(captured.chatDraft).toEqual(recovery.chatDraft);
+          expect(captured.chatServer).toEqual(recovery.chatServer);
+        } else {
+          expect(captured.chatDraft).toBeUndefined();
+          expect(captured.chatServer).toBeUndefined();
+        }
+        expect(fixture.transportControls.sendCalls().some(call =>
+          (call as { method?: string }).method === 'chat.send')).toBe(false);
+      } finally { await handle.dispose(); }
+    },
+  );
+
   it('throws WebclientUnpairedError when the store has no pair state', async () => {
     const fixture = buildOpts();
     const opts = { ...fixture.opts, localStore: buildUnpairedStore() };
@@ -1206,6 +1235,24 @@ describe('D-148 § A.4 — bootstrapWebclient: pair-state hydration', () => {
 // ══════════════════════════════════════════════════════════════════
 
 describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
+  it('wires the renewal access address through the real webclient bootstrap into a local review', async () => {
+    const fixture = buildOpts(); const selection = { kind: 'renewal' as const, id: 'renewal-12345678-1234-4123-8123-123456789abc' };
+    fixture.hashSource.setHash('#connections/others/verify-access/renewal/' + selection.id);
+    const handle = await bootstrapWebclient(fixture.opts); await flush();
+    const request = fixture.transportControls.sendCalls().find((m): m is { request_id: string; args: { action: string; selection: unknown } } =>
+      !!m && typeof m === 'object' && 'method' in m && m.method === 'collection.connection.managedOAuth'
+      && 'request_id' in m && typeof m.request_id === 'string' && 'args' in m && !!m.args && typeof m.args === 'object'
+      && 'action' in m.args && m.args.action === 'authentication_access_preview' && 'selection' in m.args);
+    expect(request?.args).toEqual({ action: 'authentication_access_preview', selection });
+    fixture.transportControls.fireMessage({ type: 'rpc_result', request_id: request!.request_id, result: {
+      action: 'authentication_access_preview', preview: { id: 'a'.repeat(43), fingerprint: 'b'.repeat(64), expires_at: Date.now() + 60000, selection,
+        label: 'Current Work authentication', targets_truncated: false, uses: [], usage_available: true,
+        targets: [{ id: 'c'.repeat(64), target: { kind: 'connection', name: 'work' }, label: 'Work API', check: 'api_read',
+          authentication_revision: 'd'.repeat(64), base_url: 'https://vendor.test/v1' }] } } });
+    for (let n = 0; n < 5; n++) await flush();
+    expect(findChildByAttrValue(fixture.root, 'data-authentication-access-action', 'run')).not.toBeNull();
+    expect(handle.activeRoute()).toBe('connections'); await handle.dispose();
+  });
   it('mounts Reception when the hash is #reception', async () => {
     const fixture = buildOpts();
     const handle = await bootstrapWebclient(fixture.opts);

@@ -1,6 +1,7 @@
 /** Local observations only. Opening the worklist never performs vendor requests. */
 import type { ManagedOAuthConnectionUse } from './managed-oauth.js';
 import { isOAuthAppSecretExpiryDate } from './foundational-oauth.js';
+import { isAuthenticationAccessVerification, type AuthenticationAccessVerification } from './authentication-access-verification.js';
 
 export type AuthenticationRepairIssueCode = 'credential_rejected' | 'access_unconfirmed' | 'source_check_failed'
   | 'binding_changed' | 'connection_missing' | 'app_missing' | 'secret_expiry';
@@ -18,6 +19,7 @@ export interface AuthenticationRepairIssue {
   secret_expires_on?: string;
 }
 export interface AuthenticationRepairGroup {
+  access_verification?: AuthenticationAccessVerification;
   id: string;
   kind: 'account' | 'app';
   label: string;
@@ -53,6 +55,8 @@ export const isAuthenticationRepairWorklist = (value: unknown): value is Authent
   return record(value) && time(value.observed_at) && Array.isArray(value.unavailable) && value.unavailable.length <= 16 && value.unavailable.every(text)
     && Array.isArray(value.groups) && value.groups.length <= 2048 && new Set(value.groups.map(g => record(g) ? g.id : null)).size === value.groups.length
     && value.groups.every(g => record(g) && id(g.id) && (g.kind === 'account' || g.kind === 'app') && text(g.label)
+      && (g.access_verification === undefined || isAuthenticationAccessVerification(g.access_verification)
+        && g.access_verification.selection.kind === 'group' && g.access_verification.selection.id === g.id)
       && typeof g.authentication === 'string' && ['direct_oauth', 'broker', 'other', 'unknown'].includes(g.authentication)
       && typeof g.usage_available === 'boolean' && Array.isArray(g.connection_names) && g.connection_names.length <= 512 && g.connection_names.every(text)
       && Array.isArray(g.issues) && g.issues.length <= 2048 && g.issues.every(issue)

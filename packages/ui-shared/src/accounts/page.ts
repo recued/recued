@@ -1922,6 +1922,7 @@ export const renderAccountsPanel = (props: AccountsPanelProps): string => {
         return row ? renderAuthenticationManagement({ prefix: 'accounts', action: state.authenticationManagement!.action,
           current: row.sourceAuthentication === 'broker' ? 'Broker sign-in' : 'Recued direct OAuth', account: row.sublabel,
           canChangeApp: row.oauthAppSwitchAvailable === true && !row.managedConnectionName,
+          ...((state.lane === 'mail' || state.lane === 'calendar') ? { historyScope: { kind: 'collection' as const, platform: state.lane, slug: row.slug } } : {}),
           canChangeMethod: row.authenticationSwitchAvailable === true, busy: state.authenticationManagementBusy })
           + (row.managedConnectionName && state.authenticationManagement!.action === 'reauthorize'
             ? '<p>Re-authorize the saved API connection shared by this account. Review its linked connections before applying.</p>'

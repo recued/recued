@@ -58,12 +58,18 @@ describe('describeAvailable', () => {
     expect(t).toContain('rolled back');
   });
 
-  it('discloses that the staged rollout has not reached this server', () => {
-    // ⛔ The rollout decides what AUTO-applies, not what the owner may know.
-    // Suppressing this would be the substrate exercising the human's judgment.
-    const t = describeAvailable(res({ in_rollout_cohort: false }), '1.4.2').text;
-    expect(t).toContain('has not reached this server');
-    expect(t).toContain('apply it yourself');
+  it('reports a release outside the rollout, and says nothing about the rollout', () => {
+    // ⛔ The rollout decides what AUTO-applies, not what the owner may know, so
+    // the release is still announced. But `rollout_pct` is 0 for good (the owner,
+    // 2026-10-16), so no server is ever in the cohort: a line about the rollout
+    // not having reached this server "yet" went into every notice and promised
+    // something that never comes.
+    const outside = describeAvailable(res({ in_rollout_cohort: false, auto_apply_eligible: false }), '1.4.2');
+    expect(outside.title).toBe('Update available');
+    expect(outside.text).toContain('Recued 1.4.2 is available (this server runs 1.3.0).');
+    expect(outside.text).not.toMatch(/rollout|cohort|early|has not reached/i);
+    // The same release inside the rollout reads the same.
+    expect(outside).toEqual(describeAvailable(res(), '1.4.2'));
   });
 
   it('omits the link rather than inventing one when the release has no notes', () => {
@@ -98,6 +104,6 @@ describe('describeAvailable', () => {
     expect(t).toContain('urgent');
     expect(t).toContain('never applied automatically');
     expect(t).toContain('migrates the database');
-    expect(t).toContain('has not reached this server');
+    expect(t).not.toMatch(/rollout|cohort|has not reached/i);
   });
 });

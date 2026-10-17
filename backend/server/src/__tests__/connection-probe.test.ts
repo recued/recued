@@ -172,6 +172,23 @@ const makeMcpStream = (
 };
 
 describe('handleConnectionProbe real health probes', () => {
+  it('does not turn a redirect from a declared private API probe into access-recovery evidence', async () => {
+    const name = await enroll('api', { config: { base_url: 'https://api.hubapi.com', vendor: 'hubspot' } });
+    const health = await probe('api', name, async () => jsonResponse(302));
+    expect(health.access_verified_at).toBeUndefined();
+  });
+
+  it('keeps resource recovery evidence private while a later authenticated probe proves that resource works', async () => {
+    const name = await enroll('api', { config: { base_url: 'https://api.hubapi.com', vendor: 'hubspot' } });
+    const rejected = await probe('api', name, async () => jsonResponse(401));
+    expect(rejected).not.toHaveProperty('access_check_key');
+    expect(rejected).not.toHaveProperty('access_checks');
+    expect(JSON.parse(store.get('api', name)!.health_json!)).toMatchObject({ access_checks: [{ status: 'auth_failed' }] });
+    const result = await handleConnectionProbe({ store, now: () => NOW + 2_000, getEncryptionKey, fetcher: async () => jsonResponse(200) }, { kind: 'api', name });
+    expect(result.health.access_verified_at).toBe(NOW + 2_000);
+    for (const field of ['access_check_key', 'access_authority', 'access_checks', 'access_checks_complete']) expect(result.health).not.toHaveProperty(field);
+    expect(JSON.parse(store.get('api', name)!.health_json!)).toMatchObject({ access_checks: [{ status: 'ok', at: NOW + 2_000 }] });
+  });
   it('bounds the production default fetch response before classifying it healthy', async () => {
     const name = await enroll('api');
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(

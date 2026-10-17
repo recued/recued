@@ -55,6 +55,11 @@ const fixture = (ambiguous = false, intercept?: (request: ManagedOAuthRequest) =
       case 'collection_authentication_retire': throw new Error('This fixture does not handle collection authentication migration.');
       case 'review_direct_authentication':
       case 'authentication_worklist':
+      case 'authentication_history':
+      case 'authentication_access_preview':
+      case 'authentication_access_retire':
+      case 'authentication_access_run':
+      case 'authentication_access_status':
       case 'file_authentication_files':
       case 'file_authentication_prepare':
       case 'reauthorization_context':

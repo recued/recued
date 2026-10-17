@@ -696,6 +696,7 @@ describe('composeExecutorConfig top-level shape', () => {
     expect(config.auditLog).toBe(log);
     expect(config.connectionApi).toEqual(expect.objectContaining({
       decodeAuth: expect.any(Function),
+      observeAccess: expect.any(Function),
       persistAuth: expect.any(Function),
     }));
     expect(config.connectionMcp).toEqual(expect.objectContaining({

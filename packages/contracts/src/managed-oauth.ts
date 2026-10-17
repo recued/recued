@@ -235,7 +235,9 @@ export interface ManagedOAuthAuthorizationRequest {
 }
 
 export type ManagedOAuthRequest =
+  | import('./authentication-access-verification.js').AuthenticationAccessRequest
   | { action: 'authentication_worklist' }
+  | ({ action: 'authentication_history' } & import('./authentication-incident-history.js').AuthenticationIncidentHistoryQuery)
   | import('./collection-oauth-app-switch.js').CollectionOAuthAppSwitchRequest
   | CollectionAuthenticationRequest
   | ManagedOAuthMigrationRequest
@@ -268,7 +270,9 @@ export type ManagedOAuthRequest =
       auth: AuthenticationSwitchAuthorization; verification_url: string; impact_fingerprint?: string };
 
 export type ManagedOAuthResponse =
+  | import('./authentication-access-verification.js').AuthenticationAccessResponse
   | { action: 'authentication_worklist'; worklist: import('./authentication-repair-worklist.js').AuthenticationRepairWorklist }
+  | { action: 'authentication_history'; history: import('./authentication-incident-history.js').AuthenticationIncidentHistoryPage }
   | { action: 'file_authentication_files'; choices: import('./file-download-verification.js').FileDownloadChoices }
   | { action: 'file_authentication_prepare'; name: string; updated_at: number; file_source: import('./file-source-authentication.js').FileSourceAuthenticationPreview | null }
   | import('./collection-oauth-app-switch.js').CollectionOAuthAppSwitchResponse

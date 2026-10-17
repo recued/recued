@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { createAuthenticationIncidentStore } from '../authentication-incident-store.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getFileVendorDeclaration, type ManagedOAuthAuth, type DirectOAuthAuthorization, type ManagedOAuthImpactPreview } from '@recued/contracts';
 import { createManagedOAuthService } from '../managed-oauth-service.js';
@@ -65,7 +66,8 @@ const fixture = async (brokerOriginal = false, renewOriginal = false) => {
   meta.upsert({ scope: source, target_id: 'one', meta: buildFileMetaSnapshot({ provider: 'google', remote_id: 'one', filename: 'one.pdf', mime_type: 'application/pdf' },10), now: 10 });
   resolve = createFileSourceConnectionResolver({ connectionStore: store, decodeAuthFromStorage, encodeAuthForStorage, keyProvider: key, managedOAuth: service, fetchImpl: fetch, now: () => 1_000_000 });
   profiles.rememberAccountScopes('https://api.nango.dev', 'drive', JSON.stringify([201,Date.parse('2026-10-01T00:00:00Z')]), [scope]);
-  const make = () => makeConnectionHandlers({ store, getEncryptionKey: key, managedOAuth: service, resolveFetch: fetch, now: () => 1_000_000 })!.handlers;
+  const make = () => makeConnectionHandlers({ store, getEncryptionKey: key, managedOAuth: service, resolveFetch: fetch, now: () => 1_000_000,
+    authenticationRepairTargets: () => [{ kind: 'file_source', source_id: source }] })!.handlers;
   const handlers = make();
   const prepare = (verification_file_id?:string) => handlers['collection.connection.managedOAuth']({ action: 'file_authentication_prepare', name: 'work', expected_updated_at: store.get('api','work')!.updated_at, ...(verification_file_id?{verification_file_id}:{}) },undefined as never);
   const authorize = async () => {
@@ -109,6 +111,9 @@ describe('file-source migration through the production switch boundary', () => {
     const f = await fixture(brokerOriginal); const before = f.state(); await f.prepare(); const reviewed = await f.authorize();
     expect(reviewed.impact.file_source).toMatchObject({ status: 'verified', file_count: 1, current: { account_id: 'same-account' }, target: { account_id: 'same-account' } });
     expect(f.state()).toEqual(before); const result = await f.apply(reviewed.auth,reviewed.impact); expect(result.action).toBe('apply_authentication_switch');
+    const history = createAuthenticationIncidentStore(f.db);
+    expect(history.history({ scope: { kind: 'file_source', source_id: source } }, 1_000_001).repairs).toMatchObject([
+      { action: 'switch_authentication', status: 'applied', targets: [{ kind: 'connection', name: 'work' }, { kind: 'file_source', source_id: source }] }]);
     const after = f.state(); for (const k of ['source','sync','file'] as const) expect(after[k]).toEqual(before[k]);
     for (const k of ['name','display_name','config_json','enrolled_at','last_used_at','subresource_path'] as const) expect(after.row[k]).toEqual(before.row[k]);
     expect(await f.decode(after.row)).toMatchObject({ type: 'managed_oauth', connection_id: 'target' });

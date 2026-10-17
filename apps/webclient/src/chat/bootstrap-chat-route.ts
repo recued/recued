@@ -1,3 +1,5 @@
+import { copyComposerRecoveryDraft, hasComposerRecoveryDraft, type ChatComposerRecoveryDraft, type ChatRouteRecoveryDraft } from './draft-recovery.js';
+export type { ChatRouteRecoveryDraft } from './draft-recovery.js';
 import { openFilePreview, type FilePreviewCallers } from '../files/file-preview.js';
 import { openExistingFilePicker, type ChatFileListCaller, type CloudFileCallers } from './existing-file-picker.js';
 import { createConversationFilesView, type ConversationFilesCaller } from './conversation-files.js';
@@ -208,8 +210,11 @@ export const CHAT_ROUTE_SESSION_DELETE_ATTR =
   'data-recued-chat-route-session-delete';
 export const CHAT_ROUTE_SESSION_DELETE_CONFIRM_ATTR =
   'data-recued-chat-route-session-delete-confirm';
+const HISTORY_DELETE_CANCEL_ATTR = 'data-recued-chat-route-session-delete-cancel';
 export const CHAT_ROUTE_HISTORY_DRAFT_GUARD_ATTR =
   'data-recued-chat-route-history-draft-guard';
+const HISTORY_DRAFT_GUARD_ACTION_ATTR =
+  'data-recued-chat-route-history-draft-guard-action';
 export const CHAT_ROUTE_HISTORY_ANNOUNCER_ATTR =
   'data-recued-chat-route-history-announcer';
 export const CHAT_ROUTE_THREAD_ATTR = 'data-recued-chat-route-thread';
@@ -350,6 +355,9 @@ export const CHAT_ROUTE_VOICE_ATTR = 'data-recued-chat-route-voice';
 export const CHAT_ROUTE_VOICE_ERROR_ATTR = 'data-recued-chat-route-voice-error';
 export const CHAT_ROUTE_ATTACHMENT_ATTR = 'data-recued-chat-route-attachment';
 export const CHAT_ROUTE_ATTACHMENT_REMOVE_ATTR = 'data-recued-chat-route-attachment-remove';
+export const CHAT_ROUTE_ATTACHMENT_RETRY_ATTR = 'data-recued-chat-route-attachment-retry';
+export const CHAT_ROUTE_ATTACHMENT_RETRY_INPUT_ATTR = 'data-recued-chat-route-attachment-retry-input';
+const CHAT_ATTACHMENT_CONTROL_ATTR = 'data-chat-attachment-control';
 /** The in-composer model picker `<select>` — lists only CONFIGURED
  *  routing layers (Local / Free pool / BYOK); selecting drives
  *  `chat.session.set_model_pref` (active session) or seeds the draft
@@ -1834,7 +1842,13 @@ button.chat-composer-attachment-name, .chat-message-file-preview {
 .chat-composer-attachment-note { color: var(--fg-muted); }
 /* Colour REINFORCES the note, never replaces it — each chip already says
    "attached" / a percentage / the error in words. */
-[${CHAT_ROUTE_ATTACHMENT_ATTR}='failed'] { border-color: var(--danger, #b3261e); }
+[${CHAT_ROUTE_ATTACHMENT_ATTR}='failed'],
+[${CHAT_ROUTE_ATTACHMENT_ATTR}='needs-file'] { border-color: var(--danger, #b3261e); flex-wrap: wrap; }
+[${CHAT_ROUTE_ATTACHMENT_RETRY_ATTR}] {
+  border: 0; background: transparent; color: var(--accent); font: inherit;
+  text-decoration: underline; cursor: pointer; padding: 3px 2px;
+}
+[${CHAT_ROUTE_ATTACHMENT_RETRY_ATTR}]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 [${CHAT_ROUTE_ATTACHMENT_ATTR}='failed'] .chat-composer-attachment-note {
   color: var(--danger, #b3261e);
 }
@@ -1862,7 +1876,8 @@ button.chat-composer-attachment-name, .chat-message-file-preview {
   border-color: var(--danger, #c0392b);
   color: var(--danger, #c0392b);
 }
-[${CHAT_ROUTE_VOICE_ATTR}][disabled] {
+[${CHAT_ROUTE_VOICE_ATTR}][disabled],
+[${CHAT_ROUTE_VOICE_ATTR}][aria-disabled="true"] {
   opacity: 0.55;
   cursor: default;
 }
@@ -2796,17 +2811,6 @@ export interface BootstrapChatRouteOptions {
   onConnectedSourceRetired?: () => void;
 }
 
-/** The minimum safe Chat state carried across an in-process re-pair. The
- * durable session and messages come back from the server; only unsent text,
- * its leave-guard posture, and a draft-only model choice need local rescue. */
-export interface ChatRouteRecoveryDraft {
-  readonly text: string;
-  readonly protected: boolean;
-  readonly modelSourceId: ChatModelSourceId | null;
-  readonly replyTo?: ChatReplyDraft;
-  readonly attachments?: import('@recued/contracts').ChatMessageAttachment[];
-}
-
 export interface ChatRoute {
   getSessions(): ReadonlyArray<ChatSessionSummary>;
   getThread(): ChatThreadState;
@@ -2819,11 +2823,11 @@ export interface ChatRoute {
   /** Handle a same-session plan link in place so an existing composer draft
    * survives. Returns false when the shell must switch sessions instead. */
   openPlanLanding(address: ChatPlanAddress): boolean;
-  /** Capture unsent composer work for an in-process re-pair. Null when the
-   * composer is empty; server-owned thread state is deliberately excluded. */
+  /** Capture every unsent composer for an in-process re-pair. Null when all
+   * are empty; server-owned thread state is deliberately excluded. */
   getRecoveryDraft(): ChatRouteRecoveryDraft | null;
   hasUnsavedChanges(): boolean;
-  /** Contextual route-leave copy when a portaled Create draft would be lost. */
+  /** Contextual route-leave copy for local drafts and microphone activity. */
   unsavedChangesPrompt(): string | null;
   /** True only while a local send/history/action RPC is awaiting its ack.
    * Accepted server turns are tracked separately and do not lock navigation. */
@@ -3650,7 +3654,16 @@ export const bootstrapChatRoute = (
   // blanking mid-compose. Conversation switches park it in memory; only a
   // confirmed send or explicit discard clears the draft.
   let composerDraft = '';
-  let composerDraftOwner: { sessionId: string | null; discarded: boolean } = { sessionId: null, discarded: false };
+  let composerDraftOwner: { sessionId: string | null; discarded: boolean } = {
+    sessionId: opts.initialSessionId?.trim() || null, discarded: false,
+  };
+  // DOM nodes change on every full render. Owners and row ids survive it;
+  // weak keys do not keep the replaced buttons alive.
+  const attachmentControlOwners = new WeakMap<HTMLElement, typeof composerDraftOwner>();
+  const markAttachmentControl = (button: HTMLElement, control: string): void => {
+    button.setAttribute(CHAT_ATTACHMENT_CONTROL_ATTR, control);
+    attachmentControlOwners.set(button, composerDraftOwner);
+  };
   // Auto-seeded onboarding/source prompts are recoverable scaffolding, not
   // unsaved user work. Typing, choosing a follow-up, or preparing an action
   // draft promotes the composer to protected work for the shell leave guard.
@@ -3665,8 +3678,8 @@ export const bootstrapChatRoute = (
   const historyPanelId = `recued-chat-history-${crypto.randomUUID()}`;
   let pendingRecoveryDraft =
     opts.initialRecoveryDraft !== undefined
-    && (opts.initialRecoveryDraft.text.trim().length > 0 || opts.initialRecoveryDraft.replyTo !== undefined || (opts.initialRecoveryDraft.attachments?.length ?? 0) > 0)
-      ? opts.initialRecoveryDraft
+    && (hasComposerRecoveryDraft(opts.initialRecoveryDraft) || (opts.initialRecoveryDraft.parkedDrafts?.length ?? 0) > 0)
+      ? copyComposerRecoveryDraft(opts.initialRecoveryDraft)
       : null;
   let initialWorkSubmission = opts.initialWorkSubmission;
   // An explicit investigation asks for a fresh read even when its prompt is
@@ -7800,16 +7813,19 @@ export const bootstrapChatRoute = (
       input.setAttribute('aria-describedby', pending.id);
     }
     (input as { value: string }).value = pendingRecoveryDraft?.text ?? composerDraft;
+    let updateVoiceLabel: (() => void) | undefined;
     input.addEventListener('input', () => {
       if (hasPendingInitialDraft()) return;
       initialWorkSubmission = undefined;
       composerDraft = (input as { value?: string }).value ?? '';
       composerDraftProtected = composerDraft.trim().length > 0;
+      // Update the action name without replacing the textarea or its caret.
+      updateVoiceLabel?.();
       send.disabled =
         state.sending
         || modelSourceWriteSessions.has(state.thread.session?.id ?? '')
         || state.aiAvailable === false
-        || composerAttachments.hasInFlight()
+        || composerAttachments.hasUnfinished()
         || hasPendingInitialDraft()
         || (composerDraft.trim().length === 0 && composerAttachments.payload().length === 0);
       if (
@@ -8012,11 +8028,14 @@ export const bootstrapChatRoute = (
       state.sending
       || modelSourceWriteSessions.has(state.thread.session?.id ?? '')
       || aiUnavailable
-      || uploadInFlight
+      || composerAttachments.hasUnfinished()
       || hasPendingInitialDraft()
       || (composerDraft.trim().length === 0 && !hasAttached)
     ) {
       send.disabled = true;
+    }
+    if (composerAttachments.hasUnfinished() && !uploadInFlight && !state.sending && !aiUnavailable) {
+      send.setAttribute('title', 'Choose the unfinished files again or remove them before sending.');
     }
     if (uploadInFlight && !state.sending && !aiUnavailable) {
       send.setAttribute('title', 'Waiting for your file to finish uploading.');
@@ -8061,17 +8080,23 @@ export const bootstrapChatRoute = (
       // `style` on a created element, and touching it throws for every mount
       // (47 suite failures on the first cut). The CSS below does the hiding.
       fileInput.setAttribute('hidden', '');
+      // The native picker can return after navigation or lazy session creation.
+      // Keep the draft owner object: its session id follows that same draft.
+      const fileOwner = composerDraftOwner;
       fileInput.addEventListener('change', () => {
-        for (const f of Array.from(fileInput.files ?? [])) {
-          composerAttachments.attach(f);
-        }
-        // Reset so re-picking the SAME file fires `change` again — otherwise a
-        // failed upload could not be retried by choosing the same file.
+        const files = Array.from(fileInput.files ?? []);
+        // Reset even a cancelled or stale result so the same file can be picked.
         fileInput.value = '';
+        if (disposed || fileOwner.discarded || files.length === 0) return;
+        for (const file of files) composerAttachments.attach(file, fileOwner.sessionId);
+        // Background uploads do not repaint the visible composer themselves.
+        // Refresh the originating chat's Draft label without moving focus.
+        if (fileOwner !== composerDraftOwner) renderPreservingHandoffFocus();
       });
       const attach = doc.createElement('button');
       attach.type = 'button';
       attach.setAttribute(CHAT_ROUTE_ATTACH_ATTR, '');
+      markAttachmentControl(attach, 'attach');
       attach.setAttribute('aria-label', 'Attach a file');
       attach.textContent = '+';
       if (state.sending || hasPendingInitialDraft()) attach.disabled = true;
@@ -8080,6 +8105,7 @@ export const bootstrapChatRoute = (
         menu.setAttribute('data-chat-attach-menu', '');
         attach.setAttribute('aria-expanded', 'false');
         const choose = doc.createElement('button'); choose.type = 'button'; choose.textContent = 'Choose from Files';
+        markAttachmentControl(choose, 'choose');
         choose.addEventListener('click', () => {
           menu.setAttribute('hidden', ''); attach.setAttribute('aria-expanded', 'false');
           filePickerAbort?.abort(); const abort = new AbortController(); filePickerAbort = abort;
@@ -8095,6 +8121,7 @@ export const bootstrapChatRoute = (
         menu.appendChild(choose);
         if (opts.uploadCallers && opts.uploadConnect) {
           const upload = doc.createElement('button'); upload.type = 'button'; upload.textContent = 'Upload files';
+          markAttachmentControl(upload, 'upload');
           upload.addEventListener('click', () => { menu.setAttribute('hidden', ''); attach.setAttribute('aria-expanded', 'false'); fileInput.click(); });
           menu.appendChild(upload);
         }
@@ -8123,43 +8150,51 @@ export const bootstrapChatRoute = (
         const mic = doc.createElement('button');
         mic.type = 'button';
         mic.setAttribute(CHAT_ROUTE_VOICE_ATTR, phase);
+        markAttachmentControl(mic, 'voice');
         // ⚠ The NAME changes with the phase, not just the glyph. A button that
         // still reads "Record a voice note" while recording tells a screen
         // reader the opposite of what the button now does.
-        mic.setAttribute(
-          'aria-label',
-          phase === 'recording'
-            // ⚠ AND IT SAYS WHICH ONE WILL HAPPEN. A note stops itself into a
-            // send only when the box is empty; with a draft in it the note
-            // becomes an ordinary attachment and waits. A button promising
-            // "and send" in that state names the wrong outcome.
-            ? (composerDraft.trim().length === 0
-              ? 'Stop recording and send'
-              : 'Stop recording and attach')
-            : phase === 'opening'
-              ? 'Waiting for you to allow the microphone'
-              : 'Record a voice note',
-        );
+        updateVoiceLabel = (): void => {
+          mic.setAttribute(
+            'aria-label',
+            phase === 'recording'
+              // ⚠ AND IT SAYS WHICH ONE WILL HAPPEN. A note stops itself into a
+              // send only with auto-send on, an empty box and no other files;
+              // otherwise the note waits as an attachment. The name must
+              // match the action the next press will take.
+              ? (state.sending
+                ? 'Stop recording'
+                : state.voiceAutoSend && composerDraft.trim().length === 0 && composerAttachments.rows().length === 0
+                  ? 'Stop recording and send'
+                  : 'Stop recording and attach')
+              : phase === 'opening'
+                ? 'Waiting for you to allow the microphone'
+                : 'Record a voice note',
+          );
+        };
+        updateVoiceLabel();
         mic.setAttribute('aria-pressed', phase === 'recording' ? 'true' : 'false');
         mic.textContent = phase === 'recording' ? '\u25a0' : '\u25cf';
-        // An in-flight send owns the composer; `opening` is waiting on the
-        // browser's own prompt and has nothing to toggle.
-        if (state.sending || hasPendingInitialDraft() || phase === 'opening') mic.disabled = true;
+        // A pending permission prompt keeps its keyboard target. The voice
+        // state machine ignores repeat presses while that prompt is open.
+        // Admission blocks a new capture, but a live mic must stay stoppable.
+        if (phase === 'idle' && (state.sending || hasPendingInitialDraft())) mic.disabled = true;
+        if (phase === 'opening') mic.setAttribute('aria-disabled', 'true');
         mic.addEventListener('click', () => {
           voiceComposer?.toggle();
         });
         inputRow.appendChild(mic);
-        // ⚠ A stopped recording SENDS ITSELF, so discard has to exist while the
-        // recording is still running — after the upload finalizes there is no
-        // window left in which to change your mind.
-        if (phase === 'recording') {
-          const discard = doc.createElement('button');
-          discard.type = 'button';
-          discard.setAttribute(CHAT_ROUTE_VOICE_ATTR, 'discard');
-          discard.setAttribute('aria-label', 'Discard recording');
-          discard.textContent = '\u00d7';
-          discard.addEventListener('click', () => { voiceComposer?.cancel(); });
-          inputRow.appendChild(discard);
+        // Cancel retires a pending attempt; the controller closes a late grant.
+        // A live recording can be discarded before its upload auto-sends.
+        if (phase === 'opening' || phase === 'recording') {
+          const dismiss = doc.createElement('button');
+          dismiss.type = 'button';
+          dismiss.setAttribute(CHAT_ROUTE_VOICE_ATTR, 'discard');
+          markAttachmentControl(dismiss, 'voice-discard');
+          dismiss.setAttribute('aria-label', phase === 'opening' ? 'Cancel recording request' : 'Discard recording');
+          dismiss.textContent = phase === 'opening' ? 'Cancel' : '\u00d7';
+          dismiss.addEventListener('click', () => { voiceComposer?.cancel(); });
+          inputRow.appendChild(dismiss);
         }
       }
     }
@@ -8191,10 +8226,14 @@ export const bootstrapChatRoute = (
         const name = doc.createElement(row.file_id && opts.filePreviewCallers ? 'button' : 'span');
         if (row.file_id && opts.filePreviewCallers) {
           name.setAttribute('type', 'button'); name.setAttribute('aria-label', `Preview ${row.filename}`);
+          markAttachmentControl(name, `preview:${row.id}`);
           name.addEventListener('click', () => {
+            const returnFocus = captureAttachmentFocus();
             filePickerAbort?.abort(); const abort = new AbortController(); filePickerAbort = abort;
             void openFilePreview(doc, { record_id: row.file_id!, filename: row.filename,
-              ...(row.selection_revision ? { selection_revision: row.selection_revision } : {}) }, opts.filePreviewCallers!, abort.signal);
+              ...(row.selection_revision ? { selection_revision: row.selection_revision } : {}) }, opts.filePreviewCallers!, abort.signal).then(() => {
+                if (!abort.signal.aborted) restoreAttachmentFocus(returnFocus);
+              });
           });
         }
         name.className = 'chat-composer-attachment-name';
@@ -8209,11 +8248,38 @@ export const bootstrapChatRoute = (
           ? 'attached'
           : row.phase === 'failed'
             ? (row.error ?? 'upload failed')
-            : `${Math.round(row.progress * 100)}%`;
+            : row.phase === 'needs-file'
+              ? 'Upload interrupted.'
+              : `${Math.round(row.progress * 100)}%`;
         chip.appendChild(note);
+        if ((row.phase === 'needs-file' || row.phase === 'failed') && opts.uploadCallers && opts.uploadConnect) {
+          const owner = composerDraftOwner;
+          const retryInput = doc.createElement('input');
+          retryInput.type = 'file'; retryInput.setAttribute('hidden', '');
+          retryInput.setAttribute(CHAT_ROUTE_ATTACHMENT_RETRY_INPUT_ATTR, String(row.id));
+          retryInput.addEventListener('change', () => {
+            const file = retryInput.files?.[0];
+            retryInput.value = '';
+            if (!file || disposed || owner.discarded || (composerDraftOwner === owner && state.sending)) return;
+            // Choosing a file is an explicit upload, never a voice auto-send.
+            voiceRowIds.delete(row.id);
+            if (pendingVoiceRowId === row.id) { pendingVoiceRowId = null; pendingVoiceSend = false; }
+            const retried = composerAttachments.retry(row.id, file);
+            if (retried !== undefined && composerDraftOwner === owner) focusComposer(false, 'end');
+          });
+          const retry = doc.createElement('button'); retry.type = 'button';
+          retry.setAttribute(CHAT_ROUTE_ATTACHMENT_RETRY_ATTR, String(row.id));
+          markAttachmentControl(retry, `retry:${row.id}`);
+          retry.setAttribute('aria-label', `Choose ${row.filename} again`);
+          retry.textContent = 'Choose file again';
+          retry.disabled = state.sending || hasPendingInitialDraft();
+          retry.addEventListener('click', () => { retryInput.click(); });
+          chip.appendChild(retryInput); chip.appendChild(retry);
+        }
         const remove = doc.createElement('button');
         remove.type = 'button';
         remove.setAttribute(CHAT_ROUTE_ATTACHMENT_REMOVE_ATTR, String(row.id));
+        markAttachmentControl(remove, `remove:${row.id}`);
         remove.setAttribute('aria-label', `Remove ${row.filename}`);
         remove.textContent = '\u00d7';
         remove.addEventListener('click', () => {
@@ -8288,12 +8354,11 @@ export const bootstrapChatRoute = (
 
   const settleVoiceSend = (): void => {
     if (!pendingVoiceSend || composerAttachments === null) return;
-    // Still climbing — `chat.send` carries finalized ids only, so sending now
-    // would send a turn with no note on it.
-    if (composerAttachments.hasInFlight()) return;
-    pendingVoiceSend = false;
+    // Wait for a single recording's bytes. Extra files retire auto-send now,
+    // so removing one later cannot unexpectedly send the remaining note.
+    const rows = composerAttachments.rows();
+    if (rows.length === 1 && composerAttachments.hasInFlight()) return;
     const recordedRowId = pendingVoiceRowId;
-    pendingVoiceRowId = null;
     // ⛔ THIS RECORDING'S OUTCOME, not "is anything attached". The chip already
     // says the upload failed and holds a retry; inventing a second failure
     // message here would contradict it. But asking `payload().length === 0`
@@ -8302,18 +8367,27 @@ export const bootstrapChatRoute = (
     // OTHER attachment as though the person had asked for it.
     const recorded = recordedRowId === null
       ? undefined
-      : composerAttachments.rows().find((r) => r.id === recordedRowId);
-    if (recorded === undefined || recorded.file_id === undefined) return;
+      : rows.find((r) => r.id === recordedRowId);
+    // Automatic transcription accepts exactly one voice file. Extra rows,
+    // including failed uploads, keep the draft for an explicit Send.
+    const singleVoiceFile = rows.length === 1 && recorded !== undefined
+      && recorded.file_id !== undefined && recorded.media_class === 'voice';
     // ⚠ SPEAK-AND-TYPE IS NORMAL. Text in the box means the person is still
     // composing, so the note waits for Send like any other attachment — and
     // the server's voice branch requires an empty message anyway, so
     // auto-sending here would produce a turn whose note is a file, not speech.
-    if (composerDraft.trim().length !== 0) return;
+    const hasDraftText = composerDraft.trim().length !== 0;
     // D-262 slice 4 — the owner's setting. ⛔ Checked HERE rather than before
     // the upload: turning auto-send off must leave the note attached and ready
     // to send, not discard the recording. The desktop chat UIs behave the same
     // way — the transcript lands in the composer and waits.
-    if (!state.voiceAutoSend) return;
+    const canAutoSend = singleVoiceFile && !hasDraftText && state.voiceAutoSend;
+    // Defer eligible sends while the owner decides. Ineligible drafts still
+    // retire their intent now, so removing extra files cannot revive it.
+    if (canAutoSend && pendingDraftGuard !== null) return;
+    pendingVoiceSend = false;
+    pendingVoiceRowId = null;
+    if (!canAutoSend) return;
     // ⚠ The turn is attributed inside `sendMessage`, which is the ONE place
     // both send paths pass through — see the note there.
     void sendMessage('');
@@ -8329,11 +8403,13 @@ export const bootstrapChatRoute = (
     onChange: () => { renderPreservingHandoffFocus(); settleVoiceSend(); },
   });
 
+  composerAttachments.activateDraft(composerDraftOwner.sessionId);
+
   /** D-262 § 5 — press-to-talk, or `null` when this context cannot record.
    *
    *  A recording reaches the server through the same resumable upload an
    *  attached file uses, so both upload seams must be available. */
-  const voiceComposer: VoiceComposer | null = ((): VoiceComposer | null => {
+  const voiceComposer: VoiceComposer<typeof composerDraftOwner> | null = ((): VoiceComposer<typeof composerDraftOwner> | null => {
     if (!opts.uploadCallers || !opts.uploadConnect) return null;
     const attachments = composerAttachments;
     const factory = opts.voiceCapture !== undefined
@@ -8346,15 +8422,19 @@ export const bootstrapChatRoute = (
       onRecording: (file, owner) => {
         if (!owner || owner.discarded) return;
         const current = owner === composerDraftOwner;
-        if (current) pendingVoiceSend = true;
+        // A note completed during another send waits as an attachment. Its
+        // later upload must not retry a failed send with both notes attached.
+        if (current) pendingVoiceSend = !state.sending;
         const id = attachments.attach(file, owner.sessionId);
         if (current) pendingVoiceRowId = id ?? null;
         if (id !== undefined) voiceRowIds.add(id);
         renderPreservingHandoffFocus();
       },
-      onChange: () => { render(); },
+      onChange: () => { renderPreservingHandoffFocus(); },
     });
   })();
+  const hasPendingVoiceRecordings = (): boolean =>
+    voiceComposer?.hasPendingRecordings(owner => owner?.discarded === false) ?? false;
 
   interface ParkedComposerDraft {
     text: string;
@@ -8369,12 +8449,28 @@ export const bootstrapChatRoute = (
     diagnosis: DataVerificationDiagnosisDraft | null;
     verification: DataVerificationLanding | null;
     error: ClassifiedRpcError | null;
+    modelSourceId?: ChatModelSourceId | null;
   }
   // Route-lifetime only, scoped to this paired Chat mount. Unsent work never
   // enters browser storage or the server's conversation history.
   const parkedComposerDrafts = new Map<string | null, ParkedComposerDraft>();
+  // Seed background drafts without selecting them or creating sessions. The
+  // visible composer already belongs to its intended initial session even
+  // while the authoritative history read is pending.
+  for (const parked of opts.initialRecoveryDraft?.parkedDrafts ?? []) {
+    if (parked.sessionId === initialDraftSessionId || !hasComposerRecoveryDraft(parked.draft)) continue;
+    const draft = copyComposerRecoveryDraft(parked.draft);
+    parkedComposerDrafts.set(parked.sessionId, {
+      text: draft.text, protected: draft.protected, reply: draft.replyTo ?? null,
+      owner: { sessionId: parked.sessionId, discarded: false }, modelSourceId: draft.modelSourceId,
+      submission: null, creationId: null, investigation: undefined,
+      followup: null, continuation: null, diagnosis: null, verification: null, error: null,
+    });
+    composerAttachments.restore(draft.attachments ?? [], parked.sessionId);
+    composerAttachments.restoreInterrupted(draft.interruptedUploads ?? [], parked.sessionId);
+  }
   const parkComposerDraft = (discard = false): void => {
-    const id = state.activeSessionId;
+    const id = composerDraftOwner.sessionId;
     if (discard) {
       composerDraftOwner.discarded = true;
       parkedComposerDrafts.delete(id);
@@ -8388,6 +8484,7 @@ export const bootstrapChatRoute = (
         diagnosis: dataVerificationDiagnosisDraft,
         verification: dataVerificationLanding?.address.sessionId === id ? dataVerificationLanding : null,
         error: state.error === sendError ? sendError : null,
+        ...(id === null ? { modelSourceId: pickerSelectedSource()?.id ?? null } : {}),
       });
     }
     // A voice upload may finish in the background, but navigation never sends
@@ -8395,7 +8492,9 @@ export const bootstrapChatRoute = (
     // existing explicit discard guard.
     pendingVoiceSend = false;
     pendingVoiceRowId = null;
-    if (discard || voiceComposer?.phase() !== 'idle') voiceComposer?.cancel();
+    if (discard) voiceComposer?.cancel(owner => owner === composerDraftOwner);
+    else if (voiceComposer?.phase() !== 'idle') voiceComposer?.cancel();
+    voiceComposer?.clearError();
   };
   const restoreComposerDraft = (id: string | null): void => {
     const draft = parkedComposerDrafts.get(id);
@@ -8415,10 +8514,11 @@ export const bootstrapChatRoute = (
       ?? (dataVerificationLanding?.address.sessionId === id ? dataVerificationLanding : null);
     sendError = draft?.error ?? null;
     composerAttachments.activateDraft(id);
+    if (id === null && draft?.modelSourceId !== undefined) state = { ...state, draftSourceId: draft.modelSourceId };
   };
   const hasComposerDraft = (id: string | null): boolean => {
     const draft = parkedComposerDrafts.get(id);
-    return composerAttachments.hasDraft(id) || (id === state.activeSessionId
+    return composerAttachments.hasDraft(id) || (id === composerDraftOwner.sessionId
       ? composerReply !== null || (composerDraftProtected && composerDraft.trim().length > 0)
       : draft !== undefined && (draft.reply !== null || (draft.protected && draft.text.trim().length > 0)));
   };
@@ -8426,10 +8526,66 @@ export const bootstrapChatRoute = (
     [...parkedComposerDrafts.values()].some(draft =>
       draft.reply !== null || (draft.protected && draft.text.trim().length > 0));
 
+  interface AttachmentFocus {
+    readonly control: string;
+    readonly owner: typeof composerDraftOwner;
+    readonly element: HTMLElement;
+    readonly rowOrder: string[];
+    readonly menuOpen: boolean;
+  }
+  const captureAttachmentFocus = (): AttachmentFocus | null => {
+    const element = doc.activeElement as HTMLElement | null | undefined;
+    const control = element?.getAttribute?.(CHAT_ATTACHMENT_CONTROL_ATTR);
+    const owner = element ? attachmentControlOwners.get(element) : undefined;
+    if (!element || !control || !owner) return null;
+    return { control, owner, element,
+      rowOrder: Array.from(routeRoot.querySelectorAll?.<HTMLElement>(`[${CHAT_ROUTE_ATTACHMENT_REMOVE_ATTR}]`) ?? [])
+        .map(button => button.getAttribute(CHAT_ROUTE_ATTACHMENT_REMOVE_ATTR)!),
+      menuOpen: routeRoot.querySelector?.(`[${CHAT_ROUTE_ATTACH_ATTR}]`)?.getAttribute('aria-expanded') === 'true',
+    };
+  };
+  const restoreAttachmentFocus = (saved: AttachmentFocus | null): void => {
+    if (!saved || disposed || saved.owner.discarded || saved.owner !== composerDraftOwner) return;
+    const active = doc.activeElement;
+    // A preview, picker or another newly focused surface owns its own focus.
+    if (active && active !== saved.element && active !== doc.body && active.isConnected) return;
+    const controls = new Map(Array.from(routeRoot.querySelectorAll?.<HTMLElement>(`[${CHAT_ATTACHMENT_CONTROL_ATTR}]`) ?? [])
+      .map(button => [button.getAttribute(CHAT_ATTACHMENT_CONTROL_ATTR)!, button] as const));
+    const focus = (control: string): boolean => {
+      const button = controls.get(control);
+      if (!button || button.hasAttribute('disabled')) return false;
+      button.focus?.({ preventScroll: true }); return true;
+    };
+    const attach = controls.get('attach');
+    const menu = routeRoot.querySelector?.<HTMLElement>('[data-chat-attach-menu]');
+    const reopenMenu = saved.menuOpen && menu != null && attach != null && !attach.hasAttribute('disabled');
+    if (reopenMenu) { menu.removeAttribute('hidden'); attach.setAttribute('aria-expanded', 'true'); }
+    if ((saved.control !== 'choose' && saved.control !== 'upload' || reopenMenu) && focus(saved.control)) return;
+    if (saved.control === 'voice' || saved.control === 'voice-discard') {
+      if (!focus('voice')) focusComposer(true);
+      return;
+    }
+    const rowId = saved.control.split(':')[1];
+    if (rowId !== undefined) {
+      if (focus(`remove:${rowId}`)) return;
+      const at = saved.rowOrder.indexOf(rowId);
+      const neighbours = [...saved.rowOrder.slice(at + 1), ...saved.rowOrder.slice(0, at).reverse()];
+      for (const id of neighbours) if (focus(`remove:${id}`)) return;
+    }
+    if (!focus('attach')) focusComposer(true);
+  };
+
   let renderedSessionId: string | null = null;
   let followFirstTranscriptFor: string | null = null;
 
   const render = (): void => {
+    if (disposed) return;
+    const attachmentFocus = captureAttachmentFocus();
+    renderContents();
+    restoreAttachmentFocus(attachmentFocus);
+  };
+
+  const renderContents = (): void => {
     if (disposed) return;
     historyFiltersOpen = routeRoot.querySelector?.<HTMLDetailsElement>('.chat-history-filter-panel')?.open ?? historyFiltersOpen;
     const sessionId = state.thread.session?.id ?? null;
@@ -8594,6 +8750,7 @@ export const bootstrapChatRoute = (
         mobileHistoryOpen = false;
         render();
         focusComposer(true);
+        settleVoiceSend();
       };
       guard.addEventListener('keydown', (event) => {
         if (event.key !== 'Escape') return;
@@ -8603,12 +8760,14 @@ export const bootstrapChatRoute = (
       });
       const keep = doc.createElement('button');
       keep.type = 'button';
+      keep.setAttribute(HISTORY_DRAFT_GUARD_ACTION_ATTR, 'keep');
       keep.className = 'chat-history-guard-action';
       keep.textContent = 'Keep writing';
       keep.addEventListener('click', keepWriting);
       actions.appendChild(keep);
       const discard = doc.createElement('button');
       discard.type = 'button';
+      discard.setAttribute(HISTORY_DRAFT_GUARD_ACTION_ATTR, 'discard');
       discard.className = 'chat-history-guard-action';
       discard.textContent = pendingDraftGuard.kind === 'new'
         ? 'Throw it away and start a new one'
@@ -8872,6 +9031,18 @@ export const bootstrapChatRoute = (
             ) {
               const confirm = doc.createElement('div');
               confirm.className = 'chat-session-confirm';
+              const cancelDeletion = (): void => {
+                if (sessionAction?.sessionId !== session.id || sessionAction.kind !== 'delete-confirm') return;
+                sessionAction = null;
+                render();
+                focusHistorySessionRow(session.id);
+              };
+              confirm.addEventListener('keydown', (event) => {
+                if (event.key !== 'Escape') return;
+                event.preventDefault();
+                event.stopPropagation();
+                cancelDeletion();
+              });
               const warning = doc.createElement('span');
               warning.textContent =
                 'Delete this chat, its messages, and everything saved with it, '
@@ -8881,14 +9052,11 @@ export const bootstrapChatRoute = (
               confirmActions.className = 'chat-history-guard-actions';
               const cancel = doc.createElement('button');
               cancel.type = 'button';
+              cancel.setAttribute(HISTORY_DELETE_CANCEL_ATTR, session.id);
               cancel.className = 'chat-history-guard-action';
               cancel.textContent = 'Cancel';
               cancel.disabled = sessionAction.kind === 'delete-busy';
-              cancel.addEventListener('click', () => {
-                sessionAction = null;
-                render();
-                focusHistorySessionRow(session.id);
-              });
+              cancel.addEventListener('click', cancelDeletion);
               confirmActions.appendChild(cancel);
               const confirmDelete = doc.createElement('button');
               confirmDelete.type = 'button';
@@ -9726,6 +9894,10 @@ export const bootstrapChatRoute = (
 
   const renderPreservingHandoffFocus = (): void => {
     const active = doc.activeElement as HTMLElement | null | undefined;
+    const draftGuardFocused = active?.hasAttribute?.(CHAT_ROUTE_HISTORY_DRAFT_GUARD_ATTR) === true;
+    const focusedDraftGuardAction = active?.getAttribute?.(HISTORY_DRAFT_GUARD_ACTION_ATTR) ?? null;
+    const focusedDeleteConfirmSessionId = active?.getAttribute?.(CHAT_ROUTE_SESSION_DELETE_CONFIRM_ATTR) ?? null;
+    const focusedDeleteCancelSessionId = active?.getAttribute?.(HISTORY_DELETE_CANCEL_ATTR) ?? null;
     const focusedReplyControl = active?.getAttribute?.('data-chat-reply-control');
     const focusedReplyOwner = active?.closest?.(`[${CHAT_ROUTE_MESSAGE_ATTR}]`)?.getAttribute(CHAT_ROUTE_MESSAGE_ATTR);
     const input = routeRoot.querySelector?.(
@@ -9867,6 +10039,18 @@ export const bootstrapChatRoute = (
       restoreDeliveryFocus(focusedDelivery, focusedDeliveryMessage);
     } else if (focusedDeliveryPanel) {
       focusDeliveryPanel(false);
+    } else if (draftGuardFocused || focusedDraftGuardAction !== null) {
+      const guard = routeRoot.querySelector?.<HTMLElement>(`[${CHAT_ROUTE_HISTORY_DRAFT_GUARD_ATTR}]`);
+      const action = Array.from(guard?.querySelectorAll<HTMLElement>(`[${HISTORY_DRAFT_GUARD_ACTION_ATTR}]`) ?? [])
+        .find(candidate => candidate.getAttribute(HISTORY_DRAFT_GUARD_ACTION_ATTR) === focusedDraftGuardAction);
+      (action ?? guard)?.focus?.({ preventScroll: true });
+    } else if (focusedDeleteConfirmSessionId !== null) {
+      focusSessionDeleteConfirm(focusedDeleteConfirmSessionId);
+    } else if (focusedDeleteCancelSessionId !== null) {
+      const cancel = routeRoot.querySelector?.<HTMLButtonElement>(`[${HISTORY_DELETE_CANCEL_ATTR}]`);
+      if (cancel?.getAttribute(HISTORY_DELETE_CANCEL_ATTR) === focusedDeleteCancelSessionId && !cancel.disabled) {
+        cancel.focus?.({ preventScroll: true });
+      }
     } else if (focusedHistoryFilter !== null) {
       routeRoot.querySelector<HTMLElement>(`[${HISTORY_FILTER_ATTR}="${focusedHistoryFilter}"]`)?.focus?.({ preventScroll: true });
     } else if (historySearchFocused) {
@@ -10081,6 +10265,7 @@ export const bootstrapChatRoute = (
     }
     historyLandingActive = false;
     composerAttachments.restore(files);
+    composerAttachments.restoreInterrupted(recovery?.interruptedUploads ?? []);
     render();
     focusComposer(false, 'end');
   };
@@ -10335,7 +10520,7 @@ export const bootstrapChatRoute = (
       if (snapshot.messages.length > 0) hasCompletedChat = true;
       // Commit composer ownership only after the winning read succeeds. Save
       // the latest input, including words typed while this read was pending.
-      const switchingDraft = state.activeSessionId !== sessionId;
+      const switchingDraft = composerDraftOwner.sessionId !== sessionId;
       if (switchingDraft) parkComposerDraft(discardDraft);
       if (hasPendingInitialDraft() && sessionId !== initialDraftSessionId) {
         pendingInitialFiles = []; pendingRecoveryDraft = null;
@@ -10927,11 +11112,13 @@ export const bootstrapChatRoute = (
       focusHistoryActionOwner();
       return;
     }
+    const recordingActive = voiceComposer !== null && voiceComposer.phase() !== 'idle';
+    const recordingFinishing = voiceComposer?.hasPendingRecordings(owner => owner === composerDraftOwner) ?? false;
     if (
       !discardProtectedDraft
-      && (hasPendingInitialDraft() || (voiceComposer !== null && voiceComposer.phase() !== 'idle')
-        || (state.activeSessionId === null && (composerReply !== null || composerAttachments.rows().length > 0
-          || (composerDraftProtected && composerDraft.trim().length > 0))))
+      && (hasPendingInitialDraft() || recordingActive
+        || (composerDraftOwner.sessionId === null && (composerReply !== null || composerAttachments.rows().length > 0
+          || recordingFinishing || (composerDraftProtected && composerDraft.trim().length > 0))))
     ) {
       pendingDraftGuard = { kind: 'new' };
       render();
@@ -10941,10 +11128,12 @@ export const bootstrapChatRoute = (
     if (
       state.thread.session === null
       && state.activeSessionId === null
+      && composerDraftOwner.sessionId === null
       && composerDraft.trim().length === 0
       && !connectedSourceHandoffActive
       && !historyLandingActive
       && !hasPendingInitialDraft()
+      && !recordingActive && !recordingFinishing
       && composerAttachments.rows().length === 0
       && composerReply === null
     ) {
@@ -10969,7 +11158,7 @@ export const bootstrapChatRoute = (
     mobileHistoryOpen = false;
     pendingDraftGuard = null;
     sessionAction = null;
-    parkComposerDraft(discardProtectedDraft || state.activeSessionId === null);
+    parkComposerDraft(discardProtectedDraft || composerDraftOwner.sessionId === null);
     retireConnectedSourceHandoff(false);
     resetConnectedSourceTurns();
     resetPlanContinuations();
@@ -11069,7 +11258,10 @@ export const bootstrapChatRoute = (
       historyMessageSearch.removeSession(session.id);
       turnsInFlightBySession.delete(session.id);
       const deletedDraft = parkedComposerDrafts.get(session.id);
-      if (deletedDraft) deletedDraft.owner.discarded = true;
+      if (deletedDraft) {
+        deletedDraft.owner.discarded = true;
+        voiceComposer?.cancel(owner => owner === deletedDraft.owner);
+      }
       parkedComposerDrafts.delete(session.id);
       composerAttachments.discardDraft(session.id);
       sessionAction = null;
@@ -11282,7 +11474,7 @@ export const bootstrapChatRoute = (
           };
         }
       }
-      composerAttachments.moveDraft(null, session_id);
+      composerAttachments.moveDraft(composerDraftOwner.sessionId, session_id);
       composerDraftOwner.sessionId = session_id;
       sendDispatches.delete(null);
       sendDispatches.add(session_id);
@@ -11350,6 +11542,7 @@ export const bootstrapChatRoute = (
       || state.sending
       || modelSourceWriteSessions.has(state.thread.session?.id ?? '')
       || hasPendingInitialDraft()
+      || composerAttachments.hasUnfinished()
     ) return;
     // ⛔⛔ D-262 — VOICE ORIGIN IS ATTRIBUTED HERE, where BOTH send paths meet.
     // It used to be set only on the auto-send branch, which silently coupled
@@ -12239,28 +12432,38 @@ export const bootstrapChatRoute = (
     openSession: async (sessionId) => { await openSession(sessionId); },
     openPlanLanding,
     getRecoveryDraft: () => {
+      let active: ChatComposerRecoveryDraft | null;
       if (composerDraft.trim().length === 0 && composerReply === null && composerAttachments.rows().length === 0) {
-        // During post-pair hydration the rescued draft waits for the initial
-        // async reads before it is painted into the composer. Keep that
-        // pending value observable so an immediate second disconnect can
-        // capture it again rather than collapsing the recovery chain.
-        return pendingInitialFiles.length ? { ...(pendingRecoveryDraft ?? { text: '', protected: true, modelSourceId: null }),
+        // Keep a pending rescue observable through a second immediate loss of
+        // access, including the interval before its session has hydrated.
+        active = pendingInitialFiles.length ? { ...(pendingRecoveryDraft ?? { text: '', protected: true, modelSourceId: null }),
           attachments: [...(pendingRecoveryDraft?.attachments ?? []), ...pendingInitialFiles] } : pendingRecoveryDraft;
+      } else {
+        active = { text: composerDraft, protected: composerDraftProtected,
+          ...(composerReply ? { replyTo: composerReply } : {}),
+          ...((composerAttachments.payload().length || pendingInitialFiles.length)
+            ? { attachments: [...composerAttachments.payload(), ...pendingInitialFiles] } : {}),
+          ...(composerAttachments.recoveryUploads().length ? { interruptedUploads: composerAttachments.recoveryUploads() } : {}),
+          modelSourceId: composerDraftOwner.sessionId === null ? pickerSelectedSource()?.id ?? null : null };
       }
-      return {
-        text: composerDraft,
-        protected: composerDraftProtected,
-        ...(composerReply ? { replyTo: composerReply } : {}),
-        ...((composerAttachments.payload().length || pendingInitialFiles.length) ? { attachments: [...composerAttachments.payload(), ...pendingInitialFiles] } : {}),
-        modelSourceId:
-          state.thread.session === null
-            ? pickerSelectedSource()?.id ?? null
-            : null,
-      };
+      const parkedDrafts = [...parkedComposerDrafts].flatMap(([sessionId, parked]) => {
+        const draft: ChatComposerRecoveryDraft = {
+          text: parked.text, protected: parked.protected, modelSourceId: parked.modelSourceId ?? null,
+          ...(parked.reply ? { replyTo: parked.reply } : {}),
+          attachments: composerAttachments.payload(sessionId),
+          interruptedUploads: composerAttachments.recoveryUploads(sessionId),
+        };
+        return hasComposerRecoveryDraft(draft) ? [{ sessionId, draft: copyComposerRecoveryDraft(draft) }] : [];
+      });
+      if (active === null && parkedDrafts.length === 0) return null;
+      return { ...copyComposerRecoveryDraft(active ?? { text: '', protected: false, modelSourceId: null }),
+        ...(parkedDrafts.length ? { parkedDrafts } : {}) };
     },
     hasUnsavedChanges: () =>
       mailComposeMount?.hasUnsavedChanges() === true
       || createOverlay?.hasUnsavedChanges() === true
+      || (voiceComposer !== null && voiceComposer.phase() !== 'idle')
+      || hasPendingVoiceRecordings()
       || composerReply !== null
       || pendingInitialFiles.length > 0
       || composerAttachments.hasDrafts()
@@ -12269,6 +12472,7 @@ export const bootstrapChatRoute = (
       || (
         pendingRecoveryDraft?.replyTo !== undefined
         || (pendingRecoveryDraft?.attachments?.length ?? 0) > 0
+        || (pendingRecoveryDraft?.interruptedUploads?.length ?? 0) > 0
         || (pendingRecoveryDraft?.protected === true && pendingRecoveryDraft.text.trim().length > 0)
       ),
     unsavedChangesPrompt: () =>
@@ -12276,7 +12480,13 @@ export const bootstrapChatRoute = (
         ? 'Throw away this unfinished email?'
         : createOverlay?.hasUnsavedChanges() === true
           ? 'Throw away this unfinished item?'
-          : null,
+          : voiceComposer?.phase() === 'opening'
+            ? 'Cancel this microphone request and leave Chat?'
+            : voiceComposer?.phase() === 'recording'
+              ? 'Discard this voice recording and leave Chat?'
+              : hasPendingVoiceRecordings()
+                ? 'Discard unfinished voice notes and leave Chat?'
+                : null,
     hasInFlightWork: () => sendDispatches.size > 0 || state.sending
       // A turn left running in another chat is still this tab's work.
       || turnsInFlightBySession.size > 0

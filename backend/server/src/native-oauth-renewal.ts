@@ -1,7 +1,19 @@
 /** Shared native grant renewal: preserve each member's local needs and concurrent owner edits. */
-import type { ConnectionAuth, ConnectionRow } from '@recued/contracts';
+import { RpcError, type ConnectionAuth, type ConnectionRow } from '@recued/contracts';
 import type { ConnectionStoreSqlite } from './storage/connection-store.js';
 type Codec = typeof import('./connection-handler.js');
+/** Access verification must describe a saved credential, even when the runtime
+ * can finish an ordinary read using a renewal whose persistence failed. */
+export const assertPersistedOAuthAccess = (used: ConnectionAuth, saved: ConnectionAuth): void => {
+  if (used.type !== 'oauth2_refresh') return;
+  if (saved.type !== 'oauth2_refresh' || !used.current_access_token || saved.current_access_token !== used.current_access_token
+    || saved.refresh_token !== used.refresh_token || saved.expires_at !== used.expires_at || saved.native_credential_id !== used.native_credential_id
+    || saved.client_id !== used.client_id || saved.client_secret !== used.client_secret || saved.token_endpoint !== used.token_endpoint
+    || saved.token_auth_style !== used.token_auth_style) {
+    throw new RpcError('credential_verification_failed', 'The renewed OAuth credential could not be confirmed in saved storage. Review storage health and reconnect if needed.',
+      422, 'collection.connection.managedOAuth', { verification_status: 'unknown' });
+  }
+};
 /** A queued renewal must reread its row before sending a rotating token. */
 export const withCurrentConnectionRenewal = <T>(store: Pick<ConnectionStoreSqlite, 'get' | 'withCredentialLease'>,
   row: ConnectionRow, run: () => Promise<T>): Promise<T> => {

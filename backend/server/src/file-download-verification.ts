@@ -82,13 +82,16 @@ export const verifyFileSourceDownload = async (args: {
   direct: FileFetch; assertActive(): Promise<void>; expected?: FileDownloadProof;
   /** Local test seam. Production always uses the fixed minute deadline. */
   timeoutMs?: number;
+  /** A background verification job may end before the per-download deadline. */
+  signal?: AbortSignal;
 }): Promise<FileDownloadProof> => {
   const choice = fileDownloadChoice(args.meta); if (choice.unavailable_reason) throw refuseFileDownload(choice.unavailable_reason);
   const metadata = fileDownloadMetadataSignature(args.meta);
   if (args.expected && args.expected.metadata !== metadata) throw refuseFileDownload('The chosen file changed. Recheck the original file before switching.');
   const transport = resolveFileBearerTransport(args.cred, args.direct, args.provider);
   if (!transport) throw refuseFileDownload('The file has no compatible authentication transport.');
-  const signal = AbortSignal.timeout(args.timeoutMs ?? 60_000); let calls = 0; let started = false;
+  const deadline = AbortSignal.timeout(args.timeoutMs ?? 60_000);
+  const signal = args.signal ? AbortSignal.any([args.signal, deadline]) : deadline; let calls = 0; let started = false;
   const active = (): Promise<void> => race(args.assertActive(),signal);
   const perform = async (fetcher: FileFetch, url: string, init: Parameters<FileFetch>[1]): Promise<FileFetchResponse> => {
     if (++calls > 8) throw refuseFileDownload('The download exceeded its request limit.');

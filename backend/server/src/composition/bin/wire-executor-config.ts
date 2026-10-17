@@ -38,6 +38,7 @@ import { createMailSendClaimStore } from '../../storage/mail-send-claim-store.js
 import { RpcError,SIGNOFF_REMINDER_REFERENCE_PREFIX,PAYMENT_REMINDER_REFERENCE_PREFIX,isCustomerAccountPaymentReference,isCustomerAccountStatementReference,isCustomerJobPaymentStatementReference,isCustomerPaymentReceiptReference,isCustomerRefundReceiptReference,isGuardedCustomerMailReference } from '@recued/contracts';
 import { raiseMailSendOutcomeAsk } from '../../mail-send-outcome-ask.js';
 import type { MailSentReconciliationResult } from '../../collections/mail/provider.js';
+import { createConnectionAccessObserver } from '../../connection-access-observer.js';
 import type {
   ConnectionApiHandlerDeps,
   ConnectionMcpHandlerDeps,
@@ -735,6 +736,8 @@ export const composeExecutorConfig = async (
             return {
               ...(deps.managedOAuthFetch ? { managedOAuthFetch: deps.managedOAuthFetch } : {}),
               decodeAuth: row => decodeCurrentNativeOAuth({ store: deps.connectionStore!, decode: decodeAuthFromStorage, key: keyProvider }, row),
+              observeAccess: createConnectionAccessObserver({ store: deps.connectionStore!,
+                decode: row => decodeAuthFromStorage(row.auth_ciphertext, row, keyProvider) }),
               withAuthRenewal: (row, run) => withCurrentConnectionRenewal(deps.connectionStore!, row, run),
               // Shared with connection.mcp via `makeRefreshPersistAuth` (the
               // `subresource_path` carry-forward invariant lives there).

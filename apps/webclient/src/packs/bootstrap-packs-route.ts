@@ -241,6 +241,7 @@ export const PACKS_ROUTE_STYLES = [
 ].join('\n');
 
 export interface BootstrapPacksRouteOptions {
+  authenticationAccessCaller?: import('../settings/managed-oauth-panel.js').ManagedOAuthCaller;
   authenticationRepairsCaller?: import('@recued/contracts').AuthenticationRepairCaller;
   reconnectWorklistCaller?: PackReconnectCaller;
   onWorklistReconnect?(group: PackReconnectGroup): void;
@@ -549,6 +550,7 @@ export const bootstrapPacksRoute = (
   const worklist = opts.reconnectWorklistCaller || opts.authenticationRepairsCaller ? createReconnectWorklistPanel({ document: doc,
     ...(opts.reconnectWorklistCaller ? { call: opts.reconnectWorklistCaller } : {}),
     ...(opts.authenticationRepairsCaller ? { repairs: opts.authenticationRepairsCaller } : {}),
+    ...(opts.authenticationAccessCaller ? { verify: opts.authenticationAccessCaller } : {}),
     ...(opts.onWorklistReconnect ? { onReconnect: opts.onWorklistReconnect } : {}),
     ...(opts.initialWorklistReturn ? { returned: opts.initialWorklistReturn } : {}) }) : null;
   if (worklist) { const host = doc.createElement('div'); packsSection.appendChild(host); worklist.mount(host); }

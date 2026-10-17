@@ -691,6 +691,7 @@ export type OAuthAppsRequest = { action: 'list' }
       client_secret?: string; expected_revision?: number; secret_expires_on?: string | null }
   | { action: 'delete'; issuer: OAuthAppIssuer; id: string; expected_revision: number }
   | import('./oauth-app-usage.js').OAuthAppUsageRequest
+  | import('./oauth-app-renewal.js').OAuthAppRenewalRequest
   | import('./oauth-permission-consolidation.js').OAuthPermissionRequest
   | import('./oauth-permission-cleanup.js').OAuthPermissionCleanupRequest;
 export interface OAuthAppsResponse {
@@ -707,6 +708,8 @@ export interface OAuthAppsResponse {
   permission_cleanup_authorization?: import('./oauth-permission-cleanup.js').OAuthPermissionCleanupAuthorization;
   usage?: import('./oauth-app-usage.js').OAuthAppUsageReview;
   rotation_outcome?: import('./oauth-app-usage.js').OAuthAppSecretRotationOutcome | null;
+  renewal_review?: import('./oauth-app-renewal.js').OAuthAppRenewalReview;
+  renewal_verification?: import('./oauth-app-renewal.js').OAuthAppRenewalVerification | null;
 }
 export const isSavedOAuthApp = (value: unknown): value is SavedOAuthApp => {
   if (!value || typeof value !== 'object') return false;
@@ -722,7 +725,7 @@ export const isSavedOAuthApp = (value: unknown): value is SavedOAuthApp => {
 export const isOAuthAppsResponse = (value: unknown): value is OAuthAppsResponse => {
   if (!value || typeof value !== 'object') return false;
   const v = value as Partial<OAuthAppsResponse>;
-  return typeof v.action === 'string' && ['list', 'save', 'delete', 'usage', 'retire_usage', 'rotate_secret', 'rotation_status', 'permission_inventory', 'preview_permission_cleanup',
+  return typeof v.action === 'string' && ['list', 'save', 'delete', 'usage', 'retire_usage', 'rotate_secret', 'rotation_status', 'renewal_preview', 'renewal_retire', 'renewal_run', 'renewal_status', 'permission_inventory', 'preview_permission_cleanup',
     'prepare_permission_cleanup', 'pause_permission_cleanup', 'authorize_permission_cleanup', 'review_permission_cleanup', 'apply_permission_cleanup',
     'refresh_permission_cleanup', 'restore_permission_cleanup', 'reset_permission_cleanup', 'cancel_permission_cleanup', 'restart_permission_cleanup', 'permission_cleanup_status'].includes(v.action)
     && Array.isArray(v.apps) && v.apps.length <= 100 && v.apps.every(isSavedOAuthApp)

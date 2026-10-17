@@ -204,6 +204,11 @@ describe('D-322 production composition and saved-account lifetime', () => {
       const pending = await composed.rpc(startArgs);
       if (pending.action !== 'start') throw new Error('Pending fixture missing');
       const sessions = broker.sessionCount();
+      const beforeLock = composed.app.connectionStoreRef!.get('api', 'sheets')!;
+      // API traffic updates observations, while the encrypted credential and
+      // every saved connection-definition field remain byte-for-byte stable.
+      expect(beforeLock).toEqual({ ...before, health_json: expect.any(String) });
+      expect(JSON.parse(beforeLock.health_json!)).toMatchObject({ status: 'ok', access_verified_at: expect.any(Number) });
       composed.close(); composed = undefined;
       const disk = readFileSync(dbPath);
       expect(disk.subarray(0, 16).toString()).not.toBe('SQLite format 3\0');
@@ -213,12 +218,13 @@ describe('D-322 production composition and saved-account lifetime', () => {
       expect(composed.app.keys!.state()).toBe('locked');
       const lockedPermissions = await makeOAuthAppConfigHandlers(composed.collection.oauthAppConfigDeps)!.handlers['server.oauthApps']({ action: 'permission_inventory' }, undefined as never);
       expect(lockedPermissions.permission_cleanup_available).toBe(false); expect(lockedPermissions.permission_cleanup_jobs).toBeUndefined();
-      expect(composed.app.connectionStoreRef!.get('api', 'sheets')).toEqual(before);
+      expect(composed.app.connectionStoreRef!.get('api', 'sheets')).toEqual(beforeLock);
       expect(await composed.rpc({ action: 'status', flow_id: pending.flow_id, claim_secret: pending.claim_secret }))
         .toMatchObject({ status: 'expired' });
       const proxyCount = broker.proxyRequests.length;
       await expect(composed.executor(manifest.slug, { connection: 'sheets' })).rejects.toMatchObject({ code: 'locked' });
       expect(broker.proxyRequests).toHaveLength(proxyCount);
+      expect(composed.app.connectionStoreRef!.get('api', 'sheets')).toEqual(beforeLock);
       await composed.app.keys!.unlockWithServerKey({ serverKey });
       await runMetadata(composed);
       expect(broker.proxyRequests).toHaveLength(proxyCount + 1);
@@ -237,7 +243,13 @@ describe('D-322 production composition and saved-account lifetime', () => {
         .rejects.toMatchObject({ code: 'ACTION_DELIVERY_UNCERTAIN' });
       expect(broker.proxyRequests).toHaveLength(proxyCount + 3);
       expect(broker.proxyRequests.at(-1)?.retries).toBe('0');
-      expect(composed.app.connectionStoreRef!.get('api', 'sheets')).toEqual(before);
+      const afterTraffic = composed.app.connectionStoreRef!.get('api', 'sheets')!;
+      expect(afterTraffic).toEqual({ ...before, health_json: expect.any(String) });
+      const health = JSON.parse(afterTraffic.health_json!);
+      expect(health).toMatchObject({ status: 'unreachable', access_checks: expect.arrayContaining([
+        expect.objectContaining({ status: 'auth_failed' }), expect.objectContaining({ status: 'unreachable' }),
+      ]) });
+      expect(JSON.stringify(health)).not.toContain(environmentKey);
     } finally {
       composed?.close();
       serverKey?.fill(0);

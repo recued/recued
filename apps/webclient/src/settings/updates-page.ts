@@ -867,12 +867,33 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
   const modeLabel = make('label', { text: 'When updates are available' });
   const modeSelect = doc.createElement('select') as HTMLSelectElement;
   modeSelect.setAttribute(UPDATES_MODE_SELECT_ATTR, '');
+  // ⛔ AUTOMATIC IS HIDDEN, NOT REMOVED (the owner, 2026-10-16: "hide the UI for
+  // now but keep it … once the product is stable we can reconsider"). Automatic
+  // installs only a release inside the rollout, and `rollout_pct` is 0 for good,
+  // so it never installs anything. The server still takes `auto`, and the option
+  // comes back the day the line below is changed.
+  //
+  // ⚠ SHOWN WHILE IT IS THE SAVED MODE. A server already on `auto` (docker-thin's
+  // default, or a choice made before this) must read as `auto`: a picker without
+  // that option would show another mode than the server has, and the next save
+  // would change it without anyone choosing to.
+  const modeOptions = new Map<UpdateMode, HTMLOptionElement>();
   for (const m of ['auto', 'notify', 'off'] as const) {
     const opt = doc.createElement('option') as HTMLOptionElement;
     opt.value = m;
     opt.textContent = MODE_OPTION_LABEL[m];
-    modeSelect.appendChild(opt);
+    modeOptions.set(m, opt);
   }
+  let shownModes = '';
+  const renderModeOptions = (saved: UpdateMode | null): void => {
+    const modes = (['auto', 'notify', 'off'] as const).filter((m) => m !== 'auto' || saved === 'auto');
+    const key = modes.join(',');
+    if (key === shownModes) return;
+    shownModes = key;
+    while (modeSelect.firstChild !== null) modeSelect.removeChild(modeSelect.firstChild);
+    for (const m of modes) modeSelect.appendChild(modeOptions.get(m)!);
+  };
+  renderModeOptions(null);
   modeSelect.addEventListener('change', () => {
     const v = modeSelect.value;
     if (
@@ -2023,6 +2044,8 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
 
     if (state.mode !== null) {
       setHidden(modeBlock, false);
+      // The options first: a value is only selectable once its option is there.
+      renderModeOptions(state.mode.mode);
       modeSelect.value = state.modeBusy && pendingMode !== null
         ? pendingMode
         : state.mode.mode;

@@ -1,5 +1,6 @@
 /** D-322 — production RPC enrollment, owner claims, scopes and native pack dispatch. */
 import Database from 'better-sqlite3';
+import { createAuthenticationIncidentStore } from '../authentication-incident-store.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createConnectionApiHandler } from '@recued/ingredients';
 import type { ManagedOAuthAuth, ManagedOAuthRequest, ManagedOAuthResponse } from '@recued/contracts';
@@ -50,7 +51,7 @@ const setup = (knownScopes = true, requiredScopes = () => ['https://www.googleap
     if (start.action !== 'start') throw new Error('wrong fixture response');
     return { saved, start };
   };
-  return { profiles, connections, fetch, sessions, service, handlers, rpc, authorize, decode,
+  return { db, profiles, connections, fetch, sessions, service, handlers, rpc, authorize, decode,
     consent: () => { consent = true; error = false; completedTags = sessions.at(-1)!.tags as Record<string, string>; },
     failConsent: () => { consent = true; error = true; completedTags = sessions.at(-1)!.tags as Record<string, string>; },
     tick: () => { clock += 11 * 60_000; } };
@@ -66,6 +67,21 @@ const savedAccount = async (f: ReturnType<typeof setup>) => {
 };
 const fullSheets = 'https://www.googleapis.com/auth/spreadsheets';
 describe('verified repair of the saved Nango account', () => {
+  it('journals an applied broker reauthorization without retaining its consent receipt or key', async () => {
+    const f = setup(); const { saved, row } = await savedAccount(f); f.tick();
+    const result = await f.rpc({ action: 'start', profile_id: saved.profile.id, integration_id: 'sheets-production', base_url: 'https://sheets.googleapis.com/v4',
+      name: 'sheets', connection_id: 'remote-account', scopes: [] });
+    if (result.action !== 'reuse') throw Error('fixture should reuse authorization');
+    const upsert = f.connections.upsert.bind(f.connections);
+    const saving = vi.spyOn(f.connections, 'upsert').mockImplementation((input, commit) => { f.tick(); return upsert(input, commit); });
+    await f.rpc({ action: 'save_reauthorization', name: 'sheets', expected_updated_at: row.updated_at, patch: { auth: result.auth } });
+    saving.mockRestore();
+    const page = createAuthenticationIncidentStore(f.db).history({ scope: { kind: 'connection', name: 'sheets' } });
+    expect(page.repairs).toHaveLength(1); expect(page.repairs![0]).toMatchObject({ action: 'reauthorize', status: 'applied',
+      from: { type: 'broker', label: 'Cloud', broker_account_id: 'remote-account' }, to: { type: 'broker', label: 'Cloud', broker_account_id: 'remote-account' } });
+    expect(page.repairs![0]!.finished_at).toBe(page.repairs![0]!.started_at + 11 * 60_000);
+    expect(JSON.stringify(page)).not.toMatch(/authorization_receipt|environment-key|short-lived/);
+  });
   it('requests additional scopes by reconnecting the existing account and applies only after a protected read', async () => {
     const f = setup(true, () => ['https://www.googleapis.com/auth/spreadsheets.readonly']);
     const { saved, row } = await savedAccount(f);

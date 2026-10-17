@@ -31,6 +31,7 @@ import type { Collection } from '@recued/storage';
 import { createSQLiteCollection } from './sqlite-collection.js';
 
 const TABLE = 'account_store';
+const oauthGrantLeases = new WeakMap<Database.Database, Map<string, Promise<void>>>();
 
 export interface AccountStoreWrite {
   key: string; value: string | null;
@@ -39,6 +40,8 @@ export interface AccountStoreWrite {
 }
 
 export interface ServerAccountStore {
+  /** Serialize native token refresh and its durable write across store handles. */
+  withOAuthGrantLease?<T>(prefix: string, run: () => Promise<T>): Promise<T>;
   /** SQLite-only: compare/write a batch and caller metadata in one transaction.
    * Byte accounting is reported only after commit. */
   transactionalWrite?(entries: readonly AccountStoreWrite[], commit?: () => void): void;
@@ -95,6 +98,13 @@ export const createServerAccountStore = (
 
   return {
     ...(db && !options.collection ? {
+      async withOAuthGrantLease<T>(prefix: string, run: () => Promise<T>): Promise<T> {
+        let leases = oauthGrantLeases.get(db); if (!leases) { leases = new Map(); oauthGrantLeases.set(db, leases); }
+        const waiting = leases.get(prefix); let release!: () => void;
+        const held = new Promise<void>(resolve => { release = resolve; }); leases.set(prefix, held);
+        try { await waiting; return await run(); }
+        finally { release(); if (leases.get(prefix) === held) leases.delete(prefix); }
+      },
       transactionalWrite(entries: readonly AccountStoreWrite[], commit?: () => void): void {
         let delta = 0;
         db.transaction(() => {

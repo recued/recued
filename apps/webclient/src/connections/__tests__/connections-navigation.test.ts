@@ -10,10 +10,53 @@ import {
   connectionsFileAuthenticationAddress, parseConnectionsFileAuthentication,
   parseConnectionsReviewAccess,
   connectionsOAuthAppsAddress, parseConnectionsOAuthApps,
+  connectionsOAuthAppAddress, parseConnectionsOAuthApp, connectionsAccountAuthenticationAddress, parseConnectionsAccountAuthentication,
+  connectionsRenewalRepairReturn, parseConnectionsRenewalRepairReturn,
+  connectionsVerifyAccessAddress, parseConnectionsVerifyAccess,
 } from '../connections-navigation.js';
 import { parseShellRoute } from '../../shell/route.js';
 
 describe('Connections hierarchical navigation contract', () => {
+  it('routes Verify access with a typed opaque selection and rejects resource or credential tails', () => {
+    const selection = { kind: 'renewal' as const, id: 'renewal-12345678-1234-4123-8123-123456789abc' };
+    const hash = connectionsVerifyAccessAddress(selection).hash;
+    expect(hash).toBe('#connections/others/verify-access/renewal/' + selection.id);
+    expect(parseConnectionsVerifyAccess(parseShellRoute(hash).segments)).toEqual(selection);
+    expect(parseConnectionsAddress(parseShellRoute(hash))).toEqual({ kind: 'lane', tab: 'others' });
+    for (const bad of [hash + '/scope', hash + '/https://vendor.test', '#connections/mail/verify-access/renewal/' + selection.id,
+      '#connections/others/verify-access/renewal/../secret', '#connections/others/verify-access/unknown/' + selection.id]) {
+      expect(parseConnectionsVerifyAccess(parseShellRoute(bad).segments)).toBeNull();
+    }
+  });
+  it('selects only a named saved app and a local usage or renewal review', () => {
+    for (const view of ['usage', 'renewal'] as const) {
+      const target = { issuer: 'microsoft' as const, id: 'default', view };
+      const hash = connectionsOAuthAppAddress(target).hash;
+      expect(parseConnectionsOAuthApp(parseShellRoute(hash).segments)).toEqual(target);
+      expect(parseConnectionsAddress(parseShellRoute(hash))).toEqual({ kind: 'lane', tab: 'others' });
+    }
+    for (const segments of [['others','oauth-apps','google','../client','usage'], ['others','oauth-apps','Google','default','usage'],
+      ['others','oauth-apps','google','default','authorize'], ['others','oauth-apps','google','default','usage','secret']]) {
+      expect(parseConnectionsOAuthApp(segments)).toBeNull();
+    }
+  });
+  it('opens account authentication and returns to renewal without accepting credentials or permission tails', () => {
+    const base = connectionsAccountAuthenticationAddress('mail', 'work').hash;
+    expect(parseConnectionsAccountAuthentication(parseShellRoute(base).segments)).toEqual({ platform: 'mail', slug: 'work' });
+    const hash = connectionsRenewalRepairReturn(base, 'google', 'default');
+    expect(parseConnectionsRenewalRepairReturn(parseShellRoute(hash).segments)).toEqual({ segments: ['mail','work','manage-authentication'],
+      app: { issuer: 'google', id: 'default', view: 'renewal' } });
+    for (const segments of [['file','work','manage-authentication'], ['mail','../work','manage-authentication'], ['mail','work','manage-authentication','scope']]) {
+      expect(parseConnectionsAccountAuthentication(segments)).toBeNull();
+    }
+    for (const invalid of ['#connections/mail/work/from-renewal/google/default', hash + '/secret',
+      '#connections/others/oauth-apps/google/default/usage/from-renewal/microsoft/default',
+      '#connections/others/review-access/api/work/from-renewal/google/client-id']) {
+      expect(parseConnectionsRenewalRepairReturn(parseShellRoute(invalid).segments)).toBeNull();
+    }
+    expect(parseConnectionsRenewalRepairReturn(parseShellRoute(connectionsRenewalRepairReturn(connectionsReviewAccessAddress('work').hash, 'google', 'default')).segments)?.segments)
+      .toEqual(['others','review-access','api','work']);
+  });
   it('opens only the saved-app manager without importing credentials or a callback from the route', () => {
     const address = connectionsOAuthAppsAddress(); expect(address.hash).toBe('#connections/others/oauth-apps');
     expect(parseConnectionsOAuthApps(parseShellRoute(address.hash).segments)).toBe(true);

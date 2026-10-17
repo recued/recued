@@ -249,8 +249,8 @@ const openStdio = async (dir: string, bearer: string): Promise<StdioSession> => 
   child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} }) + '\n');
   return {
     child,
-    // ⚠ 20s, and it now fits INSIDE the review window rather than exceeding it —
-    //   the inversion that let a slow call succeed here and expire there.
+    // The transport timeout diagnoses a stalled reply; the stricter review
+    // window is checked before the owner's decision below.
     send: async (request: PreparePreapproval) => {
       const reply = await_(2, 20_000, 'request');
       child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call',
@@ -311,8 +311,8 @@ it.each(['pending', 'approved', 'stdio'] as const)('boots the actual owner servi
   // really a clock the fixture was spending).
   //
   // Hoisting it costs nothing and changes nothing the test asserts: the budget
-  // now covers the stdio process spawn plus review/decide, which is what it is
-  // for. `mintedAt` is the fixture's own clock — the grants and token only need
+  // now covers preparation plus review/decide. `mintedAt` is the fixture's
+  // own clock — the grants and token only need
   // A timestamp, not THE one the deadline is measured from.
   let contractId: string | undefined;
   let stdioToken: string | undefined;
@@ -356,7 +356,6 @@ it.each(['pending', 'approved', 'stdio'] as const)('boots the actual owner servi
     const reply = await stdio!.send(request);
     expect(reply, JSON.stringify(reply)).not.toHaveProperty('error');
     expect(reply, JSON.stringify(reply)).not.toHaveProperty('result.isError', true);
-    await stop(stdio!.child);
     const list = await rpc<{ proposals: PreapprovalInspection[] }>(first.socket, 'preapproval.list');
     expect(list.proposals, JSON.stringify(reply)).toHaveLength(1); pending = list.proposals[0]!;
   } else pending = await rpc<PreapprovalResult>(first.socket, 'preapproval.prepare', request);
@@ -374,7 +373,10 @@ it.each(['pending', 'approved', 'stdio'] as const)('boots the actual owner servi
     await rpc(first.socket, 'preapproval.decide', { proposal_id: pending.proposal_id, expected_revision: review.revision,
       review_digest: review.review_digest, challenge: review.challenge, decision: 'approve', request_id: randomUUID() });
   }
-  first.socket.terminate(); await stop(first.child);
+  // Process shutdown is fixture cleanup, outside the owner's review window.
+  // Stop both processes together before the restart, after the decision.
+  first.socket.terminate();
+  await Promise.all([stop(first.child), stdio ? stop(stdio.child) : Promise.resolve()]);
   // Reopen after the due instant, inside the approved dispatch window. The
   // real scheduler's immediate boot tick must recover this exact occurrence.
   if (execute) await new Promise(done => setTimeout(done, Math.max(0, now + 15_000 - Date.now())));

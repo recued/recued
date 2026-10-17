@@ -1,15 +1,17 @@
 import { isOAuthAppsResponse, isOAuthAppSecretExpiryDate, oauthAppSecretExpiry, OAUTH_APP_EXPIRY_WARNING_DAYS,
   type OAuthAppsRequest, type OAuthAppsResponse, type OAuthAppIssuer, type SavedOAuthApp } from '@recued/contracts';
-import { escapeHtml as e } from '@recued/ui-shared';
+import { authenticationIncidentHistoryHref, escapeHtml as e } from '@recued/ui-shared';
 import { createOAuthPermissionPanel } from './oauth-permission-panel.js';
 import type { OAuthPermissionCleanupPopupFactory } from './oauth-permission-cleanup-panel.js';
 import { createOAuthAppUsagePanel } from './oauth-app-usage-panel.js';
+import { createOAuthAppRenewalPanel } from './oauth-app-renewal-panel.js';
 import { createOAuthTroubleshooting } from '../connections/oauth-troubleshooting.js';
+import type { ConnectionOAuthAppReview } from '../connections/connections-navigation.js';
 export type OAuthAppsCaller = (args: OAuthAppsRequest) => Promise<OAuthAppsResponse>;
 let panelSequence = 0;
 
 /** Only this mounted editor holds a freshly entered secret. Reads return metadata. */
-export const createOAuthAppsPanel = (deps: { host: HTMLElement; call: OAuthAppsCaller; changed?(): void; now?(): number; cleanupOAuth?: OAuthPermissionCleanupPopupFactory }) => {
+export const createOAuthAppsPanel = (deps: { host: HTMLElement; call: OAuthAppsCaller; changed?(): void; now?(): number; cleanupOAuth?: OAuthPermissionCleanupPopupFactory; navigate?(hash: string): void }) => {
   const host = deps.host;
   const editorId = 'saved-oauth-apps-' + ++panelSequence;
   let apps: SavedOAuthApp[] = []; let loaded = false; let loading = false; let writing = false; let disposed = false;
@@ -20,13 +22,15 @@ export const createOAuthAppsPanel = (deps: { host: HTMLElement; call: OAuthAppsC
   let expiryTimer: ReturnType<typeof setTimeout> | undefined;
   const now = deps.now ?? Date.now;
   let error = ''; let notice = ''; let generation = 0; let pending = Promise.resolve();
+  let entryPending = Promise.resolve(); let entryGeneration = 0;
   let usagePanel: ReturnType<typeof createOAuthAppUsagePanel> | undefined;
+  let renewalPanel: ReturnType<typeof createOAuthAppRenewalPanel> | undefined;
   let permissionPanel: ReturnType<typeof createOAuthPermissionPanel> | undefined;
   const oauthHelp = createOAuthTroubleshooting();
   let helpApp: SavedOAuthApp | undefined;
   let pendingFocus: Record<string, string | undefined> | undefined; let focusOnOpen = false;
   const material = () => JSON.stringify([issuer, label, clientId, secret, expiryDate, expiryInvalid]);
-  const draft = () => editing !== undefined && material() !== baseline || usagePanel?.hasDraft() === true || permissionPanel?.hasDraft() === true;
+  const draft = () => editing !== undefined && material() !== baseline || usagePanel?.hasDraft() === true || permissionPanel?.hasDraft() === true || renewalPanel?.hasDraft() === true;
   const clear = () => { editing = undefined; removing = undefined; label = ''; clientId = ''; secret = ''; expiryDate = ''; expiryEdited = false; expiryInvalid = false; editingExpirySupported = false; baseline = ''; };
   const expirySupportChanged = () => editing !== undefined && editingExpirySupported !== supportsExpiry;
   const button = (action: string, text: string, id?: string, disabled = false) =>
@@ -92,13 +96,14 @@ export const createOAuthAppsPanel = (deps: { host: HTMLElement; call: OAuthAppsC
       ${error ? `<p role="alert">${e(error)}</p>` : ''}${notice ? `<p role="status">${e(notice)}</p>` : ''}
       ${loading ? '<p role="status">Loading saved apps…</p>' : ''}
       ${expanded ? `<div id="${editorId}">${button('refresh', 'Refresh apps')}${button('add', 'Add OAuth app', undefined, draft())}
+        ${!draft() && !writing && !loading ? `<p><a href="${e(authenticationIncidentHistoryHref({ kind: 'oauth_apps' }))}">View saved-app history</a></p>` : ''}
         <p>View each app’s usage to rotate its secret across selected credential copies. Mail and Calendar retain their selected app.</p>
         ${loaded && !apps.length ? '<p>No OAuth apps are saved yet.</p>' : ''}
         <ul>${apps.map(app => `<li><strong>${e(app.label)}</strong> · ${app.issuer === 'google' ? 'Google' : 'Microsoft'}${app.id === 'default' ? ' · Default app' : ''}
           <code>${e(app.client_id)}</code>${app.has_secret ? '' : '<span>Client secret needed</span>'}
           ${supportsExpiry ? `<span data-oauth-app-expiry-key="${e(key(app))}" data-oauth-app-expiry-state="${oauthAppSecretExpiry(app, now()).status}">${e(expiryText(app))}</span>` : ''}
           ${app.uses?.length ? `<span>Used by ${e(app.uses.map(use => use.lane + ' ' + use.slug).join(', '))}</span>` : ''}
-          ${button('permissions', 'Review permissions', key(app), draft())}${button('usage', 'Usage and rotate secret', key(app), draft())}${button('troubleshoot', 'Troubleshoot OAuth', key(app), draft())}${button('edit', 'Edit', key(app), draft())}${button('remove', 'Remove', key(app), Boolean(app.uses?.length) || draft())}</li>`).join('')}</ul>
+          ${button('permissions', 'Review permissions', key(app), draft())}${button('usage', 'Usage and rotate secret', key(app), draft())}${button('renewal', 'Verify token renewal', key(app), draft())}${button('troubleshoot', 'Troubleshoot OAuth', key(app), draft())}${button('edit', 'Edit', key(app), draft())}${button('remove', 'Remove', key(app), Boolean(app.uses?.length) || draft())}</li>`).join('')}</ul>
         ${removing ? `<div role="group" aria-label="Remove app"><p>Remove ${e(removing.label)} from saved apps?</p>${button('confirm-remove', 'Remove app')}${button('cancel-remove', 'Keep app')}</div>` : ''}
         ${editing !== undefined ? `<form data-oauth-app-editor><h3>${editing ? 'Edit OAuth app' : 'Add OAuth app'}</h3>
           <label>Vendor <select data-oauth-app-field="issuer"${editing || writing ? ' disabled' : ''}><option value="google"${issuer === 'google' ? ' selected' : ''}>Google</option><option value="microsoft"${issuer === 'microsoft' ? ' selected' : ''}>Microsoft</option></select></label>
@@ -110,13 +115,13 @@ export const createOAuthAppsPanel = (deps: { host: HTMLElement; call: OAuthAppsC
           ${editingExpirySupported ? button('clear-expiry', 'Clear expiry date', undefined, expirySupportChanged()) : ''}
           ${expirySupportChanged() ? '<p role="alert">The server’s expiry support changed while this edit was open. Your draft is kept. Restore the server version and refresh, or cancel this edit and reopen it before saving.</p>' : ''}
           <button type="submit" class="rx-btn rx-btn-primary rx-btn-sm"${writing || loading || expirySupportChanged() ? ' disabled' : ''}>${writing ? 'Saving…' : 'Save app'}</button>${button('cancel-edit', 'Cancel')}
-        </form>` : ''}<div data-app-oauth-help-host></div></div>` : ''}<div data-oauth-app-usage-host></div><div data-oauth-permissions-host></div></section>`;
+        </form>` : ''}<div data-app-oauth-help-host></div></div>` : ''}<div data-oauth-app-usage-host></div><div data-oauth-app-renewal-host></div><div data-oauth-permissions-host></div></section>`;
     const currentHelpApp = editing === undefined ? apps.find(app => helpApp && key(app) === key(helpApp)) : editing;
     oauthHelp.mount(host.querySelector?.<HTMLElement>('[data-app-oauth-help-host]') ?? null, expanded && (currentHelpApp || editing === null) ? {
       key: currentHelpApp ? key(currentHelpApp) + ':' + currentHelpApp.revision : 'new:' + issuer,
       route: 'direct', issuer: currentHelpApp?.issuer ?? issuer, savedApp: editing !== null, pending: writing,
     } : null);
-    usagePanel?.render(); permissionPanel?.render();
+    usagePanel?.render(); permissionPanel?.render(); renewalPanel?.render();
     if (pendingFocus) {
       const control = [...host.querySelectorAll?.<HTMLElement>('[data-oauth-app-action],[data-oauth-app-field]') ?? []]
         .find(node => Object.entries(pendingFocus!).every(([key, value]) => node.dataset[key] === value));
@@ -158,9 +163,16 @@ export const createOAuthAppsPanel = (deps: { host: HTMLElement; call: OAuthAppsC
       finally { if (!disposed && gen === generation) { writing = false; render(); } }
     })();
   };
+  const openRenewal = (app: SavedOAuthApp, onClose?: () => void): Promise<void> => {
+    if (renewalPanel && !renewalPanel.canOpen(app)) {
+      error = 'Another saved app has an unfinished renewal check. Read its result or refresh its status before reviewing token renewal for this app.'; render();
+      return Promise.resolve();
+    }
+    return renewalPanel?.open(app, onClose) ?? Promise.resolve();
+  };
   const click = (event: Event) => {
     const target = (event.target as HTMLElement | null)?.closest?.<HTMLElement>('[data-oauth-app-action]');
-    if (!target || !host.contains(target) || writing || loading || usagePanel?.busy() || permissionPanel?.busy()) return;
+    if (!target || !host.contains(target) || writing || loading || usagePanel?.busy() || permissionPanel?.busy() || renewalPanel?.busy()) return;
     target.focus?.({ preventScroll: true });
     const action = target.dataset.oauthAppAction; error = ''; notice = '';
     if (action === 'toggle') { if (draft()) { error = 'Save or cancel the app draft before closing it.'; } else expanded = !expanded; }
@@ -181,6 +193,13 @@ export const createOAuthAppsPanel = (deps: { host: HTMLElement; call: OAuthAppsC
       if (draft()) return;
       const app = apps.find(app => key(app) === target.dataset.oauthAppId);
       if (app) { clear(); void usagePanel?.open(app); } return;
+    }
+    else if (action === 'renewal') {
+      if (draft()) return;
+      const app = apps.find(app => key(app) === target.dataset.oauthAppId);
+      if (app) { clear(); void openRenewal(app, () => {
+        [...host.querySelectorAll<HTMLElement>('[data-oauth-app-action="renewal"]')].find(n => n.dataset.oauthAppId === key(app))?.focus({ preventScroll: true });
+      }); } return;
     }
     else if (action === 'add' || action === 'edit' || action === 'edit-expiry') {
       if (draft()) return;
@@ -235,12 +254,26 @@ export const createOAuthAppsPanel = (deps: { host: HTMLElement; call: OAuthAppsC
   };
   host.addEventListener('click', click); host.addEventListener('input', input); host.addEventListener('change', input); host.addEventListener('submit', submit);
   permissionPanel = createOAuthPermissionPanel({ host, call: deps.call, ...(deps.changed ? { changed: deps.changed } : {}), ...(deps.cleanupOAuth ? { cleanupOAuth: deps.cleanupOAuth } : {}) });
-  usagePanel = createOAuthAppUsagePanel({ host, call: deps.call, now, changed: () => { void refresh(); deps.changed?.(); } });
+  renewalPanel = createOAuthAppRenewalPanel({ host, call: deps.call, now,
+    canNavigate: () => !writing && !loading && !(editing !== undefined && material() !== baseline) && !usagePanel?.busy() && !usagePanel?.hasDraft() && !permissionPanel?.busy() && !permissionPanel?.hasDraft(),
+    navigate: hash => { if (deps.navigate) deps.navigate(hash); else if (host.ownerDocument?.defaultView) host.ownerDocument.defaultView.location.hash = hash; } });
+  usagePanel = createOAuthAppUsagePanel({ host, call: deps.call, now, changed: () => { void refresh(); deps.changed?.(); }, verifyRenewal: app => { void openRenewal(app); } });
   host.ownerDocument?.addEventListener?.('visibilitychange', calendarChanged);
   render(); void refresh();
-  return { refresh, whenLoaded: async () => { await pending; await usagePanel?.whenLoaded(); await permissionPanel?.whenLoaded(); }, busy: () => writing || usagePanel?.busy() === true || permissionPanel?.busy() === true, hasDraft: draft,
-    open(): void { if (disposed) return; expanded = true; focusOnOpen = true; render(); },
-    dispose(): void { disposed = true; generation += 1; clearExpiryTimer(); host.ownerDocument?.removeEventListener?.('visibilitychange', calendarChanged); clear(); usagePanel?.dispose(); permissionPanel?.dispose(); oauthHelp.dispose(); host.removeEventListener('click', click); host.removeEventListener('input', input); host.removeEventListener('change', input); host.removeEventListener('submit', submit); },
+  return { refresh, whenLoaded: async () => { await pending; await entryPending; await usagePanel?.whenLoaded(); await permissionPanel?.whenLoaded(); await renewalPanel?.whenLoaded(); }, busy: () => writing || usagePanel?.busy() === true || permissionPanel?.busy() === true || renewalPanel?.busy() === true, hasDraft: draft,
+    open(target?: ConnectionOAuthAppReview): void {
+      if (disposed) return; expanded = true; focusOnOpen = !target; render(); const entry = ++entryGeneration;
+      if (target) entryPending = (async () => {
+        await pending; if (disposed || entry !== entryGeneration) return;
+        if (draft() || writing || loading || usagePanel?.busy() || permissionPanel?.busy() || renewalPanel?.busy()) {
+          error = 'Finish the current app review before opening another.'; render(); return;
+        }
+        const app = apps.find(a => a.issuer === target.issuer && a.id === target.id);
+        if (!loaded || !app) { error = 'This saved OAuth app could not be found. Refresh saved apps and choose a current app.'; render(); return; }
+        clear(); if (target.view === 'usage') await usagePanel?.open(app); else await openRenewal(app);
+      })();
+    },
+    dispose(): void { disposed = true; generation += 1; entryGeneration++; clearExpiryTimer(); host.ownerDocument?.removeEventListener?.('visibilitychange', calendarChanged); clear(); usagePanel?.dispose(); permissionPanel?.dispose(); renewalPanel?.dispose(); oauthHelp.dispose(); host.removeEventListener('click', click); host.removeEventListener('input', input); host.removeEventListener('change', input); host.removeEventListener('submit', submit); },
   };
 };
 export const OAUTH_APPS_STYLES = '.oauth-apps{border:1px solid var(--border);border-radius:10px;padding:16px;margin:12px 0;overflow-wrap:anywhere}.oauth-apps li{padding:8px 0}.oauth-apps code,.oauth-apps li>span{display:block}.oauth-apps button{margin:4px 8px 4px 0}.oauth-apps label{display:grid;gap:4px;margin:10px 0}.oauth-apps input,.oauth-apps select{font:inherit;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--fg);min-width:0;max-width:100%}'
@@ -248,4 +281,5 @@ export const OAUTH_APPS_STYLES = '.oauth-apps{border:1px solid var(--border);bor
   + '.oauth-permissions{border-top:1px solid var(--border);margin-top:16px;padding-top:12px;min-width:0;overflow-wrap:anywhere}.oauth-permissions section{min-width:0}.oauth-permissions ul{padding-left:20px}.oauth-permissions h5{font-size:1em;margin-bottom:8px}.oauth-permission-scopes>li{margin:12px 0}.oauth-permissions input[type=checkbox]{width:18px;min-width:18px;flex:none}.oauth-permissions li>label{display:flex;align-items:flex-start;gap:8px}.oauth-permissions code{white-space:normal;overflow-wrap:anywhere}'
   + '.oauth-cleanup-worklist{border-top:1px solid var(--border);margin-top:16px;padding-top:12px}.oauth-cleanup-worklist label{display:flex;align-items:flex-start;gap:8px}.oauth-cleanup-worklist [data-permission-cleanup-task]{border:1px solid var(--border);padding:12px;border-radius:8px;margin-top:12px}'
   + '.oauth-cleanup-worklist label.oauth-cleanup-api-field{display:grid}.oauth-cleanup-api-field input{box-sizing:border-box;width:100%}'
-  + '.oauth-app-usage{border-top:1px solid var(--border);margin-top:16px;padding-top:12px}.oauth-app-usage ul{padding-left:20px}.oauth-app-usage li>label{display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap}.oauth-app-usage input[type=checkbox]{width:18px;min-width:18px;padding:0;flex:none}.oauth-app-usage li code{display:inline}.oauth-app-usage h4{margin-bottom:6px}';
+  + '.oauth-app-usage,.oauth-app-renewal{border-top:1px solid var(--border);margin-top:16px;padding-top:12px;min-width:0}.oauth-app-usage ul,.oauth-app-renewal ul{padding-left:20px}.oauth-app-usage li>label,.oauth-app-renewal li>label{display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap}.oauth-app-usage input[type=checkbox],.oauth-app-renewal input[type=checkbox]{width:18px;min-width:18px;padding:0;flex:none}.oauth-app-usage li code{display:inline}.oauth-app-usage h4,.oauth-app-renewal h4{margin-bottom:6px}'
+  + '.oauth-app-renewal button{max-width:100%;white-space:normal;overflow-wrap:anywhere}';

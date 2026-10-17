@@ -41,9 +41,9 @@ export interface VoiceCaptureSession {
   cancel(): void;
 }
 
-/** Opens the microphone. REJECTS on denial or absent device — the caller shows
- *  the reason; it is never swallowed. */
-export type VoiceCaptureFactory = (() => Promise<VoiceCaptureSession>) | null;
+/** Opens the microphone. Rejects on startup failure; onError reports a later
+ * interruption after releasing the device and discarding incomplete audio. */
+export type VoiceCaptureFactory = ((onError?: () => void) => Promise<VoiceCaptureSession>) | null;
 
 /** The containers a browser might record, best first.
  *
@@ -116,8 +116,9 @@ export const browserVoiceCaptureFactory = (
   if (!supported) return null;
   const now = g.now ?? (() => new Date());
 
-  return async (): Promise<VoiceCaptureSession> => {
+  return async (onError): Promise<VoiceCaptureSession> => {
     const stream = await devices.getUserMedia({ audio: true });
+    const tracks = stream.getTracks();
 
     // ⛔ RELEASE THE DEVICE ON EVERY EXIT PATH. A live track keeps the
     // browser's recording indicator lit and the microphone held after the
@@ -134,10 +135,12 @@ export const browserVoiceCaptureFactory = (
     // precise failure the comment above calls unacceptable — the rule was
     // stated and the window above it was not covered.
     let released = false;
+    let onTrackEnded: (() => void) | null = null;
     const release = (): void => {
       if (released) return;
       released = true;
-      for (const track of stream.getTracks()) {
+      for (const track of tracks) {
+        if (onTrackEnded) track.removeEventListener('ended', onTrackEnded);
         try { track.stop(); } catch { /* already ended */ }
       }
     };
@@ -145,37 +148,63 @@ export const browserVoiceCaptureFactory = (
     try {
       const recorder = new Recorder(stream, { mimeType: supported });
       const chunks: Blob[] = [];
-      recorder.ondataavailable = (event: BlobEvent): void => {
-        if (event.data && event.data.size > 0) chunks.push(event.data);
+      let state: 'recording' | 'stopping' | 'done' | 'failed' | 'cancelled' = 'recording';
+      let resolveFinished!: (recording: VoiceRecording | null) => void;
+      const finished = new Promise<VoiceRecording | null>(resolve => { resolveFinished = resolve; });
+      const settle = (recording: VoiceRecording | null, terminal: 'done' | 'failed' | 'cancelled'): boolean => {
+        if (state === 'done' || state === 'failed' || state === 'cancelled') return false;
+        state = terminal;
+        chunks.length = 0;
+        recorder.ondataavailable = null;
+        recorder.onstop = null;
+        recorder.onerror = null;
+        release();
+        resolveFinished(recording);
+        return true;
+      };
+      const fail = (): void => {
+        if (!settle(null, 'failed')) return;
+        try { recorder.stop(); } catch { /* may already be inactive */ }
+        onError?.();
       };
 
-      let settled = false;
-      const finished = new Promise<VoiceRecording | null>((resolve) => {
-        recorder.onstop = (): void => {
-          release();
-          if (chunks.length === 0) { resolve(null); return; }
-          const blob = new Blob(chunks, { type: supported });
-          if (blob.size === 0) { resolve(null); return; }
-          resolve({ blob, mime_type: supported, filename: voiceFilename(supported, now()) });
-        };
-      });
+      recorder.ondataavailable = (event: BlobEvent): void => {
+        if (state !== 'recording' && state !== 'stopping') return;
+        if (event.data && event.data.size > 0) chunks.push(event.data);
+      };
+      recorder.onstop = (): void => {
+        if (state === 'recording') { fail(); return; }
+        if (state !== 'stopping') return;
+        const blob = new Blob(chunks, { type: supported });
+        settle(blob.size === 0 ? null
+          : { blob, mime_type: supported, filename: voiceFilename(supported, now()) }, 'done');
+      };
+      // Browsers can emit final data and stop AFTER an error. Settle first so
+      // those queued events cannot turn a failed recording into an attachment.
+      // https://www.w3.org/TR/mediastream-recording/#error-handling
+      recorder.onerror = fail;
+      onTrackEnded = fail;
 
-      recorder.start();
+      try {
+        for (const track of tracks) track.addEventListener('ended', onTrackEnded);
+        recorder.start();
+        if (tracks.some(track => track.readyState === 'ended')) fail();
+      } catch (e) {
+        settle(null, 'cancelled');
+        throw e;
+      }
 
       return {
         stop: async (): Promise<VoiceRecording | null> => {
-          if (!settled) {
-            settled = true;
-            try { recorder.stop(); } catch { release(); return null; }
+          if (state === 'recording') {
+            state = 'stopping';
+            try { recorder.stop(); } catch { fail(); }
           }
           return finished;
         },
         cancel: (): void => {
-          if (!settled) {
-            settled = true;
-            try { recorder.stop(); } catch { /* fall through to release */ }
-          }
-          release();
+          if (!settle(null, 'cancelled')) return;
+          try { recorder.stop(); } catch { /* may already be inactive */ }
         },
       };
     } catch (e) {
@@ -208,14 +237,19 @@ export interface VoiceComposerDeps<Context = undefined> {
 
 export type VoiceComposerPhase = 'idle' | 'opening' | 'recording';
 
-export interface VoiceComposer {
+export interface VoiceComposer<Context = undefined> {
   phase(): VoiceComposerPhase;
+  /** Stopped captures still finishing, optionally limited to retained drafts. */
+  hasPendingRecordings(include?: (context: Context | undefined) => boolean): boolean;
   /** The reason the last attempt failed, shown in the composer. */
   error(): string | null;
+  /** Clear feedback and retire an idle attempt without discarding its audio. */
+  clearError(): void;
   /** Start when idle, stop when recording. The one gesture the button has. */
   toggle(): void;
-  /** Discard an in-flight recording (route teardown, or an explicit cancel). */
-  cancel(): void;
+  /** Discard the current attempt. With a filter, discard every matching
+   *  capture, including stopped recordings, and preserve other destinations. */
+  cancel(include?: (context: Context | undefined) => boolean): void;
   destroy(): void;
 }
 
@@ -228,7 +262,7 @@ const defaultMakeFile = (recording: VoiceRecording): File =>
  *  permission prompt the first time and can sit there for as long as the person
  *  ignores it. Without the phase the button reads "start" throughout, and a
  *  second press while the prompt is open would open a SECOND stream. */
-export const createVoiceComposer = <Context = undefined>(deps: VoiceComposerDeps<Context>): VoiceComposer => {
+export const createVoiceComposer = <Context = undefined>(deps: VoiceComposerDeps<Context>): VoiceComposer<Context> => {
   const maxMs = deps.maxMs ?? VOICE_MAX_MS;
   const setTimer = deps.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
   const clearTimer = deps.clearTimer ?? ((h) => { clearTimeout(h as ReturnType<typeof setTimeout>); });
@@ -243,38 +277,69 @@ export const createVoiceComposer = <Context = undefined>(deps: VoiceComposerDeps
    *  the awaited factory can resolve AFTER teardown, and a stream opened for a
    *  route that no longer exists must be closed, not adopted. */
   let generation = 0;
-  let discardGeneration = 0;
+  // Each capture owns its discard flag. A newer cancellation must leave audio
+  // that is still finishing for an earlier capture with its original draft.
+  let attempt = { discarded: false };
   let recordingContext: Context | undefined;
+  // Stop returns the button to idle so another capture can start, but the
+  // earlier session still owns audio (and possibly a device) until it settles.
+  const pendingRecordings = new Map<typeof attempt, {
+    session: VoiceCaptureSession; context: Context | undefined;
+  }>();
 
   const clearPendingTimer = (): void => {
     if (timer !== null) { clearTimer(timer); timer = null; }
   };
 
+  const recordingFailed = (mine: number): void => {
+    if (destroyed || mine !== generation) return;
+    // Also invalidate a factory still handing back its session, and errors
+    // queued by this capture after the person starts another recording.
+    generation++;
+    const failed = session;
+    session = null;
+    phase = 'idle';
+    clearPendingTimer();
+    error = 'The recording stopped early. Try recording again.';
+    failed?.cancel();
+    deps.onChange();
+  };
+
   const stopRecording = (): void => {
     if (phase !== 'recording' || !session) return;
     const active = session;
-    const mine = discardGeneration;
+    const stoppedAttempt = attempt;
+    const captureGeneration = generation;
     const context = recordingContext;
+    pendingRecordings.set(stoppedAttempt, { session: active, context });
     session = null;
     phase = 'idle';
     clearPendingTimer();
     deps.onChange();
-    void active.stop().then((recording) => {
-      if (destroyed || mine !== discardGeneration || !recording) return;
-      deps.onRecording(makeFile(recording), context);
-    }).catch(() => {
-      // A recorder that threw on stop has already released; there is nothing
-      // to attach and nothing the person can act on.
-    });
+    const failed = (): void => { active.cancel(); recordingFailed(captureGeneration); };
+    const finished = (): void => {
+      // Keep protection through onRecording: its attachment must exist before
+      // the stopped capture stops counting as unsaved work.
+      if (pendingRecordings.delete(stoppedAttempt) && !destroyed) deps.onChange();
+    };
+    try {
+      void active.stop().then((recording) => {
+        if (destroyed || stoppedAttempt.discarded || !recording) return;
+        deps.onRecording(makeFile(recording), context);
+      }).catch(failed).finally(finished);
+    } catch {
+      try { failed(); } finally { finished(); }
+    }
   };
 
   const start = (): void => {
+    attempt = { discarded: false };
     const mine = ++generation;
     recordingContext = deps.recordingContext?.();
     phase = 'opening';
     error = null;
     deps.onChange();
-    void deps.factory().then((opened) => {
+    void deps.factory(() => { recordingFailed(mine); }).then((opened) => {
       if (destroyed || mine !== generation) { opened.cancel(); return; }
       session = opened;
       phase = 'recording';
@@ -298,7 +363,26 @@ export const createVoiceComposer = <Context = undefined>(deps: VoiceComposerDeps
 
   return {
     phase: () => phase,
+    hasPendingRecordings: include => {
+      for (const [capture, { context }] of pendingRecordings) {
+        if (!capture.discarded && (!include || include(context))) return true;
+      }
+      return false;
+    },
     error: () => error,
+    clearError: (): void => {
+      if (destroyed) return;
+      // A stopped recording may still reject after its draft is parked. Its
+      // audio may finish for that draft, but its failure no longer owns the UI.
+      if (phase === 'idle') {
+        generation++;
+        // Later cancellation belongs to the next attempt or draft.
+        attempt = { discarded: false };
+      }
+      if (error === null) return;
+      error = null;
+      deps.onChange();
+    },
     toggle: (): void => {
       if (destroyed) return;
       if (phase === 'recording') { stopRecording(); return; }
@@ -308,21 +392,40 @@ export const createVoiceComposer = <Context = undefined>(deps: VoiceComposerDeps
       if (phase === 'opening') return;
       start();
     },
-    cancel: (): void => {
-      generation++;
-      discardGeneration++;
-      clearPendingTimer();
-      const active = session;
-      session = null;
-      phase = 'idle';
-      active?.cancel();
-      deps.onChange();
+    cancel: (include): void => {
+      if (destroyed) return;
+      let changed = false;
+      if (!include || include(recordingContext)) {
+        generation++;
+        attempt.discarded = true;
+        clearPendingTimer();
+        const active = session;
+        const pending = pendingRecordings.get(attempt);
+        pendingRecordings.delete(attempt);
+        session = null;
+        phase = 'idle';
+        active?.cancel();
+        pending?.session.cancel();
+        changed = true;
+      }
+      if (include) {
+        for (const [capture, pending] of pendingRecordings) {
+          if (!include(pending.context)) continue;
+          capture.discarded = true;
+          pendingRecordings.delete(capture);
+          pending.session.cancel();
+          changed = true;
+        }
+      }
+      if (changed) deps.onChange();
     },
     destroy: (): void => {
       destroyed = true;
       generation++;
       clearPendingTimer();
       session?.cancel();
+      for (const pending of pendingRecordings.values()) pending.session.cancel();
+      pendingRecordings.clear();
       session = null;
       phase = 'idle';
     },

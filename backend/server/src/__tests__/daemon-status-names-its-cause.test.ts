@@ -20,7 +20,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { daemonStatus } from '../daemon.js';
+import { daemonStatus, statusVersionLines } from '../daemon.js';
+import { SERVER_VERSION } from '../server-version.js';
 
 /** A fresh dir per arm: `status` derives the pidfile from the db path, so an
  *  unused directory is what puts us on the no-pidfile branch. */
@@ -45,11 +46,11 @@ const capture = async (
 
 /** A realm whose instance lock names a live holder — what `recued serve` leaves
  *  and `recued start` does not. Scoped to the realm, unlike a port probe. */
-const realmHeldBy = (pid: number, bindPort: number): string => {
+const realmHeldBy = (pid: number, bindPort: number, version?: string): string => {
   const dbPath = freshDb();
   writeFileSync(
     join(dirname(dbPath), 'recued-server.lock'),
-    JSON.stringify({ pid, boot_at: Date.now(), bind_port: bindPort }),
+    JSON.stringify({ pid, boot_at: Date.now(), bind_port: bindPort, ...(version ? { version } : {}) }),
   );
   return dbPath;
 };
@@ -238,5 +239,70 @@ describe('the owner hints name commands this platform has', () => {
     const out = await capture(port, freshDb(), 'win32');
     expect(out).toContain(`netstat -ano | findstr :${port}`);
     expect(out).not.toMatch(/lsof|launchctl|systemctl|ss -ltnp/);
+  });
+});
+
+/** The owner, 2026-10-16: "recued status does not show the version #, but
+ *  recued --help does". ⛔ While a server runs, the version is the one the
+ *  server recorded in the realm lock when it booted: an update swaps the binary
+ *  on disk first, so this binary's own version can be ahead of what runs. */
+describe('status names the version that is running', () => {
+  it('a server that recorded its version shows it, with nothing to do', async () => {
+    const out = await capture(9, realmHeldBy(process.pid, 7717, SERVER_VERSION));
+    expect(out).toMatch(new RegExp(`^Version: ${SERVER_VERSION.replace(/\./g, '\\.')}$`, 'm'));
+    expect(out).not.toMatch(/restart the server|older than|unknown/);
+  });
+
+  it('a server older than this recued says so, and that a restart runs this one', async () => {
+    const out = await capture(9, realmHeldBy(process.pid, 7717, '1.0.0'));
+    expect(out).toMatch(/^Version: 1\.0\.0$/m);
+    expect(out).toContain(`This recued is ${SERVER_VERSION}: restart the server to run it.`);
+  });
+
+  it('a server newer than this recued is named, and not told to restart onto an older one', async () => {
+    const out = await capture(9, realmHeldBy(process.pid, 7717, '999.0.0'));
+    expect(out).toMatch(/^Version: 999\.0\.0$/m);
+    expect(out).toContain(`This recued is ${SERVER_VERSION}, older than the running server.`);
+    expect(out).not.toContain('restart the server');
+  });
+
+  it('a server from before version recording reads as unknown, never as this recued\'s version', async () => {
+    const out = await capture(9, realmHeldBy(process.pid, 7717));
+    expect(out).toContain(`Version: unknown — the running server did not record it (this recued is ${SERVER_VERSION}).`);
+    expect(out).not.toMatch(new RegExp(`^Version: ${SERVER_VERSION.replace(/\./g, '\\.')}$`, 'm'));
+  });
+
+  it('a server started with `recued start` names its version from the same lock', async () => {
+    const dbPath = realmHeldBy(process.pid, 7717, '1.0.0');
+    writeFileSync(join(dirname(dbPath), 'recued-server.pid'), String(process.pid));
+    const out = await capture(9, dbPath);
+    expect(out).toMatch(/^Status: {2}running$/m);
+    expect(out).toMatch(/^Version: 1\.0\.0$/m);
+  });
+
+  it('a stopped server shows the version this recued would start', async () => {
+    const out = await capture(await freePort());
+    expect(out).toMatch(/^Status: stopped$/m);
+    expect(out).toMatch(new RegExp(`^Version: ${SERVER_VERSION.replace(/\./g, '\\.')}$`, 'm'));
+  });
+
+  it('a server of another realm on the port gets no version line, since its version is not knowable here', async () => {
+    const port = await freePort();
+    await serveHealth(port);
+    const out = await capture(port);
+    expect(out).toContain('NOT on this realm');
+    expect(out).not.toMatch(/^Version:/m);
+  });
+
+  it('compares versions by number, not as text', () => {
+    expect(statusVersionLines('26.9.30', '26.10.16')).toEqual([
+      'Version: 26.9.30',
+      '  This recued is 26.10.16: restart the server to run it.',
+    ]);
+    expect(statusVersionLines('26.10.16.1', '26.10.16')).toEqual([
+      'Version: 26.10.16.1',
+      '  This recued is 26.10.16, older than the running server.',
+    ]);
+    expect(statusVersionLines(null, '26.10.16')).toEqual(['Version: 26.10.16']);
   });
 });

@@ -838,6 +838,9 @@ export interface McpPushCapability {
 export interface ConnectionHealth {
   status: 'ok' | 'auth_failed' | 'unreachable' | 'unknown';
   last_probed_at?: number;
+  /** A completed API operation or a declared authenticated probe. Generic
+   * public-root reachability does not establish this recovery evidence. */
+  access_verified_at?: number;
   last_error?: string;
   /** D-125 P4.2 — MCP tool list cached at probe time. The mcp handler
    *  validates `input.tool` against this list and surfaces

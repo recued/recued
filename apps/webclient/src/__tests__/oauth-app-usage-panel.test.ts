@@ -34,6 +34,20 @@ const fixture = async (override?: (r: OAuthAppsRequest) => Promise<OAuthAppsResp
   return { panel, calls, slot, click, secret, choose, saved, changed, clock: (n: number) => { clock = n; } };
 };
 describe('saved app usage and rotation panel', () => {
+  it('offers renewal verification only after a saved rotation and requires an explicit click', async () => {
+    const calls: OAuthAppsRequest[] = []; const listeners = new Map<string, EventListener[]>(); const slot = { innerHTML: '' }; const verifyRenewal = vi.fn();
+    const host = { ownerDocument: { defaultView: null }, contains: () => true, querySelector: (s: string) => s.includes('host') ? slot : { focus() {} },
+      addEventListener: (type: string, fn: EventListener) => listeners.set(type, [...listeners.get(type) ?? [], fn]), removeEventListener() {} } as unknown as HTMLElement;
+    const panel = createOAuthAppUsagePanel({ host, verifyRenewal, changed() {}, now: () => 1000, id: () => 'a'.repeat(43),
+      call: async request => { calls.push(request); return { action: request.action, apps: [{ ...app(), revision: 2 }],
+        ...(request.action === 'usage' ? { usage: usage() } : request.action === 'rotate_secret' ? { rotation_outcome: outcome() } : {}) }; } });
+    const click = (action: string) => { const node = { dataset: { appUsageAction: action }, hasAttribute: () => false, closest() { return this; } };
+      for (const fn of listeners.get('click') ?? []) fn({ target: node, preventDefault() {} } as unknown as Event); };
+    await panel.open(app()); expect(slot.innerHTML).not.toContain('data-app-usage-action="verify-renewal"');
+    for (const fn of listeners.get('input') ?? []) fn({ target: { value: 'new-secret', dataset: {}, hasAttribute: (name: string) => name === 'data-app-usage-secret' } } as unknown as Event);
+    click('review'); click('apply'); await panel.whenLoaded(); expect(slot.innerHTML).toContain('Verify token renewal'); expect(verifyRenewal).not.toHaveBeenCalled();
+    click('verify-renewal'); expect(verifyRenewal).toHaveBeenCalledWith({ ...app(), revision: 2 }); expect(calls.some(c => c.action === 'renewal_run')).toBe(false); panel.dispose();
+  });
   it('shows native uses and confirmed copies before an explicit review and apply', async () => {
     const f = await fixture(); await f.panel.open(app());
     expect(f.slot.innerHTML).toContain('Work &lt;app&gt;'); expect(f.slot.innerHTML).toContain('mail work');

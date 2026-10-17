@@ -46,12 +46,14 @@ import {
   connectionsAccountAddress,
   connectionsEnrollAddress,
   connectionsOAuthAppsAddress,
+  connectionsOAuthAppAddress,
   connectionsAddressSelection,
   connectionsLaneAddress,
   isConnectionsTabId,
   isFoundationalConnectionsLane,
   type ConnectionsAddress,
   type ConnectionsTabId,
+  type ConnectionOAuthAppReview,
 } from './connections-navigation.js';
 import type { ProviderSetupContinuityStore } from './provider-setup-continuity.js';
 import type { SignInGridCallers } from './sign-in-grid-controls.js';
@@ -127,6 +129,8 @@ import type {
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import { createManagedOAuthPanel, type ManagedOAuthPanelContext } from '../settings/managed-oauth-panel.js';
 import { createReconnectWorklistPanel, RECONNECT_WORKLIST_STYLES } from '../settings/reconnect-worklist-panel.js';
+import { createAuthenticationIncidentPanel, AUTHENTICATION_INCIDENT_STYLES } from './authentication-incident-panel.js';
+import { createAuthenticationAccessPanel } from './authentication-access-panel.js';
 import { createManagedOAuthMigrationPanel } from '../settings/managed-oauth-migration-panel.js';
 import { createOAuthAppsPanel, OAUTH_APPS_STYLES, type OAuthAppsCaller } from '../settings/oauth-apps-panel.js';
 import { OAUTH_TROUBLESHOOTING_STYLES } from './oauth-troubleshooting.js';
@@ -417,6 +421,7 @@ export const CONNECTIONS_ROUTE_STYLES = [
   OAUTH_APPS_STYLES,
   OAUTH_TROUBLESHOOTING_STYLES,
   RECONNECT_WORKLIST_STYLES,
+  AUTHENTICATION_INCIDENT_STYLES,
   PRIMITIVE_STYLES,
   CONNECTIONS_PAGE_STYLES,
   ACCOUNTS_PANEL_STYLES,
@@ -426,8 +431,14 @@ export const CONNECTIONS_ROUTE_STYLES = [
 ].join('\n');
 
 export interface BootstrapConnectionsRouteOptions {
+  authenticationIncidentHistoryCaller?: import('@recued/contracts').AuthenticationIncidentHistoryCaller;
+  initialIncidentHistory?: import('@recued/contracts').AuthenticationIncidentScope | null;
+  initialAccessVerification?: import('@recued/contracts').AuthenticationAccessSelection | null;
   authenticationRepairsCaller?: import('@recued/contracts').AuthenticationRepairCaller;
   initialManageOAuthApps?: boolean;
+  initialOAuthAppReview?: ConnectionOAuthAppReview;
+  initialAccountAuthentication?: { platform: 'mail' | 'calendar'; slug: string };
+  initialRenewalReturn?: ConnectionOAuthAppReview;
   oauthAppsCaller?: OAuthAppsCaller;
   reconnectWorklistCaller?: import('../settings/reconnect-worklist-panel.js').PackReconnectCaller;
   onWorklistReconnect?(group: import('@recued/contracts').PackReconnectGroup): void;
@@ -752,8 +763,15 @@ export const bootstrapConnectionsRoute = (
   // Lane panels replace their own host. Keep the shared worklist above it so
   // an account refresh cannot remove the repair entry point.
   const worklistHost = (opts.reconnectWorklistCaller || opts.authenticationRepairsCaller)
+    && opts.initialIncidentHistory === undefined && opts.initialAccessVerification === undefined
     && !opts.initialPermissionRepair && !opts.permissionRepairUnavailable ? doc.createElement('div') : null;
   if (worklistHost) routeRoot.appendChild(worklistHost);
+  if (opts.initialRenewalReturn) {
+    const note = doc.createElement('aside'); note.className = 'connections-setup-return';
+    const copy = doc.createElement('p'); copy.textContent = 'After repairing this sign-in, review and run new token-renewal checks. Opening a review does not start a check.';
+    const back = doc.createElement('a'); back.textContent = 'Review token renewal after repair'; back.href = connectionsOAuthAppAddress(opts.initialRenewalReturn).hash;
+    back.setAttribute('href', back.href); back.setAttribute('data-renewal-repair-return', ''); note.appendChild(copy); note.appendChild(back); routeRoot.appendChild(note);
+  }
   const content = doc.createElement('div');
   content.setAttribute(CONNECTIONS_ROUTE_CONTENT_ATTR, '');
   routeRoot.appendChild(content);
@@ -764,12 +782,14 @@ export const bootstrapConnectionsRoute = (
   let oauthAppsPanel: ReturnType<typeof createOAuthAppsPanel> | null = null;
   let oauthAppsHost: HTMLElement | null = null;
   let reconnectWorklist: ReturnType<typeof createReconnectWorklistPanel> | null = null;
+  let incidentHistory: ReturnType<typeof createAuthenticationIncidentPanel> | null = null;
+  let accessVerification: ReturnType<typeof createAuthenticationAccessPanel> | null = null;
   let migrationPanel: ReturnType<typeof createManagedOAuthMigrationPanel> | null = null;
   let connectionsGrant: ConnectionsGrantPanelMount | null = null;
   let webhooksPanel: WebhooksPanelMount | null = null;
   const authenticationSettings = doc.createElement('details');
   authenticationSettings.className = 'connections-authentication-settings';
-  authenticationSettings.open = opts.initialManageOAuthApps === true;
+  authenticationSettings.open = opts.initialManageOAuthApps === true || !!opts.initialOAuthAppReview;
   const settingsSummary = doc.createElement('summary'); settingsSummary.textContent = 'Authentication settings';
   authenticationSettings.appendChild(settingsSummary);
 
@@ -777,6 +797,7 @@ export const bootstrapConnectionsRoute = (
     reconnectWorklist = createReconnectWorklistPanel({ document: doc,
       ...(opts.reconnectWorklistCaller ? { call: opts.reconnectWorklistCaller } : {}),
       ...(opts.authenticationRepairsCaller ? { repairs: opts.authenticationRepairsCaller } : {}),
+      ...(opts.connectionsManagedOAuthCaller ? { verify: opts.connectionsManagedOAuthCaller } : {}),
       ...(opts.onWorklistReconnect ? { onReconnect: opts.onWorklistReconnect } : {}),
       ...(opts.initialWorklistReturn ? { returned: opts.initialWorklistReturn } : {}),
     });
@@ -796,7 +817,26 @@ export const bootstrapConnectionsRoute = (
     if (location !== undefined) location.hash = hash;
   };
 
-  if (isFoundationalLane(activeTab)) {
+  if (opts.initialAccessVerification !== undefined) {
+    const back = doc.createElement('a'); back.textContent = 'Back to connection history'; back.href = '#connections/others/incident-history';
+    back.setAttribute('href', back.href); content.appendChild(back);
+    if (opts.initialAccessVerification === null) appendUnavailable(doc, content, 'This access-check link is invalid. Open connection history and choose Verify access.');
+    else if (!opts.connectionsManagedOAuthCaller) appendUnavailable(doc, content, 'Access checks are unavailable. Reconnect or update the server, then try again.');
+    else {
+      const host = doc.createElement('div'); content.appendChild(host);
+      accessVerification = createAuthenticationAccessPanel({ document: doc, call: opts.connectionsManagedOAuthCaller });
+      accessVerification.mount(host); accessVerification.open(opts.initialAccessVerification, undefined, () => navigate('#connections/others/incident-history'));
+    }
+  } else if (opts.initialIncidentHistory !== undefined) {
+    if (opts.initialIncidentHistory === null) appendUnavailable(doc, content, 'This incident history link is invalid. Open Authentication repairs and choose Incident history.');
+    else {
+      incidentHistory = createAuthenticationIncidentPanel({ document: doc, scope: opts.initialIncidentHistory,
+        navigate, ...(opts.oauthAppsCaller ? { renewal: opts.oauthAppsCaller } : {}),
+        ...(opts.connectionsManagedOAuthCaller ? { verify: opts.connectionsManagedOAuthCaller } : {}),
+        ...(opts.authenticationIncidentHistoryCaller ? { call: opts.authenticationIncidentHistoryCaller } : {}) });
+      incidentHistory.mount(content);
+    }
+  } else if (isFoundationalLane(activeTab)) {
     accountsPanel = mountAccountsLanePanel({
       host: content,
       document: doc,
@@ -814,6 +854,8 @@ export const bootstrapConnectionsRoute = (
       ...(initialDetailSlug !== undefined
         ? { initialDetailSlug }
         : {}),
+      ...(opts.initialAccountAuthentication?.platform === activeTab && opts.initialAccountAuthentication.slug === initialDetailSlug
+        ? { initialManageAuthentication: opts.initialAccountAuthentication.slug } : {}),
       ...(opts.mail !== undefined ? { mail: opts.mail } : {}),
       ...(opts.calendar !== undefined ? { calendar: opts.calendar } : {}),
       ...(opts.file !== undefined ? { file: opts.file } : {}),
@@ -910,8 +952,8 @@ export const bootstrapConnectionsRoute = (
     if (opts.oauthAppsCaller && !opts.initialPermissionRepair && !opts.permissionRepairUnavailable) {
       oauthAppsHost = doc.createElement('div'); authenticationSettings.appendChild(oauthAppsHost);
       oauthAppsPanel = createOAuthAppsPanel({ host: oauthAppsHost, call: opts.oauthAppsCaller,
+        navigate,
         changed: () => { void connectionsEnroll?.refresh(); } });
-      if (opts.initialManageOAuthApps) oauthAppsPanel.open();
     }
     if (opts.connectionsManagedOAuthCaller !== undefined) {
       const section = doc.createElement('section');
@@ -1286,7 +1328,7 @@ export const bootstrapConnectionsRoute = (
   // clipped outside the viewport, leaving the visible Mail tab looking like
   // the current context. Reveal without moving focus or forcing page scroll.
   activeTabLink?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
-  if (opts.initialManageOAuthApps) oauthAppsPanel?.open();
+  if (opts.initialManageOAuthApps || opts.initialOAuthAppReview) oauthAppsPanel?.open(opts.initialOAuthAppReview);
 
   let disposed = false;
   const hasInFlightWork = (): boolean =>
@@ -1295,6 +1337,7 @@ export const bootstrapConnectionsRoute = (
     || (oauthAppsPanel?.busy() ?? false)
     || (migrationPanel?.busy() ?? false)
     || (reconnectWorklist?.busy() ?? false)
+    || (accessVerification?.hasInFlightWork() ?? false)
     || (connectionsEnroll?.hasInFlightWork() ?? false)
     || (connectionsGrant?.hasInFlightWork() ?? false)
     || (webhooksPanel?.hasInFlightWork() ?? false);
@@ -1308,10 +1351,10 @@ export const bootstrapConnectionsRoute = (
       connectionsEnroll?.setPostSafeStopProfileContext(context);
     },
     webhooksPanel: () => webhooksPanel,
-    whenLoaded: () => accountsPanel?.whenLoaded()
-      ?? connectionsEnroll?.whenLoaded()
-      ?? webhooksPanel?.whenLoaded()
-      ?? Promise.resolve(),
+    whenLoaded: async () => { await Promise.all([
+      accessVerification?.whenLoaded() ?? incidentHistory?.whenLoaded() ?? accountsPanel?.whenLoaded() ?? connectionsEnroll?.whenLoaded() ?? webhooksPanel?.whenLoaded(),
+      oauthAppsPanel?.whenLoaded(),
+    ]); },
     getRecoveryContextFreshness: () => {
       if (accountsPanel !== null) {
         return accountsPanel.getState().error === null
@@ -1345,9 +1388,9 @@ export const bootstrapConnectionsRoute = (
         }
       : {}),
     hasUnsavedChanges: () =>
-      (accountsPanel?.hasUnsavedChanges() ?? false) || (oauthAppsPanel?.hasDraft() ?? false) || (brokerPanel?.hasDraft() ?? false) || (migrationPanel?.hasDraft() ?? false) || (connectionsEnroll?.hasUnsavedChanges() ?? false),
+      (accountsPanel?.hasUnsavedChanges() ?? false) || (accessVerification?.hasDraft() ?? false) || (oauthAppsPanel?.hasDraft() ?? false) || (brokerPanel?.hasDraft() ?? false) || (migrationPanel?.hasDraft() ?? false) || (connectionsEnroll?.hasUnsavedChanges() ?? false),
     unsavedChangesPrompt: () =>
-      oauthAppsPanel?.hasDraft() === true ? 'Discard this OAuth app draft? The secret is held only in this editor.' : brokerPanel?.hasDraft() === true
+      accessVerification?.hasDraft() === true ? 'Leave this access review? Its selected resources will not be kept.' : oauthAppsPanel?.hasDraft() === true ? 'Discard this OAuth app draft? The secret is held only in this editor.' : brokerPanel?.hasDraft() === true
         ? 'Discard this OAuth broker setup? Credential fields are not saved in your browser and cannot be restored after leaving.'
         : accountsPanel?.hasUnsavedChanges() ? 'Discard this account setup or replacement password? Credentials entered here cannot be restored.' : connectionsEnroll?.unsavedChangesPrompt() ?? null,
     hasInFlightWork,
@@ -1363,6 +1406,8 @@ export const bootstrapConnectionsRoute = (
       brokerPanel?.dispose();
       oauthAppsPanel?.dispose();
       reconnectWorklist?.dispose();
+      incidentHistory?.dispose();
+      accessVerification?.dispose();
       for (const unsubscribe of worklistUnsubs) unsubscribe();
       migrationPanel?.dispose();
       if (webhooksPanel !== null) webhooksPanel.dispose();

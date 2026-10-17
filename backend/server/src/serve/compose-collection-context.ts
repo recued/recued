@@ -80,6 +80,7 @@ import { createOAuthAppConfigStore } from '../oauth-app-config-store.js';
 import { oauthAppUses, type OAuthAppConfigHandlerDeps } from '../oauth-app-config-handler.js';
 import { createOAuthPermissionService } from '../oauth-permission-consolidation.js';
 import { createOAuthAppUsageService } from '../oauth-app-usage-service.js';
+import { createOAuthAppRenewalService } from '../oauth-app-renewal-service.js';
 import type { OAuthProviderConfig } from '../collections/mail/oauth.js';
 import { oauthAppIssuerForProvider, resolveServerTimeZone } from '@recued/contracts';
 import { createServerTimeZoneStore } from '../storage/server-timezone-store.js';
@@ -707,6 +708,9 @@ export const composeCollectionContext = (
       ...(options.oauthAppPermissionNeeds ? { requirements: options.oauthAppPermissionNeeds } : {}),
       ...(options.oauthAppNativePermissionNeeds ? { nativeRequirements: options.oauthAppNativePermissionNeeds } : {}) }) } : {}),
       store: oauthAppConfigStore, uses: (issuer, id) => oauthAppUses(createInstanceStore({ db: db! }), issuer, id),
+      ...(db && connectionStore ? { renewal: createOAuthAppRenewalService({ db, apps: oauthAppConfigStore, connections: connectionStore,
+        instances: createInstanceStore({ db }), ...(accountStore ? { accountStore } : {}), ...(keys ? { key: keys.keyProvider('connection') } : {}),
+        ...(options.oauthAppConnectionUses ? { connectionUses: options.oauthAppConnectionUses } : {}) }) } : {}),
       ...(db && connectionStore ? { usage: createOAuthAppUsageService({ db, apps: oauthAppConfigStore, connections: connectionStore,
         instances: createInstanceStore({ db }), ...(keys ? { key: keys.keyProvider('connection') } : {}),
         ...(options.oauthAppConnectionUses ? { connectionUses: options.oauthAppConnectionUses } : {}) }) } : {}) }

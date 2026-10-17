@@ -90,6 +90,8 @@ describe('unified authentication repair worklist', () => {
     const { host, panel } = mount(undefined, async () => authentication()); await panel.whenLoaded();
     const links = host.all('data-authentication-repair-link').map(link => link.attrs.get('href'));
     expect(links).toEqual(['#connections/others/review-access/api/mail', '#connections/mail/inbox', '#data/files/remote%3Agoogle.mail.file', '#connections/others/oauth-apps']);
+    expect(host.find('data-authentication-history-link', 'all')?.attrs.get('href')).toBe('#connections/others/incident-history');
+    expect(host.find('data-authentication-history-link', authentication().groups[0]!.id)?.attrs.get('href')).toBe('#connections/others/incident-history/group/' + authentication().groups[0]!.id);
     expect(host.text()).not.toContain('Authorize with Nango'); expect(host.text()).toContain('does not contact vendors'); panel.dispose();
   });
   it('does not clear an authentication failure when unknown Pack permissions are marked reviewed', async () => {

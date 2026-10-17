@@ -148,8 +148,13 @@ const PRE_RESOLVE_INTERVAL_MS = STABLE_CHECK_INTERVAL_MS;
  *
  *  ⚠ An out-of-cohort release IS reported. The staged rollout decides what
  *  auto-applies, not what the owner is allowed to know — withholding it would
- *  be the substrate making a judgment call that is the human's. It says so
- *  plainly instead. */
+ *  be the substrate making a judgment call that is the human's.
+ *
+ *  ⛔ AND IT DOES NOT NARRATE THE ROLLOUT. `rollout_pct` is 0 for good (the
+ *  owner, 2026-10-16: "we will always have 0% rollout policy"), so no server is
+ *  ever in the cohort, and a line saying the rollout had not reached this
+ *  server YET went into every notice and promised something that never comes.
+ *  Settings → Updates and `recued update apply` say nothing about it either. */
 export const describeAvailable = (
   res: ReleaseCheckResponse,
   version: string,
@@ -164,9 +169,6 @@ export const describeAvailable = (
   }
   if (a?.migration) {
     lines.push('It migrates the database on first boot. A snapshot is taken first, so it can be rolled back.');
-  }
-  if (a && !a.in_rollout_cohort) {
-    lines.push('The staged rollout has not reached this server yet. You can still apply it yourself.');
   }
   if (res.docker) {
     lines.push(

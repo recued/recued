@@ -21,11 +21,19 @@ import {
 
 // ── the browser doubles ───────────────────────────────────────────
 
-interface FakeTrack { stopped: boolean; stop(): void }
+interface FakeTrack extends EventTarget {
+  stopped: boolean;
+  readyState: 'live' | 'ended';
+  stop(): void;
+}
 
 const makeStream = (): { stream: MediaStream; tracks: FakeTrack[] } => {
   const tracks: FakeTrack[] = [
-    { stopped: false, stop(): void { this.stopped = true; } },
+    Object.assign(new EventTarget(), {
+      stopped: false,
+      readyState: 'live' as 'live' | 'ended',
+      stop(): void { this.stopped = true; this.readyState = 'ended'; },
+    }),
   ];
   return {
     stream: { getTracks: () => tracks } as unknown as MediaStream,
@@ -38,6 +46,7 @@ interface FakeRecorder {
   started: boolean;
   ondataavailable: ((e: { data: Blob }) => void) | null;
   onstop: (() => void) | null;
+  onerror: (() => void) | null;
   start(): void;
   stop(): void;
 }
@@ -51,6 +60,8 @@ const fakeGlobals = (over: {
   omitIsTypeSupported?: boolean;
   /** Bytes the recorder emits before stopping; `[]` = a silent press. */
   chunks?: string[];
+  stopThrows?: boolean;
+  deferStop?: boolean;
 } = {}) => {
   const recorders: FakeRecorder[] = [];
   const streams: Array<{ stream: MediaStream; tracks: FakeTrack[] }> = [];
@@ -68,8 +79,11 @@ const fakeGlobals = (over: {
         started: false,
         ondataavailable: null,
         onstop: null,
+        onerror: null,
         start(): void { this.started = true; },
         stop(): void {
+          if (over.stopThrows) throw new Error('recorder failed to stop');
+          if (over.deferStop) return;
           for (const chunk of over.chunks ?? ['bytes']) {
             this.ondataavailable?.({
               data: new Blob([chunk], { type: this.mimeType }),
@@ -212,6 +226,71 @@ describe('D-262 — the microphone is released on every exit', () => {
   });
 });
 
+describe('D-262 — interruptions discard incomplete audio', () => {
+  it.each(['recorder error', 'microphone loss', 'unexpected stop'])('releases the microphone after %s', async (cause) => {
+    const { globals, streams, recorders } = fakeGlobals();
+    const onError = vi.fn();
+    const session = await browserVoiceCaptureFactory(globals)!(onError);
+    const recorder = recorders[0]!;
+    const lateData = recorder.ondataavailable;
+    const lateStop = recorder.onstop;
+    lateData?.({ data: new Blob(['incomplete']) });
+
+    if (cause === 'recorder error') recorder.onerror?.();
+    else if (cause === 'microphone loss') {
+      streams[0]!.tracks[0]!.readyState = 'ended';
+      streams[0]!.tracks[0]!.dispatchEvent(new Event('ended'));
+    } else recorder.onstop?.();
+
+    expect(streams[0]!.tracks.every(track => track.stopped)).toBe(true);
+    expect(onError).toHaveBeenCalledTimes(1);
+    lateData?.({ data: new Blob(['late bytes']) });
+    lateStop?.();
+    expect(await session.stop()).toBeNull();
+    session.cancel();
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a failed stop and settles without retaining the microphone', async () => {
+    const { globals, streams } = fakeGlobals({ stopThrows: true });
+    const onError = vi.fn();
+    const session = await browserVoiceCaptureFactory(globals)!(onError);
+    expect(await session.stop()).toBeNull();
+    expect(streams[0]!.tracks[0]!.stopped).toBe(true);
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('discards the final browser data when an error arrives after Stop', async () => {
+    const { globals, recorders } = fakeGlobals({ deferStop: true });
+    const onError = vi.fn();
+    const session = await browserVoiceCaptureFactory(globals)!(onError);
+    const recorder = recorders[0]!;
+    const lateData = recorder.ondataavailable;
+    const lateStop = recorder.onstop;
+    const stopped = session.stop();
+    recorder.onerror?.();
+    lateData?.({ data: new Blob(['partial final data']) });
+    lateStop?.();
+    expect(await stopped).toBeNull();
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('quietly discards a cancelled recording while Stop is still draining', async () => {
+    const { globals, recorders, streams } = fakeGlobals({ deferStop: true });
+    const onError = vi.fn();
+    const session = await browserVoiceCaptureFactory(globals)!(onError);
+    const lateData = recorders[0]!.ondataavailable;
+    const lateStop = recorders[0]!.onstop;
+    const stopped = session.stop();
+    session.cancel();
+    lateData?.({ data: new Blob(['discarded']) });
+    lateStop?.();
+    expect(await stopped).toBeNull();
+    expect(streams[0]!.tracks[0]!.stopped).toBe(true);
+    expect(onError).not.toHaveBeenCalled();
+  });
+});
+
 // ── the state machine ─────────────────────────────────────────────
 
 const recordingSession = (): {
@@ -239,6 +318,351 @@ const recordingSession = (): {
 };
 
 describe('D-262 — the press-to-talk state machine', () => {
+  it.each(['idle', 'opening', 'recording', 'stopped'] as const)(
+    'discards every capture for one destination with its latest attempt %s', async latest => {
+      const owner = { sessionId: null };
+      const cancels: Array<ReturnType<typeof vi.fn>> = [];
+      const finish: Array<(recording: VoiceRecording) => void> = [];
+      const errors: Array<(() => void) | undefined> = [];
+      let grant!: () => void;
+      const onRecording = vi.fn();
+      const composer = createVoiceComposer({
+        recordingContext: () => owner,
+        factory: async onError => {
+          errors.push(onError);
+          const cancel = vi.fn(); cancels.push(cancel);
+          const capture = { stop: () => new Promise<VoiceRecording>(resolve => { finish.push(resolve); }), cancel };
+          if (latest === 'opening' && cancels.length === 3) {
+            return new Promise<VoiceCaptureSession>(resolve => { grant = () => resolve(capture); });
+          }
+          return capture;
+        },
+        onRecording, onChange: () => {},
+      });
+      try {
+        for (let n = 0; n < 2; n++) { composer.toggle(); await tick(); composer.toggle(); }
+        // An idle retired attempt must not hide stopped sessions from discard.
+        composer.clearError();
+        if (latest !== 'idle') { composer.toggle(); await tick(); }
+        if (latest === 'stopped') composer.toggle();
+        composer.cancel(context => context === owner);
+        expect(composer.phase()).toBe('idle');
+        expect(composer.hasPendingRecordings()).toBe(false);
+        if (latest === 'opening') { grant(); await tick(); }
+        for (const cancel of cancels) expect(cancel).toHaveBeenCalledTimes(1);
+        for (const error of errors) error?.();
+        for (const complete of finish) complete({ blob: new Blob(['voice']), filename: 'Discarded.webm', mime_type: 'audio/webm' });
+        await tick();
+        expect(onRecording).not.toHaveBeenCalled();
+        expect(composer.error()).toBeNull();
+      } finally { composer.destroy(); }
+    },
+  );
+
+  it.each(['opening', 'recording', 'stopped'] as const)(
+    'keeps another destination’s %s capture when discarding parked audio', async latest => {
+      // Identity, rather than the mutable session id, distinguishes drafts.
+      const discarded = { sessionId: null };
+      const retained = { sessionId: null };
+      let owner = discarded;
+      const cancels: Array<ReturnType<typeof vi.fn>> = [];
+      const finish: Array<(recording: VoiceRecording) => void> = [];
+      const errors: Array<(() => void) | undefined> = [];
+      let grant!: () => void;
+      const onRecording = vi.fn();
+      const composer = createVoiceComposer({
+        recordingContext: () => owner,
+        factory: async onError => {
+          errors.push(onError);
+          const cancel = vi.fn(); cancels.push(cancel);
+          const capture = { stop: () => new Promise<VoiceRecording>(resolve => { finish.push(resolve); }), cancel };
+          if (latest === 'opening' && cancels.length === 3) {
+            return new Promise<VoiceCaptureSession>(resolve => { grant = () => resolve(capture); });
+          }
+          return capture;
+        },
+        onRecording, onChange: () => {},
+      });
+      try {
+        for (let n = 0; n < 2; n++) { composer.toggle(); await tick(); composer.toggle(); }
+        composer.clearError(); owner = retained;
+        composer.toggle(); await tick();
+        if (latest === 'stopped') composer.toggle();
+        composer.cancel(context => context === discarded);
+        expect(composer.phase()).toBe(latest === 'stopped' ? 'idle' : latest);
+        expect(composer.hasPendingRecordings(context => context === discarded)).toBe(false);
+        expect(cancels[0]).toHaveBeenCalledTimes(1);
+        expect(cancels[1]).toHaveBeenCalledTimes(1);
+        expect(cancels[2]).not.toHaveBeenCalled();
+        for (const n of [0, 1]) {
+          errors[n]?.(); finish[n]!({ blob: new Blob(['old']), filename: 'Old.webm', mime_type: 'audio/webm' });
+        }
+        await tick();
+        expect(onRecording).not.toHaveBeenCalled();
+        expect(composer.error()).toBeNull();
+        if (latest === 'opening') { grant(); await tick(); }
+        if (latest !== 'stopped') composer.toggle();
+        finish[2]!({ blob: new Blob(['keep']), filename: 'Keep.webm', mime_type: 'audio/webm' }); await tick();
+        expect(onRecording).toHaveBeenCalledTimes(1);
+        expect(onRecording.mock.calls[0]?.[1]).toBe(retained);
+        expect(cancels[2]).not.toHaveBeenCalled();
+      } finally { composer.destroy(); }
+    },
+  );
+
+  it.each(['audio', 'empty', 'reject', 'throw', 'attachment-error'] as const)(
+    'protects a stopped capture through its %s handoff', async outcome => {
+      let finish!: (recording: VoiceRecording | null) => void;
+      let reject!: (error: Error) => void;
+      const pendingChanges: boolean[] = [];
+      const onRecording = vi.fn(() => {
+        expect(composer.hasPendingRecordings()).toBe(true);
+        if (outcome === 'attachment-error') throw new Error('Unable to attach audio');
+      });
+      const composer = createVoiceComposer({
+        factory: async () => ({
+          stop: () => {
+            if (outcome === 'throw') throw new Error('Unable to stop');
+            return new Promise<VoiceRecording | null>((resolve, fail) => { finish = resolve; reject = fail; });
+          },
+          cancel: vi.fn(),
+        }),
+        onRecording, onChange: () => { pendingChanges.push(composer.hasPendingRecordings()); },
+      });
+      try {
+        expect(composer.hasPendingRecordings()).toBe(false);
+        composer.toggle(); await tick(); composer.toggle();
+        expect(composer.phase()).toBe('idle');
+        // The idle repaint must already see the outstanding recording.
+        expect(pendingChanges[2]).toBe(true);
+        if (outcome !== 'throw') {
+          expect(composer.hasPendingRecordings()).toBe(true);
+          if (outcome === 'reject') reject(new Error('Unable to finish'));
+          else finish(outcome === 'empty' ? null
+            : { blob: new Blob(['voice']), filename: 'Note.webm', mime_type: 'audio/webm' });
+        }
+        await tick();
+        expect(composer.hasPendingRecordings()).toBe(false);
+        expect(pendingChanges.at(-1)).toBe(false);
+        expect(onRecording).toHaveBeenCalledTimes(outcome === 'audio' || outcome === 'attachment-error' ? 1 : 0);
+        expect(composer.error() !== null).toBe(!['audio', 'empty'].includes(outcome));
+      } finally { composer.destroy(); }
+    },
+  );
+
+  it('clears prior feedback and ignores that attempt while fresh failures still report', async () => {
+    const errors: Array<(() => void) | undefined> = [];
+    const capture = recordingSession();
+    const onChange = vi.fn();
+    const composer = createVoiceComposer({
+      factory: async (onError?: () => void) => {
+        errors.push(onError);
+        if (errors.length === 1) throw Object.assign(new Error('refused'), { name: 'NotAllowedError' });
+        return capture.session;
+      },
+      onRecording: vi.fn(), onChange,
+    });
+    composer.toggle(); await tick();
+    expect(composer.error()).toContain('permission was refused');
+    onChange.mockClear();
+    composer.clearError();
+    expect(composer.error()).toBeNull();
+    expect(onChange).toHaveBeenCalledTimes(1);
+    composer.clearError();
+    errors[0]?.();
+    expect(composer.error()).toBeNull();
+    expect(onChange).toHaveBeenCalledTimes(1);
+
+    composer.toggle(); await tick();
+    errors[1]?.();
+    expect(composer.error()).toContain('Try recording again');
+    expect(capture.cancelled()).toBe(true);
+    composer.destroy();
+    onChange.mockClear(); composer.clearError();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('clears idle feedback without discarding audio still finishing for its original context', async () => {
+    let owner = 'first';
+    let finish!: (recording: VoiceRecording) => void;
+    let reportError: (() => void) | undefined;
+    const cancel = vi.fn();
+    const onRecording = vi.fn();
+    const composer = createVoiceComposer({
+      recordingContext: () => owner,
+      factory: async (onError?: () => void) => {
+        reportError = onError;
+        return {
+          stop: () => new Promise<VoiceRecording>(resolve => { finish = resolve; }), cancel,
+        };
+      },
+      onRecording, onChange: () => {},
+    });
+    composer.toggle(); await tick(); composer.toggle();
+    composer.clearError(); owner = 'second';
+    reportError?.();
+    expect(composer.error()).toBeNull();
+    finish({ blob: new Blob(['voice']), filename: 'First.webm', mime_type: 'audio/webm' });
+    await tick();
+    expect(onRecording).toHaveBeenCalledTimes(1);
+    expect(onRecording.mock.calls[0]?.[0].name).toBe('First.webm');
+    expect(onRecording.mock.calls[0]?.[1]).toBe('first');
+    expect(cancel).not.toHaveBeenCalled();
+    composer.destroy();
+  });
+
+  it('cleans up a late failed Stop without reviving cleared feedback', async () => {
+    let rejectStop!: (error: Error) => void;
+    const cancel = vi.fn();
+    const onRecording = vi.fn();
+    const composer = createVoiceComposer({
+      factory: async () => ({
+        stop: () => new Promise<VoiceRecording>((_resolve, reject) => { rejectStop = reject; }), cancel,
+      }),
+      onRecording, onChange: () => {},
+    });
+    composer.toggle(); await tick(); composer.toggle();
+    composer.clearError();
+    rejectStop(new Error('old recorder failed')); await tick();
+    expect(composer.phase()).toBe('idle');
+    expect(composer.error()).toBeNull();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(onRecording).not.toHaveBeenCalled();
+    composer.destroy();
+  });
+
+  it.each(['opening', 'recording'] as const)('keeps the current capture valid when clearing feedback during %s', async (phase) => {
+    let open!: (capture: VoiceCaptureSession) => void;
+    let reportError: (() => void) | undefined;
+    const capture = recordingSession();
+    const composer = createVoiceComposer({
+      factory: (onError?: () => void) => {
+        reportError = onError;
+        return new Promise(resolve => { open = resolve; });
+      },
+      onRecording: vi.fn(), onChange: () => {},
+    });
+    composer.toggle();
+    if (phase === 'recording') { open(capture.session); await tick(); }
+    expect(composer.phase()).toBe(phase);
+    composer.clearError();
+    if (phase === 'opening') { open(capture.session); await tick(); }
+    expect(composer.phase()).toBe('recording');
+    expect(capture.cancelled()).toBe(false);
+    reportError?.();
+    expect(composer.phase()).toBe('idle');
+    expect(composer.error()).toContain('Try recording again');
+    expect(capture.cancelled()).toBe(true);
+    composer.destroy();
+  });
+
+  it('shows an interruption, clears its timer and permits a successful retry', async () => {
+    const { globals, recorders, streams } = fakeGlobals();
+    const onRecording = vi.fn();
+    const clearTimer = vi.fn();
+    const composer = createVoiceComposer({
+      factory: browserVoiceCaptureFactory(globals)!, onRecording, onChange: () => {},
+      setTimer: () => 1, clearTimer,
+    });
+    composer.toggle(); await tick();
+    recorders[0]!.onerror?.();
+    await tick();
+    expect(composer.phase()).toBe('idle');
+    expect(composer.error()).toContain('Try recording again');
+    expect(clearTimer).toHaveBeenCalledWith(1);
+    expect(streams[0]!.tracks[0]!.stopped).toBe(true);
+    expect(onRecording).not.toHaveBeenCalled();
+
+    composer.toggle(); await tick();
+    expect(composer.phase()).toBe('recording');
+    expect(composer.error()).toBeNull();
+    composer.toggle(); await tick();
+    expect(onRecording).toHaveBeenCalledTimes(1);
+    composer.destroy();
+  });
+
+  it.each(['throw', 'reject'])('surfaces a stop that fails by %s', async (failure) => {
+    const cancel = vi.fn();
+    const composer = createVoiceComposer({
+      factory: async () => ({
+        stop: () => {
+          if (failure === 'throw') throw new Error('stop failed');
+          return Promise.reject(new Error('stop failed'));
+        },
+        cancel,
+      }),
+      onRecording: vi.fn(), onChange: () => {},
+    });
+    composer.toggle(); await tick();
+    composer.toggle(); await tick();
+    expect(composer.phase()).toBe('idle');
+    expect(composer.error()).toContain('Try recording again');
+    expect(cancel).toHaveBeenCalledTimes(1);
+    composer.destroy();
+  });
+
+  it('does not let a discarded capture report an error against its replacement', async () => {
+    const errors: Array<(() => void) | undefined> = [];
+    const captures = [recordingSession(), recordingSession()];
+    const composer = createVoiceComposer({
+      factory: async (onError?: () => void) => {
+        errors.push(onError);
+        return captures[errors.length - 1]!.session;
+      },
+      onRecording: vi.fn(), onChange: () => {},
+    });
+    composer.toggle(); await tick(); composer.cancel();
+    composer.toggle(); await tick();
+    errors[0]?.();
+    expect(composer.phase()).toBe('recording');
+    expect(composer.error()).toBeNull();
+    expect(captures[1]!.cancelled()).toBe(false);
+    composer.destroy();
+    errors[1]?.();
+    expect(composer.error()).toBeNull();
+  });
+
+  it('cancels a capture that opens after reporting an interruption', async () => {
+    const capture = recordingSession();
+    let reportError: (() => void) | undefined;
+    let open!: (session: VoiceCaptureSession) => void;
+    const composer = createVoiceComposer({
+      factory: (onError?: () => void) => {
+        reportError = onError;
+        return new Promise(resolve => { open = resolve; });
+      },
+      onRecording: vi.fn(), onChange: () => {},
+    });
+    composer.toggle();
+    reportError?.();
+    open(capture.session); await tick();
+    expect(composer.phase()).toBe('idle');
+    expect(composer.error()).toContain('Try recording again');
+    expect(capture.cancelled()).toBe(true);
+    composer.destroy();
+  });
+
+  it('does not let an older failed Stop interrupt a new recording', async () => {
+    let rejectStop!: (error: Error) => void;
+    const cancel = vi.fn();
+    const capture = recordingSession();
+    const factory = vi.fn()
+      .mockResolvedValueOnce({
+        stop: () => new Promise<VoiceRecording>((_resolve, reject) => { rejectStop = reject; }),
+        cancel,
+      })
+      .mockResolvedValueOnce(capture.session);
+    const composer = createVoiceComposer({ factory, onRecording: vi.fn(), onChange: () => {} });
+    composer.toggle(); await tick(); composer.toggle();
+    composer.toggle(); await tick();
+    rejectStop(new Error('old recorder failed')); await tick();
+    expect(composer.phase()).toBe('recording');
+    expect(composer.error()).toBeNull();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(capture.cancelled()).toBe(false);
+    composer.destroy();
+  });
+
   it('walks idle → opening → recording → a file on the attachment path', async () => {
     const made = recordingSession();
     const onRecording = vi.fn();
@@ -263,6 +687,99 @@ describe('D-262 — the press-to-talk state machine', () => {
     expect(made.stopped()).toBe(true);
     expect(onRecording).toHaveBeenCalledTimes(1);
     expect(onRecording.mock.calls[0]?.[0]).toMatchObject({ name: 'voice-note.webm' });
+  });
+
+  it.each([
+    { cancelPhase: 'opening', sameDraft: true },
+    { cancelPhase: 'recording', sameDraft: true },
+    { cancelPhase: 'stopped', sameDraft: true },
+    { cancelPhase: 'opening', sameDraft: false },
+    { cancelPhase: 'recording', sameDraft: false },
+    { cancelPhase: 'stopped', sameDraft: false },
+  ] as const)('keeps earlier audio when cancelling a newer $cancelPhase attempt, sameDraft=$sameDraft', async ({ cancelPhase, sameDraft }) => {
+    let owner = 'a';
+    let attempts = 0;
+    let finishEarlier!: (recording: VoiceRecording) => void;
+    let finishLater!: (recording: VoiceRecording) => void;
+    let openLater!: (session: VoiceCaptureSession) => void;
+    const cancelEarlier = vi.fn();
+    const cancelLater = vi.fn();
+    const later: VoiceCaptureSession = {
+      stop: () => new Promise(resolve => { finishLater = resolve; }), cancel: cancelLater,
+    };
+    const onRecording = vi.fn();
+    const composer = createVoiceComposer({
+      recordingContext: () => owner,
+      factory: () => ++attempts === 1
+        ? Promise.resolve({ stop: () => new Promise<VoiceRecording>(resolve => { finishEarlier = resolve; }), cancel: cancelEarlier })
+        : new Promise<VoiceCaptureSession>(resolve => { openLater = resolve; }),
+      onRecording, onChange: () => {},
+    });
+    composer.toggle(); await tick(); composer.toggle();
+    if (!sameDraft) { composer.clearError(); owner = 'b'; }
+    composer.toggle();
+    if (cancelPhase !== 'opening') { openLater(later); await tick(); }
+    if (cancelPhase === 'stopped') composer.toggle();
+    composer.cancel();
+    if (cancelPhase === 'opening') openLater(later);
+    if (cancelPhase === 'stopped') {
+      finishLater({ blob: new Blob(['later']), filename: 'Later.webm', mime_type: 'audio/webm' });
+    }
+    finishEarlier({ blob: new Blob(['earlier']), filename: 'Earlier.webm', mime_type: 'audio/webm' });
+    await tick();
+    expect(onRecording).toHaveBeenCalledTimes(1);
+    expect(onRecording.mock.calls[0]?.[0].name).toBe('Earlier.webm');
+    expect(onRecording.mock.calls[0]?.[1]).toBe('a');
+    expect(cancelEarlier).not.toHaveBeenCalled();
+    expect(cancelLater).toHaveBeenCalledTimes(1);
+    expect(composer.phase()).toBe('idle');
+    expect(composer.error()).toBeNull();
+    composer.destroy();
+  });
+
+  it('keeps retired audio when the next draft is discarded without another capture', async () => {
+    let owner = 'a';
+    let finish!: (recording: VoiceRecording) => void;
+    const onRecording = vi.fn();
+    const composer = createVoiceComposer({
+      recordingContext: () => owner,
+      factory: async () => ({ stop: () => new Promise<VoiceRecording>(resolve => { finish = resolve; }), cancel: () => {} }),
+      onRecording, onChange: () => {},
+    });
+    composer.toggle(); await tick(); composer.toggle();
+    composer.clearError(); owner = 'b'; composer.cancel();
+    finish({ blob: new Blob(['earlier']), filename: 'Earlier.webm', mime_type: 'audio/webm' });
+    await tick();
+    expect(onRecording).toHaveBeenCalledTimes(1);
+    expect(onRecording.mock.calls[0]?.[1]).toBe('a');
+    composer.destroy();
+  });
+
+  it('drops all pending stopped recordings after destruction', async () => {
+    const finish: Array<(recording: VoiceRecording) => void> = [];
+    const cancels: Array<ReturnType<typeof vi.fn>> = [];
+    const onRecording = vi.fn();
+    const onChange = vi.fn();
+    const composer = createVoiceComposer({
+      factory: async () => {
+        const cancel = vi.fn(); cancels.push(cancel);
+        return { stop: () => new Promise<VoiceRecording>(resolve => { finish.push(resolve); }), cancel };
+      },
+      onRecording, onChange,
+    });
+    composer.toggle(); await tick(); composer.toggle();
+    composer.toggle(); await tick(); composer.toggle();
+    composer.toggle(); await tick();
+    expect(composer.hasPendingRecordings()).toBe(true);
+    composer.destroy();
+    expect(composer.hasPendingRecordings()).toBe(false);
+    expect(cancels).toHaveLength(3);
+    for (const cancel of cancels) expect(cancel).toHaveBeenCalledTimes(1);
+    onChange.mockClear();
+    for (const complete of finish) complete({ blob: new Blob(['voice']), filename: 'Discarded.webm', mime_type: 'audio/webm' });
+    await tick();
+    expect(onRecording).not.toHaveBeenCalled();
+    expect(onChange).not.toHaveBeenCalled();
   });
 
   it('does not attach a stopped recording after its draft was explicitly discarded', async () => {
@@ -297,9 +814,16 @@ describe('D-262 — the press-to-talk state machine', () => {
     composer.toggle(); await tick(); composer.toggle();
     owner = 'second';
     composer.toggle(); await tick(); composer.toggle();
+    expect(composer.hasPendingRecordings(context => context === 'first')).toBe(true);
+    expect(composer.hasPendingRecordings(context => context === 'second')).toBe(true);
+    expect(composer.hasPendingRecordings(context => context === 'other')).toBe(false);
     finish[1]!({ blob: new Blob(['second']), filename: 'Second.webm', mime_type: 'audio/webm' });
+    await tick();
+    expect(composer.hasPendingRecordings(context => context === 'first')).toBe(true);
+    expect(composer.hasPendingRecordings(context => context === 'second')).toBe(false);
     finish[0]!({ blob: new Blob(['first']), filename: 'First.webm', mime_type: 'audio/webm' });
     await tick();
+    expect(composer.hasPendingRecordings()).toBe(false);
     expect(onRecording.mock.calls.map(([file, context]) => [file.name, context])).toEqual([
       ['Second.webm', 'second'], ['First.webm', 'first'],
     ]);
@@ -408,6 +932,28 @@ describe('D-262 — the press-to-talk state machine', () => {
     expect(composer.phase()).toBe('idle');
   });
 
+  it('releases a microphone granted after its pending request was cancelled', async () => {
+    const { globals } = fakeGlobals();
+    const made = makeStream();
+    let allow!: (stream: MediaStream) => void;
+    globals.mediaDevices!.getUserMedia = () => new Promise(resolve => { allow = resolve; });
+    const onRecording = vi.fn();
+    const setTimer = vi.fn();
+    const composer = createVoiceComposer({
+      factory: browserVoiceCaptureFactory(globals)!, onRecording, setTimer, onChange: () => {},
+    });
+    composer.toggle();
+    expect(composer.phase()).toBe('opening');
+    composer.cancel();
+    allow(made.stream); await tick();
+    expect(made.tracks[0]!.stopped).toBe(true);
+    expect(composer.phase()).toBe('idle');
+    expect(composer.error()).toBeNull();
+    expect(setTimer).not.toHaveBeenCalled();
+    expect(onRecording).not.toHaveBeenCalled();
+    composer.destroy();
+  });
+
   it('⛔ CLOSES a stream that opens after teardown', async () => {
     const made = recordingSession();
     let release: ((s: VoiceCaptureSession) => void) | null = null;
@@ -453,13 +999,8 @@ describe('D-262 — the press-to-talk state machine', () => {
 // in that query and reject it at construction, so the guard above does not
 // make the constructor safe.
 describe('D-262 — a failed recorder init must not keep the microphone', () => {
-  const stream = (): { stream: MediaStream; tracks: { stopped: boolean }[] } => {
-    const tracks = [{ stopped: false, stop(): void { this.stopped = true; } }];
-    return { stream: { getTracks: () => tracks } as unknown as MediaStream, tracks };
-  };
-
   const globalsThatFail = (where: 'construct' | 'start') => {
-    const made = stream();
+    const made = makeStream();
     const ctor = function (this: unknown) {
       if (where === 'construct') throw new Error('NotSupportedError');
       return {

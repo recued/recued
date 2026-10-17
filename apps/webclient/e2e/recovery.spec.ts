@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { HARNESS_SERVER_PUBLIC_KEY } from './harness/server-identity.js';
+import { openChatHistory } from './helpers/chat-history.js';
 import {
   ARTIFACTS, CHAT_INPUT, CHAT_SESSION_ROW, CONNECTION_BANNER,
   CONNECTIONS_ROUTE, HARNESS_URL, SHELL_CONTENT, SHELL_HOST,
@@ -3329,6 +3330,42 @@ test('an interrupted pair save keeps sibling context through triage and credenti
     );
   }
 });
+
+for (const newDraft of ['Keep the unfinished new chat.', '']) {
+  test(`guided re-pair keeps parked Chat work with a ${newDraft ? 'populated' : 'blank'} current composer`, async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`${HARNESS_URL}?chat=session&journey=reauth#chat/session/chat_1`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    const draft = 'Keep the existing conversation draft.';
+    await page.locator(`[${CHAT_INPUT}]`).fill(draft);
+    await openChatHistory(page);
+    await page.locator('[data-recued-chat-route-new-session]').click();
+    await expect(page).toHaveURL(/#chat\/new$/);
+    await page.locator(`[${CHAT_INPUT}]`).fill(newDraft);
+
+    await page.evaluate(() => window.__app.forceReauth());
+    const form = page.getByRole('form', { name: 'Reconnect this browser' });
+    await expect(form).toBeVisible();
+    expect(await page.evaluate(() => window.dispatchEvent(
+      new Event('beforeunload', { cancelable: true }),
+    ))).toBe(false);
+    await form.locator('#webclient-pair-code-input-recovery-0')
+      .fill(`${Array(23).fill('abandon').join(' ')} art`);
+    await form.getByRole('button', { name: 'Reconnect this browser', exact: true }).click();
+
+    await expect(form).toHaveCount(0);
+    await expect(page).toHaveURL(/#chat\/new$/);
+    await expect(page.locator(`[${CHAT_INPUT}]`)).toHaveValue(newDraft);
+    await openChatHistory(page);
+    await page.locator(`[${CHAT_SESSION_ROW}="chat_1"]`).click();
+    await expect(page.locator(`[${CHAT_INPUT}]`)).toHaveValue(draft);
+    await openChatHistory(page);
+    await page.locator('[data-recued-chat-route-new-session]').click();
+    await expect(page.locator(`[${CHAT_INPUT}]`)).toHaveValue(newDraft);
+    expect(await page.evaluate(() => window.__app.rpcCallCount('chat.send'))).toBe(0);
+    expect(await page.evaluate(() => window.__app.rpcCallCount('chat.session.create'))).toBe(0);
+  });
+}
 
 test('reauth guides a secure re-pair and returns to the exact unsent Chat work', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });

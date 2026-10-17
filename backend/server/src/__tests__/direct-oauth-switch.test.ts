@@ -1,5 +1,6 @@
 /** D-322 §27 — real encrypted handlers, native vendor reads, and durable switch receipts. */
 import Database from 'better-sqlite3';
+import { createAuthenticationIncidentStore } from '../authentication-incident-store.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { isDirectOAuthAuthenticationReview, type ConnectionAuth, type DirectOAuthAuth,
   type ManagedOAuthRequest, type ManagedOAuthMigrationView } from '@recued/contracts';
@@ -87,7 +88,7 @@ const world = async () => {
       selections: names.map(name => ({ name, expected_updated_at: 2, verification_url: url(name) })) });
     return until(id, 'ready');
   };
-  return { rpc, store, fetch, decode, review, apply, prepare, until, handlers, profiles, denied,
+  return { db, rpc, store, fetch, decode, review, apply, prepare, until, handlers, profiles, denied,
     grant: (value?: string) => { grant = value; }, tokenFailure: () => { tokenFailure = true; },
     email: (value: string) => { email = value; }, clock: (value: number) => { clock = value; },
     lifetime: (seconds: number) => { tokenLifetime = seconds; },
@@ -218,6 +219,11 @@ describe('Nango to Recued direct OAuth', () => {
     w.denied.add('second');
     await w.rpc({ action: 'migration_apply', id: ready.id, fingerprint: ready.fingerprint! });
     const result = await w.until(ready.id, 'completed'); expect(result.rows.map(row => row.state)).toEqual(['migrated', 'failed']);
+    const repairHistory = createAuthenticationIncidentStore(w.db).history({ scope: { kind: 'all' } }, 1_001);
+    expect(repairHistory.repairs).toHaveLength(2); expect(repairHistory.repairs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ status: 'applied', targets: [{ kind: 'connection', name: 'first' }], from: expect.objectContaining({ type: 'broker' }), to: expect.objectContaining({ type: 'direct_oauth' }) }),
+      expect.objectContaining({ status: 'failed', targets: [{ kind: 'connection', name: 'second' }] }),
+    ]));
     expect(w.store.get('api', 'second')).toEqual(oldSecond);
     expect(await w.decode(w.store.get('api', 'first')!)).toMatchObject({ type: 'oauth2_refresh' });
     expect(await w.decode(w.store.get('api', 'source')!)).toMatchObject({ type: 'oauth2_refresh', refresh_token: 'native-rotated-refresh' });

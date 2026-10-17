@@ -1,5 +1,7 @@
 import { e } from '../template.js';
 import { button } from '../primitives/button.js';
+import type { AuthenticationIncidentScope } from '@recued/contracts';
+import { authenticationIncidentHistoryHref } from './incident-history.js';
 
 export type AuthenticationManagementAction = 'reauthorize' | 'app' | 'method';
 
@@ -7,6 +9,7 @@ export type AuthenticationManagementAction = 'reauthorize' | 'app' | 'method';
 export const renderAuthenticationManagement = (props: {
   prefix: 'accounts' | 'connections'; action: AuthenticationManagementAction;
   current: string; account?: string; canChangeApp: boolean; canChangeMethod: boolean; canReauthorize?: boolean; busy?: boolean;
+  historyScope?: AuthenticationIncidentScope;
 }): string => {
   const choices: Array<readonly [AuthenticationManagementAction, string, string]> = [
     ...(props.canReauthorize === false ? [] : [['reauthorize', 'Re-authorize current sign-in', 'Keep this app and authentication method. Renew consent or request additional permissions.'] as const]),
@@ -22,5 +25,6 @@ export const renderAuthenticationManagement = (props: {
         variant: choice === props.action ? 'primary' : 'secondary', size: 'sm', data: { choice }, ariaPressed: choice === props.action, disabled: props.busy })).join('')}
     </div>
     <p role="status">${e(choices.find(([choice]) => choice === props.action)?.[2] ?? '')}</p>
+    ${props.historyScope ? `<p>${props.busy ? '<span aria-disabled="true">Incident history</span>' : `<a data-authentication-incident-history href="${e(authenticationIncidentHistoryHref(props.historyScope))}">Incident history</a>`}</p>` : ''}
   </section>`;
 };

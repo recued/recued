@@ -13,7 +13,9 @@
  *      finished exiting
  *
  *  Contract:
- *    - JSON content: `{ pid, boot_at, bind_port }`.
+ *    - JSON content: `{ pid, boot_at, bind_port, version }`. `version` is
+ *      optional: a server from before it was recorded writes none, and an
+ *      older reader ignores it (it checks only the three numbers).
  *    - `claim()` throws `LockHeldError` iff the recorded PID is alive
  *      AND the recorded bind_port matches what we're about to bind.
  *      Mismatch (dead PID, different port) → reclaim by overwrite.
@@ -45,6 +47,12 @@ export interface LockInfo {
    *  previous process (port mismatch → reclaim) from a live sibling
    *  on the same data folder (port match + PID alive → refuse). */
   bind_port: number;
+  /** The holder's own Recued version, so `recued status` can say what is
+   *  RUNNING. An update swaps the binary on disk and finishes on the next
+   *  start, so until then `recued --version` already names the new release
+   *  while the server is still the old one. Absent in a lock written by a
+   *  server from before it was recorded. */
+  version?: string;
 }
 
 export class LockHeldError extends Error {
@@ -62,7 +70,7 @@ export interface InstanceLock {
    *  boot_at + bind_port. Throws `LockHeldError` when another live
    *  process holds the same port. Reclaims (overwrites) when the
    *  holder's PID is dead or its port differs. */
-  claim(info: { boot_at: number; bind_port: number }): LockInfo;
+  claim(info: { boot_at: number; bind_port: number; version?: string }): LockInfo;
   /** Release the lock (delete the file). Safe to call when already
    *  released — doesn't throw if the file is missing. */
   release(): void;
@@ -110,7 +118,14 @@ const parseLockFile = (path: string): LockInfo | null => {
       typeof parsed.boot_at === 'number' &&
       typeof parsed.bind_port === 'number'
     ) {
-      return parsed as LockInfo;
+      return {
+        pid: parsed.pid,
+        boot_at: parsed.boot_at,
+        bind_port: parsed.bind_port,
+        ...(typeof parsed.version === 'string' && parsed.version.length > 0
+          ? { version: parsed.version }
+          : {}),
+      };
     }
   } catch {
     /* malformed — treat as absent, will overwrite */
@@ -142,7 +157,7 @@ export const createInstanceLock = (
 
     inspect: () => parseLockFile(lockPath),
 
-    claim({ boot_at, bind_port }) {
+    claim({ boot_at, bind_port, version }) {
       const existing = parseLockFile(lockPath);
       if (existing && existing.pid !== currentPid()) {
         // Another PID wrote this file. Alive + same port → refuse.
@@ -157,6 +172,7 @@ export const createInstanceLock = (
         pid: currentPid(),
         boot_at,
         bind_port,
+        ...(version !== undefined ? { version } : {}),
       };
       ensureDir();
       writeFileSync(lockPath, JSON.stringify(info), 'utf-8');

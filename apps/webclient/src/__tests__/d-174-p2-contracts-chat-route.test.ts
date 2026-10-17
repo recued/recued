@@ -6301,7 +6301,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     collectByAttr(root, 'data-chat-reply-action')[0]!.click();
     const reply = route.getRecoveryDraft()!.replyTo;
     await route.openSession('chat_2');
-    expect(route.getRecoveryDraft()).toBeNull();
+    expect(route.getRecoveryDraft()).toMatchObject({ text: '', parkedDrafts: [{ sessionId: 'chat_1' }] });
     fireEvent(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!, 'input', 'Another conversation');
     await route.openSession('chat_1');
     expect(route.getRecoveryDraft()).toMatchObject({ text: 'Keep this reply', replyTo: reply, attachments: [selected] });
@@ -6312,7 +6312,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(sends).toHaveLength(2);
     expect(sends[1]).toEqual(sends[0]);
     expect(sends[1]).toMatchObject({ session_id: 'chat_1', reply_to_message_id: 'quoted', attachments: [{ file_id: selected.file_id, selection_revision: selected.selection_revision }] });
-    expect(route.getRecoveryDraft()).toBeNull();
+    expect(route.getRecoveryDraft()).toMatchObject({ text: '', parkedDrafts: [{ sessionId: 'chat_2' }] });
     await route.openSession('chat_2');
     expect(route.getRecoveryDraft()?.text).toBe('Another conversation');
     route.dispose();
@@ -6359,7 +6359,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     row('chat_2').click(); await tick(); row('chat_3').click(); await tick(8);
     resolveOpen({ ...chatSession(), id: 'chat_2', messages: [] }); await tick(8);
     expect(route.getThread().session?.id).toBe('chat_3');
-    expect(route.getRecoveryDraft()).toBeNull();
+    expect(route.getRecoveryDraft()).toMatchObject({ text: '', parkedDrafts: [{ sessionId: 'chat_1' }] });
     await route.openSession('chat_1');
     expect(route.getRecoveryDraft()?.text).toBe('Typed while loading');
     route.dispose();
@@ -6372,7 +6372,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     const route = bootstrapChatRoute({ root: root as unknown as HTMLElement, document: doc as unknown as Document,
       conn: stepConn({ calls }), initialRecoveryDraft: { text: 'Unsent new chat', protected: true, modelSourceId: null, attachments: [selected] } });
     await route.whenLoaded(); await route.openSession('chat_1');
-    expect(route.getRecoveryDraft()).toBeNull();
+    expect(route.getRecoveryDraft()).toMatchObject({ text: '', parkedDrafts: [{ sessionId: null }] });
     route.startNewChat();
     expect(route.getRecoveryDraft()).toMatchObject({ text: 'Unsent new chat', attachments: [selected] });
     await route.sendMessage('Unsent new chat');
@@ -6462,7 +6462,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     const remove = collectByAttr(root, CHAT_ROUTE_SESSION_DELETE_ATTR).find(button => button.getAttribute(CHAT_ROUTE_SESSION_DELETE_ATTR) === 'chat_1')!;
     remove.click(); collectByAttr(root, CHAT_ROUTE_SESSION_DELETE_CONFIRM_ATTR)[0]!.click(); await tick(8);
     expect(route.getRecoveryDraft()?.text).toBe('Keep this draft');
-    await route.openSession('chat_1'); expect(route.getRecoveryDraft()).toBeNull();
+    await route.openSession('chat_1'); expect(route.getRecoveryDraft()).toMatchObject({ text: '', parkedDrafts: [{ sessionId: 'chat_2' }] });
     await route.openSession('chat_2'); expect(route.getRecoveryDraft()?.text).toBe('Keep this draft');
     route.dispose();
   });
@@ -7320,6 +7320,103 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
       expect(sends[1]).not.toHaveProperty('mail_work');
       expect(sends[1]).not.toHaveProperty('repeat');
     } finally { route.dispose(); }
+  });
+
+  it.each(['chat_2', null])('recovers every conversation and the new-chat draft while %s is visible', async activeId => {
+    const doc = makeFakeDocument(); const root = doc.createElement('div');
+    const calls: Array<{ method: string; payload?: unknown }> = [];
+    const base = stepConn({ calls, sessions: [sessionSummary({ id: 'chat_1' }), sessionSummary({ id: 'chat_2' })] });
+    const conn = (async (method: string, args?: unknown): Promise<unknown> => {
+      const result = await base(method as never, args as never);
+      if (method !== 'chat.session.get') return result;
+      const id = (args as { session_id: string }).session_id;
+      return { ...result, quoted_replies_available: true, messages: [{ ...chatMessage(), id: 'reply-'+id, session_id: id }] };
+    }) as ChatRouteConn;
+    const file = { file_id: 'file:quote', media_class: 'document', filename: 'Quote.pdf', selection_revision: 'f'.repeat(64) };
+    let route = bootstrapChatRoute({ root: root as unknown as HTMLElement, document: doc as unknown as Document, conn,
+      initialSessionId: 'chat_1', initialRecoveryDraft: { text: 'First draft', protected: true, modelSourceId: null, attachments: [file] } });
+    await route.whenLoaded(); collectByAttr(root, 'data-chat-reply-action')[0]!.click();
+    const reply = route.getRecoveryDraft()!.replyTo;
+    route.startNewChat(); fireEvent(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!, 'input', 'Unsent new chat');
+    fireEvent(collectByAttr(root, CHAT_ROUTE_MODEL_PICKER_ATTR)[0]!, 'change', 'slot_1');
+    await route.openSession('chat_2'); fireEvent(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!, 'input', 'Second draft');
+    if (activeId === null) route.startNewChat();
+    const snapshot = route.getRecoveryDraft()!; route.dispose();
+    const initial = () => ({ root: root as unknown as HTMLElement, document: doc as unknown as Document, conn,
+      ...(activeId ? { initialSessionId: activeId } : { initialLanding: 'new' as const }), initialRecoveryDraft: snapshot });
+    route = bootstrapChatRoute(initial());
+    // A second loss before the async reads finish must preserve the full set.
+    const recaptured = route.getRecoveryDraft()!;
+    expect(recaptured).toEqual(snapshot);
+    expect(route.hasUnsavedChanges()).toBe(true); route.dispose();
+    route = bootstrapChatRoute({ ...initial(), initialRecoveryDraft: recaptured });
+    await route.whenLoaded();
+    expect(route.getRecoveryDraft()?.text).toBe(activeId ? 'Second draft' : 'Unsent new chat');
+    await route.openSession('chat_1');
+    expect(route.getRecoveryDraft()).toMatchObject({ text: 'First draft', replyTo: reply, attachments: [file] });
+    await route.openSession('chat_2'); expect(route.getRecoveryDraft()?.text).toBe('Second draft');
+    route.startNewChat();
+    expect(route.getRecoveryDraft()?.text).toBe('Unsent new chat');
+    expect(collectByAttr(root, CHAT_ROUTE_MODEL_PICKER_ATTR)[0]!.value).toBe('slot_1');
+    expect(calls.some(call => call.method === 'chat.send' || call.method === 'chat.session.create')).toBe(false);
+    route.dispose();
+  });
+
+  it('recovers parked files and replies with an empty current composer and keeps them through failed loads', async () => {
+    const doc = makeFakeDocument(); const root = doc.createElement('div');
+    const calls: Array<{ method: string; payload?: unknown }> = [];
+    const base = stepConn({ calls }); let fail = false;
+    const conn = (async (method: string, args?: unknown): Promise<unknown> => {
+      if (method === 'chat.session.get' && (args as { session_id: string }).session_id === 'chat_1' && fail) throw new Error('Unavailable');
+      return base(method as never, args as never);
+    }) as ChatRouteConn;
+    const snapshot = { text: '', protected: false, modelSourceId: null, parkedDrafts: [
+      { sessionId: 'chat_1', draft: { text: '', protected: false, modelSourceId: null,
+        replyTo: { sessionId: 'chat_1', messageId: 'quoted' }, attachments: [{ file_id: 'file:first', media_class: 'image', filename: 'First.png' }] } },
+      { sessionId: 'chat_3', draft: { text: 'Third draft', protected: true, modelSourceId: null } },
+    ] };
+    let route = bootstrapChatRoute({ root: root as unknown as HTMLElement, document: doc as unknown as Document, conn,
+      initialSessionId: 'chat_2', initialRecoveryDraft: snapshot });
+    expect(route.getRecoveryDraft()).toEqual(snapshot); expect(route.hasUnsavedChanges()).toBe(true);
+    const second = route.getRecoveryDraft()!; route.dispose();
+    route = bootstrapChatRoute({ root: root as unknown as HTMLElement, document: doc as unknown as Document, conn,
+      initialSessionId: 'chat_2', initialRecoveryDraft: second });
+    await route.whenLoaded(); expect(route.getRecoveryDraft()).toEqual(snapshot);
+    fail = true; await route.openSession('chat_1');
+    expect(route.getThread().session?.id).toBe('chat_2'); expect(route.getRecoveryDraft()).toEqual(snapshot);
+    fail = false; await route.openSession('chat_1');
+    expect(route.getRecoveryDraft()).toMatchObject(snapshot.parkedDrafts[0]!.draft);
+    await route.openSession('chat_3'); expect(route.getRecoveryDraft()?.text).toBe('Third draft');
+    expect(calls.some(call => call.method === 'chat.send' || call.method === 'chat.session.create')).toBe(false);
+    route.dispose();
+  });
+
+  it.each(['chat_1', null])('guards unfinished files through repeated recovery and draft switches from %s', async sessionId => {
+    const doc = makeFakeDocument(); const root = doc.createElement('div');
+    const calls: Array<{ method: string; payload?: unknown }> = [];
+    const interruptedUploads = [{ id: 'unfinished', filename: 'Pending.pdf', media_class: 'document' }];
+    const snapshot = { text: '', protected: false, modelSourceId: null, interruptedUploads };
+    const options = { root: root as unknown as HTMLElement, document: doc as unknown as Document,
+      conn: stepConn({ calls }), ...(sessionId ? { initialSessionId: sessionId } : { initialLanding: 'new' as const }) };
+    let route = bootstrapChatRoute({ ...options, initialRecoveryDraft: snapshot });
+    expect(route.hasUnsavedChanges()).toBe(true); expect(route.getRecoveryDraft()).toEqual(snapshot);
+    const second = route.getRecoveryDraft()!; route.dispose();
+    route = bootstrapChatRoute({ ...options, initialRecoveryDraft: second }); await route.whenLoaded();
+    expect(route.getRecoveryDraft()).toEqual(snapshot);
+    expect(collectByAttr(root, 'data-recued-chat-route-attachment')[0]!.getAttribute('data-recued-chat-route-attachment')).toBe('needs-file');
+    fireEvent(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!, 'input', 'Keep the file with these words');
+    expect(collectByAttr(root, CHAT_ROUTE_SEND_ATTR)[0]!.disabled).toBe(true);
+    await route.sendMessage('Keep the file with these words');
+    expect(calls.some(call => call.method === 'chat.send' || call.method === 'chat.session.create')).toBe(false);
+    await route.openSession('chat_2');
+    expect(route.getRecoveryDraft()).toMatchObject({ parkedDrafts: [{ sessionId, draft: { interruptedUploads } }] });
+    expect(route.hasUnsavedChanges()).toBe(true);
+    if (sessionId) await route.openSession(sessionId); else route.startNewChat();
+    expect(route.getRecoveryDraft()).toMatchObject({ text: 'Keep the file with these words', interruptedUploads });
+    collectByAttr(root, 'data-recued-chat-route-attachment-remove')[0]!.click();
+    expect(route.getRecoveryDraft()?.interruptedUploads).toBeUndefined();
+    expect(collectByAttr(root, CHAT_ROUTE_SEND_ATTR)[0]!.disabled).toBe(false);
+    route.dispose();
   });
 
   it('restores a captured reauth draft into the exact durable session without sending it', async () => {

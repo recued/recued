@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createStorageGate } from '@recued/storage-gate';
 
 import { LockHeldError } from '../lifecycle/instance-lock.js';
+import { SERVER_VERSION } from '../server-version.js';
 import type {
   ComposeServeLifecycleOptions,
   ServeHttpServerRef,
@@ -132,6 +133,8 @@ describe('composeServeLifecycle', () => {
     expect(lifecycle.lock.claim).toHaveBeenCalledWith({
       boot_at: expect.any(Number),
       bind_port: 4321,
+      // What `recued status` names as running (the owner, 2026-10-16).
+      version: SERVER_VERSION,
     });
   });
 

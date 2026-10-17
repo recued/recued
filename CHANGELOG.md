@@ -7,6 +7,55 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.10.17 — 2026-10-17
+
+Recued now tells you when a connection's sign-in stops working, before a recipe
+fails on it, and keeps a history of what went wrong and what fixed it. After a
+repair, or after renewing a saved app's tokens, you can check that the
+connection can read again. Voice notes and chat drafts survive interruptions.
+An update asks before it installs, and `recued status` shows which version
+runs.
+
+### Added
+
+- **Sign-in alerts.** A connection whose access is rejected raises a notice at
+  once. One that Recued cannot confirm waits 15 minutes first. A saved app's
+  secret warns 30 days and 7 days before its recorded date, and on the date. A
+  notice names the uses that are affected and links to their repair.
+- **Incident and repair history.** Manage authentication and Authentication
+  repairs show a connection's history: when a problem started and was last
+  seen, which uses it affected, and each repair applied. Closed incidents are
+  kept for up to 90 days.
+- **Check access after a repair.** After a repair, run a check that reads with
+  the saved sign-in: API reads, mail and calendar, and file details. Each check
+  records whether it passed, failed or could not be confirmed.
+- **Check a saved app's tokens.** A saved OAuth app, or a secret you just
+  rotated, can run a token-renewal check for the sign-ins that use it. A
+  result links to the repair a failure needs, and to an access check.
+- **The running version in `recued status`.** It shows the version the server
+  is running, and says when the program on disk is newer and the server needs
+  a restart.
+
+### Changed
+
+- **Updates ask first.** `recued update apply` asks, for example,
+  "Update 26.10.16 → 26.10.17? [y/N]". Without a terminal, pass `--yes`.
+  Settings → Updates offers Notify only and Off.
+- **The Updates guide** covers updating from the terminal, a new version that
+  does not start, and which version runs.
+
+### Fixed
+
+- **Voice notes in chat.** A recording recovers from an interruption, can be
+  cancelled before it starts, and stays stoppable during a send. Leaving Chat
+  or starting a new chat asks first while a voice note is unfinished, and a
+  discarded draft stops its recording.
+- **Drafts and uploads after pairing again.** Parked drafts and interrupted
+  uploads come back after the web app pairs again, and a file you picked stays
+  with its draft.
+- **Keyboard focus** stays on the voice, discard and delete controls while chat
+  redraws, and Escape closes an idle delete prompt.
+
 ## 26.10.16 — 2026-10-16
 
 You can now chat with Recued by email: write from your own mailbox to a mailbox

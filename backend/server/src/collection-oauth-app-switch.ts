@@ -16,6 +16,7 @@ import { collectionProvider, collectionAbilities, collectionSelections, collecti
   collectionPermissionCaps, type CollectionAbilities } from './collection-authentication-checks.js';
 import { collectionOAuthBinding } from './collection-oauth-sources.js';
 import { collectionAuthenticationLocks } from './collection-authentication-locks.js';
+import { createAuthenticationRepairActionStore } from './authentication-repair-action-store.js';
 import { defaultHttpFetcher, exchangeCodeForTokens, fetchGraphGrantIdentity, getAccessToken, keyPrefix, readOAuthAppId,
   type HttpFetcher, type OAuthProviderConfig } from './collections/mail/oauth.js';
 
@@ -40,6 +41,7 @@ export const createCollectionOAuthAppSwitchService = (deps: {
   mail: MailEnrollDeps; calendar: CalendarEnrollDeps; now?(): number; anonymous?: HttpFetcher;
 }): CollectionOAuthAppSwitchService => {
   const now = deps.now ?? Date.now; const memoryKey = randomBytes(32);
+  const repairs = createAuthenticationRepairActionStore(deps.db);
   const active = collectionAuthenticationLocks(deps.db);
   const contexts = new Map<string, Context>(); const authorizations = new Map<string, Authorization>(); const reviews = new Map<string, Review>();
   const expirationTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -80,7 +82,12 @@ export const createCollectionOAuthAppSwitchService = (deps: {
   const readAttempt = (id: string) => deps.db.prepare<[string], { review_id: string; fingerprint: string; outcome_json: string }>(
     'SELECT review_id, fingerprint, outcome_json FROM collection_oauth_app_switch_attempts WHERE attempt_id = ?').get(id);
   const save = (outcome: CollectionOAuthAppOutcome): void => {
-    deps.db.prepare('UPDATE collection_oauth_app_switch_attempts SET outcome_json = ? WHERE attempt_id = ?').run(JSON.stringify(outcome), outcome.attempt_id);
+    deps.db.transaction(() => {
+      deps.db.prepare('UPDATE collection_oauth_app_switch_attempts SET outcome_json = ? WHERE attempt_id = ?').run(JSON.stringify(outcome), outcome.attempt_id);
+      if (outcome.status !== 'checking') repairs.finish('collection_oauth_app', outcome.attempt_id, outcome.status === 'applied'
+        ? { status: 'applied', restart_required: !!outcome.restart_needed?.length }
+        : { status: 'failed', reason: outcome.reason ?? 'server_error' }, now());
+    })();
   };
   for (const row of deps.db.prepare<[], { outcome_json: string }>('SELECT outcome_json FROM collection_oauth_app_switch_attempts').all()) {
     const outcome = JSON.parse(row.outcome_json) as CollectionOAuthAppOutcome;
@@ -314,7 +321,15 @@ export const createCollectionOAuthAppSwitchService = (deps: {
     let outcome: CollectionOAuthAppOutcome = { attempt_id: request.attempt_id, platform: ctx.public.platform, slug: ctx.public.slug,
       ...(ctx.public.intent ? { intent: ctx.public.intent } : {}),
       status: 'checking', app_id: review.public.app.id, collections: ctx.rows.map(row => ({ platform: row.platform as 'mail' | 'calendar', slug: row.slug })) };
-    deps.db.prepare('INSERT INTO collection_oauth_app_switch_attempts VALUES (?, ?, ?, ?)').run(request.attempt_id, request.review_id, request.fingerprint, JSON.stringify(outcome));
+    deps.db.transaction(() => {
+      deps.db.prepare('INSERT INTO collection_oauth_app_switch_attempts VALUES (?, ?, ?, ?)').run(request.attempt_id, request.review_id, request.fingerprint, JSON.stringify(outcome));
+      repairs.begin('collection_oauth_app', request.attempt_id, {
+        action: ctx.public.intent === 'reauthorize' ? ctx.permissionsChanged ? 'change_permissions' : 'reauthorize' : 'switch_oauth_app',
+        from: { type: 'direct_oauth', app_id: ctx.public.current_app.id, label: ctx.public.current_app.label },
+        to: { type: 'direct_oauth', app_id: review.public.app.id, label: review.public.app.label },
+        targets: outcome.collections.map(row => ({ kind: 'collection', platform: row.platform, slug: row.slug })),
+      }, now());
+    })();
     keys.forEach(key => active.add(key));
     const stopped: CollectionInstanceRecord[] = []; let committed = false;
     try {

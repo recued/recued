@@ -3428,6 +3428,7 @@ const renderForm = (
         action: dialog.authenticationManagement, current: dialog.authenticationSwitch.managed_oauth ? 'Broker sign-in' : dialog.authenticationSwitch.auth_type === 'oauth2_refresh' ? 'Recued direct OAuth' : 'Saved authentication',
         canReauthorize: ['oauth2_refresh', 'managed_oauth'].includes(dialog.authenticationSwitch.auth_type ?? ''),
         canChangeApp: !dialog.authenticationRepair && dialog.authenticationManagementCanChangeApp === true,
+        historyScope: { kind: 'connection', name: dialog.authenticationSwitch.name },
         canChangeMethod: !dialog.authenticationRepair, busy: dialog.saving || dialog.oauthInFlight || dialog.externalChange !== null }) : ''}
       ${dialog.authenticationSwitch ? `<section class="connections-auth-switch-summary" data-authentication-switch-summary>
         <p><strong>${e(dialog.authenticationSwitch.display_name)}</strong> (<code>${e(dialog.authenticationSwitch.name)}</code>)</p>

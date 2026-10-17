@@ -4,6 +4,10 @@ import { createSavedDataViewStore } from '../saved-data-view-store.js';
 import { createSavedTaskViewReader } from '../saved-data-view-task-reader.js';
 import { createSavedRecordsViewReader } from '../saved-data-view-records-reader.js';
 import { createSavedDataViewAlertRuntime } from '../saved-data-view-alert-runtime.js';
+import { createAuthenticationAlertStore } from '../authentication-alert-store.js';
+import { sourceIdConnectionName } from '../work-entity-source-boot.js';
+import { collectionOAuthSourceName } from '../collection-oauth-sources.js';
+import { createAuthenticationAlertRuntime } from '../authentication-alert-runtime.js';
 import { createFormDefinitionReader } from '../form-contract-gate.js';
 import { join, dirname } from 'node:path';
 
@@ -40,7 +44,9 @@ import { createAskCardDetailResolver } from '../ask-card-held-op-details.js';
 import { resolveArgEditSchema } from '../preflight-arg-schema-resolver.js';
 import { buildResolverDeps } from '../composition/bin/wire-reception-inbox-deps.js';
 import { createAskLandingEditApproval } from '../ask-landing-edit-approval.js';
-import { createAuthenticationRepairWorklist } from '../authentication-repair-worklist.js';
+import { createAuthenticationRepairSnapshot } from '../authentication-repair-worklist.js';
+import { createAuthenticationAccessVerification } from '../authentication-access-verification.js';
+import { createAuthenticationAccessChecks } from '../authentication-access-checks.js';
 import { createInstanceStore } from '../collections/instance-store.js';
 import {
   findReceptionHoldItem,
@@ -3087,6 +3093,32 @@ export const composeListeners = async (
       notifier: execution.notificationBlock,
       getPublicBaseUrl: () => storage.publicAddress.baseUrl('root'),
     }) : undefined;
+  // The owner worklist and unattended alerts read the same passive inventory.
+  // No broker, OAuth refresh or provider request is needed by either reader.
+  const authenticationRepairSnapshot = storage.db && app.connectionStoreRef ? createAuthenticationRepairSnapshot({
+    connections: () => app.connectionStoreRef!.list(),
+    decode: row => decodeAuthFromStorage(row.auth_ciphertext, row, app.keys?.keyProvider('connection')),
+    instances: () => createInstanceStore({ db: storage.db! }).list(),
+    health: (platform, slug) => collection.collectionRegistry.get(platform, slug)?.health(),
+    ...(app.managedOAuth?.collectionProfileSignature ? { brokerProfileSignature: app.managedOAuth.collectionProfileSignature } : {}),
+    ...(storage.workEntityStoreRef ? { sources: () => storage.workEntityStoreRef!.listSources('file') } : {}),
+    ...(app.fileSourceSyncStateRef ? { fileState: id => app.fileSourceSyncStateRef!.get(id) } : {}),
+    ...(collection.oauthAppConfigDeps ? { apps: () => collection.oauthAppConfigDeps!.store.listApps() } : {}),
+    ...(app.oauthAppConnectionUses ? { connectionUses: app.oauthAppConnectionUses } : {}),
+  }) : undefined;
+  const authenticationAlertStore = storage.db ? createAuthenticationAlertStore(storage.db) : undefined;
+  const authenticationAccess = storage.db && app.connectionStoreRef && authenticationRepairSnapshot
+    ? createAuthenticationAccessVerification({ db: storage.db, inventory: async () => (await authenticationRepairSnapshot()).worklist,
+      prepare: createAuthenticationAccessChecks({ store: app.connectionStoreRef, instances: createInstanceStore({ db: storage.db }),
+        source: id => storage.workEntityStoreRef?.getSource(id) ?? undefined,
+        ...(app.keys ? { key: app.keys.keyProvider('connection') } : {}),
+        ...(app.managedOAuth ? { broker: app.managedOAuth } : {}),
+        ...(collection.collectionAuthentication ? { collections: collection.collectionAuthentication } : {}) }) }) : undefined;
+  const authenticationAlerts = authenticationRepairSnapshot && authenticationAlertStore && execution.notificationBlock && storage.auditLog
+    ? createAuthenticationAlertRuntime({ store: authenticationAlertStore, read: authenticationRepairSnapshot,
+      auditLog: storage.auditLog, notifier: execution.notificationBlock,
+      canRun: () => (app.isVaultUnlocked?.() ?? !app.keys) && !(app.serverState?.isPaused() ?? false),
+      getPublicBaseUrl: () => storage.publicAddress.baseUrl('root') }) : undefined;
 
   // D-174 #22 + slice 1 — built ONCE, used TWICE: the `work_entity.{upsert,
   // delete}` pair-RPC below and the Tier-1 `work.create` chat tool both
@@ -3363,18 +3395,21 @@ export const composeListeners = async (
       ? {
           connectionDeps: {
             store: app.connectionStoreRef,
+            authenticationRepairTargets: (name: string) => [
+              ...(storage.workEntityStoreRef?.listSources('file') ?? [])
+                .filter(source => source.source_kind === 'connection' && sourceIdConnectionName(source.id) === name)
+                .map(source => ({ kind: 'file_source' as const, source_id: source.id })),
+              ...(storage.db ? createInstanceStore({ db: storage.db }).list() : [])
+                .filter(row => (row.platform === 'mail' || row.platform === 'calendar') && collectionOAuthSourceName(row.config) === name)
+                .map(row => ({ kind: 'collection' as const, platform: row.platform as 'mail' | 'calendar', slug: row.slug })),
+            ],
             ...(collection.oauthAppConfigDeps ? { oauthAppConfig: collection.oauthAppConfigDeps.store } : {}),
-            ...(storage.db ? { authenticationRepairs: createAuthenticationRepairWorklist({
-              connections: () => app.connectionStoreRef!.list(),
-              decode: row => decodeAuthFromStorage(row.auth_ciphertext, row, app.keys?.keyProvider('connection')),
-              instances: () => createInstanceStore({ db: storage.db! }).list(),
-              health: (platform, slug) => collection.collectionRegistry.get(platform, slug)?.health(),
-              ...(app.managedOAuth?.collectionProfileSignature ? { brokerProfileSignature: app.managedOAuth.collectionProfileSignature } : {}),
-              ...(storage.workEntityStoreRef ? { sources: () => storage.workEntityStoreRef!.listSources('file') } : {}),
-              ...(app.fileSourceSyncStateRef ? { fileState: id => app.fileSourceSyncStateRef!.get(id) } : {}),
-              ...(collection.oauthAppConfigDeps ? { apps: () => collection.oauthAppConfigDeps!.store.listApps() } : {}),
-              ...(app.oauthAppConnectionUses ? { connectionUses: app.oauthAppConnectionUses } : {}),
-            }) } : {}),
+            ...(authenticationRepairSnapshot ? { authenticationRepairs: async () => (await authenticationRepairSnapshot()).worklist } : {}),
+            ...(authenticationAlertStore ? { authenticationHistory: async query => {
+              const page = authenticationAlertStore.history(query);
+              return collection.oauthAppConfigDeps?.renewal ? collection.oauthAppConfigDeps.renewal.history(page) : page;
+            } } : {}),
+            ...(authenticationAccess ? { authenticationAccess } : {}),
             // D-320 phase 3 (3b) — a deleted connection moves the webhook doors
             // that named it, as a change to a pack's connections does.
             ...(followPackConnectionsWebhookDoors
@@ -4876,6 +4911,7 @@ export const composeListeners = async (
   await messengerIngressSupervisor?.start();
   webhookOutboxRuntime?.start();
   savedDataViewAlerts?.start();
+  authenticationAlerts?.start();
 
   let closePromise: Promise<void> | undefined;
   const closeServer = (): Promise<void> => {
@@ -4889,6 +4925,7 @@ export const composeListeners = async (
     // report failures only after every network/background branch has drained.
     const drains = [
       ...(savedDataViewAlerts ? [begin(() => savedDataViewAlerts.stop())] : []),
+      ...(authenticationAlerts ? [begin(() => authenticationAlerts.stop())] : []),
       ...(webhookOutboxRuntime ? [begin(() => webhookOutboxRuntime.stop())] : []),
       ...(messengerIngressSupervisor
         ? [begin(() => messengerIngressSupervisor.stop())]

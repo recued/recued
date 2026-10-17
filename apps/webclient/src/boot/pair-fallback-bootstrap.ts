@@ -34,6 +34,7 @@ import time, so a test that
  *  Spec: D-148 § A.4 (Thin Webclient);
  *  D-169 (P1.5 pair persistence). */
 
+import { hasProtectedChatRecoveryDraft } from '../chat/draft-recovery.js';
 import {
   bootstrapWebclient,
   WEBCLIENT_SHELL_CONTENT_ATTR,
@@ -955,14 +956,7 @@ const installRecoveryDraftGuard = (
   deps: PairFallbackBootstrapDeps,
   snapshot: WebclientRecoverySnapshot,
 ): RecoveryDraftGuard | undefined => {
-  if (
-    snapshot.chatDraft === undefined
-    || (snapshot.chatDraft.replyTo === undefined
-      && (snapshot.chatDraft.attachments?.length ?? 0) === 0
-      && (snapshot.chatDraft.protected !== true || snapshot.chatDraft.text.trim().length === 0))
-  ) {
-    return undefined;
-  }
+  if (!hasProtectedChatRecoveryDraft(snapshot.chatDraft)) return undefined;
   const view = deps.document?.defaultView
     ?? (globalThis as unknown as Window);
   if (

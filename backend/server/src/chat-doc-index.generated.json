@@ -597,7 +597,7 @@
     "section": "The built-in chat",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/ai-chat-and-mcp#the-built-in-chat",
-    "body": "Chat talks to your server. It answers from your warehouse. The warehouse is\nthe place on your server that keeps a copy of your mail, calendar, contacts,\nCRM records, and files. It builds timelines from them. CRM means your\ncustomer records system. Pick a model for chat in Settings →\nAI/Models. It can be a free-pool key or a provider you bring.\n\nEach chat keeps a draft while Chat stays open. A draft is text you have\nnot sent yet. It keeps your chosen reply and files too. Switch chats and\ncome back to keep writing. A **Draft** label marks chats with unsent work.\n**New chat** returns to your draft for a new chat.\n\nA failed send keeps your draft ready to retry. A successful send clears\nonly what your server accepted. Your drafts stay in memory for this Chat\nvisit. Reloading the page or closing the tab loses them. Leaving Chat warns\nbefore throwing away drafts in any chat.\n\nSometimes chat wants to act: send, update, or create something. Then the\naction comes to you as an approval. An approval is a pause. Recued stops and\nasks you first. You can fix the details before you say yes. You can approve\njust that one action. You can approve the whole batch it belongs to. Or you\ncan open a grant for the rest of the session. See\n[Grants and approvals](../concepts/grants-and-approvals.md)."
+    "body": "Chat talks to your server. It answers from your warehouse. The warehouse is\nthe place on your server that keeps a copy of your mail, calendar, contacts,\nCRM records, and files. It builds timelines from them. CRM means your\ncustomer records system. Pick a model for chat in Settings →\nAI/Models. It can be a free-pool key or a provider you bring.\n\nEach chat keeps a draft while Chat stays open. A draft is text you have\nnot sent yet. It keeps your chosen reply and files too. Switch chats and\ncome back to keep writing. A **Draft** label marks chats with unsent work.\n**New chat** returns to your draft for a new chat.\nPairing repair keeps these drafts while this tab stays open.\nIf an upload stops during repair, its file stays listed.\nChoose the file again, or remove it before you send.\n\nA failed send keeps your draft ready to retry. A successful send clears\nonly what your server accepted. Your drafts stay in memory for this Chat\nvisit. Reloading the page or closing the tab loses them. Leaving Chat warns\nbefore throwing away drafts in any chat.\n\nSometimes chat wants to act: send, update, or create something. Then the\naction comes to you as an approval. An approval is a pause. Recued stops and\nasks you first. You can fix the details before you say yes. You can approve\njust that one action. You can approve the whole batch it belongs to. Or you\ncan open a grant for the rest of the session. See\n[Grants and approvals](../concepts/grants-and-approvals.md)."
   },
   {
     "id": "guides/ai-chat-and-mcp#when-nothing-installed-can-do-it",
@@ -1232,6 +1232,46 @@
     "body": "Choose **Review rotation**, then **Apply secret rotation**.\nRecued saves the app and checked copies in one step.\nTheir names, accounts, scopes and sync state stay in place.\nSkipped copies keep their old secret.\nA failed save keeps the previous settings.\n\nThis save does not test the new secret with the vendor.\nFor Microsoft, keep the old secret valid until renewals succeed.\nThen remove it in the vendor console.\nUpdate other tools that use this same app too.\nIf the reply is lost, choose **Check rotation result**.\nIt reads the saved result without repeating the change.\nIf Recued confirms the rotation but cannot confirm its date, refresh the app.\nUse **Edit expiry date** to fix the date without changing the secret again."
   },
   {
+    "id": "guides/connections#verify-a-new-app-secret",
+    "doc": "Connections",
+    "section": "Verify a new app secret",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#verify-a-new-app-secret",
+    "body": "In **Manage saved apps**, choose **Verify token renewal** on the app.\nYou can also choose it after a saved secret rotation.\nThe first view reads local settings only.\nChoose which saved sign-ins to check, then choose **Run renewal checks**.\nCopies that share one sign-in stay together.\nThe check uses the app secret saved now. It asks the vendor for a new token.\nA token from the cache cannot pass this check.\nRecued saves new tokens for normal use. It requests no new scopes.\n\nOld secret copies and copies with no known app are left unchecked.\nUse **Usage and rotate secret** to review those copies first.\nEach sign-in has its own **Passed**, **Failed**, or **Unconfirmed** result.\nA refused app secret needs an app or secret fix.\nA refused sign-in may need reauthorization.\nA storage or network error leaves the result unconfirmed.\nIf the saved app or sign-in changes, the old result is **Superseded**.\n\nChecks run in the background. You can close the view.\nReopen it to read the latest saved result.\nAfter a lost reply, choose **Refresh renewal status**.\nThis reads saved status and does not retry the token request.\nA server restart leaves unfinished checks unconfirmed. It never resumes them.\nFinished results are kept for up to 90 days and 10,000 checks on this server.\n\nA passed renewal proves only that the vendor issued a token and Recued saved it.\nUse **Verify access** for data reads. Renewal does not prove send or edit access.\nIt does not start sync, run work or mark an old incident recovered."
+  },
+  {
+    "id": "guides/connections#review-token-renewal-history",
+    "doc": "Connections",
+    "section": "Review token-renewal history",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#review-token-renewal-history",
+    "body": "Choose **View saved-app history** in **Manage saved apps** to see older checks.\nYou can also view them in **Connection incident history**.\nEach check shows the app version, times and result for each sign-in.\nAn excluded sign-in was not checked. An unknown result is not a pass.\n**Superseded** means the saved app or sign-in has changed since the check.\nIf Recued cannot read the current keys, it says the comparison is unknown.\nUnlock Recued and refresh history to compare them again.\n\nAn older saved check may be added when history support is first enabled.\nIts card shows both the check time and when it was added.\nIts position shows when it was added, not when an earlier repair took place.\nOpening or refreshing history makes no vendor calls and never repeats a check.\nRenewal results have their own card. They do not mark an incident recovered.\nChecks for saved API sign-ins can appear in linked Mail and Calendar history too.\nThis checks the sign-in. It does not read mail or calendar data.\nSome account or file links may be missing. The card says when its list is incomplete.\nUse the listed API link or all history to find that check."
+  },
+  {
+    "id": "guides/connections#repair-a-failed-token-renewal",
+    "doc": "Connections",
+    "section": "Repair a failed token renewal",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#repair-a-failed-token-renewal",
+    "body": "Open a saved renewal result or history.\nUse the repair button by a failed sign-in.\n**Review app credentials** opens that saved app's usage and secret form.\n**Review app usage** helps you check copies with old or conflicting keys.\n**Re-authorize** opens the listed API, Mail or Calendar sign-in review.\nCheck the account. Review its shared uses and needed permissions.\nThen approve the change.\n\nRecued checks the saved result again. It does this before opening a repair.\nThe app or sign-in may have changed. Recued may be unable to compare it.\nIf so, refresh and review it again.\nA saved app or account may be gone. Recued will not pick another one for you.\n\nAfter repair, choose **Review token renewal after repair**.\nYou can also choose **Review token renewal again** in a saved result.\nThis opens a new review for that saved app. It uses the current keys.\nChoose the sign-ins to check, then choose **Run renewal checks**.\nOpening a review does not run the check. An earlier result stays in history.\nUse **Verify access** to check data reads too. Renewal alone does not prove data access."
+  },
+  {
+    "id": "guides/connections#pending-renewal-reviews",
+    "doc": "Connections",
+    "section": "Pending renewal reviews",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#pending-renewal-reviews",
+    "body": "If a check for another saved app is still in progress, Recued keeps it.\nRead its result or refresh its status first.\nWhen it finishes, choose the app you want to check.\nRecued says when it cannot open that review yet.\n\nYou can leave history while Recued reads a saved result.\nIf you do, its late reply will not open a repair."
+  },
+  {
+    "id": "guides/connections#verify-access-after-token-renewal",
+    "doc": "Connections",
+    "section": "Verify access after token renewal",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#verify-access-after-token-renewal",
+    "body": "Open a finished renewal result or its history card.\nChoose **Verify access**. This opens a new read check.\nIt does not run a new token-renewal check.\nThe review uses the sign-ins saved now.\nIt lists the accounts from that saved result.\nTheir sign-ins may have changed since then.\nIt can include sign-ins that renewal skipped or could not check.\nOther uses of that app stay outside this list.\n\nReview the API URLs and the Mail and Calendar accounts shown.\nReview its file sources too.\nThe review keeps the old links to accounts and files.\nIt says when some links are missing.\nFor file bytes, choose a file yourself. Recued does not pick one.\nChoose **Run checks** when ready.\nBefore that, this review makes no vendor reads.\n\nA running check can be opened again. This reads its saved status.\nIt does not start a new job.\nReading a running job does not need a fresh review.\nIts saved status can still be read if older links are gone.\nIf current keys cannot be read, the comparison stays unknown.\nFind finished access checks in connection history.\nRead results also stay in the saved app's history.\nThey stay in each checked account's history too.\nOld token-renewal results are kept separate.\nA read does not prove send or edit access.\nIt does not run workflows or start sync.\nIt does not prove that an old problem is fixed."
+  },
+  {
     "id": "guides/connections#review-app-permissions",
     "doc": "Connections",
     "section": "Review app permissions",
@@ -1454,6 +1494,54 @@
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/connections#find-sign-ins-that-need-repair",
     "body": "Open **Connections**. Find **Authentication repairs** below the tabs.\nThe same list is on **Packs**.\nIt joins account problems with your **Reconnect later** Pack reminders.\n\nUse **Refresh** to read the saved status again.\nThis does not call vendors, sign you in, or change your account.\nA token that needs its usual refresh is not a failed sign-in.\n\nEach entry shows the known uses of that account.\nSome uses may be unknown; Recued says so when the list is incomplete.\nChoose **Open connection**, **Open Mail**, or **Open Calendar** to review it.\nFor files, you can open the source to check its last sync.\nUse **Manage saved OAuth apps** to review an app or its secret date.\nYour own OAuth app stays the first choice. A broker is optional.\n\nA failed file read can have more than one cause.\nIt does not prove that more permissions will fix it.\nAn app secret date is the date you saved, not a vendor error.\nThe list keeps these cases clear.\n\n**Mark reviewed** clears only a Pack permission reminder.\nIt does not clear a sign-in or file-source failure.\nAfter a repair, choose **Refresh**.\nFile failures clear after the source records a successful sync.\nIf part of the status cannot be read, unlock Recued or try again."
+  },
+  {
+    "id": "guides/connections#view-connection-incident-history",
+    "doc": "Connections",
+    "section": "View connection incident history",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#view-connection-incident-history",
+    "body": "Open **Manage authentication**, then choose **Incident history**.\nYou can also open it from **Authentication repairs**.\nChoose **Connection incident history** there to view all accounts.\nThis includes saved history for accounts you removed.\n\nEach incident shows when the problem was first and last seen.\nAn old alert may not have kept its last problem date.\nThat date shows as **Unknown**.\nIt lists known uses and shows how the incident ended.\n**Awaiting access evidence** means the error is no longer recorded.\nIt still needs a later successful check for each failed use.\n**Successful operations recorded** means those checks passed.\nIt does not prove all permissions or retry failed work.\n\nChanging a sign-in or removing a use can close an incident too.\nThat does not mean access recovered. The history shows the reason.\nA new failure gets its own incident after the prior one ends."
+  },
+  {
+    "id": "guides/connections#view-repair-actions",
+    "doc": "Connections",
+    "section": "View repair actions",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#view-repair-actions",
+    "body": "Incident history also shows repair actions and their results.\nThese include reauthorization, app changes, sign-in changes and secret rotation.\nEach bulk change keeps a result for each connection.\nAn action can appear even if no problem was recorded first.\nIt shows the old and new sign-in, when known.\nIt links to open incidents known when the repair started.\n\n**Authentication updated** means the local change was saved.\nIt does not confirm that all affected work can run again.\nA secret change does not check vendor access.\nLater success appears only when all linked incidents record recovery.\nThe operation itself must happen after the repair was saved.\nA later background status update alone is not enough.\nThis does not prove which repair caused the recovery.\nAn unfinished collection restart is shown separately.\n**Repair failed** means the saved sign-in was kept.\nEarlier repairs and closed consent windows may not be in this history.\n\nChoose **Refresh history** to read the saved state again.\nChoose **Load older history** for more entries.\nThese reads do not call vendors or change your sign-in.\nClosed incidents, finished repairs, renewal and access checks stay for up to 90 days.\nUp to 10,000 finished records are kept.\nLong entries may omit some details; the page says when it does.\nEvents from before this history was enabled may not be available."
+  },
+  {
+    "id": "guides/connections#verify-access-after-a-repair",
+    "doc": "Connections",
+    "section": "Verify access after a repair",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#verify-access-after-a-repair",
+    "body": "In **Incident history**, find a saved repair. Choose **Verify access**.\nYou can also choose it on an account in **Authentication repairs**.\nThe review reads local settings. Choose **Run checks** to make vendor calls.\nChecks use the sign-in saved now.\nAn old repair may have used a different sign-in.\nClose the review before **Run checks** to release it.\nIf a stale review cannot start, choose **Review again**.\n\nFor an API read, check the resource URL. It must need sign-in.\nIt must use that connection's saved vendor API.\nFor Sheets, you can paste a Google Sheets link.\nLeave the URL blank to keep that API read **Unconfirmed**.\nMail and Calendar checks read the saved account.\nThey check its chosen folders or calendars. They do not wait for sync.\n\nFor files, the base check reads file metadata.\nTo check file bytes too, choose **Choose a file**.\nPick a saved file. Then choose **Use this file for verification**.\nRecued does not choose a sample. The check allows up to 10 MiB.\nThe file is not kept or sent to an AI service."
+  },
+  {
+    "id": "guides/connections#read-access-check-results",
+    "doc": "Connections",
+    "section": "Read access-check results",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#read-access-check-results",
+    "body": "Checks run in the background. You can close the panel while they run.\nChoose **View access check** to read its saved result.\nYou can also refresh incident history.\n**Refresh check status** reads that result. It makes no new vendor calls.\n\nEach listed read shows **Passed**, **Failed**, or **Unconfirmed**.\nIf a check renews a token, Recued must save it before the read can pass.\nSending, editing and workflow execution remain unconfirmed.\nA successful read covers only the checked resource.\nIt does not prove that a new app secret can refresh a token.\nRelated Packs, recipes and schedules are listed. They are not run.\nSync state, failed jobs and incident recovery stay separate.\n\n**Superseded** means the saved sign-in or source changed after the check.\nIf Recued is locked, it may be unable to compare saved sign-ins.\nUnlock it and refresh before relying on an earlier result.\nA check interrupted by a server restart stays unconfirmed.\nChoose **Review new checks** to run a fresh check."
+  },
+  {
+    "id": "guides/connections#get-alerts-about-connection-problems",
+    "doc": "Connections",
+    "section": "Get alerts about connection problems",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#get-alerts-about-connection-problems",
+    "body": "Recued reads saved status once a minute on your server.\nThis works when the app is closed too.\nIt makes no calls to vendors for this check.\nHas a sign-in or access check been refused?\nRecued can alert you on the next check.\nOther access or setup errors must last for 15 minutes first.\nTheir cause may still be unknown. A network error may need time.\nA new sign-in may not fix it.\n\nAlerts appear in **Notifications**.\nThey use the channels you turned on in **Settings → Notifications**.\nThey show known uses of the account and a repair link.\nOpen it to review the saved account or source.\nFor a sign-in problem, choose **Manage authentication**.\nThe same error on the same account does not keep sending alerts.\nThe cause may be unknown at first.\nIf a later check proves access was refused, Recued alerts you once more.\n\nFor an app secret date, Recued warns at 30 days and 7 days.\nIt warns when the date is reached too.\nSet a nearer date and it starts with that warning.\nThese checks use the date on your server's clock.\nYou enter this date. It does not prove the vendor stopped access.\nChange or clear it to end the old reminder."
+  },
+  {
+    "id": "guides/connections#resolve-a-connection-alert",
+    "doc": "Connections",
+    "section": "Resolve a connection alert",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#resolve-a-connection-alert",
+    "body": "After a repair, each failed use needs a later check or sync that works.\nOnly then can Recued send a notice that it worked again.\nNew secret keys, an old sync, or missing status is not enough.\nA test that only reaches a public API root is not enough.\nFor an API, each failed request needs a check of that same resource.\nA call to a different resource is not enough.\nRemove an account to end its alert. This does not claim it works again.\nOld alerts stay in your history.\nAn alert may fail to reach a channel outside Recued.\nUse the repair list to see the saved status now.\n\nThe checks pause while the vault is locked or the server is paused.\nAn alert does not change authentication or repeat failed jobs."
   },
   {
     "id": "guides/connections#switch-a-cloud-file-source-s-sign-in",
@@ -4133,7 +4221,7 @@
     "section": "Updates",
     "eyebrow": "Setup",
     "url": "https://recued.com/docs/setup/updates",
-    "body": "An update is a new version of the server program. Your server can update\nitself while nobody is watching. It is built so it can never break itself\nquietly. And it never tells anyone who it is when it checks."
+    "body": "An update is a new version of the server program. By default, your server\nchecks for new versions and tells you when one is out. You choose when to\ninstall it. An update is built so it can never break your server quietly.\nAnd your server never tells anyone who it is when it checks."
   },
   {
     "id": "setup/updates#channels",
@@ -4141,7 +4229,7 @@
     "section": "Channels",
     "eyebrow": "Setup",
     "url": "https://recued.com/docs/setup/updates#channels",
-    "body": "A channel is the line of releases your server follows.\n\n| Channel | Who it is for |\n| --- | --- |\n| `stable` | The default. Releases that have settled. |\n| `edge` | Early releases, for people who want changes first. |\n\nA release can go out to a share of servers at a time. Your server works\nout by itself, on your own machine, whether it is in that share. The update\ncheck sends no account name, no handle, and no install identity. Nothing\nsays who you are."
+    "body": "A channel is the line of releases your server follows.\n\n| Channel | Who it is for |\n| --- | --- |\n| `stable` | The default. Releases that have settled. |\n| `edge` | Early releases, for people who want changes first. |\n\nThe update check sends no account name, no handle, and no install\nidentity. Nothing says who you are."
   },
   {
     "id": "setup/updates#signed-manifests",
@@ -4157,7 +4245,31 @@
     "section": "How each install path applies updates",
     "eyebrow": "Setup",
     "url": "https://recued.com/docs/setup/updates#how-each-install-path-applies-updates",
-    "body": "- **Binary** — it downloads the new version, checks it, swaps itself, then\n  restarts.\n- **From source** — you get a note that a release exists. Building it is up\n  to you."
+    "body": "- **Binary** — when you install an update, it downloads the new version,\n  checks it, and swaps itself. The new version runs once the server starts\n  again.\n- **From source** — you get a note that a release exists. Building it is up\n  to you."
+  },
+  {
+    "id": "setup/updates#update-from-the-terminal",
+    "doc": "Updates",
+    "section": "Update from the terminal",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/updates#update-from-the-terminal",
+    "body": "`recued update` only checks. It tells you if a new version is out. It does\nnot install anything.\n\nThe easy way to install is the web app. Open **Settings → Updates**. This\nworks when your server starts by itself on macOS or Linux. The server then\nupdates and starts again by itself. On Windows, or for a server you started\nby hand, use the terminal steps below.\n\nTo install from the terminal, stop the server first:\n\n1. Stop the server: `recued stop`.\n2. Run `recued update apply`. It asks one question, such as\n   `Update 26.10.16 → 26.10.17? [y/N]`. Type `y`. To skip the question, run\n   `recued update apply --yes`.\n3. Start the server again. The update finishes on this first start.\n\nDoes your server start by itself when you log in? Then start it the same\nway:\n\n- macOS: `launchctl kickstart gui/$(id -u)/com.recued.server`\n- Linux: `sudo systemctl start recued`, or `systemctl --user start recued`\n- Windows: `recued start`\n\nRunning the install script again does not update a working server. It stops\nand shows you these steps."
+  },
+  {
+    "id": "setup/updates#if-the-new-version-does-not-start",
+    "doc": "Updates",
+    "section": "If the new version does not start",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/updates#if-the-new-version-does-not-start",
+    "body": "On macOS and Linux, a server that starts by itself goes back by itself. After\nthree failed starts, it puts the old version back. It writes down why.\n\nA server you started by hand does not go back by itself. Neither does a\nserver on Windows. Stop it, then run `recued update rollback`. It puts back\nthe old program, its parts and the web app. Did the release change the\ndatabase? Then it also puts back the snapshot from before the change."
+  },
+  {
+    "id": "setup/updates#see-which-version-runs",
+    "doc": "Updates",
+    "section": "See which version runs",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/updates#see-which-version-runs",
+    "body": "`recued --version` shows the version of the program on disk.\n\n`recued status` shows the version the server is running. Look for its\n`Version:` line. The two can differ for a short time. An update changes the\nprogram on disk first. The server runs the new version only once it starts\nagain. Is the program on disk newer? Then `recued status` tells you to\nrestart the server."
   },
   {
     "id": "setup/updates#safety-model",
@@ -4165,7 +4277,7 @@
     "section": "Safety model",
     "eyebrow": "Setup",
     "url": "https://recued.com/docs/setup/updates#safety-model",
-    "body": "An update happens in two steps. First the new version is staged and\nstarted. Then it must pass a start-up health check. Only then is it kept.\nIf the check fails, the server goes back to the old version by itself.\n\nSome releases change the database. Those take a snapshot first, before the\nchange. Going back to a version from before that change is refused. That\nkeeps your data safe.\n\nOne lock on the whole machine stops two update paths from running at once.\nEvery try is written to an update ledger. The ledger only grows. It is kept\noutside the database it talks about."
+    "body": "An update happens in two steps. First the new version is staged and\nstarted. Then it must pass a start-up health check. Only then is it kept.\nIf the check keeps failing, the old version comes back.\n[If the new version does not start](#if-the-new-version-does-not-start)\nsays when that happens by itself.\n\nSome releases change the database. Those take a snapshot first, before the\nchange. Going back to a version from before that change is refused. That\nkeeps your data safe.\n\nOne lock on the whole machine stops two update paths from running at once.\nEvery try is written to an update ledger. The ledger only grows. It is kept\noutside the database it talks about."
   },
   {
     "id": "setup/updates#owner-only",

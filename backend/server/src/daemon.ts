@@ -26,6 +26,8 @@ import { runningAsPackagedBinary } from './packaged-binary.js';
 // come to disagree about one machine; importing the update profile's copy
 // would instead breach the per-profile module graph `bin-router` ratchets.
 import { liveServerHolding } from './lifecycle/instance-lock.js';
+import { compareVersions } from '@recued/release';
+import { SERVER_VERSION } from './server-version.js';
 
 /** Find the npx binary path. Falls back to 'npx' (relies on PATH). */
 const findNpx = (): string => {
@@ -346,6 +348,32 @@ export const findOwnerHint = (
   ];
 };
 
+/** The `Version:` line of `recued status` (the owner, 2026-10-16: "recued
+ *  status does not show the version #, but recued --help does").
+ *
+ *  ⛔ WHAT IS RUNNING, NOT WHAT IS ON DISK. An update swaps the binary and
+ *  finishes on the next start, so until then `recued --version` already names
+ *  the new release while the server is still the old one. The server records
+ *  its version in the realm's instance lock when it boots
+ *  (`LockInfo.version`), and that is what this reads.
+ *
+ *  `running`: `null` when no server of this realm runs (this recued's own
+ *  version is the one that would start); `undefined` when one runs but its lock
+ *  records no version (a server from before it was recorded). */
+export const statusVersionLines = (
+  running: string | null | undefined,
+  here: string = SERVER_VERSION,
+): string[] => {
+  if (running === null) return [`Version: ${here}`];
+  if (running === undefined) {
+    return [`Version: unknown — the running server did not record it (this recued is ${here}).`];
+  }
+  if (running === here) return [`Version: ${running}`];
+  return compareVersions(here, running) > 0
+    ? [`Version: ${running}`, `  This recued is ${here}: restart the server to run it.`]
+    : [`Version: ${running}`, `  This recued is ${here}, older than the running server.`];
+};
+
 /** Show the running state. */
 export const daemonStatus = async (
   opts: DaemonOptions,
@@ -403,6 +431,7 @@ export const daemonStatus = async (
     const holder = liveServerHolding(opts.dbPath);
     if (holder) {
       console.log(`Status: running — started by \`recued serve\` (pid ${holder.pid}, port ${holder.bind_port}).`);
+      for (const line of statusVersionLines(holder.version)) console.log(line);
       if (staleNote) console.log(staleNote);
       console.log('  No pidfile: `recued start` did not launch it — a foreground `recued serve`');
       console.log('  or an autostart unit did. That is the normal shape, not a fault.');
@@ -429,14 +458,17 @@ export const daemonStatus = async (
       for (const line of findOwnerHint(opts.port, platform, true)) console.log(line);
     } else if (await portInUse(opts.port)) {
       console.log(`Status: stopped — but port ${opts.port} is already in use.`);
+      for (const line of statusVersionLines(null)) console.log(line);
       if (staleNote) console.log(staleNote);
       console.log('  Whatever holds it does not answer /health, so it is probably not a');
       console.log('  recued server. `recued serve` will fail with EADDRINUSE until it is freed.');
       for (const line of findOwnerHint(opts.port, platform, false)) console.log(line);
     } else if (stalePid !== null) {
       console.log(`Status: stopped (stale pidfile for pid ${stalePid}, removed)`);
+      for (const line of statusVersionLines(null)) console.log(line);
     } else {
       console.log('Status: stopped');
+      for (const line of statusVersionLines(null)) console.log(line);
     }
     // 🔑 SAY WHY, when a start failed. An autostart service has no terminal, so
     // its error went nowhere an owner looks — a passphrase-sealed key file whose
@@ -451,6 +483,10 @@ export const daemonStatus = async (
   const healthy = await pingHealth(opts.port);
 
   console.log(`Status:  running`);
+  // `recued start` spawned it, and the server it spawned claims the realm lock
+  // like any other, so the lock names the version actually running.
+  const held = liveServerHolding(opts.dbPath);
+  for (const line of statusVersionLines(held ? held.version : undefined)) console.log(line);
   console.log(`PID:     ${pid}`);
   console.log(`Port:    ${opts.port}`);
   console.log(`Health:  ${healthy ? 'ok' : 'not responding'}`);

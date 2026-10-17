@@ -23,6 +23,7 @@ import {
   OAUTH_APP_ID,
   isOAuthAppSecretExpiryDate,
   OAUTH_PERMISSION_CLEANUP_ACTIONS,
+  OAUTH_APP_RENEWAL_ACTIONS,
   type SavedOAuthApp,
 } from '@recued/contracts';
 import type { WsClient } from './ws-server.js';
@@ -43,6 +44,7 @@ export interface OAuthAppConfigHandlerDeps {
   usage?: import('./oauth-app-usage-service.js').OAuthAppUsageService;
   permissions?: import('./oauth-permission-consolidation.js').OAuthPermissionService;
   cleanup?: import('./oauth-permission-cleanup.js').OAuthPermissionCleanupService;
+  renewal?: import('./oauth-app-renewal-service.js').OAuthAppRenewalService;
 }
 
 export type OAuthAppConfigMethods =
@@ -88,6 +90,10 @@ export const makeOAuthAppConfigHandlers = (
     methods: ['server.getOAuthAppConfig', 'server.oauthApps', 'server.setOAuthAppConfig', 'server.clearOAuthAppConfig'],
     handlers: {
       'server.oauthApps': async args => {
+        if (args && (OAUTH_APP_RENEWAL_ACTIONS as readonly string[]).includes(args.action)) {
+          if (!deps.renewal) throw new RpcError('not_configured', 'Update and unlock the server to verify saved-app token renewal.');
+          return { ...await deps.renewal.handle(args as import('@recued/contracts').OAuthAppRenewalRequest), apps: apps(), secret_expiry_supported: true };
+        }
         if (args && (OAUTH_PERMISSION_CLEANUP_ACTIONS as readonly string[]).includes(args.action)) {
           if (!deps.cleanup) throw new RpcError('not_configured', 'Update and unlock the server to use guided permission cleanup.');
           return { ...await deps.cleanup.handle(args as import('@recued/contracts').OAuthPermissionCleanupRequest), apps: apps(), secret_expiry_supported: true };

@@ -3323,6 +3323,20 @@ describe('guided reauthorization return-to-work journey', () => {
     { text: 'Draft the customer follow-up before sending.', protected: true, modelSourceId: null },
     { text: '', protected: true, modelSourceId: null, attachments: [{ file_id: 'file:restored', media_class: 'image' }] },
     { text: '', protected: false, modelSourceId: null, replyTo: { sessionId: 'chat_1', messageId: 'target' } },
+    { text: '', protected: false, modelSourceId: null, parkedDrafts: [
+      { sessionId: 'chat_2', draft: { text: 'Parked words', protected: true, modelSourceId: null } },
+      { sessionId: null, draft: { text: '', protected: false, modelSourceId: null, attachments: [{ file_id: 'file:parked', media_class: 'image' }] } },
+    ] },
+    { text: '', protected: false, modelSourceId: null, parkedDrafts: [
+      { sessionId: 'chat_2', draft: { text: '', protected: false, modelSourceId: null,
+        replyTo: { sessionId: 'chat_2', messageId: 'quoted' } } },
+    ] },
+    { text: '', protected: false, modelSourceId: null,
+      interruptedUploads: [{ id: 'active-upload', filename: 'Active.pdf', media_class: 'document' }] },
+    { text: '', protected: false, modelSourceId: null, parkedDrafts: [
+      { sessionId: null, draft: { text: '', protected: false, modelSourceId: null,
+        interruptedUploads: [{ id: 'parked-upload', filename: 'Parked.pdf', media_class: 'document' }] } },
+    ] },
   ])('wipes rejected credentials but guards and restores the exact page and Chat draft (%#)', async chatDraft => {
     const dom = makeFakeDocument();
     let beforeUnloadListener: ((event: BeforeUnloadEvent) => void) | null = null;

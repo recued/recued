@@ -134,7 +134,17 @@ const hasOwn = (obj: Record<string, unknown>, key: string): boolean =>
 const own = (obj: Record<string, unknown>, key: string): unknown =>
   hasOwn(obj, key) ? obj[key] : undefined;
 
+/** Private resource identity shared with owner probes. Call before injecting
+ * query auth or request signatures, so rotating secrets never change it. */
+export const connectionApiAccessKey = (method: string, unsignedUrl: string): string =>
+  sha256Hex(JSON.stringify([method.toUpperCase(), new URL(unsignedUrl).toString()]));
+
 export interface ConnectionApiHandlerDeps {
+  /** Passive host reporting. This must never change the operation's result or
+   * retry it. The host fences this observation against the current credential. */
+  observeAccess?: (row: ConnectionRow, auth: ConnectionAuth, observation: {
+    status: 'ok' | 'auth_failed' | 'unreachable'; at: number; base_url: string; check_key?: string;
+  }) => Promise<void>;
   withAuthRenewal?<T>(row: ConnectionRow, run: () => Promise<T>): Promise<T>;
   /** D-322 — raw vendor HTTP through the owner-selected OAuth broker. */
   managedOAuthFetch?: (auth: Extract<ConnectionAuth, { type: 'managed_oauth' }>, url: string, init: RequestInit) => Promise<Response>;
@@ -1304,10 +1314,21 @@ const fetchCredentialJson = async <T>({
 
   try {
     if (!response.ok) {
+      // Keep only recognized protocol codes. Provider descriptions and error
+      // bodies can contain credentials and never belong in an owner alert.
+      let oauthError: string | undefined;
+      try {
+        const { text } = await readBoundedResponseText(response, CREDENTIAL_RESPONSE_MAX_BYTES);
+        const parsed: unknown = JSON.parse(text);
+        const code = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+          ? (parsed as Record<string, unknown>).error : undefined;
+        if (typeof code === 'string' && ['invalid_grant', 'invalid_client', 'unauthorized_client', 'access_denied',
+          'invalid_scope', 'invalid_request', 'unsupported_grant_type', 'temporarily_unavailable', 'server_error'].includes(code)) oauthError = code;
+      } catch { /* HTTP status remains useful when the bounded body is unavailable. */ }
       throw new IngredientError(
         'TOKEN_REFRESH_FAILED',
         `${label} returned ${response.status} ${response.statusText}`,
-        { ...details, status: response.status },
+        { ...details, status: response.status, ...(oauthError ? { oauth_error: oauthError } : {}) },
       );
     }
 
@@ -2274,8 +2295,26 @@ export const createConnectionApiHandler = (
 
     // ────────────── auth (decrypt + maybe refresh + inject) ──────────────
     const auth = await deps.decodeAuth(record);
-    const refreshed = await ensureFreshAuth(record, auth);
-    const liveAuth = refreshed.auth;
+    const observe = async (status: 'ok' | 'auth_failed' | 'unreachable', usedAuth: ConnectionAuth): Promise<void> => {
+      try { await deps.observeAccess?.(record, usedAuth, { status, at: now(), base_url: baseUrl,
+        check_key: connectionApiAccessKey(method, resolveRequestUrl(baseUrl).url.toString()) }); }
+      catch { /* Reporting must not break or repeat a vendor operation. */ }
+    };
+    const refresh = async (usedAuth: ConnectionAuth, reportedAuth: ConnectionAuth = usedAuth) => {
+      try { return await ensureFreshAuth(record, usedAuth); }
+      catch (error) {
+        if (error instanceof IngredientError && error.code === 'TOKEN_REFRESH_FAILED') {
+          const details = error.details;
+          if (details?.cause === 'network' || details?.cause === 'timeout' || details?.status === 429
+            || typeof details?.status === 'number' && details.status >= 500) await observe('unreachable', reportedAuth);
+          else if (details?.status === 401 || details?.status === 403 || details?.status === 400
+            && ['invalid_grant', 'invalid_client', 'unauthorized_client', 'access_denied'].includes(String(details?.oauth_error))) await observe('auth_failed', reportedAuth);
+        }
+        throw error;
+      }
+    };
+    const refreshed = await refresh(auth);
+    let liveAuth = refreshed.auth;
     if (
       refreshed.runtime_base_url !== undefined
       && refreshed.runtime_base_url !== baseUrl
@@ -2332,12 +2371,13 @@ export const createConnectionApiHandler = (
         // this a 3xx to an internal / metadata host would be followed
         // (carrying non-stripped custom auth headers) and its body returned
         // to the recipe. Same-origin redirects still work.
-        const requestFetch: typeof fetch = liveAuth.type === 'managed_oauth'
+        const requestAuth = liveAuth;
+        const requestFetch: typeof fetch = requestAuth.type === 'managed_oauth'
           ? async (input, init) => {
               if (deps.managedOAuthFetch === undefined) {
                 throw new IngredientError('CONNECTION_REFUSED', 'Managed OAuth is unavailable on this host.');
               }
-              return deps.managedOAuthFetch(liveAuth, input.toString(), init ?? {});
+              return deps.managedOAuthFetch(requestAuth, input.toString(), init ?? {});
             }
           : fetchImpl;
         const response = await fetchOriginPinned(requestFetch, url.toString(), {
@@ -2357,6 +2397,7 @@ export const createConnectionApiHandler = (
             { slug: call.slug, name: record.name },
           );
         }
+        await observe('unreachable', liveAuth);
         const isAbort = (e as Error).name === 'AbortError';
         if (isWrite) {
           throw new IngredientError(
@@ -2423,10 +2464,10 @@ export const createConnectionApiHandler = (
       // still collapses concurrent 401s into ONE exchange, which matters
       // doubly when the refresh token is single-use. The cleared copy is local;
       // what gets persisted is built from the row's own credential fields.
-      const reauthResult = await ensureFreshAuth(record, {
+      const reauthResult = await refresh({
         ...liveAuth,
         current_access_token: undefined,
-      });
+      }, liveAuth);
       const reauthed = reauthResult.auth;
       // ⚠ This narrowing is what the TYPE SYSTEM needs to read the field off a
       // `ConnectionAuth`, NOT a second guard — the behavioural one is
@@ -2462,12 +2503,15 @@ export const createConnectionApiHandler = (
           });
           if (typeof body === 'string' || body === undefined) body = reinjected.body;
         }
+        liveAuth = reauthed;
         pending = await attempt();
         response = pending.response;
       }
     }
 
     // ────────────── status classification + body parse ──────────────
+    if (response.status === 401 || response.status === 403) await observe('auth_failed', liveAuth);
+    else if (response.status === 429 || response.status >= 500) await observe('unreachable', liveAuth);
     classifyHttpError(response, call.slug, isWrite);
 
     // SMB-finance slice 3 — response_capture (storage-gdrive `file.download`):
@@ -2493,6 +2537,7 @@ export const createConnectionApiHandler = (
         || filenameFromContentDisposition(response.headers.get('content-disposition'))
         || 'download';
       ctx?.setBytes(bytes.byteLength, bodyByteLength(body));
+      await observe('ok', liveAuth);
       return {
         status: response.status,
         headers: responseHeadersToObject(response.headers),
@@ -2530,6 +2575,7 @@ export const createConnectionApiHandler = (
       headers: responseHeadersToObject(response.headers),
       result,
     };
+    await observe('ok', liveAuth);
     if (Object.keys(call.output).length === 0) {
       return data;
     }

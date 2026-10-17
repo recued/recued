@@ -73,6 +73,32 @@ const fixture = (provider: FileSourceOAuthProvider = 'google', config: Record<st
   };
 };
 afterEach(() => vi.useRealTimers());
+describe('saved file-source access verification', () => {
+  it('refuses a renewed credential that its resolver did not save before reading file metadata', async () => {
+    const f = fixture(); f.resolve.mockResolvedValueOnce({ auth: f.target, config: JSON.parse(f.row.config_json) as Record<string, unknown> });
+    await expect(f.service.verifySaved('work')).rejects.toMatchObject({ code: 'credential_verification_failed' }); expect(f.fetch).not.toHaveBeenCalled();
+  });
+  it.each(['google', 'onedrive', 'sharepoint', 'dropbox', 'box'] as const)('checks saved %s metadata without replacing a migration review or selecting file bytes', async provider => {
+    const f = fixture(provider, provider === 'sharepoint' ? { drive_id: 'team-library' } : {}); const row = { ...f.row };
+    await f.service.prepare('work', 2); const review = f.service.assertCurrent('work'); f.fetch.mockClear();
+    expect(await f.service.verifySaved('work')).toEqual([{ kind: 'file_metadata', status: 'passed' },
+      { kind: 'file_download', status: 'unconfirmed', reason: 'resource_required' }, { kind: 'write_permissions', status: 'unconfirmed', reason: 'not_executed' }]);
+    expect(f.row).toEqual(row); expect(f.service.assertCurrent('work')).toBe(review);
+    expect(f.fetch.mock.calls.some(([url]) => /alt=media|\/content(?:\?|$)|\/download(?:\?|$)/.test(String(url)))).toBe(false);
+  });
+  it('checks only the user-selected download and reports its failure separately from metadata', async () => {
+    const f = fixture(); expect((await f.service.verifySaved('work', 'file-1'))[1]).toEqual({ kind: 'file_download', status: 'passed' });
+    f.contentFail(); expect(await f.service.verifySaved('work', 'file-1')).toMatchObject([{ kind: 'file_metadata', status: 'passed' },
+      { kind: 'file_download', status: 'unconfirmed', reason: 'inconclusive' }, { kind: 'write_permissions', status: 'unconfirmed' }]);
+  });
+  it('requires a file from this saved source and obeys cancellation and the remote-download gate', async () => {
+    const f = fixture(); await expect(f.service.verifySaved('work', 'other-file')).rejects.toMatchObject({ code: 'credential_verification_failed' });
+    expect(f.fetch).not.toHaveBeenCalled(); f.revoke(); await expect(f.service.verifySaved('work', 'file-1')).rejects.toThrow('disabled');
+    const controller = new AbortController(); controller.abort(); await expect(f.service.verifySaved('work', undefined, controller.signal)).rejects.toThrow('cancelled');
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+});
+
 describe('same-source file authentication metadata proof', () => {
   it.each(['google','onedrive','sharepoint','dropbox','box'] as const)('proves %s through its production adapter without retaining candidate tokens or cursors', async provider => {
     const f = fixture(provider, provider === 'sharepoint' ? { drive_id: 'team-library' } : {});

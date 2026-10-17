@@ -26,6 +26,11 @@ describe('recipeCodeForRpcRefusal', () => {
     expect(recipeCodeForRpcRefusal('endpoint_already_revoked', 409)).toBe('CONFLICT');
   });
 
+  it('names credential verification refusals by their evidence: an inconclusive read or a storage error', () => {
+    expect(recipeCodeForRpcRefusal('credential_verification_failed', 422)).toBe('BAD_INPUT');
+    expect(recipeCodeForRpcRefusal('credential_verification_failed', 500)).toBe('SERVER_ERROR');
+  });
+
   it('⛔ reads only an rpc-shaped code: a system error is not a refusal', () => {
     expect(recipeCodeForRpcRefusal('ECONNRESET', 404)).toBeUndefined();
     expect(recipeCodeForRpcRefusal('toString', 400)).toBeUndefined();

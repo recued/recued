@@ -3,11 +3,15 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { ReleaseCheckResponse } from '@recued/contracts';
+import * as ts from 'typescript';
 import {
+  APPLY_DECLINED_MESSAGE,
+  APPLY_NO_TERMINAL_MESSAGE,
   buildCliApplyDeps,
   buildUpdateApplyGuidance,
   resolveCliApplyOutcome,
   runUpdateProfile,
+  takeApplyConsent,
 } from '../cli-context/update.js';
 import { runningServerUpdateRemedy } from '../cli-context/update-profile-guards.js';
 import { createUpdateLedger } from '../update/update-ledger.js';
@@ -362,6 +366,58 @@ describe('the CLI staged-rollout bypass is audited as confirmed', () => {
     expect(source).toContain(
       'rolloutBypass: { rolloutPct: resolved.rolloutPct, clientConfirmed: true }',
     );
+  });
+});
+
+/** `rollout_pct` is 0 for good (the owner, 2026-10-16: "we will always have 0%
+ *  rollout policy"), so no install is ever in the cohort and every apply asks
+ *  here. It used to narrate the rollout first; now it asks one plain question. */
+describe("the owner's yes to an apply (takeApplyConsent)", () => {
+  const asked: string[] = [];
+  const answering = (yes: boolean) => async (question: string): Promise<boolean> => {
+    asked.push(question);
+    return yes;
+  };
+  const versions = { fromVersion: '26.10.14', toVersion: '26.10.16' };
+  beforeEach(() => { asked.length = 0; });
+
+  it('takes --yes as the yes and asks nothing', async () => {
+    expect(await takeApplyConsent({ yes: true, isTTY: true, ...versions, ask: answering(false) })).toBe('confirmed');
+    expect(asked).toEqual([]);
+  });
+
+  it('asks one plain question on a terminal, and only a yes installs', async () => {
+    expect(await takeApplyConsent({ yes: false, isTTY: true, ...versions, ask: answering(true) })).toBe('confirmed');
+    expect(await takeApplyConsent({ yes: false, isTTY: true, ...versions, ask: answering(false) })).toBe('declined');
+    expect(asked).toEqual(['Update 26.10.14 → 26.10.16? [y/N] ', 'Update 26.10.14 → 26.10.16? [y/N] ']);
+  });
+
+  it('installs nothing with no terminal and no --yes, and names the flag', async () => {
+    expect(await takeApplyConsent({ yes: false, isTTY: false, ...versions, ask: answering(true) })).toBe('no-terminal');
+    expect(asked).toEqual([]);
+    expect(APPLY_NO_TERMINAL_MESSAGE).toContain('nothing was installed');
+    expect(APPLY_NO_TERMINAL_MESSAGE).toContain('--yes');
+  });
+
+  it('says nothing about rollout, cohorts or installing early, in any string the CLI holds', async () => {
+    const words = /rollout|cohort|early|bypass/i;
+    await takeApplyConsent({ yes: false, isTTY: true, ...versions, ask: answering(true) });
+    expect([...asked, APPLY_DECLINED_MESSAGE, APPLY_NO_TERMINAL_MESSAGE].filter((text) => words.test(text))).toEqual([]);
+    // Every string literal in the profile, comments excluded: the words are
+    // allowed to explain the code, never to reach the owner's terminal.
+    const file = resolve(import.meta.dirname, '../cli-context/update.ts');
+    const source = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
+    const literals: string[] = [];
+    const visit = (node: ts.Node): void => {
+      if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) literals.push(node.text);
+      else if (ts.isTemplateExpression(node)) {
+        literals.push(node.head.text, ...node.templateSpans.map((span) => span.literal.text));
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    expect(literals.length).toBeGreaterThan(50);
+    expect(literals.filter((text) => words.test(text))).toEqual([]);
   });
 });
 
