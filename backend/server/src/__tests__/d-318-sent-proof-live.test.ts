@@ -165,7 +165,9 @@ const scriptGmail = (
         messageId, source,
       };
       const threadId = body.threadId ?? `sent-${n}`;
-      account.mailbox.push({ ...copy, id: `sent-${n}`, labels: ['SENT'], threadId });
+      // §8.18 — mail to oneself: Gmail keeps ONE message, in Sent and the inbox.
+      const toItself = copy.to.toLowerCase().includes(account.address.toLowerCase());
+      account.mailbox.push({ ...copy, id: `sent-${n}`, labels: toItself ? ['SENT', 'INBOX'] : ['SENT'], threadId });
       for (const other of Object.values(accounts)) {
         if (other !== account && copy.to.includes(other.address)) {
           // Delivered as Gmail delivers: its stamp on top.
@@ -273,7 +275,7 @@ const scriptGmail = (
   return { sentLookups, sent };
 };
 
-const bootLive = async (opts: { model?: boolean } = {}) => {
+const bootLive = async (opts: { model?: boolean; oneMailbox?: boolean; bothSend?: boolean } = {}) => {
   tmp = mkdtempSync(join(tmpdir(), 'd-318-proof-live-'));
   const dbPath = join(tmp, 'server.db');
   const runtimeConfig = createRuntimeConfigStore({});
@@ -335,15 +337,17 @@ const bootLive = async (opts: { model?: boolean } = {}) => {
 
   createOAuthAppConfigStore(storage.db!, { getEncryptionKey: app.keys!.keyProvider('server-data') })
     .setIssuer('google', 'client-id', 'client-secret');
-  for (const [slug, address, token] of [
-    ['recued-chat', CHAT_ADDRESS, 'at-chat'],
-    ['me', OWNER_ADDRESS, 'at-me'],
-  ] as const) {
+  // §8.18 — one mailbox: the owner's own Gmail alone, which is the chat mailbox too.
+  const accounts = opts.oneMailbox
+    ? [['me', OWNER_ADDRESS, 'at-me']] as const
+    : [['recued-chat', CHAT_ADDRESS, 'at-chat'], ['me', OWNER_ADDRESS, 'at-me']] as const;
+  const chatSlug = opts.oneMailbox ? 'me' : 'recued-chat';
+  for (const [slug, address, token] of accounts) {
     await storage.accountStore!.set(`gmail.${slug}.access_token`, token);
     await storage.accountStore!.set(`gmail.${slug}.refresh_token`, `rt-${slug}`);
     await storage.accountStore!.set(`gmail.${slug}.expires_at`, String(Date.now() + 3_600_000));
     // The chat mailbox can send, as the door requires (D-127).
-    if (slug === 'recued-chat') await storage.accountStore!.set(`gmail.${slug}.granted_scopes`, GMAIL_SEND_SCOPE);
+    if (slug === chatSlug || opts.bothSend) await storage.accountStore!.set(`gmail.${slug}.granted_scopes`, GMAIL_SEND_SCOPE);
     collection.mailStack!.instances.upsert({
       platform: 'mail',
       slug,
@@ -354,7 +358,7 @@ const bootLive = async (opts: { model?: boolean } = {}) => {
       last_synced_at: null,
     } as never);
   }
-  collection.mailChatDoor!.setChatMailbox('recued-chat', CHAT_ADDRESS);
+  collection.mailChatDoor!.setChatMailbox(chatSlug, opts.oneMailbox ? OWNER_ADDRESS : CHAT_ADDRESS);
   // The owner names their own mailbox: its Sent record alone proves a request.
   collection.mailChatDoor!.setOwnerMailboxes(['me']);
 
@@ -822,5 +826,254 @@ describe('D-318 step 5, live — the answer goes back by email', () => {
     const substrate = readFileSync(resolve(here, '..', 'composition/bin/wire-housekeeping-substrate.ts'), 'utf-8');
     expect(substrate.split('...(deps.isChatConversationRecord ? { isChatConversationRecord: deps.isChatConversationRecord } : {}),'))
       .toHaveLength(3);
+  });
+});
+
+describe('§8.18 one mailbox, live — the owner writes to their own Gmail, and Recued answers there', () => {
+  it('answers in the thread from the same mailbox, keeps the conversation out of the owner’s mail, and the rest in', async () => {
+    const mine: ScriptedMessage[] = [];
+    let turn = 0;
+    const { sent, sentLookups } = scriptGmail({
+      'at-me': { address: OWNER_ADDRESS, mailbox: mine },
+    }, () => JSON.stringify({ response: turn++ === 0 ? 'Nothing today.' : 'Tomorrow is clear too.', tool_calls: [] }));
+    const live = await bootLive({ model: true, oneMailbox: true });
+    let answers: MailChatAnswers | undefined;
+    try {
+      expect(live.collection.mailChatDoor!.get()).toMatchObject({
+        chat_mailbox: 'me', owner_mailboxes: ['me'], ask_prefix: 'ask:',
+      });
+      live.app.chatDeps!.store.setDefaultModelSourceId('free_pool');
+      await live.mailStack.startAll();
+      const conversations = live.collection.mailChatConversations!;
+      const mailboxes = () => live.collection.collectionRegistry.list()
+        .filter((entry): entry is MailCollection => entry.platform === 'mail');
+      const turns = composeMailChatTurns({
+        orchestrator: live.app.chatOrchestratorRef!,
+        door: live.collection.mailChatDoor!,
+        mailboxes,
+        readBody: (record) => materializeMailBody(record, live.app.cacheBlobs!),
+        conversations,
+        afterTurn: () => answers?.kick(),
+      })!;
+      answers = composeMailChatAnswers({
+        db: live.storage.db!,
+        chatStore: live.app.chatStoreRef!,
+        door: live.collection.mailChatDoor!,
+        mailboxes,
+        requests: live.proof,
+        conversations,
+        claims: createMailSendClaimStore(live.storage.db!),
+        publicBaseUrl: () => null,
+        isUnlocked: live.app.isVaultUnlocked,
+      })!;
+      answers.start();
+      live.proof.bindAdmit(turns.admit);
+      live.proof.start();
+
+      await live.mailStack.pauseSync();
+      const at = Date.now() - 20_000;
+      // ⛔ As Gmail keeps an email to oneself: ONE message, labelled SENT and INBOX.
+      const self = { at, from: OWNER_ADDRESS, to: OWNER_ADDRESS, labels: ['SENT', 'INBOX'] } as const;
+      mine.push({ ...self, id: 'm1', subject: 'ask: what is on today?', messageId: 'req-1@owner.example' });
+      // The rest of the owner's mail, in the same mailbox.
+      mine.push({ ...self, id: 'm2', subject: 'Buy milk', messageId: 'note-1@owner.example', body: 'and eggs' });
+      mine.push({
+        id: 'm3', at, labels: ['INBOX'], from: 'bob@friend.example', to: OWNER_ADDRESS, subject: 'lunch?',
+        messageId: 'lunch-1@friend.example', body: 'Thursday?',
+        source: `Authentication-Results: ${gmailStamp('bob@friend.example')}\r\n` + [
+          'From: bob@friend.example', `To: ${OWNER_ADDRESS}`, 'Subject: lunch?', 'Message-ID: <lunch-1@friend.example>',
+          `Date: ${new Date(at).toUTCString()}`, 'Content-Type: text/plain; charset=utf-8', '', 'Thursday?', '',
+        ].join('\r\n'),
+      });
+      await live.mailStack.resumeSync();
+
+      // Proven by its own Sent record, run, and answered — by the real Gmail
+      // provider, past D-127's self-loop guard, to the owner, in the thread.
+      await vi.waitFor(() => expect(sent).toHaveLength(1), { timeout: 15_000 });
+      expect(live.proof.get('me', 'req-1@owner.example')).toMatchObject({ state: 'proven', proven_by: 'me' });
+      expect(sentLookups.map((lookup) => lookup.q)).toContain('rfc822msgid:req-1@owner.example');
+      const first = sent[0]!;
+      expect(first.token).toBe('at-me');
+      expect(first.threadId).toBe('m1');
+      expect(headerOf(first.source, 'To')).toBe(OWNER_ADDRESS);
+      expect(headerOf(first.source, 'Cc')).toBeUndefined();
+      expect(headerOf(first.source, 'In-Reply-To')).toBe('<req-1@owner.example>');
+      const reconciliation = headerOf(first.source, 'x-recued-reconciliation-id');
+      expect(reconciliation).toMatch(/^mail-chat-answer:[0-9a-f]{32}$/);
+      expect(first.source.split('\r\n\r\n')[1]).toBe('Nothing today.');
+
+      // The answer lands in the same mailbox; synced, it is Recued's own.
+      const conversation = conversations.conversationOf('me', 'req-1@owner.example');
+      await vi.waitFor(() => expect(conversations.conversationOf('me', 'CAgmail-1@mail.gmail.com'))
+        .toBe(conversation), { timeout: 10_000 });
+      await live.mailStack.pauseSync();
+      await live.mailStack.resumeSync();
+      const box = live.collection.collectionRegistry.get('mail', 'me') as MailCollection;
+      const rowOf = (key: string, value: string) => box.list({ platform: 'mail', slug: 'me', limit: 50 })
+        .find((record) => record.hot_fields[key] === value);
+      await vi.waitFor(() => expect(rowOf('reconciliation_id', reconciliation!)).toBeDefined(), { timeout: 10_000 });
+      // ⛔ The conversation is out of the owner's mail: the request, and the answer.
+      expect(rowOf('rfc_message_id', 'req-1@owner.example')?.hot_fields.mail_chat).toBe(true);
+      expect(rowOf('reconciliation_id', reconciliation!)?.hot_fields.mail_chat).toBe(true);
+      // ⛔ ...and the rest of the mailbox is theirs, as before: a note to self, a
+      // friend's email, which still makes the friend a contact.
+      expect(rowOf('rfc_message_id', 'note-1@owner.example')?.hot_fields.mail_chat).toBeUndefined();
+      expect(rowOf('rfc_message_id', 'lunch-1@friend.example')?.hot_fields.mail_chat).toBeUndefined();
+      await vi.waitFor(() => expect(live.app.contactStoreRef!.get('bob@friend.example')).not.toBeNull(), { timeout: 10_000 });
+      // The answer, delivered back, is no request; nor is anything but the request.
+      expect(live.proof.get('me', 'CAgmail-1@mail.gmail.com')).toBeNull();
+      expect(live.proof.recent('me', 10).map((request) => request.rfc_message_id)).toEqual(['req-1@owner.example']);
+
+      // The owner replies to the answer, from the same mailbox, without ask:.
+      await live.mailStack.pauseSync();
+      mine.push({
+        ...self, at: Date.now() - 2_000, id: 'm4', threadId: 'm1', subject: 'Re: what is on today?',
+        messageId: 'req-2@owner.example', inReplyTo: '<CAgmail-1@mail.gmail.com>', body: 'and tomorrow?',
+      });
+      await live.mailStack.resumeSync();
+      await vi.waitFor(() => expect(sent).toHaveLength(2), { timeout: 15_000 });
+      expect(conversations.conversationOf('me', 'req-2@owner.example')).toBe(conversation);
+      expect(headerOf(sent[1]!.source, 'To')).toBe(OWNER_ADDRESS);
+      expect(sent[1]!.source.split('\r\n\r\n')[1]).toBe('Tomorrow is clear too.');
+      await vi.waitFor(() => expect(rowOf('rfc_message_id', 'req-2@owner.example')?.hot_fields.mail_chat).toBe(true),
+        { timeout: 10_000 });
+      expect((await live.app.chatDeps!.store.listMessages(`mail:me:${conversation}`)).map((m) => m.content)).toEqual([
+        'what is on today?', 'Nothing today.', 'and tomorrow?', 'Tomorrow is clear too.',
+      ]);
+    } finally {
+      await answers?.dispose();
+      await live.close();
+    }
+  }, 60_000);
+});
+
+describe('§8.18, live — switching between two mailboxes and one, and back', () => {
+  it('answers in each setup, turns the prefix back on for one mailbox, and leaves the old threads unanswered', async () => {
+    const chatBox: ScriptedMessage[] = [];
+    const mine: ScriptedMessage[] = [];
+    let turn = 0;
+    const { sent } = scriptGmail({
+      'at-chat': { address: CHAT_ADDRESS, mailbox: chatBox },
+      'at-me': { address: OWNER_ADDRESS, mailbox: mine },
+    }, () => JSON.stringify({ response: `answer ${++turn}`, tool_calls: [] }));
+    const live = await bootLive({ model: true, bothSend: true });
+    let answers: MailChatAnswers | undefined;
+    try {
+      live.app.chatDeps!.store.setDefaultModelSourceId('free_pool');
+      await live.mailStack.startAll();
+      const door = live.collection.mailChatDoor!;
+      const conversations = live.collection.mailChatConversations!;
+      const mailboxes = () => live.collection.collectionRegistry.list()
+        .filter((entry): entry is MailCollection => entry.platform === 'mail');
+      const turns = composeMailChatTurns({
+        orchestrator: live.app.chatOrchestratorRef!, door, mailboxes,
+        readBody: (record) => materializeMailBody(record, live.app.cacheBlobs!), conversations,
+        afterTurn: () => answers?.kick(),
+      })!;
+      answers = composeMailChatAnswers({
+        db: live.storage.db!, chatStore: live.app.chatStoreRef!, door, mailboxes, requests: live.proof, conversations,
+        claims: createMailSendClaimStore(live.storage.db!), publicBaseUrl: () => null, isUnlocked: live.app.isVaultUnlocked,
+      })!;
+      answers.start();
+      live.proof.bindAdmit(turns.admit);
+      live.proof.start();
+      /** As Settings → Email chat switches: off, then on with the mailboxes picked
+       *  (`collection.mail.chat_door.set` names the owner's mailboxes first). */
+      const switchTo = (chat: 'recued-chat' | 'me') => {
+        door.setChatMailbox(null);
+        door.setOwnerMailboxes(['me']);
+        return door.setChatMailbox(chat, chat === 'me' ? OWNER_ADDRESS : CHAT_ADDRESS);
+      };
+      const deliver = async (...pushes: Array<[ScriptedMessage[], ScriptedMessage]>) => {
+        await live.mailStack.pauseSync();
+        for (const [box, msg] of pushes) box.push(msg);
+        await live.mailStack.resumeSync();
+      };
+      const at = () => Date.now() - 2_000;
+
+      // 1. Two mailboxes, the prefix switched off by the owner.
+      door.setAskPrefix(null);
+      const one = { at: at(), from: OWNER_ADDRESS, to: CHAT_ADDRESS, subject: 'first question', messageId: 'q1@owner.example' };
+      await deliver([chatBox, { ...one, id: 'c1', labels: ['INBOX'] }], [mine, { ...one, id: 'o1', labels: ['SENT'] }]);
+      await vi.waitFor(() => expect(sent).toHaveLength(1), { timeout: 15_000 });
+      expect(sent[0]!.token).toBe('at-chat');
+      expect(headerOf(sent[0]!.source, 'To')).toBe(OWNER_ADDRESS);
+      await vi.waitFor(() => expect(conversations.conversationOf('recued-chat', 'CAgmail-1@mail.gmail.com')).not.toBeNull(),
+        { timeout: 10_000 });
+
+      // 2. Switched to one mailbox: the filter is on again, whatever the owner chose before.
+      expect(switchTo('me')).toMatchObject({ chat_mailbox: 'me', owner_mailboxes: ['me'], ask_prefix: 'ask:' });
+      // ⛔ A reply to the old thread goes to the old chat mailbox: nobody answers it now.
+      const oldReply = {
+        at: at(), from: OWNER_ADDRESS, to: CHAT_ADDRESS, subject: 'Re: first question', messageId: 'q1-reply@owner.example',
+        inReplyTo: '<CAgmail-1@mail.gmail.com>',
+      };
+      // A note to themselves, without the prefix: their own mail.
+      const note = { at: at(), from: OWNER_ADDRESS, to: OWNER_ADDRESS, subject: 'Buy milk', messageId: 'note@owner.example' };
+      const two = { at: at(), from: OWNER_ADDRESS, to: OWNER_ADDRESS, subject: 'ask: second question', messageId: 'q2@owner.example' };
+      await deliver(
+        [chatBox, { ...oldReply, id: 'c2', labels: ['INBOX'] }], [mine, { ...oldReply, id: 'o2', labels: ['SENT'] }],
+        [mine, { ...note, id: 'o3', labels: ['SENT', 'INBOX'] }],
+        [mine, { ...two, id: 'o4', labels: ['SENT', 'INBOX'] }],
+      );
+      await vi.waitFor(() => expect(sent).toHaveLength(2), { timeout: 15_000 });
+      expect(sent[1]!.token).toBe('at-me');
+      expect(headerOf(sent[1]!.source, 'To')).toBe(OWNER_ADDRESS);
+      expect(headerOf(sent[1]!.source, 'In-Reply-To')).toBe('<q2@owner.example>');
+      expect(live.proof.get('me', 'q2@owner.example')).toMatchObject({ state: 'proven', proven_by: 'me' });
+      expect(live.proof.get('me', 'note@owner.example')).toBeNull();
+      expect(live.proof.get('me', 'q1-reply@owner.example')).toBeNull();
+      expect(live.proof.get('recued-chat', 'q1-reply@owner.example')).toBeNull();
+
+      // 3. Back to two mailboxes. ⛔ A reply in the one-mailbox thread is the owner's mail again.
+      expect(switchTo('recued-chat')).toMatchObject({ chat_mailbox: 'recued-chat', owner_mailboxes: ['me'], ask_prefix: 'ask:' });
+      const twoReply = {
+        at: at(), from: OWNER_ADDRESS, to: OWNER_ADDRESS, subject: 'Re: ask: second question',
+        messageId: 'q2-reply@owner.example', inReplyTo: '<q2@owner.example>',
+      };
+      const three = { at: at(), from: OWNER_ADDRESS, to: CHAT_ADDRESS, subject: 'ask: third question', messageId: 'q3@owner.example' };
+      await deliver(
+        [mine, { ...twoReply, id: 'o5', labels: ['SENT', 'INBOX'] }],
+        [chatBox, { ...three, id: 'c3', labels: ['INBOX'] }], [mine, { ...three, id: 'o6', labels: ['SENT'] }],
+      );
+      await vi.waitFor(() => expect(sent).toHaveLength(3), { timeout: 15_000 });
+      expect(sent[2]!.token).toBe('at-chat');
+      expect(headerOf(sent[2]!.source, 'In-Reply-To')).toBe('<q3@owner.example>');
+      expect(live.proof.get('me', 'q2-reply@owner.example')).toBeNull();
+      // Nothing else was sent: three questions, three answers.
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      expect(sent).toHaveLength(3);
+      // Each setup kept its own conversations.
+      expect(conversations.conversationOf('recued-chat', 'q1@owner.example')).not.toBeNull();
+      expect(conversations.conversationOf('me', 'q2@owner.example')).not.toBeNull();
+      expect(conversations.conversationOf('recued-chat', 'q3@owner.example')).not.toBeNull();
+    } finally {
+      await answers?.dispose();
+      await live.close();
+    }
+  }, 90_000);
+});
+
+describe('D-325 §5.3, live — where the owner forwards proof', () => {
+  it('names the +done address of the owner’s mailbox and never the chat mailbox’s, whose mail is not read for facts', async () => {
+    scriptGmail({ 'at-chat': { address: CHAT_ADDRESS, mailbox: [] }, 'at-me': { address: OWNER_ADDRESS, mailbox: [] } });
+    const live = await bootLive();
+    try {
+      await live.mailStack.startAll();
+      expect((await live.collection.yours!.snapshot()).proof_addresses).toEqual(['me+done@owner.example']);
+    } finally {
+      await live.close();
+    }
+  });
+
+  it('names it with one mailbox, which is the owner’s own as well as the chat’s (§8.18)', async () => {
+    scriptGmail({ 'at-me': { address: OWNER_ADDRESS, mailbox: [] } });
+    const live = await bootLive({ oneMailbox: true });
+    try {
+      await live.mailStack.startAll();
+      expect((await live.collection.yours!.snapshot()).proof_addresses).toEqual(['me+done@owner.example']);
+    } finally {
+      await live.close();
+    }
   });
 });

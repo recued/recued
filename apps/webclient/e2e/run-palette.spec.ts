@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import {
   CHAT_ACTIVATION_ACTION, CREATE_OVERLAY, DRAWER_ACTION, DRAWER_TOGGLE,
   GLOBAL_RUN_PALETTE_TRIGGER, HARNESS_URL, RUN_PALETTE, SHELL_TOPBAR,
@@ -12,6 +12,232 @@ const RUN_PALETTE_RESULT = 'data-recued-run-palette-result';
 const RUN_PALETTE_RETRY = 'data-recued-run-palette-retry';
 
 installFullAppHooks();
+
+const PREFILL_URL = `${HARNESS_URL}?data=records&run_prefill=1`;
+const openContextRecipe = async (page: Page, name: string) => {
+  await page.locator(`[${GLOBAL_RUN_PALETTE_TRIGGER}]`).click();
+  await page.getByRole('combobox', { name: 'Recipe' }).fill(name);
+  await page.getByRole('option', { name: new RegExp(name) }).click();
+  await page.locator(`[${RUN_PALETTE_ACTION}]`).filter({ hasText: /^Run$/ }).click();
+  return page.locator('.run-modal-overlay-root');
+};
+
+test('page context ranks actual matches first and fills renamed arguments without guessing another object', async ({ page }) => {
+  await page.goto(`${PREFILL_URL}#data/records/publisher-a/same-board/job/job-1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await expect(page.locator('[data-action="records-close-record"]')).toBeVisible();
+  await page.locator(`[${GLOBAL_RUN_PALETTE_TRIGGER}]`).click();
+  await page.getByRole('combobox', { name: 'Recipe' }).click();
+  const options = page.getByRole('option');
+  await expect(options.first()).toContainText('Follow up on this job');
+  await expect(options.first()).toContainText('Prefills 2 arguments from this page');
+  const reads = await page.evaluate(() => window.__app.rpcCallCount('recipe.get'));
+  await page.getByRole('combobox', { name: 'Recipe' }).fill('Draft this job message');
+  await page.getByRole('option', { name: /Draft this job message/ }).click();
+  expect(await page.evaluate(() => window.__app.rpcCallCount('recipe.get'))).toBe(reads);
+  await page.locator(`[${RUN_PALETTE_ACTION}]`).filter({ hasText: /^Run$/ }).click();
+  const modal = page.locator('.run-modal-overlay-root');
+  await expect(modal.locator('[data-var-key="subject_line"]')).toHaveValue('Prepare quote');
+  await expect(modal.locator('[data-var-key="recipient"]')).toHaveValue('');
+  await modal.locator('[data-var-key="subject_line"]').fill('Discuss quote');
+  await modal.locator('[data-var-key="recipient"]').fill('ana@example.test');
+  await modal.locator('[data-recued-run-modal-action="confirm-run"]').click();
+  await expect.poll(() => page.evaluate(() => JSON.parse(sessionStorage.getItem('recued-test-run-prefill-execute') ?? 'null')?.config))
+    .toEqual({ subject_line: 'Discuss quote', recipient: 'ana@example.test' });
+});
+
+test('page context prefills a selected Records object, remains editable, and waits for Run', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${PREFILL_URL}#data/records/publisher-a/same-board/job/job-1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await expect(page.locator('[data-action="records-close-record"]')).toBeVisible();
+  const modal = await openContextRecipe(page, 'Follow up on this job');
+  await expect(modal.locator('[data-var-key="job_id"]')).toHaveValue('job-1');
+  await expect(modal.locator('[data-var-key="title"]')).toHaveValue('Prepare quote');
+  await expect(modal.locator('[data-recued-run-prefill-source]')).toContainText('Prefilled from Prepare quote');
+  expect(await page.evaluate(() => window.__app.rpcCallCount('execute'))).toBe(0);
+  await modal.locator('[data-var-key="title"]').fill('Follow up tomorrow');
+  await modal.locator('[data-recued-run-modal-action="confirm-run"]').click();
+  await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('execute'))).toBe(1);
+  const request = await page.evaluate(() => JSON.parse(sessionStorage.getItem('recued-test-run-prefill-execute') ?? 'null'));
+  expect(request.config).toMatchObject({ job_id: 'job-1', title: 'Follow up tomorrow' });
+  expect(request.config).not.toHaveProperty('count');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test('page context preserves structured arguments through JSON review and tab changes', async ({ page }) => {
+  await page.goto(`${PREFILL_URL}#data/records/publisher-a/same-board/job/job-1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await expect(page.locator('[data-action="records-close-record"]')).toBeVisible();
+  const modal = await openContextRecipe(page, 'Review this job object');
+  await expect(modal).not.toContainText('[object Object]');
+  await expect(modal.locator('[data-var-key="job"]')).toHaveCount(0);
+  const json = modal.locator('[data-recued-run-modal-config]');
+  await expect(json).toBeVisible();
+  const config = JSON.parse(await json.inputValue());
+  expect(config.job).toMatchObject({ id: 'job-1', title: 'Prepare quote' });
+  config.job.title = 'Review tomorrow';
+  await json.fill(JSON.stringify(config));
+  await modal.getByRole('tab', { name: 'Schedule', exact: true }).click();
+  await expect(modal.locator('[data-recued-run-prefill-source]')).toHaveCount(0);
+  await modal.getByRole('tab', { name: 'Run', exact: true }).click();
+  expect(JSON.parse(await json.inputValue()).job.title).toBe('Review tomorrow');
+  await modal.locator('[data-recued-run-modal-action="confirm-run"]').click();
+  await expect.poll(() => page.evaluate(() => JSON.parse(sessionStorage.getItem('recued-test-run-prefill-execute') ?? 'null')?.config?.job?.title))
+    .toBe('Review tomorrow');
+});
+
+test('page context does not cross a Records pack namespace', async ({ page }) => {
+  await page.goto(`${PREFILL_URL}#data/records/publisher-a/same-board/job/job-1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await expect(page.locator('[data-action="records-close-record"]')).toBeVisible();
+  const modal = await openContextRecipe(page, 'Follow up on this job');
+  await expect(modal.locator('[data-var-key="job_id"]')).toHaveValue('job-1');
+  await page.keyboard.press('Escape');
+  await page.getByRole('combobox', { name: 'Recipe' }).fill('Follow up in another pack');
+  await page.getByRole('option', { name: /Follow up in another pack/ }).click();
+  await page.locator(`[${RUN_PALETTE_ACTION}]`).filter({ hasText: /^Run$/ }).click();
+  await expect(modal.locator('[data-var-key="job_id"]')).toHaveValue('');
+  await expect(modal.locator('[data-recued-run-prefill-source]')).toHaveCount(0);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('execute'))).toBe(0);
+});
+
+test('page context is cleared after leaving a selected record', async ({ page }) => {
+  await page.goto(`${PREFILL_URL}#data/records/publisher-a/same-board/job/job-1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator('[data-action="records-close-record"]').click();
+  const modal = await openContextRecipe(page, 'Follow up on this job');
+  await expect(modal.locator('[data-var-key="job_id"]')).toHaveValue('');
+  await expect(modal.locator('[data-var-key="title"]')).toHaveValue('');
+  await expect(modal.locator('[data-recued-run-prefill-source]')).toHaveCount(0);
+});
+
+test('page context reads a rendered recipe record through the Installed tab shell', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?recipes=installed&recipe_default_run=1&recipe_result=record-fields&run_prefill=1#recipes/autorun-live-1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
+  await detail.locator('[data-recued-recipes-action="run-defaults"]').click();
+  await expect(detail.locator('.record-fields-block')).toBeVisible();
+  const modal = await openContextRecipe(page, 'Follow up on this job');
+  await expect(modal.locator('[data-var-key="job_id"]')).toHaveValue('job_1');
+  await expect(modal.locator('[data-var-key="title"]')).toHaveValue('Replace the circulation pump');
+});
+
+test('page context uses targets declared only in the loaded recipe body', async ({ page }) => {
+  await page.goto(`${PREFILL_URL}#data/records/publisher-a/same-board/job/job-1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await expect(page.locator('[data-action="records-close-record"]')).toBeVisible();
+  const modal = await openContextRecipe(page, 'Use this job as context');
+  const target = modal.locator('[data-recued-run-modal-target="job_id"]');
+  await expect(target).toHaveValue('job-1');
+  await target.fill('job-2');
+  await modal.locator('[data-recued-run-modal-action="confirm-run"]').click();
+  await expect.poll(() => page.evaluate(() => JSON.parse(sessionStorage.getItem('recued-test-run-prefill-execute') ?? 'null')?.context)).toEqual({ job_id: 'job-2' });
+  await page.keyboard.press('Escape');
+  await expect(page.locator(`[${RUN_PALETTE_ACTION}]`).filter({ hasText: /^Run$/ })).toBeFocused();
+});
+
+for (const mode of ['choice', 'single']) {
+  test(`API page arguments keep their source account through review and Run (${mode})`, async ({ page }) => {
+    await page.goto(`${HARNESS_URL}?recipes=installed&recipe_default_run=1&recipe_result=record-fields&run_prefill=1&api_record_source=hubspot&recipe_connections=${mode}#recipes/autorun-live-1`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await page.locator('[data-recued-recipes-detail="autorun-live-1"] [data-recued-recipes-action="run-defaults"]').click();
+    await expect(page.locator('.record-fields-block')).toBeVisible();
+    const before = await page.evaluate(() => window.__app.rpcCallCount('execute'));
+    const modal = await openContextRecipe(page, 'Follow up with this API contact');
+    await expect(modal.locator('[data-var-key="person"]')).toHaveValue('contact-42');
+    await expect(modal.locator('[data-var-key="email"]')).toHaveValue('ana@example.test');
+    if (mode === 'choice') await expect(modal.locator('[data-recued-run-modal-connection="hubspot"]')).toHaveValue('hubspot-app');
+    expect(await page.evaluate(() => window.__app.rpcCallCount('execute'))).toBe(before);
+    await modal.locator('[data-var-key="email"]').fill('edited@example.test');
+    await modal.getByRole('tab', { name: 'Schedule', exact: true }).click();
+    await modal.getByRole('tab', { name: 'Run', exact: true }).click();
+    await modal.locator('[data-recued-run-modal-action="confirm-run"]').click();
+    await expect.poll(() => page.evaluate(() => JSON.parse(sessionStorage.getItem('recued-test-run-prefill-execute') ?? 'null')))
+      .toMatchObject({ config: { person: 'contact-42', email: 'edited@example.test' }, connections: { hubspot: 'hubspot-app' },
+        connection_revisions: { 'hubspot-app': 'a'.repeat(64) } });
+  });
+}
+
+test('API page arguments stay manual after its source account is replaced before opening Run', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?recipes=installed&recipe_default_run=1&recipe_result=record-fields&run_prefill=1&api_record_source=hubspot&recipe_connections=choice#recipes/autorun-live-1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator('[data-recued-recipes-detail="autorun-live-1"] [data-recued-recipes-action="run-defaults"]').click();
+  await expect(page.locator('.record-fields-block')).toBeVisible();
+  await page.evaluate(() => sessionStorage.setItem('recued-test-api-account-revision', 'b'.repeat(64)));
+  const modal = await openContextRecipe(page, 'Follow up with this API contact');
+  await expect(modal.locator('[data-var-key="person"]')).toHaveValue('');
+  await expect(modal.locator('[data-recued-run-prefill-source]')).toHaveCount(0);
+});
+
+test('replacing an API account while Run is open clears untouched arguments and requires review', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?recipes=installed&recipe_default_run=1&recipe_result=record-fields&run_prefill=1&api_record_source=hubspot&recipe_connections=choice#recipes/autorun-live-1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator('[data-recued-recipes-detail="autorun-live-1"] [data-recued-recipes-action="run-defaults"]').click();
+  await expect(page.locator('.record-fields-block')).toBeVisible();
+  const before = await page.evaluate(() => window.__app.rpcCallCount('execute'));
+  const modal = await openContextRecipe(page, 'Follow up with this API contact');
+  await expect(modal.locator('[data-var-key="person"]')).toHaveValue('contact-42');
+  await modal.locator('[data-var-key="email"]').fill('edited@example.test');
+  await page.evaluate(() => sessionStorage.setItem('recued-test-api-account-revision', 'b'.repeat(64)));
+  await modal.locator('[data-recued-run-modal-action="confirm-run"]').click();
+  await expect(modal).toContainText('An account used by the page changed. Review the arguments before running.');
+  await expect(modal.locator('[data-var-key="person"]')).toHaveValue('');
+  await expect(modal.locator('[data-var-key="email"]')).toHaveValue('edited@example.test');
+  expect(await page.evaluate(() => window.__app.rpcCallCount('execute'))).toBe(before);
+  await modal.getByRole('tab', { name: 'Schedule', exact: true }).click();
+  await modal.getByRole('tab', { name: 'Run', exact: true }).click();
+  await expect(modal.locator('[data-var-key="person"]')).toHaveValue('');
+});
+
+test('changing the API account clears untouched page arguments and retains reviewed edits', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?recipes=installed&recipe_default_run=1&recipe_result=record-fields&run_prefill=1&api_record_source=hubspot&recipe_connections=choice#recipes/autorun-live-1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator('[data-recued-recipes-detail="autorun-live-1"] [data-recued-recipes-action="run-defaults"]').click();
+  await expect(page.locator('.record-fields-block')).toBeVisible();
+  const before = await page.evaluate(() => window.__app.rpcCallCount('execute'));
+  const modal = await openContextRecipe(page, 'Follow up with this API contact');
+  await expect(modal.locator('[data-var-key="person"]')).toHaveValue('contact-42');
+  await modal.locator('[data-var-key="email"]').fill('edited@example.test');
+  const connection = modal.locator('[data-recued-run-modal-connection="hubspot"]');
+  await connection.selectOption('hubspot-key');
+  await expect(modal.locator('[data-var-key="person"]')).toHaveValue('');
+  await expect(modal.locator('[data-var-key="email"]')).toHaveValue('edited@example.test');
+  await expect(modal.locator('[data-recued-run-prefill-source]')).toContainText('Unedited page values were cleared');
+  await modal.getByRole('tab', { name: 'Schedule', exact: true }).click();
+  await modal.getByRole('tab', { name: 'Run', exact: true }).click();
+  await expect(modal.locator('[data-var-key="person"]')).toHaveValue('');
+  expect(await page.evaluate(() => window.__app.rpcCallCount('execute'))).toBe(before);
+});
+
+for (const [source, mode] of [['missing', 'choice'], ['salesforce', 'choice'], ['hubspot', 'unavailable']]) {
+  test(`API page arguments stay manual when the source cannot match (${source}/${mode})`, async ({ page }) => {
+    await page.goto(`${HARNESS_URL}?recipes=installed&recipe_default_run=1&recipe_result=record-fields&run_prefill=1&api_record_source=${source}&recipe_connections=${mode}#recipes/autorun-live-1`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await page.locator('[data-recued-recipes-detail="autorun-live-1"] [data-recued-recipes-action="run-defaults"]').click();
+    await expect(page.locator('.record-fields-block')).toBeVisible();
+    const modal = await openContextRecipe(page, 'Follow up with this API contact');
+    await expect(modal.locator('[data-var-key="person"]')).toHaveValue('');
+    await expect(modal.locator('[data-var-key="email"]')).toHaveValue('');
+    await expect(modal.locator('[data-recued-run-prefill-source]')).toHaveCount(0);
+  });
+}
+
+test('page context uses the selected Yours asset and clears on its list', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?yours=demo&run_prefill=1#yours/asset/passport`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await expect(page.locator('[data-recued-yours] h2').first()).toHaveText('Ana’s passport');
+  let modal = await openContextRecipe(page, 'Check this asset');
+  await expect(modal.locator('[data-var-key="asset_id"]')).toHaveValue('passport');
+  await expect(modal.locator('[data-var-key="name"]')).toHaveValue('Ana’s passport');
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('Escape');
+  await page.evaluate(() => window.__app.setHash('#yours/assets'));
+  await expect(page).toHaveURL(/#yours\/assets$/);
+  modal = await openContextRecipe(page, 'Check this asset');
+  await expect(modal.locator('[data-var-key="asset_id"]')).toHaveValue('');
+  await expect(modal.locator('[data-recued-run-prefill-source]')).toHaveCount(0);
+});
 
 test('the shell owns one Run palette across routes and Ctrl+K opens it globally', async ({ page }) => {
   await page.setViewportSize({ width: 280, height: 653 });
@@ -114,9 +340,12 @@ test('the first-run recipe handoff traps focus and recovers an empty inventory',
   expect((await close.boundingBox())?.height).toBeGreaterThanOrEqual(36);
   await page.keyboard.press('Tab');
   await expect(close).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(dialog.getByRole('link', { name: /Look through starter Packs/ })).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(close).toBeFocused();
   await page.keyboard.press('Shift+Tab');
-  expect(await overlay.evaluate((node) => node.contains(document.activeElement)))
-    .toBe(true);
+  await expect(dialog.getByRole('link', { name: /Look through starter Packs/ })).toBeFocused();
 
   await page.keyboard.press('Escape');
   await expect(overlay).toHaveCount(0);

@@ -180,6 +180,8 @@ describe('mountRestoreOnboardingSplash — status phases', () => {
     onb.emit(baseState({ phase: 'done' }));
     expect(phaseOf(splash.getHtml())).toBe('done');
     expect(splash.getHtml()).toContain('Starting Recued');
+    expect(splash.getHtml()).toContain('Backup accepted');
+    expect(splash.getHtml()).not.toContain('All back');
   });
 
   it('renders the upload progress bar with a clamped percentage', () => {

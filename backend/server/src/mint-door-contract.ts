@@ -190,6 +190,9 @@ export const mintDoorContract = (
     readonly recipeId: string;
     readonly capability: RecipeCapability;
     readonly mintedBy: string;
+    /** Host-resolved replaced doors. Their read-sphere restrictions survive a
+     * capability re-mint; reviewing new ops does not reset a privacy choice. */
+    readonly previousContractIds?: readonly string[];
     /** Reception only. Omit for the fail-closed no-AI default; webhook doors do not consume
      *  this policy because their machine-trigger cost posture is separate. */
     readonly doorExecutionPolicy?: DoorExecutionPolicy;
@@ -202,6 +205,11 @@ export const mintDoorContract = (
 ): { readonly contract_id: string } => {
   const ts = deps.now();
   const profile = DOOR_MINT_PROFILES[input.door];
+  const priorScopes = (input.previousContractIds ?? []).flatMap(id => {
+    const row = deps.definitionStore.get(id); if (!row) return [[]];
+    return row.read_spheres === undefined ? [] : [row.read_spheres];
+  });
+  const readSpheres = priorScopes.length ? priorScopes.slice(1).reduce((scope, next) => scope.filter(sphere => next.includes(sphere)), [...priorScopes[0]!]) : undefined;
   const basePolicy = input.door === 'reception'
     ? input.doorExecutionPolicy ?? DEFAULT_RECEPTION_DOOR_EXECUTION_POLICY
     : undefined;
@@ -216,6 +224,7 @@ export const mintDoorContract = (
 
   const def = deps.definitionStore.mint({
     minted_by: input.mintedBy,
+    ...(readSpheres !== undefined ? { read_spheres: [...readSpheres] } : {}),
     display_name: `${profile.display} — ${input.recipeId}`,
     // `grant_kind` DELIBERATELY OMITTED (note 3): omission is standing. Passing anything
     // else makes the contract non-governing and the door silently dies.

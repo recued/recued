@@ -144,7 +144,7 @@ export type PostListenerRuntimeCollectionContext =
   StartHousekeepingStartupOptions['collection']
   & StartPostHousekeepingTailOptions['collection']
   // D-324 — the reminders ring through the notification channels.
-  & Pick<CollectionContext, 'channelDispatchers'>;
+  & Pick<CollectionContext, 'channelDispatchers' | 'assetOccurrences' | 'assetReminders' | 'yours' | 'scheduledSituations' | 'episodeRuntime' | 'proactiveLearning' | 'proactiveRetention'>;
 
 export interface StartPostListenerRuntimeOptions {
   readonly dbPath: string;
@@ -443,6 +443,8 @@ export const startPostListenerRuntime = async (
   // `onExitMaintenance` hook (second codex HIGH fold), NOT here.
   if (options.eventTriggerDispatcher) {
     const dispatcher = options.eventTriggerDispatcher;
+    options.backgroundServices.registerInterval({ name: 'situation-subscriber-catch-up', intervalMs: 60_000,
+      fireImmediate: true, tick: () => dispatcher.catchUpSituations?.() });
     options.backgroundServices.register({
       name: 'event-trigger-dispatcher',
       kind: 'scheduler',
@@ -493,10 +495,44 @@ export const startPostListenerRuntime = async (
       quietHoursStore: options.storage.quietHoursStore,
       registry: options.backgroundServices,
       notification: { dispatchers: options.collection.channelDispatchers },
+      publicBaseUrl: () => options.storage.publicAddress.baseUrl('root'),
       isVaultUnlocked: options.app.isVaultUnlocked,
       ...(options.storage.workEntityStoreRef ? { workEntityStore: options.storage.workEntityStoreRef } : {}),
       ...(auditLog ? { logActivity: (entry) => auditLog.logActivity(entry) } : {}),
     });
+  }
+
+  if (options.collection.assetReminders || options.collection.assetOccurrences) {
+    const service = options.collection.assetReminders ?? options.collection.assetOccurrences!;
+    options.backgroundServices.registerInterval({ name: 'asset-occurrences', intervalMs: 60_000,
+      fireImmediate: true, tick: () => service.tick() });
+    if (options.collection.assetReminders) options.backgroundServices.register({ name: 'asset-reminder-answer-drain', kind: 'emitter',
+      stop: () => options.collection.assetReminders!.stop() });
+  }
+  if (options.collection.scheduledSituations) {
+    const service = options.collection.scheduledSituations;
+    options.backgroundServices.registerInterval({ name: 'scheduled-situations', intervalMs: 60_000, fireImmediate: true, tick: () => service.tick() });
+    options.backgroundServices.register({ name: 'scheduled-situations-drain', kind: 'emitter', stop: () => service.stop() });
+  }
+  if (options.collection.episodeRuntime) {
+    const service = options.collection.episodeRuntime;
+    service.bindRecords(options.storage.recordsStore);
+    options.backgroundServices.registerInterval({ name: 'episode-dark-recall', intervalMs: 3_600_000, fireImmediate: true, tick: () => service.tick() });
+    options.backgroundServices.register({ name: 'episode-dark-recall-drain', kind: 'emitter', stop: () => service.stop() });
+  }
+  if (options.collection.proactiveLearning) {
+    const service = options.collection.proactiveLearning;
+    options.backgroundServices.registerInterval({ name: 'proactive-learning', intervalMs: 3_600_000, fireImmediate: true, tick: () => service.tick() });
+    options.backgroundServices.register({ name: 'proactive-learning-drain', kind: 'emitter', stop: () => service.stop() });
+  }
+  if (options.collection.proactiveRetention) {
+    const service = options.collection.proactiveRetention;
+    options.backgroundServices.registerInterval({ name: 'proactive-retention', intervalMs: 3_600_000, fireImmediate: true, tick: () => service.tick() });
+  }
+  if (options.collection.yours) {
+    const service = options.collection.yours;
+    options.backgroundServices.registerInterval({ name: 'yours-intake', intervalMs: 60_000, fireImmediate: true, tick: () => service.tick() });
+    options.backgroundServices.register({ name: 'yours-intake-drain', kind: 'emitter', stop: () => service.stop() });
   }
 
   // R21.1 — vault-gated-executors coordinator. Each executor PAUSES

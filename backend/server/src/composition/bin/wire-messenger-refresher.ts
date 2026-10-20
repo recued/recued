@@ -22,6 +22,7 @@ import {
   type MessengerNotificationRefresher,
   type MessengerRefreshFailure,
   type OAuth2RefreshAuth,
+  type MessengerRefreshIdentity,
 } from '../../messenger-notification-refresh.js';
 import type { ConnectionAuth } from '@recued/contracts';
 import type { ConnectionStoreSqlite } from '../../storage/connection-store.js';
@@ -40,6 +41,29 @@ export interface MessengerRefresherDeps {
 /** One refresher per connection store, for the lifetime of the process. */
 const shared = new WeakMap<ConnectionStoreSqlite, MessengerNotificationRefresher>();
 
+/** Persist the credential only against the source captured before renewal. */
+export const persistMessengerNotificationAuth = async (
+  deps: MessengerRefresherDeps, name: string, auth: ConnectionAuth, identity?: MessengerRefreshIdentity,
+): Promise<void> => {
+  const { encodeAuthForStorage } = await import('../../connection-handler.js');
+  const existing = deps.connectionStore.get('notification', name);
+  const matches = (row: typeof existing) => identity && row && row.enrolled_at === identity.enrolled_at
+    && row.auth_ciphertext === identity.auth_ciphertext && row.config_json === identity.config_json;
+  if (!matches(existing) || !existing) throw new Error('The notification connection changed during credential renewal');
+  const auth_ciphertext = await encodeAuthForStorage(auth, { kind: existing.kind, name: existing.name },
+    deps.keys?.keyProvider('connection'));
+  if (deps.connectionStore.persistRefreshedAuth) {
+    if (!deps.connectionStore.persistRefreshedAuth(existing, auth_ciphertext, Date.now())) {
+      throw new Error('The notification connection changed during credential renewal');
+    }
+  } else {
+    const current = deps.connectionStore.get('notification', name);
+    if (!matches(current) || !current) throw new Error('The notification connection changed during credential renewal');
+    // Synchronous fallback for embedders without the store's atomic CAS.
+    deps.connectionStore.upsert({ ...current, auth_ciphertext, updated_at: Date.now() });
+  }
+};
+
 /** Get (or build) the process-shared notification refresher.
  *
  *  Both call sites pass the same `connectionStore` — it is the server's single
@@ -50,12 +74,6 @@ export const getMessengerNotificationRefresher = (
 ): MessengerNotificationRefresher => {
   const existing = shared.get(deps.connectionStore);
   if (existing !== undefined) return existing;
-
-  const keyProvider = (): (() => Uint8Array | null) | undefined =>
-    // Re-read per call, never captured: a boot→unlock transition must land
-    // without rebuilding the refresher (the same rule the credential resolver
-    // follows).
-    deps.keys ? deps.keys.keyProvider('connection') : undefined;
 
   const refresher = createMessengerNotificationRefresher({
     now: () => Date.now(),
@@ -71,38 +89,7 @@ export const getMessengerNotificationRefresher = (
       );
       return refreshed.auth;
     },
-    persist: async (vendor: string, auth: ConnectionAuth): Promise<void> => {
-      const { encodeAuthForStorage } = await import('../../connection-handler.js');
-      // The row is keyed by the VENDOR being renewed (D-163 I-4: row name IS
-      // the vendor). Re-read rather than captured, so a re-enrolment between
-      // the exchange and this write is not clobbered with the older record.
-      const existingRow = deps.connectionStore.get('notification', vendor);
-      if (existingRow === null) return;
-      const auth_ciphertext = await encodeAuthForStorage(
-        auth,
-        { kind: existingRow.kind, name: existingRow.name },
-        keyProvider(),
-      );
-      deps.connectionStore.upsert({
-        kind: existingRow.kind,
-        name: existingRow.name,
-        ...(existingRow.subtype !== undefined ? { subtype: existingRow.subtype } : {}),
-        display_name: existingRow.display_name,
-        ...(existingRow.publisher_id !== undefined
-          ? { publisher_id: existingRow.publisher_id }
-          : {}),
-        config_json: existingRow.config_json,
-        auth_ciphertext,
-        enrolled_at: existingRow.enrolled_at,
-        updated_at: Date.now(),
-        ...(existingRow.last_used_at !== undefined
-          ? { last_used_at: existingRow.last_used_at }
-          : {}),
-        ...(existingRow.health_json !== undefined
-          ? { health_json: existingRow.health_json }
-          : {}),
-      });
-    },
+    persist: (name, auth, identity) => persistMessengerNotificationAuth(deps, name, auth, identity),
     ...(deps.onFailure ? { onFailure: deps.onFailure } : {}),
   });
 

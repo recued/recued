@@ -9,8 +9,9 @@
  *    one day before, thirty minutes before.
  *
  *  Drives meeting reminders, deadline alerts, renewal nudges,
- *  anniversary triggers, follow-up windows, and similar time-anchored
- *  reactive recipes. The same watcher slug works on every collection
+ *  follow-up windows and similar time-anchored
+ *  reactive recipes. Contacts and yearly dates are unsupported.
+ *  The same watcher slug works on every supported collection
  *  whose records carry a timestamp field — anchor_field selects which
  *  one, offsets describe the boundary set.
  *

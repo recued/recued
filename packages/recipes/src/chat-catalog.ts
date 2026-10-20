@@ -473,10 +473,16 @@ const variableToArgProp = (
   return { schema, required: hint.optional !== true && hint.default === undefined };
 };
 
-/** What the owner's chat is told about a "Send from" setting its run fills. */
+/** What the owner's chat is told about a "Send from" setting its run fills.
+ *
+ *  ⛔ "Ask the owner which" made Chat ask even when the owner had said: told
+ *  "send an email from my Gmail", it replied "Which one is your Gmail?" (live,
+ *  2026-10-18). The reply now lists each mailbox with its address
+ *  (`mail-senders.ts`), so the owner's words can settle it. */
 const SENDER_FILL_HINT =
   'Leave it out to send from the only mailbox on this server that can send; '
-  + 'if several can, the reply names them, so ask the owner which.';
+  + 'if several can, the reply lists them with their addresses: pass the one the owner meant, '
+  + 'or ask the owner which if you cannot tell.';
 
 const withSenderFill = (schema: Record<string, unknown>): Record<string, unknown> => {
   const said = typeof schema.description === 'string' ? schema.description.trim() : '';

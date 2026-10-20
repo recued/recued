@@ -701,6 +701,28 @@ describe('D-232 § 24 — the retry sweep is REACHED at boot', () => {
     expect(runtimeMocks.wireReminderDelivery).not.toHaveBeenCalled();
   });
 
+  it('D-325 — the boot runs proactive retention hourly, the first pass at once', async () => {
+    // ⛔ THE JOIN. Retention's own suite calls `prune` directly, so it stays green
+    //    whether or not a boot ever schedules it, while the situation log and the
+    //    learner's evidence keep growing.
+    runtimeMocks.composeCertStackLate.mockResolvedValue({
+      tlsCertSource: undefined, tlsRenewerConfigured: false,
+    });
+    runtimeMocks.startHousekeepingStartup.mockResolvedValue({ scheduler: undefined });
+    const tick = vi.fn();
+    const base = makeOptions();
+    const options = makeOptions({
+      collection: { ...base.collection, proactiveRetention: { tick, prune: vi.fn() } } as never,
+    });
+    await startPostListenerRuntime(options);
+    const spec = (options.backgroundServices.registerInterval as unknown as {
+      mock: { calls: Array<[{ name: string; intervalMs: number; fireImmediate?: boolean; tick: () => unknown }]> };
+    }).mock.calls.map((c) => c[0]).find((s) => s.name === 'proactive-retention');
+    expect(spec).toMatchObject({ intervalMs: 3_600_000, fireImmediate: true });
+    await spec?.tick();
+    expect(tick).toHaveBeenCalledTimes(1);
+  });
+
   // ── D-268 ───────────────────────────────────────────────────────────────
   it('D-268 — the boot hands the scheduler a failure-notice seam bound to the notification block', async () => {
     // ⛔ THE JOIN, NOT THE HALVES. The scheduler's own suite proves it PRODUCES

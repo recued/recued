@@ -179,6 +179,7 @@ export type WorkEntityLookupKey = (typeof WORK_ENTITY_LOOKUP_KEYS)[number];
  *  metadata in the extension lane. */
 export const WORK_ENTITY_RELATIONSHIP_TARGETS = [
   'task', 'project', 'note', 'contact', 'calendar.event', 'mail_message',
+  'asset',
   'crm.deal', 'crm.contact', 'crm.account',
 ] as const;
 export type WorkEntityRelationshipTarget = (typeof WORK_ENTITY_RELATIONSHIP_TARGETS)[number];

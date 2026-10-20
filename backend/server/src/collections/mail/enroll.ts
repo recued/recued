@@ -159,11 +159,12 @@ export interface MailEnrollDeps {
 /** Attach a broker-backed API account without exchanging or copying vendor tokens. */
 export const handleMailEnrollManagedOAuth = async (deps: MailEnrollDeps, args: {
   provider?: unknown; account_slug?: unknown; connection_name?: unknown;
-  send_enabled?: unknown; mutation_enabled?: unknown;
+  send_enabled?: unknown; mutation_enabled?: unknown; backfill_days?: unknown;
 }): Promise<{ slug: string; account_email: string; permission_state: 'unknown' | 'reported' }> => {
   const provider = requireOAuthAdapter(args.provider);
   const slug = requireSlug(args.account_slug);
   const name = requireString(args.connection_name, 'connection_name');
+  const backfill = optionalPositiveInt(args.backfill_days, 'backfill_days');
   for (const key of ['send_enabled', 'mutation_enabled'] as const) {
     if (args[key] !== undefined && typeof args[key] !== 'boolean') throw new RpcError('bad_request', `${key} must be a boolean`);
   }
@@ -189,6 +190,7 @@ export const handleMailEnrollManagedOAuth = async (deps: MailEnrollDeps, args: {
     // Colon cannot appear in a user account slug, keeping direct grant/cursor
     // keys disjoint even if an owner names an account 'managed-mail-work'.
     config: { account_slug: `managed-mail:${slug}`, account_email: email, managed_oauth: transport.binding,
+      ...(backfill !== undefined ? { backfill_days: backfill } : {}),
       managed_send_enabled: args.send_enabled === true, managed_mutation_enabled: args.mutation_enabled === true },
     caps: PLACEHOLDER_MAIL_CAPS, auth_state: 'healthy', last_synced_at: null });
   try { await deps.onEnrolled?.(toRow(provider, stored.auth_state, slug, null)); }

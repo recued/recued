@@ -8,7 +8,7 @@ import type { BootTrace } from '../cli/boot-trace.js';
 import { cmdAudit } from '../commands/audit.js';
 import { ensureAuditIndexes } from '../audit-indexes.js';
 import { createSQLiteCollection } from '../sqlite-collection.js';
-import { openDatabase } from '../open-database.js';
+import { openApplicationDatabase } from '../open-application-database.js';
 import { resolveRealmDbPath } from '../realm-db-path.js';
 
 export interface AuditProfileOptions {
@@ -24,7 +24,7 @@ export async function runAuditProfile(options: AuditProfileOptions): Promise<voi
   const dbPath = resolveRealmDbPath(getArg(options.args, 'db') ?? env.DB_PATH);
 
   options.bootTrace?.markDbOpenAttempted('configured-db-path');
-  const db = await openDatabase(dbPath);
+  const db = await openApplicationDatabase({ dbPath, env });
   try {
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');

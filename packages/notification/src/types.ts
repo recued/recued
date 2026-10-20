@@ -59,6 +59,11 @@ export const ASK_NOTE_MAX = 600;
  *  only through the pair-authenticated `pending_asks` rpc and the owner's own
  *  broadcast bus. */
 export interface AskExtras {
+  /** Host-only presentation for the owner's live reminder toast. */
+  reminder?: true;
+  /** Host-authored versions and before/after values, for paired owner UI
+   * only. Never included in NotificationMessage or external delivery. */
+  resource_review?: import('@recued/contracts').ResourceReview;
   /** Invite a written reason with the answer. */
   note_prompt?: AskNotePrompt;
   /** D-269 step 5 — when the WORK behind this ask stops being doable.
@@ -265,6 +270,10 @@ interface NotificationSettingsBase {
  *  ⚠ Turning a mode on is only ever a request — `CHANNEL_ROLES` decides whether the
  *  channel can do it at all, and the gates check support FIRST. */
 export interface ChannelModeSettings {
+  /** D-325: the owner's explicit named connection. An absent selection may
+   * resolve automatically only when exactly one connection of this type exists.
+   * Null deliberately selects none. An old enrollment never follows a reuse. */
+  connection?: { name: string; enrolled_at: number } | null;
   /** OS notification / message fan-out. Default `false`. */
   notification: boolean;
   /** Interactive ask delivery + first-answer-wins participation.
@@ -319,6 +328,14 @@ export type PendingAskStatus = 'open' | 'answered' | 'handled';
  *  never cloud-synced (D-090 / D-097). */
 export interface PendingAsk {
   ask_id: string;
+  /** D-325 reminders use durable destination/attempt rows rather than the
+   * legacy open-ask redelivery path. This identifies their immutable envelope. */
+  delivery_group_id?: string;
+  /** Host-authenticated participant role recorded atomically with a managed
+   * reminder answer. Absent on legacy rows; never supplied by a reply form. */
+  owner_answer?: boolean;
+  /** Owner UI route. Never part of the remote message. */
+  ui_link_url?: string;
   message: NotificationMessage;
   options: readonly AskOption[];
   /** The persisted handler reference — kind + JSON payload, never a
@@ -356,6 +373,8 @@ export interface PendingAsk {
    *  so it lives and dies with the conversation and needs no second store or
    *  eviction rule. ⛔ Never copied into `message` — see {@link AskExtras}. */
   body?: string;
+  /** Host-authored evidence retained for paired owner review and recovery. */
+  resource_review?: import('@recued/contracts').ResourceReview;
   /** Recorded once `status` leaves `open`. */
   answer?: Answer;
   /** Provenance — which channel the winning answer arrived on (A.2
@@ -375,12 +394,30 @@ export interface InboundReply {
   option: string;
   /** Which channel the reply arrived on. */
   via: ChannelName;
+  /** Stamped only by the server after consuming the public landing form's
+   * nonce for this random ask capability. Never decoded from form fields. */
+  landing_capability?: true;
+  /** Authenticated by the host's inbound adapter. Required for a managed
+   * reminder answered off the paired UI; never accepted from an answer body. */
+  origin?: {
+    connection_name: string;
+    connection_enrolled_at: number;
+    recipient: string;
+    sender: string;
+    provider_message_id?: string;
+  };
   /** D-234 § 234.4e — free text, when the ask offered a note prompt. A note on
    *  an ask that did not offer one is DROPPED, not refused: the option is the
    *  decision and it is already valid, and failing a recorded decision over an
    *  extra field is TR-4's forbidden failure. */
   note?: string;
 }
+
+/** What `submitAnswer` did with a reply. `closed`: the reply would have been a
+ *  valid answer (an offered option, from where a reminder went), but the ask had
+ *  already closed, so it changed nothing and the surface can say so. `ignored`:
+ *  anything else that changed nothing, which a surface does not reveal. */
+export type SubmitAnswerOutcome = 'answered' | 'closed' | 'ignored';
 
 /** What the block hands its audit seam when an ask is answered.
  *
@@ -396,6 +433,7 @@ export interface InboundReply {
  *  derivable from anywhere else once the ask row is gone. */
 export interface AnswerAuditRecord {
   ask_id: string;
+  reminder?: true;
   /** Which handler the ask was raised for — `gateway.preflight` for an
    *  approval gate. Lets a reader tell an approval from any other ask
    *  kind without re-reading the (possibly pruned) row. */

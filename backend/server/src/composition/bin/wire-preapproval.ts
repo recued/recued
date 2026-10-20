@@ -19,6 +19,13 @@ import type { ContractDefinitionStore } from '../../storage/contract-definition-
 import type { ChatInboundTokenStore } from '../../storage/chat-inbound-token-store.js';
 import { createPreapprovalMail } from '../../preapproval-mail.js';
 import { createMailDraftService } from '../../mail-draft-service.js';
+import { createLocalUpdateUndo } from '../../local-update-undo.js';
+import { createLocalChangeSets } from '../../local-change-sets.js';
+import type { LocalUpdateCall } from '../../local-update-operation.js';
+import type { PreapprovalOrigin } from '../../preapproval-model.js';
+import { createSingleOperationAdmission } from '../../single-operation-admission.js';
+import { RpcError } from '@recued/contracts';
+import { createPreapprovalReconciliation } from '../../preapproval-reconciliation.js';
 
 export const composePreapproval = (deps: {
   ownerId: string; storage: PreapprovalStorage; sources: PreapprovalServiceDeps['sources'];
@@ -46,6 +53,21 @@ export const composePreapproval = (deps: {
   const drafts = createMailDraftService({ store: deps.storage.drafts, authority, gate: deps.execution.opAdmissionGate,
     origin: { ownerId: deps.ownerId, recipes: deps.sources.recipes, definitions: deps.definitions,
       clientTokens: deps.clientTokens, inboundTokens: deps.inboundTokens } });
+  const validateLocalCall = (origin: PreapprovalOrigin, call: LocalUpdateCall): void => {
+      const resolved = authority.resolve(origin);
+      const decision = createSingleOperationAdmission({ source: origin.source, ...resolved,
+        manifest: slug => deps.execution.executorConfig.manifests.get(slug),
+        contractScan: deps.execution.contractScan, contractOverlay: deps.execution.contractOverlay,
+        opAdmissionGate: deps.execution.opAdmissionGate, granted_recipe_steps: false, recipeCoversOp: () => false })
+        (call.slug, call.input, call.operation);
+      if (!decision || decision.verdict === 'deny') throw new RpcError('local_undo_authority_changed',
+        decision?.verdict === 'deny' ? decision.detail : 'The reverse operation is unavailable.', 403);
+    };
+  const localUndo = deps.storage.localUndo ? createLocalUpdateUndo({ db: deps.sources.db, store: deps.storage.localUndo,
+    workers: deps.storage.workers, execution: deps.execution, now: deps.now, validate: validateLocalCall }) : undefined;
+  const localChanges = deps.storage.localUndo ? createLocalChangeSets({ db: deps.sources.db, undo: deps.storage.localUndo,
+    repository: deps.storage.repository, workers: deps.storage.workers, execution: deps.execution, now: deps.now,
+    validateOwner: origin => { authority.resolve(origin); }, validate: validateLocalCall }) : undefined;
   let composed = false;
   const service = createPreapprovalService({ storage: deps.storage, sources: deps.sources,
     activations, authority, execution: deps.execution, profiles: deps.profiles, now: deps.now, drafts,
@@ -63,7 +85,9 @@ export const composePreapproval = (deps: {
           ? [{ family: 'ai' as const, identity_version: 1 }] : []),
         ...(deps.execution.cliReachabilityResolver ? [{ family: 'cli' as const, identity_version: 1 }] : []),
         ...(deps.execution.executorConfig.connectionMcp ? [{ family: 'mcp' as const, identity_version: 1 }] : []),
-        ...(mail ? [{ family: 'kernel' as const, identity_version: 1 }] : [])],
+        ...(mail || (deps.execution.executorConfig.resourceReview && (deps.execution.recordsStore
+          || deps.execution.executorConfig.kernelDispatchers?.calendarUpdate))
+          ? [{ family: 'kernel' as const, identity_version: 1 }] : [])],
       child_calls: mail ? ['mail_attachments', 'ai_input', 'http_upload'] : [], decision_channels: deps.keys ? ['webclient', 'telegram'] : ['webclient'],
     } : { activation_kinds: [], bindings: [], child_calls: [], decision_channels: [] },
   });
@@ -75,7 +99,7 @@ export const composePreapproval = (deps: {
     reviewLink: deps.reviewLink }) : undefined;
   const outbox = createPreapprovalOutbox({ storage: deps.storage, activations, notifications, ...(telegram ? { telegram } : {}),
     ...(deps.onActivationChanged ? { onActivationChanged: deps.onActivationChanged } : {}),
-    maintain: async () => { mail?.releaseExpired(deps.now?.() ?? Date.now()); await runtime.maintain(); } });
+    maintain: async () => { mail?.releaseExpired(deps.now?.() ?? Date.now()); localUndo?.prune(); localChanges?.prune(); await runtime.maintain(); } });
   const driver = createPreapprovalDriver({ storage: deps.storage, activations, runtime,
     execution: deps.execution, pumpOutbox: () => outbox.drain(),
     ...(deps.settleRecoveredTrigger ? { settleRecovered: deps.settleRecoveredTrigger } : {}) });
@@ -104,7 +128,10 @@ export const composePreapproval = (deps: {
     return pending;
   };
   const handlers: PreapprovalHandlerDeps = { ownerId: deps.ownerId, repository: deps.storage.repository,
-    clientTokens: deps.clientTokens, prepare: service.prepare, capabilities: service.capabilities, drafts };
+    clientTokens: deps.clientTokens, prepare: service.prepare, continuePlan: service.continuePlan, capabilities: service.capabilities, drafts,
+    reconcile: createPreapprovalReconciliation({ db: deps.sources.db, repository: deps.storage.repository,
+      registry: deps.mail?.registry, validateRead: service.validateReconciliationRead, now: deps.now }),
+    ...(localUndo ? { localUndo } : {}), ...(localChanges ? { localChanges } : {}) };
   composed = true;
   return { service, runtime, driver, outbox, handlers, autoRunStatus: activations.describeAutoRun,
     triggerStatus: activations.describeTrigger, scheduleStatus: activations.describeSchedule };

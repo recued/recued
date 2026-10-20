@@ -106,7 +106,7 @@ describe('§ 234.4o — asking a peer is an outbound send', () => {
     expect(d.authorization_provenance?.lift_reason).toBe('review_send');
   });
 
-  it('⛔ and it says WHOSE SCREEN, not "outside your trust boundary"', () => {
+  it('⛔ and it says WHOSE SCREEN, not "outside this server"', () => {
     // Prose only — the policy is the send lift's, unchanged. But the generic
     // sentence describes a MACHINE boundary, and what the owner is being asked
     // about is an interruption of another PERSON. The distinction is the whole
@@ -115,11 +115,11 @@ describe('§ 234.4o — asking a peer is an outbound send', () => {
     const d = admit(OWNER);
     if (d.verdict !== 'ask') throw new Error('expected ask');
     expect(d.detail).toContain('another server owner\'s screen');
-    expect(d.detail).not.toContain('outside your trust boundary');
+    expect(d.detail).not.toContain('outside this server');
     // …and a real send still gets the generic wording.
     const send = admit(OWNER, 'mail-send');
     if (send.verdict !== 'ask') throw new Error('expected ask');
-    expect(send.detail).toContain('outside your trust boundary');
+    expect(send.detail).toContain('outside this server');
   });
 });
 

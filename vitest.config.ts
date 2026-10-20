@@ -1,6 +1,61 @@
 import { defineConfig } from 'vitest/config';
-import { readdirSync, readFileSync } from 'fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import { join, relative, resolve, sep } from 'path';
+
+/** ⛔ EVERY RUN GETS A TEMP FOLDER OF ITS OWN, AND DELETES IT WHEN IT ENDS.
+ *
+ *  Tests make folders with `mkdtemp(join(tmpdir(), …))` and many never remove
+ *  them: the system temp folder held 128,000 entries and 7.2 GB on 2026-10-19,
+ *  27,300 of them `recued-orch-*` from one test file. Rather than chase every
+ *  file, a run points TMPDIR (and TMP and TEMP) at a folder of its own before
+ *  any worker starts, so the workers and whatever they spawn inherit it, and
+ *  deletes that folder when the run exits. A run that is killed leaves one
+ *  folder instead of thousands, and the next run deletes it: the folder records
+ *  its run's process, and one whose process is gone is removed at startup.
+ *
+ *  ⚠ The name is short on purpose: macOS caps a Unix socket path at 104 bytes,
+ *  and a test that makes a socket makes it under tmpdir().
+ *  ⚠ Once per run: this file is evaluated once per project (see below), so the
+ *  folder is remembered on the process like the scans further down.
+ *  ⛔ A RUN STARTED BY A TEST SHARES ITS PARENT'S FOLDER. The crash tests start a
+ *  vitest of their own that writes a database and dies, then read it back; with
+ *  a folder of its own that child deleted the database on its way out. The
+ *  parent names its folder in the environment, and a child that inherits the
+ *  name uses that folder as it is: the parent deletes it when the whole run ends. */
+const RUN_TEMP_PREFIX = 'rvt-';
+const RUN_TEMP_OWNER = '.run-pid';
+const RUN_TEMP_ENV = 'RECUED_TEST_RUN_TEMP';
+const createRunTemp = (): string => {
+  const inherited = process.env[RUN_TEMP_ENV];
+  if (inherited !== undefined && existsSync(inherited)) return inherited;
+  const base = tmpdir();
+  for (const name of readdirSync(base)) {
+    if (!name.startsWith(RUN_TEMP_PREFIX)) continue;
+    let owner = Number.NaN;
+    try { owner = Number(readFileSync(join(base, name, RUN_TEMP_OWNER), 'utf8')); } catch { /* not stamped yet */ }
+    // No stamp yet is a run still starting; a live (or not ours to signal) process is a run still going.
+    if (!Number.isSafeInteger(owner) || owner <= 0) continue;
+    try {
+      process.kill(owner, 0);
+      continue;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EPERM') continue;
+    }
+    rmSync(join(base, name), { recursive: true, force: true });
+  }
+  const dir = mkdtempSync(join(base, RUN_TEMP_PREFIX));
+  writeFileSync(join(dir, RUN_TEMP_OWNER), String(process.pid));
+  process.env[RUN_TEMP_ENV] = dir;
+  process.env.TMPDIR = dir;
+  process.env.TMP = dir;
+  process.env.TEMP = dir;
+  process.once('exit', () => {
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort at exit */ }
+  });
+  return dir;
+};
+(globalThis as { __recuedRunTemp?: string }).__recuedRunTemp ??= createRunTemp();
 
 /** What makes a `packages/` test file unsafe to share a worker process with the files
  *  after it: a module mock, a stubbed global or env var, fake timers, a module-registry
@@ -108,6 +163,8 @@ export default defineConfig({
       { find: '@recued/logger', replacement: resolve(__dirname, 'packages/logger/src') },
       { find: '@recued/recipes', replacement: resolve(__dirname, 'packages/recipes/src') },
       { find: '@recued/marketplace', replacement: resolve(__dirname, 'packages/marketplace/src') },
+      { find: '@recued/notification', replacement: resolve(__dirname, 'packages/notification/src') },
+      { find: '@recued/transport', replacement: resolve(__dirname, 'packages/transport/src') },
       { find: '@recued/renderer', replacement: resolve(__dirname, 'packages/renderer/src') },
       // The `@recued/server-network` rule MUST appear before
       // `@recued/server` — Vite alias resolution is prefix-based

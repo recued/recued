@@ -605,3 +605,36 @@ describe('D-207 3d — fence opt-in through the email façade', () => {
     expect('already_sent' in (result as { result: object }).result).toBe(false);
   });
 });
+
+// ────────────────────────────────────────────────────────────────
+// D-158 amendment 2026-10-18 — the enrolled destination, which may be
+// the sending mailbox itself
+// ────────────────────────────────────────────────────────────────
+
+describe('D-158 amendment 2026-10-18 — the connection’s own destination', () => {
+  const ownerSeam = () => {
+    const send = vi.fn<MailRpcDep['send']>(async () => okMeta());
+    const sendToOwner = vi.fn<NonNullable<MailRpcDep['sendToOwner']>>(async () => okMeta({ message_id: '<owner@example.com>' }));
+    return { send, sendToOwner, rpc: { send, sendToOwner } };
+  };
+
+  it('sends a notification naming no recipient through the owner seam: to the mailbox itself, or to the default', async () => {
+    const { send, sendToOwner, rpc } = ownerSeam();
+    const handler = createConnectionNotificationHandler(mkDeps({ mailRpc: rpc }));
+    const result = await handler(mkRow(), { text: 'Passport', title: 'Renew' }, mkCall({ slug: 'notification-send' }));
+    await handler(mkRow({ config_json: JSON.stringify({ sender_mail_instance: 'work-gmail', default_recipient: 'phone@self.com' }) }),
+      { text: 'Passport' }, mkCall({ slug: 'notification-send' }));
+    expect(sendToOwner.mock.calls.map(([args]) => [args.instance, args.to])).toEqual([['work-gmail', undefined], ['work-gmail', ['phone@self.com']]]);
+    expect(result).toMatchObject({ status: 'ok', result: { message_id: '<owner@example.com>' } });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('⛔ never takes a caller’s recipient through it: an explicit to or recipient keeps the guarded send', async () => {
+    const { send, sendToOwner, rpc } = ownerSeam();
+    const handler = createConnectionNotificationHandler(mkDeps({ mailRpc: rpc }));
+    await handler(mkRow(), { body: 'b', to: ['me@self.com'] }, mkCall());
+    await handler(mkRow(), { text: 't', recipient: 'me@self.com' }, mkCall({ slug: 'notification-send' }));
+    expect(send.mock.calls.map(([args]) => args.to)).toEqual([['me@self.com'], ['me@self.com']]);
+    expect(sendToOwner).not.toHaveBeenCalled();
+  });
+});

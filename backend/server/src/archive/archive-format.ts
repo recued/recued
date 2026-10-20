@@ -40,13 +40,8 @@ export const AEAD_TAG_LEN = 16;
  *  recovery-key-only disaster recovery can open the restored realm. */
 export const ARCHIVE_FORMAT_VERSION = 3;
 
-/** Current schema version for SQLite tables. Bump when warehouse /
- *  server_state / vault table schemas change shape in a way that
- *  requires migration. Phase F starts at 1; Phase G (D-109) bumps
- *  to 2 when the `event_triggers` table lands (archive format
- *  version stays 1 — triggers ride as another table inside the same
- *  envelope). */
-export const SCHEMA_VERSION = 2;
+/** Compatibility ceiling shared with the stored database migration registry. */
+export { DATABASE_SCHEMA_VERSION as SCHEMA_VERSION } from '../database-schema.js';
 
 /** Minimum consumer version that understands this archive. Bumped
  *  alongside breaking format changes. Producers always write their

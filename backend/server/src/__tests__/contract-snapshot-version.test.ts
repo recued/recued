@@ -56,6 +56,13 @@ describe('contract snapshot authority version', () => {
     expect(deriveContractSnapshotVersion(withoutCeiling))
       .not.toBe(deriveContractSnapshotVersion(BASE_AUTHORITY));
   });
+  it('versions sphere authority as a set while distinguishing all, none and either sphere', () => {
+    const version = (read_spheres?: readonly ('personal' | 'professional')[]) => deriveContractSnapshotVersion({ ...BASE_AUTHORITY, read_spheres });
+    expect(new Set([version(), version([]), version(['personal']), version(['professional'])]).size).toBe(4);
+    expect(version(['professional', 'personal', 'professional'])).toBe(version(['personal', 'professional']));
+    const value = buildVersionedContractSnapshot({ ...BASE_AUTHORITY, read_spheres: [], resolved_at: 1 });
+    expect(value.read_spheres).toEqual([]); expect(Object.isFrozen(value.read_spheres)).toBe(true);
+  });
 });
 
 describe('webhook contract snapshot version', () => {

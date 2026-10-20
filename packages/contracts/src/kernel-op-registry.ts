@@ -85,7 +85,7 @@ export const OP_ENTITIES = [
   'enrichment', 'work', 'form_response', 'webhook', 'peer', 'seller',
   'notification', 'recall',
   // D-324 — the owner's reminders, their own store.
-  'reminder',
+  'reminder', 'situation',
   // capabilities with no stored entity behind them
   'ai', 'browser', 'schedule', 'watch',
   // ⚠ NO KERNEL OP CARRIES THESE TWO — they exist for the Tier-1 chat primitives
@@ -162,6 +162,7 @@ export const OP_ENTITY_LABEL: Readonly<Record<OpEntity, string>> = {
   seller: 'Selling',
   notification: 'Notifications',
   reminder: 'Reminders',
+  situation: 'Situations',
   crm: 'CRM records',
   recipe: 'Recipes',
   ai: 'AI models',
@@ -560,6 +561,11 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   op('core.work-entity.booking.create', 'work-entity', 'booking-create', 'write', 'work'),
   op('core.work-entity.booking.update', 'work-entity', 'booking-update', 'write', 'work'),
   op('core.work-entity.booking.delete', 'work-entity', 'booking-delete', 'destructive', 'work'),
+  op('core.work-entity.asset.create', 'work-entity', 'asset-create', 'write', 'work'),
+  op('core.work-entity.asset.update', 'work-entity', 'asset-update', 'write', 'work'),
+  op('core.work-entity.asset.delete', 'work-entity', 'asset-delete', 'destructive', 'work'),
+  // A bound observation is deliberately separate from general asset writes.
+  op('core.work-entity.asset.observe', 'work-entity', 'asset-observe', 'read', 'work'),
   op('core.work-entity.list', 'work-entity', 'work-entity-list', 'read', 'work'),
   op('core.work-entity.get', 'work-entity', 'work-entity-get', 'read', 'work'),
   /** NATIVE verb-op for the Tier-1 `work.search` + `work.read` tools — the READ
@@ -582,6 +588,8 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
    *  labelling the DATA rows in the user's own vocabulary (`task`) while this
    *  row names the tool. `feedback_separate_authorization_axes`. */
   nativeOp('core.work-entity.read', 'work-entity', 'read', 'work'),
+  op('core.situation.read', 'situation', 'situation-query', 'read', 'situation'),
+  nativeOp('core.situation.prefetch', 'situation', 'read', 'situation'),
 
   // ── memory — the provenance / audit / annotation + links graph + timeline
   //    (CLAUDE.md: data.memory = audit/memory + provenance links + annotations).

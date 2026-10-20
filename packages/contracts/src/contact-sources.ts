@@ -246,6 +246,10 @@ export interface ContactImportFilePlan {
    *  vanishes is a person missing from the graph, and the user would have no way to
    *  know. */
   errors: ReadonlyArray<string>;
+  /** Dates the file carries that could not be used as written: a birthday kept as
+   *  text, an anniversary left out, a labelled date with no field on a contact. The
+   *  person still imports. Absent when there are none, and from an older server. */
+  date_notes?: ReadonlyArray<string>;
 }
 
 /** One contact Source's health, as `contact.source.list` returns it: the registry
@@ -815,13 +819,9 @@ export const CONTACT_SOURCE_DECLARATIONS: ReadonlyArray<ContactSourceDeclaration
       // `photo`   — `photos[].url`. A URL, never bytes (C-2's North star), and the
       //             detail page renders it as TEXT for exactly that reason.
       //
-      // ⚠ NO `birthday` and NO `title`, and both are STATEMENTS rather than gaps.
-      // The People API carries both — but the PACK's `entities.person` field map
-      // declares neither, so nothing can produce them today. `supplies` is a
-      // PROMISE the runner verifies per record: promising a field no code emits
-      // fails EVERY record on the FIRST cycle. Adding them is a visible two-line
-      // pack edit + a line here, not a discovery six months on.
-      attributes: ['name', 'org', 'address', 'photo'],
+      // D-325 — the People leaf requests and preserves yearless birthdays, and
+      // anniversaries: the `events` entry typed `anniversary`.
+      attributes: ['name', 'org', 'address', 'photo', 'birthday', 'anniversary'],
     },
     // Email only. `phone_alias` is in `supplies` (we import every number) but is
     // NOT a join key: the runner has no phone→contact resolver, and it REFUSES a
@@ -904,7 +904,10 @@ export const CONTACT_SOURCE_DECLARATIONS: ReadonlyArray<ContactSourceDeclaration
       //
       // ⚠ Promising it anyway would fail EVERY record on the FIRST cycle —
       // `supplies` is a promise the runner verifies per record.
-      attributes: ['name', 'org', 'address'],
+      //
+      // `birthday` — `birthday`, a UTC timestamp; the leaf reads the calendar date
+      //             Outlook meant (D-325).
+      attributes: ['name', 'org', 'address', 'birthday'],
     },
     // Email only, same as every other contact source: there is no phone→contact
     // resolver, and the runner refuses a cycle keyed on one.

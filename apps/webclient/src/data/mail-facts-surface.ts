@@ -90,6 +90,8 @@ export interface MailFactsSurfaceDeps {
   readonly render: () => void;
   /** The address after the tab changed. */
   readonly onAddressChange: () => void;
+  /** D-325 — one thing opened by its address (a bill, a delivery Today linked to). */
+  readonly onThingOpened?: (thing_id: string) => void;
 }
 
 const FILTER_KEYS = ['type', 'state', 'notice', 'template', 'complete', 'paired', 'runs'] as const;
@@ -236,6 +238,8 @@ interface FactsState {
   readonly error: string | null;
   readonly filters: Filters;
   readonly email: { readonly ref: MailFactEmailRef; readonly subject?: string } | null;
+  /** One thing's facts, across the emails that told of it: what Today links to. */
+  readonly thing: string | null;
   readonly templates: readonly MailTemplate[];
   /** The kinds of email the owner made (§4.5). */
   readonly types: readonly MailFactTypeSpec[];
@@ -468,7 +472,16 @@ const renderRow = (
   </li>`;
 
 const hasFilters = (state: FactsState): boolean =>
-  state.email !== null || FILTER_KEYS.some((key) => state.filters[key] !== undefined);
+  state.email !== null || state.thing !== null || FILTER_KEYS.some((key) => state.filters[key] !== undefined);
+
+/** The one thing a view shows, as its own facts name it: "Bill: Acme Power". */
+const thingHeading = (state: FactsState): string => {
+  const thing = state.rows.find((row) => row.thing !== null)?.thing;
+  if (thing === undefined || thing === null) return 'One item';
+  const label = [thing.variables.issuer, thing.variables.merchant, thing.variables.provider, thing.variables.carrier]
+    .find((value): value is string => typeof value === 'string' && value.length > 0);
+  return `${typeName(thing.type, state.types)}${label !== undefined ? `: ${label}` : ''}`;
+};
 
 const renderFacts = (state: FactsState, actionAttr: string, available: boolean, openData: ReadonlySet<string>): string => {
   if (!available) {
@@ -477,9 +490,11 @@ const renderFacts = (state: FactsState, actionAttr: string, available: boolean, 
   const body = !state.loaded
     ? '<p class="mail-facts-subtle" aria-live="polite">Loading facts…</p>'
     : state.rows.length === 0 && state.error === null
-      ? `<p class="mail-facts-empty">${hasFilters(state)
+      ? `<p class="mail-facts-empty">${state.thing !== null
+          ? 'This item is no longer stored.'
+          : hasFilters(state)
           ? 'No facts match.'
-          : 'No facts yet. Recued reads them from new mail: parcels, orders, bills and bookings that senders mark up in a standard way, requests you mail to your own +tag address, and anything a template of yours reads.'}</p>`
+          : 'No facts yet. Recued reads them from saved mail, including your first sync: parcels, orders, bills and bookings that senders mark up in a standard way, requests you mail to your own +tag address, and anything a template of yours reads.'}</p>`
       : `
         <div class="mail-facts-columns" aria-hidden="true">
           <span>Matched mail</span><span>Fact</span><span>Triggered recipes</span>
@@ -488,7 +503,13 @@ const renderFacts = (state: FactsState, actionAttr: string, available: boolean, 
           ${state.rows.map((row) => renderRow(row, state.templates, state.types, actionAttr, openData)).join('')}
         </ul>`;
   return `
-    ${state.email !== null
+    ${state.thing !== null
+      ? `<div class="mail-facts-email-filter" data-mail-facts-thing="${e(state.thing)}">
+          <span>${state.loaded && state.rows.length > 0 ? `<strong>${e(thingHeading(state))}</strong>, every email that told of it` : 'One item'}</span>
+          <button type="button" class="data-button" ${actionAttr}="mail-facts-show-all"
+            ${MAIL_FACTS_FOCUS_ATTR}="show-all">Show all facts</button>
+        </div>`
+      : state.email !== null
       ? `<div class="mail-facts-email-filter">
           <span>Facts from one email${state.email.subject !== undefined && state.email.subject.length > 0
             ? `: <strong>${e(state.email.subject)}</strong>`
@@ -519,7 +540,8 @@ const renderFacts = (state: FactsState, actionAttr: string, available: boolean, 
 const queryOf = (state: FactsState, before?: MailFactRowsCursor): MailFactRowsQuery => {
   // One email's facts are all of them: its screen shows no filters, so none
   // may apply unseen. They wait for "Show all facts".
-  const filters: Filters = state.email !== null ? {} : state.filters;
+  const filters: Filters = state.email !== null || state.thing !== null ? {} : state.filters;
+  if (state.thing !== null) return { limit: PAGE_EMAILS, thing_id: state.thing, ...(before !== undefined ? { before } : {}) };
   return {
     limit: PAGE_EMAILS,
     ...(filters.type !== undefined ? { type: filters.type } : {}),
@@ -549,6 +571,7 @@ export const createMailFactsSurface = (deps: MailFactsSurfaceDeps): MailFactsSur
     error: null,
     filters: {},
     email: null,
+    thing: null,
     templates: [],
     types: [],
   };
@@ -702,8 +725,10 @@ export const createMailFactsSurface = (deps: MailFactsSurfaceDeps): MailFactsSur
         pendingFocus = 'retry';
         void loadFacts(false);
       } else if (action === 'mail-facts-show-all') {
-        facts = { ...facts, email: null, rows: [], next: null, loaded: false };
+        const wasThing = facts.thing !== null;
+        facts = { ...facts, email: null, thing: null, rows: [], next: null, loaded: false };
         pendingFocus = 'filter:type';
+        if (wasThing) deps.onAddressChange();
         void loadFacts(false);
       }
       return true;
@@ -735,10 +760,18 @@ export const createMailFactsSurface = (deps: MailFactsSurfaceDeps): MailFactsSur
 
     handleInput: (target) => view === 'templates' && templates.handleInput(target),
 
-    addressSegments: () => (view === 'templates' ? [view, ...templates.addressSegments()] : [view]),
+    addressSegments: () => (view === 'templates' ? [view, ...templates.addressSegments()]
+      : view === 'facts' && facts.thing !== null ? ['thing', facts.thing] : [view]),
 
     openAddress: (segments) => {
       const wanted = segments[0];
+      // `#data/mail_fact/thing/<id>`: Today's link to one item opens that item.
+      if (wanted === 'thing' && segments[1] !== undefined && segments[1].length > 0) {
+        view = 'facts';
+        facts = { ...facts, thing: segments[1], email: null, rows: [], next: null, loaded: false };
+        deps.onThingOpened?.(segments[1]);
+        return;
+      }
       view = (MAIL_FACT_VIEWS as readonly string[]).includes(wanted ?? '') ? (wanted as MailFactView) : 'facts';
       if (view === 'templates') templates.openAddress(segments.slice(1));
     },
@@ -754,6 +787,7 @@ export const createMailFactsSurface = (deps: MailFactsSurfaceDeps): MailFactsSur
       facts = {
         ...facts,
         email: { ref: email, ...(subject !== undefined ? { subject } : {}) },
+        thing: null,
         rows: [],
         next: null,
         loaded: false,

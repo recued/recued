@@ -16,7 +16,7 @@
  *
  *  Spec: D-123 §4.2. */
 
-import type { ContactRecord, EnrichmentScope, Note, Project, Task } from '@recued/contracts';
+import type { Asset, ContactRecord, EnrichmentScope, Note, Project, Task } from '@recued/contracts';
 
 import type { CollectionRecord } from '@recued/contracts';
 import type { CollectionRegistry } from '../collections/registry.js';
@@ -147,10 +147,12 @@ export interface CreateMailSourceWalkerOptions {
    *  `hashMailRecordWithBody` (or a custom variant) so a body
    *  change marks the source row dirty for re-derivation. */
   hashRecord?: (record: CollectionRecord) => string;
-  /** D-318 step 1 — is this mailbox the email chat door's chat mailbox? Its
-   *  mail is the conversation with Recued, not the owner's mail: no producer
-   *  reads it. Asked at each walk. Absent ⇒ none is. */
-  isChatMailbox?: (slug: string) => boolean;
+  /** D-318 step 1 — is this mailbox the email chat door's chat mailbox, used
+   *  for chat alone? Its mail is the conversation with Recued, not the owner's
+   *  mail: no producer reads it. A chat mailbox that is one of the owner's own
+   *  too (one mailbox, §8.18) is not one: its mail is theirs. Asked at each
+   *  walk. Absent ⇒ none is. */
+  isChatOnlyMailbox?: (slug: string) => boolean;
   /** D-318 step 5 — is this record, in one of the owner's other mailboxes, the
    *  conversation with the chat mailbox (an answer, or the Sent copy of a
    *  request)? No producer reads it either. Absent ⇒ none is. */
@@ -176,12 +178,12 @@ export const createMailSourceWalker = (
   options?: CreateMailSourceWalkerOptions,
 ): SourceCollectionWalker => {
   const hashFn = options?.hashRecord ?? hashMailRecord;
-  const isChatMailbox = options?.isChatMailbox ?? (() => false);
+  const isChatOnlyMailbox = options?.isChatOnlyMailbox ?? (() => false);
   const isChatConversationRecord = options?.isChatConversationRecord ?? (() => false);
   const liveMailCollections = () =>
     collections
       .list()
-      .filter((c) => c.platform === 'mail' && !isChatMailbox(c.slug))
+      .filter((c) => c.platform === 'mail' && !isChatOnlyMailbox(c.slug))
       .sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
 
   return {
@@ -846,12 +848,27 @@ export const createProjectSourceWalker = (
  *  consumers pair it with the matching producer at the call site (TS
  *  enforces the cross-scope pairing through
  *  `buildEnrichmentProducerTask`'s generic). */
+export const createAssetSourceWalker = (store: WorkEntityStore): SourceCollectionWalker<Asset> => ({
+  *walkAfter(cursor_token, batch_size) {
+    for (const record of store.walkByAssetId(cursor_token, batch_size)) {
+      yield { target_id: record.id, data: record, cursor_token: record.id };
+    }
+  },
+  hashOf: ({ data }) => fnv1a(JSON.stringify({ ...data, updated_at: undefined, field_sources: undefined })),
+  fetchOne: id => {
+    const data = store.readAsset(id);
+    return data && data.deleted_at == null && (data.sync_state === 'live' || data.sync_state === 'stale_unreachable')
+      ? { target_id: data.id, data, cursor_token: data.id } : null;
+  },
+});
+
 export type AnySourceWalker =
   | SourceCollectionWalker<CollectionRecord>
   | SourceCollectionWalker<ContactRecord>
   | SourceCollectionWalker<Note>
   | SourceCollectionWalker<Task>
-  | SourceCollectionWalker<Project>;
+  | SourceCollectionWalker<Project>
+  | SourceCollectionWalker<Asset>;
 
 export interface SourceWalkerRegistry {
   /** D-131 A.4 — narrow overloads so `get('mail')` etc. return the
@@ -863,13 +880,15 @@ export interface SourceWalkerRegistry {
     scope: 'mail' | 'calendar' | 'file' | 'connection.api' | 'connection.mcp' | 'connection.notification',
   ): SourceCollectionWalker<CollectionRecord> | undefined;
   get(scope: 'contact'): SourceCollectionWalker<ContactRecord> | undefined;
+  get(scope: 'asset'): SourceCollectionWalker<Asset> | undefined;
   get(scope: EnrichmentScope): AnySourceWalker | undefined;
 }
 
 export interface SourceWalkerDeps {
   collections: CollectionRegistry;
-  /** D-318 step 1 — the mail walker leaves the chat mailbox out. */
-  isChatMailbox?: (slug: string) => boolean;
+  /** D-318 step 1 — the mail walker leaves out a chat mailbox used for chat
+   *  alone. */
+  isChatOnlyMailbox?: (slug: string) => boolean;
   /** D-318 step 5 — and the conversation's mail in the owner's other mailboxes. */
   isChatConversationRecord?: (record: CollectionRecord) => boolean;
   /** Required to register the `contact` walker. When omitted (test
@@ -878,6 +897,7 @@ export interface SourceWalkerDeps {
    *  calendar, and file walkers register unconditionally because they
    *  only need the always-present `CollectionRegistry`. */
   contactStore?: ContactStore;
+  workEntityStore?: WorkEntityStore;
 }
 
 /** Build the registry mapping each `EnrichmentScope` to its walker.
@@ -889,7 +909,7 @@ export interface SourceWalkerDeps {
 export const createSourceWalkerRegistry = (deps: SourceWalkerDeps): SourceWalkerRegistry => {
   const walkers = new Map<EnrichmentScope, AnySourceWalker>();
   walkers.set('mail', createMailSourceWalker(deps.collections, {
-    ...(deps.isChatMailbox ? { isChatMailbox: deps.isChatMailbox } : {}),
+    ...(deps.isChatOnlyMailbox ? { isChatOnlyMailbox: deps.isChatOnlyMailbox } : {}),
     ...(deps.isChatConversationRecord ? { isChatConversationRecord: deps.isChatConversationRecord } : {}),
   }));
   walkers.set('calendar', createCalendarSourceWalker(deps.collections));
@@ -897,6 +917,7 @@ export const createSourceWalkerRegistry = (deps: SourceWalkerDeps): SourceWalker
   if (deps.contactStore) {
     walkers.set('contact', createContactSourceWalker(deps.contactStore));
   }
+  if (deps.workEntityStore) walkers.set('asset', createAssetSourceWalker(deps.workEntityStore));
   return registryFromMap(walkers);
 };
 
@@ -924,6 +945,7 @@ function registryFromMap(
     scope: 'mail' | 'calendar' | 'file' | 'connection.api' | 'connection.mcp' | 'connection.notification',
   ): SourceCollectionWalker<CollectionRecord> | undefined;
   function get(scope: 'contact'): SourceCollectionWalker<ContactRecord> | undefined;
+  function get(scope: 'asset'): SourceCollectionWalker<Asset> | undefined;
   function get(scope: EnrichmentScope): AnySourceWalker | undefined;
   function get(scope: EnrichmentScope): AnySourceWalker | undefined {
     return walkers.get(scope);

@@ -35,6 +35,14 @@
  *  the thread: written into the conversation as an answer of the turn that
  *  asked (`follow-ups.ts`), it is owed and sent here like any other.
  *
+ *  One mailbox (§8.18) — the owner wrote to the chat mailbox from itself, so
+ *  the answer goes to the mailbox it is sent from. D-127's self-loop guard
+ *  would refuse that; the answer lifts it (`self_addressed`), as the owner's own
+ *  notification does (D-158, 2026-10-18): its one recipient is the proven
+ *  request's From, never a caller's `to`, and its reconciliation id makes the
+ *  copy that lands back in the mailbox Recued's own, which no request, mail
+ *  fact or recipe reads.
+ *
  *  Spec: D-318 §4.5, §4.6, §4.13, §8 step 5. */
 
 import { createHash } from 'node:crypto';
@@ -86,6 +94,12 @@ const IDLE_POLL_MS = 15_000;
 /** The longest the timer sleeps, so a clock change cannot strand an answer. */
 const MAX_SLEEP_MS = 60_000;
 
+/** `"Ann" <Ann@Example.com>` → `ann@example.com`. */
+const bareAddress = (address: string): string => {
+  const angled = /<([^<>]+)>/.exec(address);
+  return (angled?.[1] ?? address).trim().toLowerCase();
+};
+
 export type MailChatAnswerState = 'pending' | 'sending' | 'unknown' | 'sent' | 'failed' | 'dropped';
 
 export interface MailChatAnswer {
@@ -133,6 +147,9 @@ export interface ComposeMailChatAnswersDeps {
   readonly isUnlocked?: () => boolean;
   /** The notice's history row. Absent ⇒ the push alone. */
   readonly auditLog?: Pick<AuditLogStore, 'logActivity'>;
+  /** The title of the tool a run came from, for the follow-up after an
+   *  approval (`recipeToolTitle`). Absent ⇒ the follow-up names no title. */
+  readonly toolTitle?: (tool_name: string) => string | undefined;
   readonly now?: () => number;
   readonly log?: (level: 'info' | 'warn', msg: string, data?: Record<string, unknown>) => void;
 }
@@ -326,7 +343,9 @@ export const composeMailChatAnswers = (deps: ComposeMailChatAnswersDeps): MailCh
   const { db, chatStore, door, mailboxes, requests, conversations, claims, askOwner, auditLog, log } = deps;
   if (!ensureSchema(db)) return undefined;
   const now = deps.now ?? Date.now;
-  const followUps = createMailChatFollowUps({ db, chatStore });
+  const followUps = createMailChatFollowUps({
+    db, chatStore, ...(deps.toolTitle !== undefined ? { toolTitle: deps.toolTitle } : {}),
+  });
 
   const selectOne = db.prepare('SELECT * FROM mail_chat_answers WHERE answer_id = ?');
   const selectOfRequest = db.prepare(`SELECT state, sent_at FROM mail_chat_answers
@@ -547,6 +566,8 @@ export const composeMailChatAnswers = (deps: ComposeMailChatAnswersDeps): MailCh
     update(row.answer_id, { state: 'sending', attempts, first_attempt_at });
     const current: AnswerRow = { ...row, state: 'sending', attempts, first_attempt_at };
     const reconciliation_id = mailChatAnswerReconciliationId(row.answer_id);
+    // One mailbox: the request came from the chat mailbox's own address.
+    const toItself = bareAddress(envelope.to) === bareAddress(chat.accountEmail);
     let result: Awaited<ReturnType<MailChatAnswersMailbox['send']>>;
     try {
       result = await chat.send({
@@ -557,6 +578,7 @@ export const composeMailChatAnswers = (deps: ComposeMailChatAnswersDeps): MailCh
         references: [...envelope.references],
         reconciliation_id,
         ...(withThread ? { thread_id: envelope.thread_id } : {}),
+        ...(toItself ? { self_addressed: true } : {}),
         automatic: true,
         // The owner may change the chat mailbox while the send is prepared.
         before_dispatch: () => {

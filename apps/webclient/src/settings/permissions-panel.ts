@@ -2078,6 +2078,7 @@ export const mountPermissionsPanel = (
         const minted = await mint({
           display_name: MCP_DOOR_CONTRACT_NAME,
           scope: MCP_DOOR_CONTRACT_SCOPE,
+          ...(boundContract()?.read_spheres !== undefined ? { read_spheres: boundContract()!.read_spheres } : {}),
           ...(wantLimit && nextMaxUses !== null ? { max_uses: nextMaxUses } : {}),
           // Only with a count: the rpc refuses a period that refills nothing.
           ...(wantLimit && nextMaxUses !== null && nextUsePeriod !== 'total'

@@ -74,6 +74,11 @@ export const normalizeAnswerText = (raw: string): string =>
     .trim()
     .toLowerCase();
 
+/** Email keeps its existing exact-option vocabulary, including its narrower
+ * punctuation rule. A numbered bundle adds an item, not a new answer policy. */
+export const normalizeEmailAnswerToken = (raw: string): string => raw.trim().toLowerCase()
+  .replace(/[.!,;:]+$/, '').replace(/\s+/g, ' ').trim();
+
 /** The prompt line an ask carries, and the ONLY vocabulary the matcher accepts.
  *
  *  ⛔⛔ **SHOWN AND ACCEPTED MUST BE ONE THING.** The first version of this

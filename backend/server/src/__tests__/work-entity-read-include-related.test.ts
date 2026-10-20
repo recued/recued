@@ -205,14 +205,7 @@ describe('work.read include_related', () => {
     expect((result.related_unavailable as { reason: string }).reason).toMatch(/not wired/i);
   });
 
-  it('DISCLOSES for a kind that has no relationship model at all', async () => {
-    // `commitment` is not a WorkEntitySourceDeclarableKind, so `work_entity_edge`
-    // cannot key an owner row of that kind — it has no links by construction.
-    //
-    // ⚠ The row must EXIST. A missing record short-circuits to
-    // `{ entity: null, found: false }` long before the related block, so seeding
-    // nothing here would have passed for the wrong reason — the first version of
-    // this test did exactly that and asserted on an undefined.
+  it('reads ordinary commitment edges, including the asset relationships introduced by D-325', async () => {
     const commitmentSource = RECUED_BUILTIN_SOURCE_ID('commitment');
     store.registerSource({
       id: commitmentSource,
@@ -239,9 +232,8 @@ describe('work.read include_related', () => {
       ),
     );
     expect(result.found).toBe(true);
-    expect(result).not.toHaveProperty('related');
-    expect((result.related_unavailable as { reason: string }).reason)
-      .toMatch(/no relationship model/i);
+    expect(result.related).toEqual([]);
+    expect(result).not.toHaveProperty('related_unavailable');
   });
 
   it('rejects a non-boolean flag instead of coercing it', async () => {

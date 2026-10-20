@@ -1295,6 +1295,8 @@ const fetchCredentialJson = async <T>({
     }, origin);
   } catch (e) {
     clearTimeout(timer);
+    // A host handoff refusal is not a failed credential or network probe.
+    if (e instanceof IngredientError && e.code === 'run_killed') throw e;
     if (e instanceof CrossOriginRedirectError) {
       throw new IngredientError(
         'TOKEN_REFRESH_FAILED',

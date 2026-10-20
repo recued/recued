@@ -23,6 +23,9 @@ export type BootCommandProfile =
   | 'doctor'
   | 'update-lease'
   | 'release-floor'
+  /** The server's folder-watch process (`collections/file/watch-host.ts`). Its
+   *  own profile because it must open nothing: it only watches folders. */
+  | 'watch-host'
   | 'mcp'
   | 'serve'
   | 'command';
@@ -107,6 +110,7 @@ export const classifyBootProfile = (input: BootProfileInput): BootCommandProfile
   if (input.subcommand === 'doctor') return 'doctor';
   if (input.subcommand === 'update-lease') return 'update-lease';
   if (input.subcommand === 'release-floor') return 'release-floor';
+  if (input.subcommand === 'watch-host') return 'watch-host';
   return 'command';
 };
 

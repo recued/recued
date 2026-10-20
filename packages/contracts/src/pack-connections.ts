@@ -77,6 +77,8 @@ export interface RecipeConnectionSlot {
    *  in the slot, and set up), the default marked. Two or more is a choice. */
   connections: Array<{
     connection_name: string;
+    /** Opaque current account revision for page-argument freshness checks. */
+    connection_revision?: string;
     /** The owner's alias for it; the name when it has none. */
     display_name: string;
     is_default: boolean;

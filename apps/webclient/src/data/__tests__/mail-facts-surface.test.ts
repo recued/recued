@@ -339,6 +339,31 @@ describe('one email’s facts', () => {
     expect(surface.render()).not.toContain('Facts from one email');
   });
 
+  // D-325 Option A — Today links a bill or a delivery to itself; the list alone left the
+  // owner to find it, and nothing could tell the learner it was opened.
+  it('opens one thing by its address, says so to its host, and goes back to all facts', async () => {
+    const ups = thing({ carrier: 'UPS', state: 'in_transit' });
+    const { surface, queries, deps } = harness(async () => ({ rows: [row('a', { thing: ups }), row('b', { thing: ups })] }));
+    const opened = vi.fn(); const withOpen = createMailFactsSurface({ ...deps, onThingOpened: opened });
+    withOpen.openAddress(['thing', 'mthing_1']);
+    expect(opened).toHaveBeenCalledWith('mthing_1'); expect(withOpen.addressSegments()).toEqual(['thing', 'mthing_1']);
+    await withOpen.refresh();
+    expect(queries.at(-1)).toEqual({ limit: 50, thing_id: 'mthing_1' });
+    expect(withOpen.render()).toContain('<strong>Shipment: UPS</strong>, every email that told of it');
+    withOpen.handleAction('mail-facts-show-all', {} as HTMLElement);
+    await vi.waitFor(() => expect(queries.at(-1)).toEqual({ limit: 50 }));
+    expect(withOpen.addressSegments()).toEqual(['facts']); expect(deps.onAddressChange).toHaveBeenCalled();
+    expect(withOpen.render()).not.toContain('every email that told of it');
+    surface.openAddress(['thing', '']); expect(surface.addressSegments()).toEqual(['facts']);
+  });
+
+  it('says when the item a link names is no longer stored', async () => {
+    const { surface } = harness(async () => ({ rows: [] }));
+    surface.openAddress(['thing', 'mthing_gone']); await surface.refresh();
+    expect(surface.render()).toContain('This item is no longer stored.');
+    expect(surface.render()).not.toContain('every email that told of it');
+  });
+
   it('applies no filter its screen does not show, and gives them back with all facts', async () => {
     const { surface, queries } = harness(async () => ({ rows: [] }));
     await surface.refresh();

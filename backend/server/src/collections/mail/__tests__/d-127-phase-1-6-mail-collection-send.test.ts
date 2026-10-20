@@ -37,7 +37,7 @@ import type {
   ProviderHealth,
   SentMessageMeta,
 } from '../provider.js';
-import { handleCollectionMailSend } from '../../collection-handler.js';
+import { handleCollectionMailSend, handleOwnerNotificationMailSend } from '../../collection-handler.js';
 import type { CollectionRegistry } from '../../registry.js';
 import { createMailSendClaimStore } from '../../../storage/mail-send-claim-store.js';
 
@@ -466,5 +466,54 @@ describe('trusted reminder guard at the mail provider boundary', () => {
     await handleCollectionMailSend({ registry: stubRegistry(h.collection) },
       Object.assign({ instance: 'work', ...baseInput }, { before_dispatch: supplied }));
     expect(supplied).not.toHaveBeenCalled(); expect(h.stub.sendCalls).toHaveLength(1);
+  });
+});
+
+describe('D-158 amendment 2026-10-18 — a notification to the sending mailbox itself', () => {
+  const owner = { instance: 'work', subject: 'Passport', body_text: 'Renew it.' };
+  it('sends it to the mailbox when the connection names no recipient, stamped as Recued’s own', async () => {
+    const h = withHarness({ sendCapable: true, accountEmail: 'Alice@Example.com' });
+    await handleOwnerNotificationMailSend({ registry: stubRegistry(h.collection) }, owner);
+    const call = h.stub.sendCalls[0]!;
+    expect(call.to).toEqual(['alice@example.com']);
+    expect(call.reconciliation_id).toMatch(/^owner-notification:[0-9a-f-]{36}$/u);
+    // The mail readers know Recued's own copy by its send claim, never a header.
+    expect(createMailSendClaimStore(h.db).get(call.reconciliation_id!)).not.toBeNull();
+  });
+  it('sends to a configured recipient, stamped, and keeps an id the caller pins', async () => {
+    const h = withHarness({ sendCapable: true, accountEmail: 'alice@example.com' });
+    const registry = stubRegistry(h.collection);
+    await handleOwnerNotificationMailSend({ registry }, { ...owner, to: ['bob@example.com'] });
+    await handleOwnerNotificationMailSend({ registry }, { ...owner, to: ['Alice <alice@example.com>'], reconciliation_id: 'attempt-1' });
+    expect(h.stub.sendCalls.map(call => [call.to, call.reconciliation_id?.split(':')[0]]))
+      .toEqual([[['bob@example.com'], 'owner-notification'], [['Alice <alice@example.com>'], 'attempt-1']]);
+  });
+  it('sends several recipients unstamped, and never with the mailbox among them', async () => {
+    const h = withHarness({ sendCapable: true, accountEmail: 'alice@example.com' });
+    const registry = stubRegistry(h.collection);
+    await handleOwnerNotificationMailSend({ registry }, { ...owner, to: ['bob@example.com', 'carol@example.com'] });
+    expect(h.stub.sendCalls[0]?.reconciliation_id).toBeUndefined();
+    await expect(handleOwnerNotificationMailSend({ registry }, { ...owner, to: ['bob@example.com', 'alice@example.com'] }))
+      .rejects.toMatchObject({ code: 'MAIL_SEND_SELF_LOOP_TO' });
+    expect(h.stub.sendCalls).toHaveLength(1);
+  });
+  it('keeps refusing a caller who aims mail at the sending mailbox', async () => {
+    const h = withHarness({ sendCapable: true, accountEmail: 'alice@example.com' });
+    const self = { ...baseInput, to: ['alice@example.com'] };
+    // The wire handler builds its input field by field: the flag never rides in.
+    await expect(handleCollectionMailSend({ registry: stubRegistry(h.collection) },
+      Object.assign({ instance: 'work', ...self, reconciliation_id: 'wire-1' }, { self_addressed: true })))
+      .rejects.toMatchObject({ code: 'MAIL_SEND_SELF_LOOP_TO' });
+    // Unstamped, or with another recipient beside it, the flag lifts nothing.
+    await expect(h.collection.send({ ...self, self_addressed: true })).rejects.toMatchObject({ code: 'MAIL_SEND_SELF_LOOP_TO' });
+    await expect(h.collection.send({ ...self, cc: ['carol@example.com'], self_addressed: true, reconciliation_id: 'cc-1' }))
+      .rejects.toMatchObject({ code: 'MAIL_SEND_SELF_LOOP_TO' });
+    expect(h.stub.sendCalls).toHaveLength(0);
+  });
+  it('says so when the mailbox does not know its own address', async () => {
+    const h = withHarness({ sendCapable: true, accountEmail: '' });
+    await expect(handleOwnerNotificationMailSend({ registry: stubRegistry(h.collection) }, owner))
+      .rejects.toMatchObject({ code: 'failed_precondition' });
+    expect(h.stub.sendCalls).toHaveLength(0);
   });
 });

@@ -105,6 +105,7 @@ export interface MailLaneCallers {
    *  redirect_uri. Optional so older mounts without it still type. */
   enrollOAuth?: (args: {
     provider: MailOAuthProvider;
+    backfill_days?: number;
     account_slug: string;
     code: string;
     redirect_uri: string;
@@ -113,6 +114,7 @@ export interface MailLaneCallers {
   }) => Promise<{ ok: true; account_key_prefix: string }>;
   enrollManagedOAuth?: (args: {
     provider: MailOAuthProvider;
+    backfill_days?: number;
     account_slug: string;
     connection_name: string;
     send_enabled: boolean;
@@ -207,7 +209,7 @@ export interface MountAccountsLanePanelOptions {
   /** Deep-link entry — the lane (and optional detail account) to open. */
   initialLane?: AccountLaneId;
   initialDetailSlug?: string;
-  /** Opens the existing review once, after the saved account list is loaded. */
+  /** Opens the existing authentication editor once, after the saved account list is loaded. */
   initialManageAuthentication?: string;
   /** Fired on lane / detail navigation so the route can sync the hash
    *  (`#connections/<lane>[/<slug>]`). Optional — navigation works
@@ -217,6 +219,7 @@ export interface MountAccountsLanePanelOptions {
    *  these also work with injected/manual hash sources. */
   onGoToChat?: (source: AccountsChatHandoff) => void;
   onOpenLane?: (lane: AccountLaneId) => void;
+  onFirstMailboxConnected?: () => void;
   mail?: MailLaneCallers;
   calendar?: CalendarLaneCallers;
   file?: FileLaneCallers;
@@ -432,6 +435,11 @@ export const mountAccountsLanePanel = (
   const firstSyncPollIntervalMs = opts.firstSyncPollIntervalMs ?? 2_500;
   const firstSyncPollMaxAttempts = opts.firstSyncPollMaxAttempts ?? Infinity;
   let firstSyncPollAttempts = 0;
+  let mailboxHandedOff = false;
+  const openFirstMailboxProposals = (slug: string) => {
+    if (disposed || mailboxHandedOff || state.lane !== 'mail' || !opts.onFirstMailboxConnected || state.rows.some(row => row.slug !== slug)) return;
+    mailboxHandedOff = true; opts.onFirstMailboxConnected();
+  };
   let firstSyncPollCancel: (() => void) | null = null;
   let firstSyncBackgroundLoadGeneration: number | null = null;
 
@@ -1021,7 +1029,7 @@ export const mountAccountsLanePanel = (
         if (provider.transport === 'mail-oauth') {
           if (!opts.mail?.enrollManagedOAuth) throw new Error('Managed OAuth is not available for Mail on this server.');
           enrolledSlug = (await opts.mail.enrollManagedOAuth({ provider: provider.id as MailOAuthProvider,
-            account_slug: name, connection_name: state.values.connection_name!,
+            account_slug: name, connection_name: state.values.connection_name!, backfill_days: Number(state.values.backfill_days || '400'),
             send_enabled: state.values.send_enabled === 'true', mutation_enabled: state.values.mutation_enabled === 'true' })).slug;
         } else {
           if (!opts.calendar?.enrollManagedOAuth) throw new Error('Managed OAuth is not available for Calendar on this server.');
@@ -1057,6 +1065,7 @@ export const mountAccountsLanePanel = (
       const refresh = doRefresh(false, true);
       focusConnectionSuccess();
       await refresh;
+      openFirstMailboxProposals(enrolledSlug);
     } catch (err) {
       if (disposed) return;
       state.saving = false;
@@ -1138,6 +1147,7 @@ export const mountAccountsLanePanel = (
     const appClientId = state.oauthCredValues.client_id.trim() || oauthAppStatusForSelection(state.oauthAppConfig, oauthAppIssuerForProvider(p), appId)?.client_id || '';
     const slug = (state.values['name'] ?? '').trim();
     const sendEnabled = state.values['send_enabled'] === 'true';
+    const backfillDays = Number(state.values.backfill_days || '400');
     // Microsoft ONLY — `graph` mail and calendar share one grant + one token
     // prefix, so one consent can serve both. The field is absent from the Gmail
     // form and the authorize builder ignores it there regardless.
@@ -1158,6 +1168,7 @@ export const mountAccountsLanePanel = (
         await opts.mail!.enrollOAuth!({
           provider: p,
           account_slug: slug,
+          backfill_days: backfillDays,
           code: a.code,
           redirect_uri: a.redirect_uri,
           ...(appId ? { oauth_app_id: appId, oauth_client_id: appClientId } : {}),
@@ -1379,8 +1390,9 @@ export const mountAccountsLanePanel = (
               ...(note !== undefined ? { note } : {}),
             };
             render(true);
+            openFirstMailboxProposals(terminal.slug);
           })();
-        }
+        } else openFirstMailboxProposals(terminal.slug);
         return;
       }
       if (sameSlug !== undefined) {
@@ -1465,7 +1477,7 @@ export const mountAccountsLanePanel = (
       firstSyncPollAttempts = 0;
       const refresh = doRefresh(false, true);
       if (!oauthDismissed && !disposed) focusConnectionSuccess();
-      void refresh;
+      void refresh.then(() => openFirstMailboxProposals(terminal.slug));
       return;
     }
 
@@ -2184,6 +2196,11 @@ export const mountAccountsLanePanel = (
     pendingLoad = pendingLoad.then(async () => {
       if (disposed || gen !== loadGeneration || state.error || state.lane !== lane || state.stage !== 'detail' || state.detailSlug !== slug || state.authenticationManagement) return;
       const row = state.rows.find(r => r.slug === slug);
+      const updateCredentials = lane === 'mail' ? opts.mail?.updateCredentials : lane === 'calendar' ? opts.calendar?.updateCredentials : undefined;
+      if (row?.passwordRepairAvailable && updateCredentials) {
+        passwordPanel.open(lane, row.slug, row.sendCapable === true, updateCredentials);
+        return;
+      }
       if (!row || !['mail', 'calendar'].includes(lane) || !['gmail', 'gcal', 'graph'].includes(row.adapterType) || !opts.runCollectionAuthentication) {
         state.error = 'This account cannot open an authentication review. Refresh and choose a current Mail or Calendar account.'; render(); return;
       }

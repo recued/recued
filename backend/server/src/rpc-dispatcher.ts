@@ -49,6 +49,12 @@ export const AUTO_LOCK_IDLE_EXEMPT = new Set<string>([
   'auth.state',
   'auth.migrate.status',
   'passport.fetch',
+  // Settings refreshes these on reconnect and during a transfer. Receiving
+  // delivery history is not an owner action that should postpone locking.
+  'server.archive.destinations',
+  'server.archive.backups',
+  'server.archive.status',
+  'server.archive.import_status',
   // D-169 P0 — `bridge.capabilityProfile.push` is automatically fired
   // by the bridge SW on every WS reconnect AND on every
   // chrome.permissions onAdded/onRemoved event. A reconnect storm or

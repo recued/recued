@@ -166,6 +166,13 @@ describe('the filters (§6.4)', () => {
   it('one email’s facts', () => {
     expect(flat({ email: ref('mail:3') })).toEqual(['unpaired']);
   });
+
+  // D-325 Option A — Today opens one bill or delivery as itself.
+  it('one thing’s facts, across every email that told of it', () => {
+    store.insertFact(fact('arrived', ref('mail:5'), { email_at: 4_000, thing_id: 'thing_delivered', variables: { state: 'delivered' } }));
+    expect(flat({ thing_id: 'thing_delivered' })).toEqual(['arrived', 'old_news']);
+    expect(flat({ thing_id: 'thing_nope' })).toEqual([]);
+  });
 });
 
 describe('run links follow their email', () => {
@@ -348,6 +355,11 @@ describe('mail_fact.facts.list', () => {
     expect(second.next_cursor).toBeUndefined();
   });
 
+  it('shows one thing’s facts by its id, each with its whole email counted', async () => {
+    const { rows } = await rpcWith()['mail_fact.facts.list']({ thing_id: 'thing_1' }, owner);
+    expect(rows.map((row) => [row.fact.fact_id, row.of_email])).toEqual([['f1', { index: 1, count: 2 }], ['f3', { index: 1, count: 1 }]]);
+  });
+
   it('counts the whole email even when a filter shows one of its facts', async () => {
     const { rows } = await rpcWith()['mail_fact.facts.list']({ state: 'in_transit' }, owner);
     expect(rows.map((row) => [row.fact.fact_id, row.of_email])).toEqual([['f2', { index: 2, count: 2 }]]);
@@ -366,6 +378,7 @@ describe('mail_fact.facts.list', () => {
       { before: { email_at: 'x', slug: 'work', record_id: 'mail:a' } },
       { template_id: '' },
       { unpaired: 'yes' },
+      { thing_id: '' },
       { email: { slug: 'work' } },
     ]) {
       await expect(rpc['mail_fact.facts.list'](bad as never, owner)).rejects.toMatchObject({ code: 'bad_request' });
@@ -500,7 +513,7 @@ describe('the screens’ wiring', () => {
       recipeStore: { get: () => undefined } as never,
       mail: { registry: { list: () => [work, chat], get: () => undefined } as never, instances: { get: () => null }, blobs: {} as never },
       writer: createMailFactWriter({ store, emit: () => {}, now: () => 1 }),
-      isChatMailbox: (slug) => slug === 'recued-chat',
+      isChatOnlyMailbox: (slug) => slug === 'recued-chat',
     });
     const editor = deps.editor as unknown as { mailboxes: () => ReadonlyArray<{ slug: string }> };
     expect(editor.mailboxes().map((mailbox) => mailbox.slug)).toEqual(['work']);

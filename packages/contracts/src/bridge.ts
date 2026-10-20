@@ -165,6 +165,7 @@ export type BridgeErrorCode =
   | 'ingredient_domain_signature_invalid'
   | 'tab_navigation_blocked'
   | 'idempotency_violation'
+  | 'delivery_uncertain'
   | 'mv3_lifecycle_killed'
   | 'queue_full'
   | 'unknown';
@@ -180,6 +181,7 @@ export const BRIDGE_ERROR_CODES: ReadonlyArray<BridgeErrorCode> = [
   'ingredient_domain_signature_invalid',
   'tab_navigation_blocked',
   'idempotency_violation',
+  'delivery_uncertain',
   'mv3_lifecycle_killed',
   'queue_full',
   'unknown',
@@ -229,7 +231,9 @@ export interface BridgeCancelCommand {
 export type BridgeWireEnvelope =
   | { kind: 'command'; command: BridgeCommand }
   | { kind: 'cancel'; cancel: BridgeCancelCommand }
-  | { kind: 'notification'; notification: ServerToBridgeNotification };
+  | { kind: 'notification'; notification: ServerToBridgeNotification; receipt_request_id?: string }
+  | { kind: 'notification.probe'; request_id: string }
+  | { kind: 'notification.clear'; request_id: string; notification_id: string };
 
 /** D-169 P0 Slice 1 — bridge → server wire-envelope union. Sister to
  *  `BridgeWireEnvelope` (server → bridge). Today only `result` is
@@ -244,7 +248,14 @@ export type BridgeWireEnvelope =
  *  server-side WS inbound router (consumer) share one source of truth.
  *  Wire-protocol drift between sides is a compile-time failure. */
 export type BridgeFromBridgeWireEnvelope =
-  | { kind: 'result'; result: BridgeResult };
+  | { kind: 'result'; result: BridgeResult }
+  | { kind: 'notification_receipt'; receipt: BridgeNotificationReceipt };
+
+export interface BridgeNotificationReceipt {
+  request_id: string;
+  outcome: 'ready' | 'denied' | 'displayed' | 'cleared' | 'failed';
+  notification_id?: string;
+}
 
 /** D-148 § A.3.2 — queue state visible to server. Bridge enforces
  *  `max_queue_depth = 32` by default; overflow returns 429 to server. */

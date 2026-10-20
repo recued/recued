@@ -38,7 +38,9 @@ export interface FileAdapterEvent {
   /** Path-style-native identifier — `fs` emits absolute FS paths,
    *  `s3` emits object keys, `ext-downloads` emits opaque IDs. The
    *  collection layer treats this as opaque and compares for
-   *  equality; recipe-visible surface normalises against `path_style`. */
+   *  equality — except that an `fs` `remove` may name a folder that
+   *  went, which takes the files under it; recipe-visible surface
+   *  normalises against `path_style`. */
   path: string;
 }
 
@@ -55,6 +57,10 @@ export interface FileAdapterInstance {
    *  everything on disk, so a stored file it did not see is gone. Absent on an
    *  adapter with no walk to count. */
   walkErrors?(): number;
+  /** Walk again, firing `present` for every record as `start` does, when the
+   *  adapter asked for it (`onRescanNeeded`). `complete` as for `walkErrors`.
+   *  Absent on an adapter that never asks. */
+  rescan?(): Promise<{ complete: boolean }>;
 }
 
 /** Mutation-capable adapter. Write / delete ingredients cast at
@@ -112,6 +118,9 @@ export interface FileAdapterContext {
    *  record. Failures in the sink must NOT propagate out of the
    *  adapter's loop; adapters log + swallow. */
   onEvent: (event: FileAdapterEvent) => Promise<void> | void;
+  /** The adapter may have missed changes since its walk: the owner walks it
+   *  again (`rescan`) and compares with what it stored. */
+  onRescanNeeded?: () => void;
   /** Optional log hook. Defaults to no-op. */
   log?: (level: 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
 }

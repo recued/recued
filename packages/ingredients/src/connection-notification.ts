@@ -221,6 +221,13 @@ interface EmailNotificationResult {
  *  silently dropping the email subtype. */
 export interface MailRpcDep {
   send(args: MailRpcSendInput): Promise<MailRpcSendResult>;
+  /** D-158 amendment 2026-10-18 — send to the connection's ENROLLED
+   *  destination: `to` as the connection configures it, or, absent, the
+   *  sending mailbox itself (one-address notifications). The one way mail
+   *  may be addressed to the sending mailbox, so it is used only when no
+   *  caller named a recipient; the server stamps a one-recipient send with a
+   *  reconciliation id. Absent ⇒ a connection naming no recipient cannot send. */
+  sendToOwner?(args: Omit<MailRpcSendInput, 'to'> & { to?: string[] }): Promise<MailRpcSendResult>;
 }
 
 export interface ConnectionNotificationHandlerDeps {
@@ -848,12 +855,16 @@ const sendEmail = async (
   }
   // Recipient resolution: explicit `to` (mail-post primary) wins;
   // `recipient` (notification override) next; `config.default_recipient`
-  // last. All three coerce to a non-empty string[].
+  // last. All three coerce to a non-empty string[]. With no caller recipient
+  // the mail goes to the connection's enrolled destination, which may be the
+  // sending mailbox itself (D-158 amendment 2026-10-18) — only `sendToOwner`
+  // can send there.
   const explicitTo = coerceRecipientList(params.to);
   const recipientOverride = coerceRecipientList(params.recipient);
   const defaultRecipient = coerceRecipientList(config.default_recipient);
+  const toOwner = explicitTo === undefined && recipientOverride === undefined && mailRpc.sendToOwner !== undefined;
   const to = explicitTo ?? recipientOverride ?? defaultRecipient;
-  if (!to) {
+  if (!to && !toOwner) {
     throw new IngredientError(
       'INGREDIENT_OUTPUT_VALIDATION_FAILED',
       `connection.notification: email subtype requires 'to' (mail-post) or 'recipient' override or config.default_recipient for connection '${record.name}'`,
@@ -873,9 +884,9 @@ const sendEmail = async (
     && params.reconciliation_id.length > 0
     ? params.reconciliation_id
     : undefined;
-  const sendArgs: MailRpcSendInput = {
+  const sendArgs: Omit<MailRpcSendInput, 'to'> & { to?: string[] } = {
     instance: senderInstance,
-    to,
+    ...(to ? { to } : {}),
     subject,
     body_text: body,
     ...(isHtml ? { body_html: body } : {}),
@@ -884,7 +895,9 @@ const sendEmail = async (
       : {}),
   };
   const bytesOut = new TextEncoder().encode(JSON.stringify(sendArgs)).byteLength;
-  const result = await mailRpc.send(sendArgs);
+  const result = toOwner
+    ? await mailRpc.sendToOwner!(sendArgs)
+    : await mailRpc.send({ ...sendArgs, to: to! });
   ctx?.setBytes(0, bytesOut);
   return {
     status: 'ok' as const,

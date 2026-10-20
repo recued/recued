@@ -34,6 +34,7 @@
  *  Spec: D-177 § N.10 / N.3 / N.4; landing order P5a. */
 
 import { canonicalJSONStringify } from '@recued/crypto/canonical-json';
+import { approvalValueLabel, type ApprovalValueLabels } from './ask-detail-label.js';
 import type { Actor, Channel, ExecutionSource } from './commits.js';
 import type { RiskTier } from './ingredient.js';
 
@@ -550,11 +551,15 @@ interface PreviewField {
 /** Flatten resolved args into labeled leaves, nested plain objects
  *  becoming dotted labels (`properties.dealstage`) down to
  *  {@link MAX_FLATTEN_DEPTH}. Key order follows the object — the
- *  projected wire form, i.e. the order the op's author declared. */
+ *  projected wire form, i.e. the order the op's author declared.
+ *
+ *  `labels` renders a top-level value the way the owner knows it (a mailbox
+ *  by its address, not its name). `value` stays the raw one. */
 const toFields = (
   args: Record<string, unknown>,
   path: readonly string[] = [],
   depth = 0,
+  labels?: ApprovalValueLabels,
 ): PreviewField[] => {
   const out: PreviewField[] = [];
   for (const [k, v] of Object.entries(args)) {
@@ -568,6 +573,7 @@ const toFields = (
       continue;
     }
     const label = next.map(neutralize).join('.');
+    const known = path.length === 0 ? approvalValueLabel(labels, k, v) : undefined;
     out.push({
       // `id` is the RAW path — identity must not be neutralized (two keys
       // differing only by a middot are different keys). `label` is the
@@ -578,7 +584,9 @@ const toFields = (
       // ⚠ `rendered` is shortened; `value` is NOT. Commonality across batch
       // members is decided on `value`, so two different uuids can never
       // hoist into "All N share" on the strength of a shared 8-char prefix.
-      rendered: renderInstant(k, v) ?? shortenIdentifiers(label, renderInline(v)),
+      rendered: known !== undefined
+        ? clip(neutralize(known), VALUE_CLIP)
+        : renderInstant(k, v) ?? shortenIdentifiers(label, renderInline(v)),
     });
   }
   return out;
@@ -786,9 +794,13 @@ const canonicalKey = (value: unknown): string | undefined => {
  *  Falls back to the durable `summary` lines whenever any member lacks a
  *  structured preview (an over-sized preview is dropped upstream) — a
  *  partial hoist across a partly-known set could assert a shared value
- *  over a member nobody can see. */
+ *  over a member nobody can see.
+ *
+ *  `labels` shows a value the owner knows by another name that way: a
+ *  mailbox's name as its address. Sameness is still decided on raw values. */
 export const renderBatchItemsBlock = (
   items: ReadonlyArray<Pick<BatchedApprovalItem, 'summary' | 'args_preview'>>,
+  labels?: ApprovalValueLabels,
 ): string => {
   // A batch row always carries at least one member, so this is
   // unreachable — but every branch below indexes `items[0]`, and an
@@ -796,7 +808,7 @@ export const renderBatchItemsBlock = (
   if (items.length === 0) return '';
 
   const perItem = items.every((i) => i.args_preview !== undefined)
-    ? items.map((i) => toFields(i.args_preview as Record<string, unknown>))
+    ? items.map((i) => toFields(i.args_preview as Record<string, unknown>, [], 0, labels))
     : undefined;
 
   if (items.length === 1) {

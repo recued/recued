@@ -35,12 +35,56 @@ const OPERATION_VERBS = new Set([
 
 const words = (segment: string): string[] => segment.split('_').filter(Boolean);
 
+/** How a catalog slug's word is written where capitalising its first letter
+ *  gets it wrong: `hubspot` is "HubSpot", not "Hubspot"; `api` is "API".
+ *
+ *  ⚠ MEASURED, NOT RECALLED: each entry is how a shipped pack's own name writes
+ *  that word of its catalog's slug (119 words over 896 catalogs, 2026-10-19, no
+ *  two packs disagreeing). `operation-phrase-pack-names.test.ts` measures it
+ *  again from the packs, so a new pack whose name spells a word this list lacks
+ *  fails there rather than reaching an approval as "Hubspot". */
+const CATALOG_WORD_CASING: Readonly<Record<string, string>> = {
+  ai: 'AI', api: 'API', aps: 'APS', assemblyai: 'AssemblyAI', bamboohr: 'BambooHR',
+  bigcommerce: 'BigCommerce', bigquery: 'BigQuery', bim: 'BIM', circleci: 'CircleCI',
+  clamav: 'ClamAV', cli: 'CLI', clickhouse: 'ClickHouse', clickpipes: 'ClickPipes',
+  clickstack: 'ClickStack', clickup: 'ClickUp', cockroachdb: 'CockroachDB', crm: 'CRM',
+  csvcut: 'CSVCut', csvgrep: 'CSVGrep', csvkit: 'CSVKit', csvstat: 'CSVStat',
+  deeptutor: 'DeepTutor', devops: 'DevOps', dig: 'DiG', digitalocean: 'DigitalOcean',
+  dns: 'DNS', docusign: 'DocuSign', e2b: 'E2B', edgar: 'EDGAR', elevenlabs: 'ElevenLabs',
+  emsc: 'EMSC', eslint: 'ESLint', exiftool: 'ExifTool', ffmpeg: 'FFmpeg',
+  ffprobe: 'FFprobe', finops: 'FinOps', freshbooks: 'FreshBooks', gitbook: 'GitBook',
+  github: 'GitHub', gitlab: 'GitLab', gocardless: 'GoCardless', gpg: 'GPG', hibob: 'HiBob',
+  hris: 'HRIS', hubspot: 'HubSpot', imagemagick: 'ImageMagick', it: 'IT', itam: 'ITAM',
+  jpegoptim: 'JPEGOptim', launchdarkly: 'LaunchDarkly', libreoffice: 'LibreOffice',
+  lp: 'LP', markitdown: 'MarkItDown', mcp: 'MCP', mediainfo: 'MediaInfo',
+  mongodb: 'MongoDB', musicbrainz: 'MusicBrainz', mutool: 'MuTool', ocrmypdf: 'OCRmyPDF',
+  officecli: 'OfficeCLI', onedrive: 'OneDrive', onesignal: 'OneSignal', openai: 'OpenAI',
+  opencode: 'OpenCode', openrouter: 'OpenRouter', opensky: 'OpenSky', openssl: 'OpenSSL',
+  openstreetmap: 'OpenStreetMap', osv: 'OSV', oxipng: 'OxiPNG', pagerduty: 'PagerDuty',
+  pandadoc: 'PandaDoc', paypal: 'PayPal', pdfgrep: 'PDFGrep', pdfimages: 'PDFImages',
+  pdfinfo: 'PDFInfo', pdfseparate: 'PDFSeparate', pdftotext: 'PDFToText',
+  pdfunite: 'PDFUnite', planetscale: 'PlanetScale', pmc: 'PMC', posthog: 'PostHog',
+  qpdf: 'QPDF', qrencode: 'QRencode', quickbooks: 'QuickBooks', rest: 'REST', rpc: 'RPC',
+  rspec: 'RSpec', rubocop: 'RuboCop', rum: 'RUM', runpod: 'RunPod', scim: 'SCIM',
+  scp: 'SCP', sec: 'SEC', sendgrid: 'SendGrid', servicenow: 'ServiceNow',
+  sharepoint: 'SharePoint', shellcheck: 'ShellCheck', shipstation: 'ShipStation',
+  sip: 'SIP', sox: 'SoX', sql: 'SQL', sqlite3: 'SQLite3', surveymonkey: 'SurveyMonkey',
+  tar: 'TAR', themealdb: 'TheMealDB', tradingview: 'TradingView', trufflehog: 'TruffleHog',
+  typescript: 'TypeScript', vcs: 'VCS', virustotal: 'VirusTotal', weasyprint: 'WeasyPrint',
+  woocommerce: 'WooCommerce', wordpress: 'WordPress', workos: 'WorkOS',
+  xlsx2csv: 'XLSX2CSV', xmllint: 'XMLLint', youtube: 'YouTube', zip: 'ZIP',
+};
+
 /** `salesforce-catalog` → `Salesforce`; `adobe-sign-agreement-workflows` →
- *  `Adobe Sign Agreement Workflows`. The `-catalog` suffix is a packaging
- *  detail and never part of what the owner recognises. */
+ *  `Adobe Sign Agreement Workflows`; `hubspot-catalog` → `HubSpot`. The
+ *  `-catalog` suffix is a packaging detail and never part of what the owner
+ *  recognises. */
 const vendorLabel = (catalogSlug: string): string =>
   catalogSlug.replace(/-catalog$/, '').split('-').filter(Boolean)
-    .map(part => part.charAt(0).toUpperCase() + part.slice(1)).join(' ');
+    .map(part => Object.hasOwn(CATALOG_WORD_CASING, part)
+      ? CATALOG_WORD_CASING[part]!
+      : part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
 
 /** Compose an owner-facing phrase, or return `operation_id` unchanged when the
  *  identifier does not carry a recognisable verb + entity. */

@@ -32,6 +32,7 @@ import {
   canonicalizeGraphEvent,
   createGraphCalAdapterFactory,
   createGraphCalProvider,
+  graphRecurrenceRule,
   type GraphCalEvent,
   type GraphCalProviderConfig,
 } from '../graph-provider.js';
@@ -270,7 +271,7 @@ describe('canonicalizeGraphEvent', () => {
     };
     const c = canonicalizeGraphEvent(ev, 'cal');
     expect(c.recurring_event_id).toBe('series-1');
-    expect(c.recurrence_rule).toBe('GRAPH:weekly');
+    expect(c.recurrence_rule).toBe('RRULE:FREQ=WEEKLY');
   });
 
   it('strips HTML bodies into plaintext description', () => {
@@ -368,7 +369,94 @@ describe('GraphCalProvider — connect', () => {
 // initialScan
 // ────────────────────────────────────────────────────────────────
 
+describe('graphRecurrenceRule', () => {
+  it.each([
+    [{ pattern: { type: 'absoluteYearly', interval: 1, month: 4, dayOfMonth: 15 }, range: { type: 'noEnd', startDate: '2020-04-15' } },
+      'RRULE:FREQ=YEARLY;BYMONTH=4;BYMONTHDAY=15'],
+    [{ pattern: { type: 'relativeYearly', interval: 1, month: 11, daysOfWeek: ['thursday'], index: 'fourth' } },
+      'RRULE:FREQ=YEARLY;BYMONTH=11;BYDAY=4TH'],
+    [{ pattern: { type: 'weekly', interval: 2, daysOfWeek: ['monday', 'wednesday'] }, range: { type: 'numbered', numberOfOccurrences: 10 } },
+      'RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE;COUNT=10'],
+    [{ pattern: { type: 'relativeMonthly', interval: 1, daysOfWeek: ['friday'], index: 'last' }, range: { type: 'endDate', endDate: '2027-06-30' } },
+      'RRULE:FREQ=MONTHLY;BYDAY=-1FR;UNTIL=20270630'],
+    [{ pattern: { type: 'absoluteMonthly', interval: 1, dayOfMonth: 1 } }, 'RRULE:FREQ=MONTHLY;BYMONTHDAY=1'],
+    [{ pattern: { type: 'daily', interval: 3 } }, 'RRULE:FREQ=DAILY;INTERVAL=3'],
+    [{ pattern: { type: 'hourly' } }, undefined],
+    [null, undefined],
+  ])('writes %j as %s', (recurrence, rule) => {
+    expect(graphRecurrenceRule(recurrence)).toBe(rule);
+  });
+});
+
 describe('GraphCalProvider — initialScan', () => {
+  it('learns the account\'s address as it reads the calendar list: the default calendar\'s owner, never a shared one\'s', async () => {
+    const { fetcher } = makeRouter([
+      {
+        match: (u) => u.includes('/me/calendars?') || u.endsWith('/me/calendars'),
+        response: { status: 200, body: { value: [
+          { id: 'cal-shared', name: 'Team', owner: { name: 'Bob', address: 'bob@contoso.test' } },
+          { id: 'cal-1', name: 'Calendar', isDefaultCalendar: true, owner: { name: 'Me', address: 'me@outlook.test' } },
+        ] } },
+      },
+      initialDeltaRoute('cal-shared'),
+      initialDeltaRoute('cal-1'),
+      {
+        match: (u) => u.includes('/calendarView') && !u.includes('/delta'),
+        response: { status: 200, body: { value: [] } },
+      },
+    ]);
+    const provider = createGraphCalProvider({
+      slug: 'work', config: mkConfig(), accountStore: seedStore(), providerConfig, fetcher,
+      scheduler: () => () => undefined,
+    });
+    cleanup.push(() => provider.close());
+    expect(provider.accountEmail).toBe('');
+    await provider.initialScan({
+      backfill_days: 7, expansion_future_days: 30, expansion_past_days: 7, onEvent: async () => true,
+    });
+    expect(provider.accountEmail).toBe('me@outlook.test');
+  });
+
+  it('puts the series master’s pattern on its occurrences, one read per series per pass', async () => {
+    const occurrence = (id: string, day: string, seriesMasterId?: string): GraphCalEvent => ({
+      id, iCalUId: `uid-${id}`, subject: id, type: seriesMasterId ? 'occurrence' : 'singleInstance',
+      start: { dateTime: `${day}T10:00:00`, timeZone: 'UTC' }, end: { dateTime: `${day}T11:00:00`, timeZone: 'UTC' },
+      recurrence: null, ...(seriesMasterId ? { seriesMasterId } : {}),
+    });
+    const { fetcher, calls } = makeRouter([
+      calendarsListRoute([{ id: 'cal-1', name: 'Primary' }]),
+      initialDeltaRoute('cal-1'),
+      {
+        match: (u) => u.includes('/me/calendars/cal-1/events/bday-master?') && u.includes('select=recurrence'),
+        response: { status: 200, body: { recurrence: { pattern: { type: 'absoluteYearly', interval: 1, month: 4, dayOfMonth: 24 },
+          range: { type: 'noEnd', startDate: '2020-04-24' } } } },
+      },
+      {
+        match: (u) => u.includes('/me/calendars/cal-1/calendarView') && !u.includes('/delta'),
+        response: { status: 200, body: { value: [occurrence('b1', '2026-04-24', 'bday-master'),
+          occurrence('b2', '2027-04-24', 'bday-master'), occurrence('s1', '2026-04-25', 'standup-master'),
+          occurrence('lunch', '2026-04-26')] } },
+      },
+    ]);
+    const provider = createGraphCalProvider({
+      slug: 'work', config: mkConfig(), accountStore: seedStore(), providerConfig, fetcher,
+      scheduler: () => () => undefined,
+    });
+    cleanup.push(() => provider.close());
+    const rules = new Map<string, string | undefined>();
+    const scan = () => provider.initialScan({
+      backfill_days: 7, expansion_future_days: 30, expansion_past_days: 7,
+      onEvent: async (p) => { rules.set(p.event.source_id, p.event.recurrence_rule); return true; },
+    });
+    await scan();
+    expect(Object.fromEntries(rules)).toEqual({ b1: 'RRULE:FREQ=YEARLY;BYMONTH=4;BYMONTHDAY=24',
+      b2: 'RRULE:FREQ=YEARLY;BYMONTH=4;BYMONTHDAY=24', s1: undefined, lunch: undefined });
+    const masterReads = () => calls.filter(call => /\/events\/[a-z-]+-master\?/u.test(call.url)).map(call => call.url.split('?')[0]!.split('/').at(-1));
+    expect(masterReads()).toEqual(['bday-master', 'standup-master']);
+    await scan();
+    expect(masterReads()).toEqual(['bday-master', 'standup-master', 'bday-master', 'standup-master']);
+  });
+
   it('streams expanded instances from calendarView across selected calendars', async () => {
     const store = seedStore();
     const events: GraphCalEvent[] = [

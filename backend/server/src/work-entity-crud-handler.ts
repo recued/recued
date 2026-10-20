@@ -27,6 +27,7 @@
 
 import {
   RpcError,
+  AssetValidationError,
   WORK_ENTITY_KIND_SET,
   type ExecutionSource,
   type HandlerSlice,
@@ -161,6 +162,7 @@ const mapCrudError = (method: string, err: unknown): never => {
     err instanceof WorkEntityWriteCapabilityError
     || err instanceof CommitmentLifecycleError
     || err instanceof WorkEntityValidationError
+    || err instanceof AssetValidationError
   ) {
     throw new RpcError('bad_request', `${method}: ${err.message}`);
   }
@@ -177,15 +179,19 @@ const mapCrudError = (method: string, err: unknown): never => {
  * canonical dispatcher may await a provider, so reading before that wait in
  * two RPCs could otherwise restore old fields or emit completion twice. */
 const taskMutations = new WeakMap<WorkEntityStore, Map<string, Promise<void>>>();
-const withTaskMutation = async <T>(store: WorkEntityStore, id: string, mutate: () => Promise<T>): Promise<T> => {
-  let pending = taskMutations.get(store);
-  if (!pending) { pending = new Map(); taskMutations.set(store, pending); }
+const commitmentMutations = new WeakMap<WorkEntityStore, Map<string, Promise<void>>>();
+const withEntityMutation = async <T>(mutations: WeakMap<WorkEntityStore, Map<string, Promise<void>>>, store: WorkEntityStore, id: string, mutate: () => Promise<T>): Promise<T> => {
+  let pending = mutations.get(store);
+  if (!pending) { pending = new Map(); mutations.set(store, pending); }
   const result = (pending.get(id) ?? Promise.resolve()).then(mutate);
   const settled = result.then(() => {}, () => {});
   pending.set(id, settled);
   try { return await result; }
   finally { if (pending.get(id) === settled) pending.delete(id); }
 };
+
+const withTaskMutation = <T>(store: WorkEntityStore, id: string, mutate: () => Promise<T>): Promise<T> =>
+  withEntityMutation(taskMutations, store, id, mutate);
 
 /** ⛔⛔ THE COMPLETION GUARD FOR THE SURFACES THAT ARE NOT THE RPC — the chat
  *  Tier-1 `work.update` tool and the kernel `task-mark-done` ingredient (every
@@ -357,12 +363,12 @@ export const handleWorkEntityList = async (
   const kind = requireKind('work_entity.list', args.kind);
   if (
     (kind !== 'booking' && args.booking_lifecycle_states !== undefined)
-    || (kind !== 'booking' && kind !== 'task' && args.search !== undefined)
+    || (kind !== 'booking' && kind !== 'task' && kind !== 'asset' && args.search !== undefined)
     || (kind !== 'task' && args.task_filter !== undefined)
   ) {
     throw new RpcError(
       'bad_request',
-      'work_entity.list: search requires tasks or bookings; task_filter requires tasks; booking_lifecycle_states requires bookings',
+      'work_entity.list: search requires tasks, bookings or assets; task_filter requires tasks; booking_lifecycle_states requires bookings',
     );
   }
   // Build the store-layer query from the wire request. The resolver
@@ -443,7 +449,6 @@ export const handleWorkEntityGet = async (
     // otherwise — the source_freshness wire-distinguishability rule.
     const relationship_edges =
       deps.edges !== undefined
-      && (kind === 'task' || kind === 'project' || kind === 'note')
         ? deps.edges
             .listByOwner(kind, entity.id)
             .map((edge) => edgeToView(edge, deps.contactDisplay))
@@ -509,6 +514,14 @@ export const handleWorkEntityUpsert = async (
       : stripped;
   try {
     switch (kind) {
+      case 'asset': {
+        const input = { ...safeArgs,
+          ...(callerSource ? { source: { kind: 'owner' as const, ref: 'paired-owner' }, origin_execution_source: callerSource } : {}) };
+        const { asset } = update
+          ? await deps.dispatchers.assetUpdate(input as Parameters<WorkEntityDispatchers['assetUpdate']>[0])
+          : await deps.dispatchers.assetCreate(input as Parameters<WorkEntityDispatchers['assetCreate']>[0]);
+        return { entity: { _kind: 'asset', ...asset } };
+      }
       case 'task': {
         if (update) {
           const input = safeArgs as Parameters<WorkEntityDispatchers['taskUpdate']>[0];
@@ -579,6 +592,7 @@ export const handleWorkEntityDelete = async (
   if (args.tombstone !== undefined) input.tombstone = args.tombstone;
   try {
     switch (kind) {
+      case 'asset': return await deps.dispatchers.assetDelete(input);
       case 'task':
         return await withTaskMutation(deps.store, id, () => deps.dispatchers.taskDelete(input));
       case 'note':
@@ -620,11 +634,47 @@ export const handleWorkEntityTaskMarkDone = async (
   }
 };
 
+/** A semantic close, shared by Today, Data and Yours. The server sets its time.
+ * Same-state retries retain that first time and emit no second outcome. */
+export const handleWorkEntityCommitmentClose = async (
+  deps: WorkEntityCrudRpcDeps,
+  args: { id: string },
+  to: 'fulfilled' | 'cancelled',
+  ownerAction = false,
+): Promise<{ entity: Extract<WorkEntity, { _kind: 'commitment' }> }> => {
+  const method = `work_entity.commitment.${to === 'fulfilled' ? 'fulfill' : 'cancel'}`;
+  const id = requireId(method, args?.id);
+  if (Object.keys(args).some(key => key !== 'id')) {
+    throw new RpcError('bad_request', `${method}: provide only id`, 400);
+  }
+  try {
+    return await withEntityMutation(commitmentMutations, deps.store, id, async () => {
+      const current = deps.store.readCommitment(id);
+      if (!current || current.deleted_at != null || current.sync_state !== 'live') {
+        throw new WorkEntityNotFoundError('commitment', id);
+      }
+      if (current.lifecycle_state === to) return { entity: { _kind: 'commitment', ...current } };
+      const source = deps.store.getSource(current.source_id);
+      if (!source || source.top_tier_kind !== 'commitment' || !source.write_capable || source.sync_posture === 'read_through') {
+        throw new RpcError('bad_request', `${method}: this source cannot confirm a commitment change`);
+      }
+      const { commitment } = to === 'fulfilled'
+        ? await (ownerAction ? deps.dispatchers.ownerCommitmentFulfill : deps.dispatchers.commitmentFulfill)({ id })
+        : await deps.dispatchers.commitmentCancel({ id });
+      return { entity: { _kind: 'commitment' as const, ...commitment } };
+    });
+  } catch (error) {
+    return mapCrudError(method, error);
+  }
+};
+
 type WorkEntityCrudMethods =
   | 'work_entity.list'
   | 'work_entity.get'
   | 'work_entity.upsert'
   | 'work_entity.task.mark_done'
+  | 'work_entity.commitment.fulfill'
+  | 'work_entity.commitment.cancel'
   | 'work_entity.delete';
 
 export const makeWorkEntityCrudHandlers = (
@@ -639,6 +689,8 @@ export const makeWorkEntityCrudHandlers = (
       'work_entity.get',
       'work_entity.upsert',
       'work_entity.task.mark_done',
+      'work_entity.commitment.fulfill',
+      'work_entity.commitment.cancel',
       'work_entity.delete',
     ],
     handlers: {
@@ -668,6 +720,16 @@ export const makeWorkEntityCrudHandlers = (
       'work_entity.task.mark_done': async (args, client) => {
         requireRegisteredClient(client);
         return handleWorkEntityTaskMarkDone(deps, args);
+      },
+      'work_entity.commitment.fulfill': async (args, client) => {
+        requireRegisteredClient(client);
+        if (client.client_kind !== 'webclient') throw new RpcError('unauthorized', 'A paired webclient is required.', 401);
+      return handleWorkEntityCommitmentClose(deps, args, 'fulfilled', true);
+      },
+      'work_entity.commitment.cancel': async (args, client) => {
+        requireRegisteredClient(client);
+        if (client.client_kind !== 'webclient') throw new RpcError('unauthorized', 'A paired webclient is required.', 401);
+        return handleWorkEntityCommitmentClose(deps, args, 'cancelled');
       },
       'work_entity.delete': async (args, client) => {
         requireRegisteredClient(client);

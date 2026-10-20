@@ -30,6 +30,10 @@ import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
 
 import type { DraftRecovery } from './editor-history.js';
 import type { RecipeSimulationCaller } from './recipe-simulation-caller.js';
+import type { RecipeRegressionCaller } from './recipe-regression-caller.js';
+import type { RecipeRunCaptureCaller } from './recipe-run-capture-caller.js';
+import type { RecipeReleaseCaller } from './recipe-release-caller.js';
+import type { RecipeReleaseView } from '@recued/contracts';
 import { serializeShellRoute } from '../../shell/route.js';
 import { humanizeRpcError } from '../../shell/rpc-error-copy.js';
 import {
@@ -263,6 +267,9 @@ export interface MountRecipeEditorRouteOptions {
   }>;
   validateCaller: (args: { recipe: RecipeDefinition }) => Promise<RecipeValidateResult>;
   simulateCaller?: RecipeSimulationCaller;
+  regressionCaller?: RecipeRegressionCaller;
+  captureCaller?: RecipeRunCaptureCaller;
+  releaseCaller?: RecipeReleaseCaller;
   saveCaller: (args: {
     recipe: RecipeDefinition;
     publisher_id?: string;
@@ -487,14 +494,27 @@ export const mountRecipeEditorRoute = (
           webhookControl = undefined;
         }
       }
+      let releaseInitial: RecipeReleaseView | undefined;
+      if (options.releaseCaller) {
+        try { releaseInitial = await options.releaseCaller.get({ recipe_id: entry.recipe_id }); }
+        catch (cause) {
+          const code = (cause as { code?: unknown } | null)?.code;
+          if (!['not_configured','method_not_found','unknown_method','not_found'].includes(String(code))) throw cause;
+        }
+        if (disposed) return;
+      }
       clearChildren(host);
       editor = bootstrapRecipeEditorRoute({
         recovery: options.recovery,
         root: host,
         ...(options.document !== undefined ? { document: options.document } : {}),
-        initialRecipe: entry.recipe,
+        initialRecipe: releaseInitial?.managed && releaseInitial.draft ? releaseInitial.draft.recipe : entry.recipe,
         validateCaller: options.validateCaller,
         simulateCaller: options.simulateCaller,
+        ...(options.regressionCaller ? { regressionCaller: options.regressionCaller } : {}),
+        ...(options.captureCaller ? { captureCaller: options.captureCaller } : {}),
+        ...(options.releaseCaller ? { releaseCaller: options.releaseCaller } : {}),
+        ...(releaseInitial ? { releaseInitial } : {}),
         saveCaller: options.saveCaller,
         ...(webhookControl ? { webhookControl } : {}),
         ...(options.mailFactTypesCaller !== undefined ? { mailFactTypesCaller: options.mailFactTypesCaller } : {}),

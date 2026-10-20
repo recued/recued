@@ -441,6 +441,11 @@ const NO_GOVERNED_COLLECTION_SLUGS: ReadonlySet<string> = new Set([
   'reminder-list',
   'reminder-update',
   'reminder-cancel',
+  // D-325 P48 — the situation query reads many collections, and applies each
+  // source's own verb and `data.<collection>` grants, and the contract's spheres,
+  // before it selects anything. No one collection represents it, and the grant
+  // rows this fence derives from are the ones it already checks per source.
+  'situation-query',
 ]);
 
 export const deriveDispatchScope = (

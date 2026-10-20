@@ -506,7 +506,12 @@ export type RecipeErrorCode =
   /** The server is locked (its vault sealed), so it cannot read or write what
    *  the step needs until the owner unlocks it. Rpc `locked` / `server_locked`
    *  / `not_unlocked`, status 423. */
-  | 'SERVER_LOCKED';
+  | 'SERVER_LOCKED'
+  /** The run was stopped before this step finished: its time budget ran out or
+   *  the run that started it stopped. The host's read-recovery and provider
+   *  handoff fences throw it, and it was a `NETWORK_ERROR` before it was listed.
+   *  ⚠ An owner's own stop rarely shows it: that run returns with no errors. */
+  | 'run_killed';
 
 /** Severity map — every code has exactly one severity. */
 export const ERR: Record<RecipeErrorCode, ErrorSeverity> = {
@@ -669,6 +674,7 @@ export const ERR: Record<RecipeErrorCode, ErrorSeverity> = {
   CONFLICT: 'error',
   SERVER_ERROR: 'error',
   SERVER_LOCKED: 'error',
+  run_killed: 'error',
 };
 
 export interface RecipeError {
@@ -845,6 +851,7 @@ export const ERROR_MESSAGES: Record<RecipeErrorCode, string> = {
   CONFLICT: 'Something else changed what this step changes, first. Running it again reads the new state.',
   SERVER_ERROR: 'Your server hit an error running this step. The Logs detail has what it said.',
   SERVER_LOCKED: 'Your server is locked. Unlock it, then run this again.',
+  run_killed: 'The run was stopped before this step finished.',
 };
 
 /** Return a default user-facing message for the code, never empty.
@@ -1047,6 +1054,10 @@ export const ERROR_ATTRIBUTION: Record<RecipeErrorCode, ErrorAttribution> = {
   CONFLICT: 'environment',
   SERVER_ERROR: 'environment',
   SERVER_LOCKED: 'environment',
+  // A budget or a stopped parent run, never a fact about the step. Not `owner`:
+  // that disarms an automation on its first failure, and one slow run is not
+  // the owner turning it off.
+  run_killed: 'environment',
 };
 
 /** Codes attributable to the owner's own refusal. Derived from the one table

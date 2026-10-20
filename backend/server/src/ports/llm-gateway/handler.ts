@@ -221,6 +221,7 @@ export interface LlmGatewayHandlerDeps {
     | 'permitsDoorType'
     | 'resolveBoundContractKind'
     | 'resolveContractScopeRestrictions'
+    | 'resolveContractReadSpheres'
   >;
   readonly sellerStore?: SellerCustomerAccessAdmissionStore & SellerCustomerUsageStore;
   readonly getLlmConfig: () => LLMConfig | undefined;
@@ -1698,6 +1699,7 @@ const createDispatchSnapshotResolver = (
       allowed_tools: allowedTools,
       approval_required: [],
       scope_restrictions: scopeRestrictions,
+      ...(deps.contractOverlay?.resolveContractReadSpheres ? { read_spheres: deps.contractOverlay.resolveContractReadSpheres(source) } : {}),
       resolved_at: current,
     });
   };

@@ -1,3 +1,7 @@
+import { connectionIdentity, connectionRevisionGuard } from './connection-revision.js';
+import { canonicalJsonString } from '@recued/recipes';
+import { collectRefs } from '@recued/contracts';
+import { createReadScope, assertKernelReadScope, SPHERE_READ_REFUSAL } from './situations/read-scope.js';
 /** Recipe execution handler for the headless server.
  *
  *  POST /execute accepts a recipe (by id or inline) + context, runs
@@ -12,7 +16,11 @@ import { currentPreapprovalIo } from './preapproval-io-context.js';
 import { bindChatToolCallRun, observeResumedChatToolCall } from './chat-tool-call-context.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { connectionBaseUrlFromConfig } from './connection-base-url.js';
+import { createRecordOutputSources } from './record-output-source.js';
+import { recordOutputSourceCache } from './record-output-source-cache.js';
+import { connectionVendorOf } from './work-entity-source-boot.js';
 import { createRecordsReadStepClassifier } from './audit-exempt-records-read.js';
+import { recordsOperationReachable } from './records/reachability.js';
 import { PEER_RECEIVE_ASK_TOOL } from './peer-receive-ask-recipe.js';
 import { createPeerAnswerStore } from './storage/peer-answer-store.js';
 import type {
@@ -43,6 +51,7 @@ import {
   type IngredientExecutor,
   type SharedResolvers,
 } from '@recued/engine';
+import { localMutationHash } from './storage/ordinary-local-mutation-receipts.js';
 import {
   wrapWithCommitGateway,
   PreflightDeniedError,
@@ -99,6 +108,7 @@ import type {
   ScopedSenderCandidate,
 } from '@recued/contracts';
 import {
+  captureResourceReview,
   entityFieldsFromMetaFields,
   entityFieldsFromRecordsSnapshot,
   isContainerPickDetail,
@@ -201,7 +211,7 @@ import {
   withSlotSettings,
   type PackOpResolution,
 } from '@recued/recipes';
-import { settleMailSenders } from './mail-senders.js';
+import { heldSenderValueLabels, settleMailSenders, type SendCapableMailbox } from './mail-senders.js';
 import {
   buildAuditEntry,
   newRunId,
@@ -275,6 +285,7 @@ import {
 import type { RecipeStore } from './recipe-store.js';
 import type { FileReadFn, ServerExecutorConfig } from './server-executor.js';
 import { createBoundExecutor, createGatewayAuditEmitter, createNamespaceStores, createServerExecutor, extractFileRecordId, mergeVault } from './server-executor.js';
+import { currentRunAbortContext, withRunAbortContext, withoutRunAbortContext } from './execution/run-abort-context.js';
 import { createStepEffect } from './step-effect.js';
 import { createCliInvocationExecutor } from './cli-invocation-executor.js';
 import type { ConnectionOperationProfileStore } from './connection-operation-profile.js';
@@ -1021,6 +1032,7 @@ type CommitSubstrateFields = {
 };
 
 export interface ExecuteHandlerDeps {
+  situationAccess?: import('./situations/access.js').SituationAccess;
   preapprovalRuntime?: ReturnType<typeof import('./preapproval-execution.js').createPreapprovalExecutionRuntime>;
   preapprovalDriver?: import('./preapproval-driver.js').PreapprovalDriver;
   mailDraft?: import('@recued/ingredients').KernelDispatchers['mailDraft'];
@@ -1140,6 +1152,7 @@ export interface ExecuteHandlerDeps {
    *  `EmittedLink`s through the engine's `linkSink`, and bulk-
    *  inserts them post-audit-append against the same `run_id`. */
   db?: import('better-sqlite3').Database;
+  localMutations?: import('./ordinary-local-mutations.js').OrdinaryLocalMutations;
   /** D-121 Phase 6 — realtime broadcast bus. When provided the
    *  handler stamps execution lifecycle (`start` / `complete` /
    *  `error`) + memory (`audit` / `insight` / `link`) events for
@@ -1339,6 +1352,12 @@ export interface ExecuteHandlerDeps {
    *  (which also defers the server-side notification-block
    *  construction to a downstream slice). */
   preflightNotifier?: PreflightNotifier;
+  /** The channels an approval ask went to (its `fanout_channels`), read once a
+   *  hold has raised its ask. The response names them (`approval_channels`), so
+   *  an agent can tell the owner where else to answer: a reply to the approval
+   *  email, as well as the bell in the app. Absent, or a read that fails ⇒ the
+   *  response names none, as before. */
+  approvalAskChannels?: (ask_id: string) => Promise<readonly string[] | undefined>;
   /** Reception's live address/key/offer validator, wired after composition.
    * Protected reminder mail refuses dispatch while this seam is unavailable. */
   getQuoteSignoffReminderService?: () => import('./quote-signoff-reminder-service.js').QuoteSignoffReminderService;
@@ -1413,11 +1432,12 @@ export interface ExecuteHandlerDeps {
    *  of a SINGLE capable candidate and the headless pinned-target
    *  block do NOT depend on this seam. */
   pickNotifier?: PickNotifier;
-  /** The mailboxes that can send right now, by name (`sendCapableMailboxes`).
-   *  Read once per owner run that sends mail from a "Send from" setting
-   *  (`mailSenderSettings`), to fill an empty one or refuse it naming these.
-   *  Absent ⇒ no run is filled or refused for it, as before. */
-  listSendCapableMailboxes?: () => readonly string[];
+  /** The mailboxes that can send right now, each by name, address and
+   *  provider (`sendCapableMailboxes`). Read once per owner run that sends mail
+   *  from a "Send from" setting (`mailSenderSettings`), to fill an empty one or
+   *  refuse it naming these. Absent ⇒ no run is filled or refused for it, as
+   *  before. */
+  listSendCapableMailboxes?: () => readonly SendCapableMailbox[];
   /** D-192 Slice 6b — the D-158 notification block, threaded as the narrow
    *  `ContainerPickNotifier` seam. When wired AND a work-entity create in the run
    *  failed on an AMBIGUOUS vendor container (Linear `team`, an Asana
@@ -1656,8 +1676,10 @@ const outputForExecutionSource = (
 ): ExecuteResponse['output'] => {
   if (isUnrestrictedLocalOwner(source, contractSnapshot)) return output;
   return {
-    render: output.render.filter((section) => section.type !== 'filter'),
-    sidebar: output.sidebar.filter((section) => section.type !== 'filter'),
+    render: output.render.filter((section) => section.type !== 'filter')
+      .map(({ record_source: _source, ...section }) => section),
+    sidebar: output.sidebar.filter((section) => section.type !== 'filter')
+      .map(({ record_source: _source, ...section }) => section),
   };
 };
 
@@ -2377,8 +2399,14 @@ const awaitExecutionOrOwnerAbort = async (
  *  returns the ExecuteResponse on success or throws `RpcError` for
  *  request-shape problems (missing recipe, recipe_id not found).
  *  Runtime execution errors are carried inside the response's
- *  `success: false` + `errors: [...]` fields, not thrown. */
+ *  `success: false` + `errors: [...]` fields, not thrown.
+ *  Starts an independent run; explicit local/exchange invocations below retain
+ *  their parent's cancellation through the private entry instead. */
 export const handleExecute = (
+  deps: ExecuteHandlerDeps, request: ExecuteRequest, internal: InternalExecuteOverrides = {},
+): Promise<ExecuteResponse> => withoutRunAbortContext(() => handleExecuteInRunContext(deps, request, internal));
+
+const handleExecuteInRunContext = (
   deps: ExecuteHandlerDeps, request: ExecuteRequest, internal: InternalExecuteOverrides = {},
 ): Promise<ExecuteResponse> => {
   if (internal.preapproval_candidate !== undefined) {
@@ -2409,12 +2437,14 @@ export const resumeReviewedParent = async (deps: ExecuteHandlerDeps,
   return handleExecute(deps, { recipe_id: parent.snapshot.recipe_id, config: parent.config,
     execution_source: parent.plan.origin.source, contract_snapshot: authority.contract_snapshot,
     ...(anchor.context_snapshot ? { context: { ...anchor.context_snapshot } } : {}),
+    ...(anchor.connection_revisions ? { connection_revisions: { ...anchor.connection_revisions } } : {}),
     ...(anchor.trigger_source ? { trigger_source: anchor.trigger_source } : {}),
     dispatch_depth: parent.snapshot.invocation_path.filter(segment => segment.kind === 'recipe').length - 1,
   }, { preapproval_run: parent.handle, run_id: parent.run_id,
     ...(checkpoint.entry_tool_name ? { entry_tool_name: checkpoint.entry_tool_name } : {}),
     held_recipes: new Set(parent.snapshot.invocation_path.filter(segment => segment.kind === 'recipe').map(segment => segment.recipe_id)),
     resume_from: { gated_step_id: checkpoint.gated_step_id!, step_state: checkpoint.step_state,
+      ...(checkpoint.resource_review ? { resource_review: checkpoint.resource_review } : {}),
       ...(checkpoint.execution_phase ? { execution_phase: checkpoint.execution_phase } : {}),
       ...(checkpoint.trigger_state ? { trigger_state: checkpoint.trigger_state } : {}),
       ...(checkpoint.prefetch_completed ? { prefetch_completed: checkpoint.prefetch_completed } : {}),
@@ -2434,6 +2464,12 @@ const handleExecuteInner = async (
    *  could otherwise overwrite an unrelated run's audit anchor. */
   internal: InternalExecuteOverrides = {},
 ): Promise<ExecuteResponse> => {
+  const parentRun = currentRunAbortContext();
+  const checkConnectionRevisions = connectionRevisionGuard(request.connection_revisions,
+    name => deps.connectionStore?.get('api', name),
+    name => deps.connectionStore?.getAuthSourceId?.('api', name));
+  checkConnectionRevisions?.();
+
   // `context.caller` is host-owned and therefore has ZERO caller-input
   // semantics. Strip it before *any* request consumer—not only before namespace
   // construction—so a discarded value cannot affect targeting, customer-usage
@@ -2465,6 +2501,7 @@ const handleExecuteInner = async (
   // Resolve recipe: inline > by id
   let recipe: RecipeDefinition | null = null;
   let authoredRecipeHash = '';
+  let authoredRecipeSha256 = '';
   let operationBoundWebhookConsumer: ExecutionContext['operationBoundWebhookConsumer'];
   let storedRecipeCallerPack: string | undefined;
 
@@ -2498,6 +2535,9 @@ const handleExecuteInner = async (
   } else {
     throw new RpcError('bad_request', 'Either recipe_id or recipe is required', 400);
   }
+  if (internal.preapproval_run !== undefined && deps.preapprovalRuntime) {
+    recipe = deps.preapprovalRuntime.continuationRecipe(internal.preapproval_run, recipe.recipe_id) ?? recipe;
+  }
 
   // D-222 Slice 3 — a filter submit is narrower than an ordinary owner run.
   // Re-resolve the immutable authored block before ANY overlay or dispatch
@@ -2514,6 +2554,7 @@ const handleExecuteInner = async (
   // this approval was pending" on a recipe nobody had touched. Both sides must
   // hash the same canonical DEFINITION; only the reader's side was ever able to.
   authoredRecipeHash = hashRecipe(canonicalRecipeDefinition(recipe));
+  authoredRecipeSha256 = createHash('sha256').update(canonicalJsonString(canonicalRecipeDefinition(recipe))).digest('hex');
   if (request.invocation !== undefined) {
     const invocation = request.invocation !== null
       && typeof request.invocation === 'object'
@@ -3713,6 +3754,15 @@ const handleExecuteInner = async (
   installContextCaller(context, request.execution_source);
 
   // Build namespace stores
+  const initialReadScope = deps.situationAccess && createReadScope(deps.situationAccess, request.execution_source);
+  const sphereLimited = initialReadScope?.limited ?? false;
+  const contractRead = initialReadScope !== undefined && !initialReadScope.context.owner;
+  const assertNamespaceScope = (): void => {
+    if (deps.situationAccess && createReadScope(deps.situationAccess, request.execution_source).limited) throw new RpcError('permission_denied', SPHERE_READ_REFUSAL, 403);
+  };
+  if (sphereLimited && collectRefs(recipe).some(ref => ref.ns === 'data')) {
+    throw new RpcError('permission_denied', 'This contract has restricted spheres. Raw data references cannot enforce that boundary; read through situation.query or a scoped work reader instead.', 403);
+  }
   const stores = createNamespaceStores(vault, config, context);
 
   // D-157 server-wiring — seed `stores.step` from the resume payload
@@ -3748,7 +3798,7 @@ const handleExecuteInner = async (
   // ingredient so the resolvers can stay sync. Manifest version folds
   // into step sourceHashes so v1 → v2 upgrades retire stale entries.
   let stepCache: Parameters<typeof executeRecipe>[0]['stepCache'];
-  if (deps.executorConfig.cacheStore && internal.preapproval_run === undefined && internal.preapproval_candidate === undefined) {
+  if (!contractRead && deps.executorConfig.cacheStore && internal.preapproval_run === undefined && internal.preapproval_candidate === undefined) {
     const policyBySlug = new Map<string, { cacheable: boolean; ttl_seconds: number; category?: string }>();
     const versionBySlug = new Map<string, string | number>();
     const seqIngredientSlugs = new Set<string>();
@@ -3769,7 +3819,9 @@ const handleExecuteInner = async (
       // skipping the grant/preflight/audit the gateway owns (Invariant 5).
       // Omitting the slug leaves `ingredientPolicy(slug)` null → uncached →
       // every catalog call routes through the gateway. (Codex review HIGH#3.)
-      if (isCatalogForm(manifest)) continue;
+      // Legacy connection wrappers also resolve their account at dispatch.
+      // Their reads must reach L1, where the host binds the account revision.
+      if (isCatalogForm(manifest) || manifest.kind === 'connection') continue;
       // Owner-default-only kernel reads must cross the per-dispatch op + scope
       // gates on EVERY run. An L2 hit replays before the commit Gateway, so
       // caching one would let an authorized run warm sensitive output for a
@@ -3856,7 +3908,9 @@ const handleExecuteInner = async (
               // an installed pack forge the owner's own knowledge.
               dataMemory: {
                 lookup: async (key: string) => {
+                  assertNamespaceScope();
                   const resolved = await userMemoryStore.get(key);
+                  assertNamespaceScope();
                   if (!resolved) return null;
                   return {
                     ...resolved.row,
@@ -3870,7 +3924,9 @@ const handleExecuteInner = async (
           ? {
               dataShared: {
                 lookup: async (key: string) => {
+                  assertNamespaceScope();
                   const row = await sharedStore.read(key);
+                  assertNamespaceScope();
                   return row?.value ?? null;
                 },
               },
@@ -3878,16 +3934,17 @@ const handleExecuteInner = async (
           : {}),
         ...(annotationStore
           ? {
-              annotationsForRecord: async (collection: string, id: string) =>
-                annotationStore.annotationsForRecord(collection, id),
+              annotationsForRecord: async (collection: string, id: string) => {
+                assertNamespaceScope(); const rows = await annotationStore.annotationsForRecord(collection, id); assertNamespaceScope(); return rows;
+              },
               linksForRecord: async (
                 collection: string,
                 id: string,
                 direction: 'outbound' | 'inbound',
-              ) =>
-                direction === 'outbound'
-                  ? annotationStore.outboundLinks(collection, id)
-                  : annotationStore.inboundLinks(collection, id),
+              ) => {
+                assertNamespaceScope(); const rows = await (direction === 'outbound'
+                  ? annotationStore.outboundLinks(collection, id) : annotationStore.inboundLinks(collection, id)); assertNamespaceScope(); return rows;
+              },
             }
           : {}),
         ...(deps.recordsStore
@@ -3898,10 +3955,11 @@ const handleExecuteInner = async (
               // declared root today, and a non-root collection answers with an
               // empty group rather than a resolver error — the ref is simply
               // not one this surface serves.
-              rollupsForRecord: async (collection: string, id: string) =>
-                collection === 'contact'
+              rollupsForRecord: async (collection: string, id: string) => {
+                assertNamespaceScope(); return collection === 'contact'
                   ? readRootProjections(deps.recordsStore!, 'contact', id).map(toTimelineRollup)
-                  : [],
+                  : [];
+              },
             }
           : {}),
       }
@@ -4619,6 +4677,16 @@ const handleExecuteInner = async (
               // op-scopable, not silently op-exempt).
               operationId?: string,
             ): AdmissionDecision | null => {
+              if (deps.situationAccess) {
+                try {
+                  assertKernelReadScope(deps.situationAccess, slug, executionSource);
+                  const scoped = createReadScope(deps.situationAccess, executionSource).limited;
+                  const manifest = deps.executorConfig.manifests.get(slug);
+                  if (scoped && manifest && ['connection', 'records'].includes(manifest.kind ?? '')) {
+                    return { verdict: 'deny', code: 'tool_not_in_contract', detail: SPHERE_READ_REFUSAL };
+                  }
+                } catch (error) { return { verdict: 'deny', code: 'tool_not_in_contract', detail: error instanceof Error ? error.message : SPHERE_READ_REFUSAL }; }
+              }
               // D-172 P2 (review F2) — a `mail-send` carrying `attachments`
               // reads `data.file` content bytes out of the warehouse INSIDE
               // `MailCollection.send` (via the otherwise-ungated
@@ -4982,13 +5050,13 @@ const handleExecuteInner = async (
   // `overlayForUse` are `const`s narrowed by the ternary condition, so the
   // closure captures them non-undefined without `!`.
   const overlayForUse = deps.contractOverlay;
-  const recordDispatchUse: ((slug: string) => void) | undefined =
+  const recordDispatchUse: ((slug: string) => void | object) | undefined =
     executionSource !== undefined
     && overlayForUse !== undefined
     && (POLICY_GATED_SYSTEM_CHANNELS.has(executionSource.channel)
       || POLICY_GATED_USER_CHANNELS.has(executionSource.channel)
       || POLICY_GATED_CONTRACT_CHANNELS.has(executionSource.channel))
-      ? (slug: string): void => {
+      ? (slug: string): void | object => {
           if (deps.preapprovalRuntime?.recordDispatchUse(executionSource, slug, overlayForUse)) return;
           // Meter the contract's use iff the overlay reports this dispatch meterable.
           // No op id is threaded: the metering op axis RETIRED (home #2 —
@@ -5045,6 +5113,7 @@ const handleExecuteInner = async (
           //   back is a separate, deliberate change: the gateway would have to
           //   report the failure back to this seam, which it does not today.
           overlayForUse.settleDispatchUse?.(take, true);
+          return take.kind === 'taken' ? take.token : undefined;
         }
       : undefined;
 
@@ -5606,10 +5675,44 @@ const handleExecuteInner = async (
       }
       inheritedConnectionObserver?.(emission);
     };
+  const canShowRecordSources = isUnrestrictedLocalOwner(request.execution_source, request.contract_snapshot)
+    && recipeOutputSections(recipe).some(section => section.type === 'record_fields');
+  let recordSourceCache: ReturnType<typeof recordOutputSourceCache> | undefined;
+  if (canShowRecordSources && deps.executorConfig.cacheStore
+    && !reviewed && !internal.preapproval_candidate && !contractRead) {
+    try { recordSourceCache = recordOutputSourceCache(deps.executorConfig.cacheStore, deps.db); }
+    catch { /* Source evidence is optional; cached values remain manual. */ }
+  }
+  const recordOutputSources = canShowRecordSources ? createRecordOutputSources({
+    recipe,
+    manifest: (catalog, version) => deps.executorConfig.manifests.get(catalog, version),
+    schemas: (catalog, version) => deps.localManifestStore?.getEntitySchemas(catalog, version) ?? [],
+    ...(recordSourceCache ? { cacheEvidence: recordSourceCache } : {}),
+    connectionIdentity: name => {
+      const row = deps.connectionStore?.get('api', name);
+      return connectionIdentity(row, deps.connectionStore?.getAuthSourceId?.('api', name));
+    },
+    connectionVendor: name => {
+      const row = deps.connectionStore?.get('api', name);
+      return row ? connectionVendorOf(row) : null;
+    },
+  }) : undefined;
+  // Parent cancellation reaches every child engine, including queued lanes and
+  // finite CLI calls. Keep the owner's controller separate for abandon-await.
+  const killController = new AbortController();
+  const ownerSignal = parentRun?.owner_signal
+    ? AbortSignal.any([killController.signal, parentRun.owner_signal])
+    : killController.signal;
+  const runAbortSignal = parentRun?.signal
+    ? AbortSignal.any([ownerSignal, parentRun.signal])
+    : ownerSignal;
+  // The engine adds this invocation's budget before entering its host scope.
+  // Retain that signal for admission and late callbacks, even outside ALS.
+  let effectiveRunAbortSignal = runAbortSignal;
   const ingredientExecutor = createBoundExecutor(
     {
       ...deps.executorConfig,
-      ...(reviewed || internal.preapproval_candidate ? { cacheStore: undefined } : {}),
+      ...(reviewed || internal.preapproval_candidate || contractRead ? { cacheStore: undefined } : {}),
       observeConnectionAudit,
       ...(gatedFileRead ? { fileRead: gatedFileRead } : {}),
     },
@@ -5619,6 +5722,9 @@ const handleExecuteInner = async (
       recipe_ttl: (recipe as unknown as { ttl?: number }).ttl ?? 0,
     },
     observeCacheStatus,
+    recordOutputSources?.resultEvidence,
+    checkConnectionRevisions,
+    runAbortSignal,
   );
 
   // D-145 engine-wiring slice 3b.3 — wrap the ingredient executor with
@@ -5642,11 +5748,6 @@ const handleExecuteInner = async (
   // matched contract's use counter at the actual-proceed point (once per
   // boundary-crossing dispatch), counting the approval-resume path the
   // per-call probe could not see.
-  // Mint before composing the commit Gateway so the same host-owned signal
-  // governs both the engine's step boundary and late commit outcome capture.
-  // It is registered as a control handle only after all pre-run gates pass.
-  const killController = new AbortController();
-
   const commitGatewayActive =
     runIdentity !== undefined && deps.commitStore !== undefined;
   /** A direct-MCP customer meter must still see the real ingredient boundary
@@ -5678,13 +5779,13 @@ const handleExecuteInner = async (
    * ask/deny authoritative when the commit store or typed source is absent —
    * notably source-less housekeeping consulting a `system` override. */
   const admissionAwareFallbackExecutor: IngredientExecutor =
-    evaluateAdmission !== undefined && !commitGatewayActive
+    !commitGatewayActive
       ? async (slug, input, output, stepOptions, stepMeta) => {
           const authorityInput = stepMeta?.surface_dispatch === true
             && stepMeta.surface_dispatch_authority_input !== undefined
             ? stepMeta.surface_dispatch_authority_input as Record<string, unknown>
             : input;
-          const decision = evaluateAdmission(
+          const decision = evaluateAdmission?.(
             slug,
             authorityInput,
             stepMeta?.surface_dispatch === true
@@ -5694,19 +5795,75 @@ const handleExecuteInner = async (
           if (decision?.verdict === 'deny') {
             throw new PreflightDeniedError(slug, decision.code, decision.detail);
           }
+          const hooks = deps.executorConfig.resourceReview;
+          const surfaceDispatch = stepMeta?.surface_dispatch === true;
+          const manifest = deps.executorConfig.manifests.get(slug);
+          const review = !surfaceDispatch && (stepMeta?.resource_review || decision?.verdict === 'ask')
+            ? captureResourceReview(hooks, slug, hooks && manifest ? actionIdentityBasis(manifest, input,
+              merged => resolveDeep(merged, stores, { deferVault: true }) as Record<string, unknown>,
+              { surfaceDispatch }) ?? input : input,
+              stepMeta?.resource_review, stepMeta?.preflight_admitted === true) : undefined;
           if (decision?.verdict === 'ask') {
             const resumeApproved =
               stepMeta?.preflight_admitted === true
               && stepMeta.preflight_approved_target?.ingredient_slug === slug;
-            if (!resumeApproved) raiseOnAsk(decision, { slug });
+            if (!resumeApproved) raiseOnAsk(decision, { slug, ...(review ? { resource_review: review } : {}) });
           }
-          return usageAwareFallbackExecutor(slug, input, output, stepOptions, stepMeta);
+          const dispatch = () => usageAwareFallbackExecutor(slug, input, output, stepOptions, stepMeta);
+          return hooks ? hooks.run(review, dispatch) : dispatch();
         }
       : usageAwareFallbackExecutor;
+
+  const localSourceRecipeHash = hashRecipe(deps.recipeStore.get(recipe.recipe_id) ?? recipe);
+  const localRunIdentity = runIdentity ? structuredClone(runIdentity) : undefined;
+  const localManifestHashes = new WeakMap<object, string>();
+  const resumedLocalStep = recipe.steps.find(step => step.id === internal.resume_from?.gated_step_id);
+  const singleLocalStep = resumedLocalStep && !('foreach' in resumedLocalStep && resumedLocalStep.foreach != null)
+    && ('ingredient' in resumedLocalStep || 'call' in resumedLocalStep) ? resumedLocalStep.id : undefined;
+  const ordinaryLocalMutations = deps.localMutations && localRunIdentity && deps.commitStore
+    ? deps.localMutations.forRun({ identity: localRunIdentity, store: deps.commitStore,
+        ...(internal.gated_action_ref ? { action_ref: internal.gated_action_ref } : {}),
+        ...(internal.resume_from?.gated_step_id ? { action_step_id: internal.resume_from.gated_step_id } : {}),
+        ...(singleLocalStep ? { single_action_step_id: singleLocalStep } : {}),
+        validate(call) {
+          if (effectiveRunAbortSignal.aborted) throw new RpcError('run_killed', 'The run stopped before its local write.', 409);
+          if (hashRecipe(deps.recipeStore.get(recipe.recipe_id) ?? recipe) !== localSourceRecipeHash) {
+            throw new RpcError('resource_conflict', 'The original recipe changed before its local write.', 409);
+          }
+          const manifest = deps.executorConfig.manifests.get(call.slug);
+          const manifestHash = localMutationHash(manifest);
+          const original = localManifestHashes.get(call);
+          if (original !== undefined && original !== manifestHash) throw new RpcError('resource_conflict', 'The operation changed before its local write.', 409);
+          localManifestHashes.set(call, manifestHash);
+          if (deps.approvalResumeAuthority) {
+            const qualified = recipe.metadata?.author ? recipe.metadata.author + '/' + recipe.recipe_id : undefined;
+            const names = grantedByRecipe ? [grantedByRecipe] : internal.entry_tool_name ? [internal.entry_tool_name]
+              : executionSource?.channel === 'chat' ? qualified ? [qualified] : []
+                : ['recued_runRecipe', 'recipe.run', ...(qualified ? [qualified] : [])];
+            const authority = deps.approvalResumeAuthority.resolve({ execution_source: structuredClone(localRunIdentity.source),
+              required_bearer_tool_names: names, require_live_owner_credential: true });
+            if (!authority.admitted) throw new RpcError('forbidden', authority.detail, 403);
+            if (localMutationHash(authority.execution_source) !== localMutationHash(localRunIdentity.source)) {
+              throw new RpcError('forbidden', 'The original execution authority changed.', 403);
+            }
+            if (localRunIdentity.contract_snapshot && authority.contract_snapshot) {
+              const { resolved_at: _oldTime, ...oldScope } = localRunIdentity.contract_snapshot;
+              const { resolved_at: _newTime, ...newScope } = authority.contract_snapshot;
+              if (localMutationHash(oldScope) !== localMutationHash(newScope)) throw new RpcError('forbidden', 'The original contract permissions changed.', 403);
+            }
+          } else if (executionSourceHasContract(localRunIdentity.source)) {
+            throw new RpcError('forbidden', 'The original local-write authority is unavailable.', 403);
+          }
+          const decision = evaluateAdmission?.(call.slug, call.input,
+            typeof call.input.operation === 'string' ? call.input.operation : undefined);
+          if (decision?.verdict === 'deny') throw new PreflightDeniedError(call.slug, decision.code, decision.detail);
+        } }) : undefined;
 
   const engineExecutor: IngredientExecutor =
     commitGatewayActive
       ? wrapWithCommitGateway(cacheAwareGatewayInner(ingredientExecutor), {
+          ...(deps.executorConfig.resourceReview ? { resourceReview: deps.executorConfig.resourceReview } : {}),
+          ...(ordinaryLocalMutations ? { localMutations: ordinaryLocalMutations } : {}),
           commitStore: deps.commitStore!,
           ...(deps.inDoubtNotifier ? { inDoubtNotifier: deps.inDoubtNotifier } : {}),
           // Names the operation in the in-doubt ask instead of the catalog slug.
@@ -5715,7 +5872,7 @@ const handleExecuteInner = async (
             resolve: async (call) => reviewed?.reviewedDispatch.resolve(call) ?? null,
           } } : {}),
           identity: runIdentity,
-          runAbortSignal: killController.signal,
+          get runAbortSignal() { return effectiveRunAbortSignal; },
           getIngredientCategory: (slug) =>
             deps.executorConfig.manifests.get(slug)?.category,
           // D-177 P1b — action-identity hash basis (N.2): the SAME
@@ -5949,6 +6106,7 @@ const handleExecuteInner = async (
     } : originalProgress;
     deps.inFlightRegistry!.registerRun({
       run_id,
+      ...(parentRun?.run_id && parentRun.run_id !== run_id ? { parent_run_id: parentRun.run_id } : {}),
       recipe_id: recipe.recipe_id,
       ...(boundDish?.dish_id !== undefined ? { dish_id: boundDish.dish_id } : {}),
       ...declaration,
@@ -6005,7 +6163,9 @@ const handleExecuteInner = async (
     });
   }
     const executionStartedAt = Date.now();
+    internal.beforeRunStart?.(run_id);
     const execution = executeRecipe({
+      ...(internal.regression_capture ? { onTestCaptureInput: internal.regression_capture.input } : {}),
       ...(internal.entry_tool_name !== undefined ? { entry_tool_name: internal.entry_tool_name } : {}),
       ...(grantedByRecipe !== undefined ? { governing_recipe_grant: grantedByRecipe } : {}),
       recipe,
@@ -6025,9 +6185,14 @@ const handleExecuteInner = async (
         },
       } : {}),
       outputRecipeHash: authoredRecipeHash,
+      recipeDefinitionSha256: authoredRecipeSha256,
       stores,
       ...(contextRecipeSnapshot !== null ? { contextRecipeSnapshot } : {}),
       ingredientExecutor: engineExecutor,
+      withRunAbortSignal: (signal, run) => {
+        effectiveRunAbortSignal = signal ?? runAbortSignal;
+        return withRunAbortContext({ run_id, signal, owner_signal: ownerSignal }, run);
+      },
       cliInvocationExecutor: deps.cliInvocationExecutor ?? CLI_INVOCATION_EXECUTOR,
       ...(deps.ingestFileDownload
         ? {
@@ -6051,7 +6216,7 @@ const handleExecuteInner = async (
       // governor. `run_id` labels each gated call's registry entry; the abort
       // signal rejects the run's queued calls when the owner kills it.
       run_id,
-      ...(registerLiveRun ? { runAbortSignal: killController.signal } : {}),
+      ...(registerLiveRun || parentRun?.signal ? { runAbortSignal } : {}),
       // D-259 §7.4.2 — engine phase transitions are host-observed
       // liveness. Store only a contract + timestamp for the next concurrent
       // turn; individual CLI heartbeat/file-growth signals replace this with
@@ -6107,6 +6272,7 @@ const handleExecuteInner = async (
         }
         return null;
       },
+      ...(recordOutputSources ? { recordOutputSource: recordOutputSources.source } : {}),
       stepCache,
       // Read fresh before a write (engine `step-seed.ts`): in a recipe that
       // writes, reads of the owner's own records skip both cache tiers.
@@ -6163,44 +6329,9 @@ const handleExecuteInner = async (
               ingredientId,
               operationId,
               binding,
-            ) => {
-              if (principal === null) return false;
-              const namespace = deps.recordsStore!.getNamespace(binding.owner);
-              if (!(namespace?.state.state === 'ready'
-                && namespace.state.version === binding.pack_version
-                && namespace.state.storage_schema_hash === binding.storage_schema_hash
-                && namespace.state.declaration_hash === binding.declaration_hash)) {
-                return false;
-              }
-
-              // The D-221 catalog is its own internal installed-pack id and
-              // connectionless grant target. Authorize only through the exact
-              // pack-owned operation-group rows written by the atomic install
-              // coordinator. This keeps an install_scope selection (and a live
-              // revoke) authoritative at the actual-proceed point; namespace
-              // readiness alone must never synthesize an all-operations grant.
-              const manifest = deps.executorConfig.manifests.get(ingredientId);
-              const operation = manifest?.operations?.[operationId];
-              const groups = operation?.groups ?? [];
-              if (manifest?.surfaces?.records === undefined
-                || groups.length === 0
-                || deps.contractScan === undefined) {
-                return false;
-              }
-              const declaredGroups = manifest.operation_groups ?? {};
-              const grantedGroups = new Set(
-                deps.contractScan('grant', [ingredientId, ingredientId, ingredientId])
-                  .filter((row) => row.segments.length === 4
-                    && row.segments[0] === ingredientId
-                    && row.segments[1] === ingredientId
-                    && row.segments[2] === ingredientId
-                    && row.value.allowed === true)
-                  .map((row) => row.segments[3]),
-              );
-              return groups.some((groupId) =>
-                declaredGroups[groupId]?.operations.includes(operationId) === true
-                && grantedGroups.has(groupId));
-            },
+            ) => recordsOperationReachable({ records: deps.recordsStore!,
+              manifest: slug => deps.executorConfig.manifests.get(slug), scan: deps.contractScan },
+            principal, ingredientId, operationId, binding),
             // D-221 — the `csv_ref` dereference, composed HERE and nowhere else.
             // This closure runs AFTER the catalog gateway has admitted the op
             // (grant, approval, reachability, principal) and BEFORE the store,
@@ -6254,11 +6385,12 @@ const handleExecuteInner = async (
       localRecipeInvoker: async (call) => {
         const reviewedChild = internal.preapproval_run === undefined ? undefined
           : await deps.preapprovalRuntime!.nested(internal.preapproval_run, call);
-        const nested = await handleExecute(
+        const nested = await handleExecuteInRunContext(
           deps,
           {
             recipe_id: call.recipe_id,
             config: reviewedChild?.config ?? call.args,
+            ...(request.connection_revisions ? { connection_revisions: request.connection_revisions } : {}),
             ...(request.execution_source !== undefined
               ? { execution_source: request.execution_source }
               : {}),
@@ -6375,7 +6507,7 @@ const handleExecuteInner = async (
             return undefined;
           }
         })();
-        const fired = await handleExecute(
+        const fired = await handleExecuteInRunContext(
           deps,
           {
             recipe: RUN_INGREDIENT_RECIPE as unknown as Record<string, unknown>,
@@ -6545,9 +6677,10 @@ const handleExecuteInner = async (
               ),
           }
         : {}),
-      ...((emit) => (emit !== undefined || recordFollowers.size > 0
+      ...((emit) => (emit !== undefined || recordFollowers.size > 0 || recordOutputSources !== undefined
         ? {
             onGatewayCall: (event: Parameters<NonNullable<typeof emit>>[0]) => {
+              recordOutputSources?.observe(event);
               // D-320 ruling 20g — a call a record step made: on the run's record.
               if (event.outcome === 'success' && event.step_id !== undefined && recordFollowers.has(event.step_id)) {
                 followedCalls.push({ catalog: event.ingredient_id, connection_name: event.connection_name });
@@ -6614,6 +6747,8 @@ const handleExecuteInner = async (
       // for the dispatched (actor, ingredient, operation) and TIGHTENS the
       // connection-keyed profile-floor resolution (restrict only). Absent (no
       // contract store wired — dbless / unit paths) ⇒ override layer skipped.
+      ...(deps.executorConfig.resourceReview ? { resourceReview: deps.executorConfig.resourceReview } : {}),
+      ...(ordinaryLocalMutations ? { localMutations: ordinaryLocalMutations } : {}),
       ...(deps.contractScan ? { contractScan: deps.contractScan } : {}),
       // D-157 server-wiring — switch the engine into resume mode when
       // the resumer threaded `resume_from` through `internal`. The
@@ -6625,6 +6760,7 @@ const handleExecuteInner = async (
       ...(internal.resume_from
         ? {
             resumeFrom: {
+              ...(internal.resume_from.resource_review ? { resource_review: internal.resume_from.resource_review } : {}),
               gated_step_id: internal.resume_from.gated_step_id,
               ...(internal.resume_from.execution_phase ? { execution_phase: internal.resume_from.execution_phase } : {}),
               ...(internal.resume_from.trigger_state ? { trigger_state: internal.resume_from.trigger_state } : {}),
@@ -6700,7 +6836,33 @@ const handleExecuteInner = async (
           () => deps.inFlightRegistry!.waitForSubprocessDrain?.(run_id) ?? Promise.resolve(),
         )
       : { result: await execution };
-    const result = executionOutcome.result;
+    let result = executionOutcome.result;
+    // An ancestor deadline is authoritative for this child too. Retain a
+    // non-retryable budget failure rather than the transport-shaped error from
+    // unwinding a cancelled call (notably an exchange carrier in the outbox).
+    // Manual owner stops have their own terminal below and must not be called
+    // budget failures. The host scope admits only those two cancellation causes.
+    if (parentRun?.signal?.aborted && !parentRun.owner_signal?.aborted) {
+      result = {
+        ...result,
+        success: false,
+        awaiting_approval: undefined,
+        awaiting_peer: undefined,
+        output: { render: [], sidebar: [] },
+        errors: [{
+          error_id: `${run_id}:parent_budget`,
+          code: 'RECIPE_BUDGET_EXCEEDED',
+          severity: 'error',
+          message: 'The parent recipe exceeded its time budget and stopped this run.',
+          source: { recipe_id: recipe.recipe_id, step_id: null, ingredient_slug: null },
+          details: {},
+          timestamp: new Date().toISOString(),
+          retryable: false,
+        }],
+      };
+    }
+    try { internal.regression_capture?.result(result); }
+    catch { /* Capture failures cannot reinterpret a completed live execution. */ }
     drainingExecution = executionOutcome.drain;
     // D-181 slice 4 / D-259 §7.4 — the instant the engine returns OR the
     // caller-facing await is abandoned, consume the run's KILL
@@ -6718,7 +6880,8 @@ const handleExecuteInner = async (
       : undefined;
     if (liveRunRegistered) deps.inFlightRegistry!.completeRun(run_id);
     // D-181 §7c — derive the run's owner-control termination from the authoritative
-    // signals: the registry's `killed` marker (deliberate kill — always honored,
+    // signals: the registry's `killed` marker or an ancestor's owner signal
+    // (deliberate kill — always honored,
     // even on a run that finished before the abort was observed), OR a genuine
     // failure carrying the engine's `slot_cancelled` step-error marker (a queued
     // call's cancel that actually failed the run). A swallowed cancel leaves no
@@ -6726,7 +6889,7 @@ const handleExecuteInner = async (
     // is never mislabelled cancelled. Drives `error_category` / `commit_status` /
     // the agent's `run_terminated`.
     const runTermination = deriveRunTermination({
-      killed: consumedTermination === 'killed',
+      killed: consumedTermination === 'killed' || parentRun?.owner_signal?.aborted === true,
       success: result.success,
       errors: result.errors,
     });
@@ -7164,7 +7327,7 @@ const handleExecuteInner = async (
           // A held `foreach` step: ONE approval covers every remaining item that
           // targets the same operation and account, so the ask must say how many
           // and list them — it used to show only the item it paused on.
-          const foreachCover = awaitingApproval.foreach_progress !== undefined
+          const foreachCover = awaitingApproval.resource_review === undefined && awaitingApproval.foreach_progress !== undefined
             ? foreachApprovalCover({
                 recipe,
                 gated_step_id,
@@ -7190,6 +7353,18 @@ const handleExecuteInner = async (
                 manifest: (slug) => deps.executorConfig.manifests.get(slug) ?? undefined,
               })
             : undefined;
+          // The mailbox a held send goes from reads as its address on the
+          // approval, not as the name the call passes it by.
+          const heldStep = awaitingApproval.step_state[gated_step_id];
+          const heldCall = heldStep !== null && typeof heldStep === 'object'
+            ? heldStep as { input?: unknown; args?: unknown }
+            : {};
+          const valueLabels = heldSenderValueLabels([
+            heldCall.input,
+            heldCall.args,
+            awaitingApproval.args_preview,
+            ...(foreachCover?.items ?? []).map((item) => item.args_preview),
+          ], deps.listSendCapableMailboxes);
           const preflightContext = {
             ...(foreachCover !== undefined ? { foreach_cover: foreachCover } : {}),
             ...(awaitingApproval.tool_slug !== undefined
@@ -7220,6 +7395,12 @@ const handleExecuteInner = async (
               && isDoorDispatchSource(executionSource)
               ? { origin_actor: executionSource.actor }
               : {}),
+            // The approval is titled by the recipe's own title, as the owner
+            // knows it, never by its operation's internal name.
+            ...(typeof recipe.metadata?.name === 'string' && recipe.metadata.name.trim() !== ''
+              ? { recipe_title: recipe.metadata.name.trim() }
+              : {}),
+            ...(valueLabels !== undefined ? { value_labels: valueLabels } : {}),
             ...(awaitingApproval.egress_bound !== undefined
               ? { egress_bound: awaitingApproval.egress_bound }
               : {}),
@@ -7238,6 +7419,7 @@ const handleExecuteInner = async (
               : {}),
           };
           const checkpoint: Checkpoint = {
+            ...(awaitingApproval.resource_review ? { resource_review: awaitingApproval.resource_review } : {}),
             checkpoint_id: randomUUID(),
             run_id,
             ...(internal.entry_tool_name !== undefined ? { entry_tool_name: internal.entry_tool_name } : {}),
@@ -7379,6 +7561,7 @@ const handleExecuteInner = async (
                   || awaitingApproval.authorization_provenance?.lift_reason === 'review_customer_payment';
                 const resolvedOffer =
                   deps.sessionGrantResolver !== undefined
+                  && awaitingApproval.resource_review === undefined
                   && !individualWorkflowReview
                   && runIdentity !== undefined
                   && executionSource !== undefined
@@ -7502,6 +7685,7 @@ const handleExecuteInner = async (
                   && foreachCover === undefined
                   && runIdentity !== undefined
                   && executionSource !== undefined
+                  && awaitingApproval.resource_review === undefined
                   && awaitingApproval.ingredient_slug !== undefined
                   && awaitingApproval.arg_shape_hash !== undefined
                   && awaitingApproval.canonical_payload_hash !== undefined
@@ -8153,6 +8337,9 @@ const handleExecuteInner = async (
             && Object.keys(request.context).length > 0
             ? { context_snapshot: request.context }
             : {}),
+          ...((result.awaiting_approval || result.awaiting_peer) && checkpointId !== undefined
+            && request.connection_revisions !== undefined
+            ? { connection_revisions: request.connection_revisions } : {}),
           trigger_url: typeof context.url === 'string' ? context.url as string : null,
           trigger_source: request.trigger_source ?? null,
           instance_id: request.instance_id ?? deps.instanceId ?? null,
@@ -8246,6 +8433,7 @@ const handleExecuteInner = async (
         ) {
           try {
             const held = await deps.gatedActionStore.createHeld({
+              ...(result.awaiting_approval.resource_review ? { resource_review: result.awaiting_approval.resource_review } : {}),
               run_id,
               recipe_id: recipe.recipe_id,
               gated_step_id: result.awaiting_approval.gated_step_id,
@@ -8736,6 +8924,22 @@ const handleExecuteInner = async (
       }
     }
 
+    // ⛔ "APPROVE IT FROM THE BELL" TO AN OWNER WHO ASKED BY EMAIL. The held
+    // message names the app only, and an email chat answered "You can review
+    // and approve it from the bell icon at the top of the Recued app" while the
+    // approval email sat in the owner's inbox (live, 2026-10-18). Where the ask
+    // went is the ask's own record, read once it is raised. Best effort: a
+    // failed read names nowhere else.
+    let approvalChannels: readonly string[] | undefined;
+    if (durablePauseMarker !== undefined && 'awaiting_approval' in durablePauseMarker
+      && askId !== undefined && deps.approvalAskChannels !== undefined) {
+      try {
+        approvalChannels = await deps.approvalAskChannels(askId);
+      } catch {
+        approvalChannels = undefined;
+      }
+    }
+
     const response = stampExecuteResponseStandingDish(stampExecuteResponseAuditRun({
       recipe_id: result.recipe_id,
       recipe_hash: result.recipe_hash,
@@ -8783,6 +8987,9 @@ const handleExecuteInner = async (
         && durablePauseMarker !== undefined
         && heldActionReceiptRef !== undefined
         ? { action_ref: heldActionReceiptRef }
+        : {}),
+      ...(approvalChannels !== undefined && approvalChannels.length > 0
+        ? { approval_channels: [...approvalChannels] }
         : {}),
       // D-232 § 19.3 — the exchange receipt, and NOTE WHERE IT IS: inside the
       // enumerating copier the comment above warns about. The engine derived
@@ -9161,6 +9368,8 @@ const buildRpcExecuteRequest = (
   // D-320 §3.5 — the run's own choice of connection, by slot; checked inside
   // `handleExecute` (`readConnectionChoices`).
   ...(args.connections !== undefined ? { connections: args.connections as Record<string, string> } : {}),
+  ...(args.connection_revisions !== undefined
+    ? { connection_revisions: args.connection_revisions as Record<string, string> } : {}),
   trigger_source: (args.trigger_source as string | undefined) ?? 'extension_ws',
   instance_id: client.instance_id ?? undefined,
   // D-153 P2.C — channel-shaped `ExecutionSource` resolved at the rpc
@@ -9194,12 +9403,13 @@ const withRecipeRunFacts = async (
  *  it can resolve the server-private, non-enumerable audit pointer. Agent and
  *  internal execution results stay unchanged. A receipt read is observability:
  *  it must never turn a completed recipe into a failed RPC. */
-const handleRpcExecute = async (
+export const handleRpcExecute = async (
   deps: ExecuteHandlerDeps,
   args: Record<string, unknown>,
   client: WsClient,
+  internal: InternalExecuteOverrides = {},
 ): Promise<ServerExecuteResponse> => {
-  const response = await handleExecute(deps, buildRpcExecuteRequest(args, client));
+  const response = await handleExecute(deps, buildRpcExecuteRequest(args, client),internal);
   return withRecipeRunFacts(response, deps.auditLog);
 };
 

@@ -1904,3 +1904,46 @@ test('a safe-check closure keeps focus on its durable receipt', async ({ page })
   await expect(receipt).toHaveAttribute('role', 'status');
   await expect(receipt).toBeFocused();
 });
+
+for (const width of [280, 1280]) {
+  test('Chat shows the reviewed Calendar state before approval at width ' + width, async ({ page }) => {
+    await page.setViewportSize({ width, height: 800 });
+    await page.goto(HARNESS_URL + '?chat=session#chat/session/chat_1');
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await page.evaluate(() => {
+      window.__app.fireMessage({ type: 'server_event', event: {
+        kind: 'chat.plan_proposed', session_id: 'chat_1', turn_id: 'review-calendar',
+        plan_id: 'resource-review-calendar', tool: 'calendar.update', tier: 1,
+        args: { source_id: 'meeting', start_at: 1792252800000 },
+        resource_review: { schema_version: 1, operation: 'calendar-update', input_hash: 'a'.repeat(64),
+          captured_at: 1792245600000, resources: [{
+            kind: 'calendar', key: 'meeting', label: 'Meeting', binding: 'local', version: 'v1',
+            precondition: { kind: 'local_version', value: 'v1' },
+            before: { summary: 'Meeting <script>window.reviewInjected = true</script>',
+              start_at: 1792245600000, timezone: 'UTC' },
+            after: { summary: 'Meeting <script>window.reviewInjected = true</script>',
+              start_at: 1792252800000, timezone: 'UTC' },
+          }] },
+        cursor: 1,
+      } });
+      window.__app.fireMessage({ type: 'server_event', event: {
+        kind: 'chat.message_complete', session_id: 'chat_1', turn_id: 'review-calendar',
+        final: { id: 'resource-review-message', session_id: 'chat_1', role: 'assistant',
+          content: 'Review the meeting change.', target_server: 'self',
+          picker_at_send: { display_name: 'This server', signature: { server_kind: 'recued', version: 'test', instance_id: 'test' } },
+          model_used: { provider: 'test', model_id: 'fixture' }, contributor: 'model', ts: 1792245600000 },
+        cursor: 2,
+      } });
+    });
+    const card = page.locator('[' + CHAT_PLAN_CARD + '][data-plan-id="resource-review-calendar"]');
+    const review = card.locator('[data-resource-review]');
+    await expect(review).toBeVisible();
+    await expect(review).toContainText('Before:');
+    await expect(review).toContainText('After:');
+    await expect(review).toContainText('changes require a fresh review');
+    await expect(review).toContainText('2026-10-17T14:00:00.000Z');
+    await expect(review.locator('script')).toHaveCount(0);
+    await expect(card.locator('[' + CHAT_PLAN_APPROVE + ']')).toBeEnabled();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  });
+}

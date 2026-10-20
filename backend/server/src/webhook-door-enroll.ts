@@ -295,6 +295,7 @@ export const reconcileWebhookDoors = (
             recipeId: entry.recipe_id,
             capability: derived.capability,
             mintedBy: input.mintedBy,
+            previousContractIds: priorIds,
           },
           deps,
         ).contract_id;

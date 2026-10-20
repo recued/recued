@@ -20,7 +20,9 @@
  */
 
 import { execFile, spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, chmodSync } from 'node:fs';
+import {
+  copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, chmodSync, statSync, writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { connect } from 'node:net';
@@ -115,7 +117,8 @@ export type LiveServer = {
    *  wrong on either side. It also expires on its own (~14 min), which a slow
    *  run can outlive. Mint at the moment of use. */
   freshCode: () => string;
-  /** The realm's 24 words. ⛔ NEVER log, print, or assert on this value. */
+  /** The seed's 24 words (a fresh target has no enrolled key yet).
+   *  ⛔ NEVER log, print, or assert on this value. */
   recoveryWords: string[];
   log: () => string;
   stop: () => void;
@@ -127,19 +130,156 @@ export type LiveServer = {
   cli: (args: string[]) => { stdout: string; stderr: string; status: number | null };
   /** Keep local HTTP/WS fixture forwarding alive during a daemon restart. */
   cliAsync: (args: string[]) => Promise<{ stdout: string; stderr: string; status: number | null }>;
+  /** SIGKILL only the daemon in this staged realm, without a graceful drain. */
+  crash: () => Promise<void>;
+};
+
+/** A staged realm's folder name. */
+const REALM_PREFIX = 'recued-e2e-realm-';
+/** The file in an e2e temp folder naming the process that made it.
+ *  ⚠ `backend/server/scripts/make-e2e-seed.mjs` writes the same name. */
+const FOLDER_OWNER = 'e2e-owner.json';
+/** A folder made before owners were recorded is left alone this long. */
+const UNOWNED_FOLDER_GRACE_MS = 6 * 60 * 60 * 1000;
+
+/** Block without a timer: `stop()` is synchronous and also runs from a process
+ *  'exit' handler, where nothing asynchronous runs. */
+const blockFor = (ms: number): void => {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+};
+
+/** Whether a process, or for a negative id any member of that process group, is
+ *  still running.
+ *
+ *  ⚠ An exited child of THIS process stays a zombie until the event loop reaps
+ *  it, and `blockFor` blocks the loop, so a zombie counts as gone.
+ *  ⚠ `EPERM` is not proof of life: macOS answers it for a group whose only
+ *  members left are zombies, so the process table decides. */
+const stillRunning = (target: number): boolean => {
+  try {
+    process.kill(target, 0);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EPERM') return false;
+  }
+  if (process.platform === 'win32') return true;
+  const rows = spawnSync('ps', ['-axo', 'pid=,pgid=,stat='], { encoding: 'utf8' }).stdout ?? '';
+  return rows.split('\n').some((row) => {
+    const [pid, pgid, stat] = row.trim().split(/\s+/);
+    const member = target < 0 ? Number(pgid) === -target : Number(pid) === target;
+    return member && stat !== undefined && !stat.startsWith('Z');
+  });
+};
+
+/** End a process, or with a negative id its whole process group: SIGTERM, up to
+ *  `graceMs` to exit, then SIGKILL. True once nothing of it is running. */
+export const endProcess = (target: number, graceMs = 10_000): boolean => {
+  const signal = (name: NodeJS.Signals): void => {
+    try { process.kill(target, name); } catch { /* already gone */ }
+  };
+  if (!stillRunning(target)) return true;
+  signal('SIGTERM');
+  for (const deadline = Date.now() + graceMs; stillRunning(target) && Date.now() < deadline;) blockFor(50);
+  if (!stillRunning(target)) return true;
+  signal('SIGKILL');
+  for (const deadline = Date.now() + 5_000; stillRunning(target) && Date.now() < deadline;) blockFor(50);
+  return !stillRunning(target);
+};
+
+/** A new temp folder named `<prefix>…` that names this process as its owner, so
+ *  `reapOrphanedFolders` leaves it alone while this process runs and deletes it
+ *  once the process is gone. */
+export const ownedTempFolder = (prefix: string): string => {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  writeFileSync(join(dir, FOLDER_OWNER), JSON.stringify({ pid: process.pid }));
+  return dir;
+};
+
+/** ⛔ A FOLDER WHOSE RUN IS GONE IS DELETED BY THE NEXT RUN, AND WHATEVER STILL
+ *  RUNS FROM IT IS ENDED FIRST.
+ *
+ *  A run that is killed (Ctrl-C, a timeout, a memory reaper) never reaches its
+ *  own cleanup. `stop()` is the only thing that ends a server and deletes its
+ *  realm, and a `daemon` server is detached on purpose and outlives its runner:
+ *  one served a realm on port 51431 for 12 hours, its folder still on disk beside
+ *  two more (found 2026-10-19). A stopped paired run left its inputs (a test seed
+ *  and the frozen artifact list) behind the same day. So each such folder names
+ *  the process that made it (`ownedTempFolder`), and a run first ends the
+ *  processes still using a folder whose owner is gone (a server names its realm
+ *  in its arguments, `--db <realm>/verify.db`), then deletes the folder. A folder
+ *  another run is still using is never touched. One made before owners were
+ *  recorded is deleted once it is `UNOWNED_FOLDER_GRACE_MS` old. */
+export const reapOrphanedFolders = (prefix: string, base = tmpdir(), now = Date.now()): number => {
+  let names: string[];
+  try {
+    names = readdirSync(base).filter((name) => name.startsWith(prefix));
+  } catch {
+    return 0;
+  }
+  if (names.length === 0) return 0;
+  // Its servers name the realm in their arguments (`--db <realm>/verify.db`).
+  // `ww`: never cut a long command line short.
+  const processes = process.platform === 'win32'
+    ? []
+    : (spawnSync('ps', ['-axww', '-o', 'pid=,args='], { encoding: 'utf8' }).stdout ?? '')
+      .split('\n')
+      .map((row) => /^\s*(\d+)\s+(.*)$/.exec(row))
+      .filter((match): match is RegExpExecArray => match !== null)
+      .map((match) => ({ pid: Number(match[1]), args: match[2]! }));
+  let reaped = 0;
+  for (const name of names) {
+    const dir = join(base, name);
+    let owner: unknown;
+    try {
+      owner = (JSON.parse(readFileSync(join(dir, FOLDER_OWNER), 'utf8')) as { pid?: unknown }).pid;
+    } catch { /* made before owners were recorded */ }
+    if (typeof owner === 'number' && Number.isSafeInteger(owner) && owner > 0) {
+      if (owner === process.pid || stillRunning(owner)) continue;
+    } else {
+      let modified: number;
+      try { modified = statSync(dir).mtimeMs; } catch { continue; }
+      if (now - modified < UNOWNED_FOLDER_GRACE_MS) continue;
+    }
+    for (const { pid, args } of processes) {
+      if (pid !== process.pid && args.includes(dir)) endProcess(pid);
+    }
+    rmSync(dir, { recursive: true, force: true });
+    reaped += 1;
+  }
+  return reaped;
+};
+
+/** Every boot first stops and deletes the realms of runs that are gone. */
+export const reapOrphanedRealms = (base = tmpdir(), now = Date.now()): number =>
+  reapOrphanedFolders(REALM_PREFIX, base, now);
+
+/** Servers this process booted and has not stopped yet: stopped on the way out,
+ *  so a worker that exits early (an uncaught error, `process.exit`) leaves none
+ *  running. A run killed outright is `reapOrphanedRealms`'s. */
+const liveServers = new Set<() => void>();
+let stopsOnExit = false;
+const stopOnExit = (stop: () => void): void => {
+  liveServers.add(stop);
+  if (stopsOnExit) return;
+  stopsOnExit = true;
+  process.once('exit', () => {
+    for (const each of [...liveServers]) {
+      try { each(); } catch { /* best effort on the way out */ }
+    }
+  });
 };
 
 /** Copy the realm — ⛔ never boot the seed's own db, and never write to it. The
  *  identity file's NAME matters: the server looks for `recued-server-identity.json`
  *  beside the database. The -wal/-shm siblings come too, or the copy silently
  *  loses whatever had not been checkpointed. */
-export const stageRealm = (seedDir: string, mode: BootMode): string => {
-  const dir = mkdtempSync(join(tmpdir(), 'recued-e2e-realm-'));
-  // ⛔ `unit` GETS NOTHING. The whole property under test is that an UNENROLLED
+export const stageRealm = (seedDir: string, mode: BootMode, fresh = false): string => {
+  const dir = ownedTempFolder(REALM_PREFIX);
+  // ⛔ `unit` and an explicit fresh recovery target GET NOTHING. The property
+  // under test is that an UNENROLLED
   // realm is served rather than refused, so copying the enrolled seed here would
   // make the mode pass without exercising the change at all. The server mints its
   // own db and identity on first boot.
-  if (mode === 'unit') {
+  if (mode === 'unit' || fresh) {
     mkdirSync(join(dir, 'bin', 'lib'), { recursive: true });
     return dir;
   }
@@ -178,6 +318,7 @@ export const bootLiveServer = async (
     timeoutMs = 60_000,
     mode = 'foreground',
     unsupervised = false,
+    fresh = false,
     env = {},
     prepareRealm,
   }: {
@@ -187,13 +328,16 @@ export const bootLiveServer = async (
     /** Force the server to resolve `dev` — nothing will respawn it. For the arm
      *  that asserts `update.apply` REFUSES rather than stranding the owner. */
     unsupervised?: boolean;
+    /** A genuinely empty target for pre-pair archive recovery. */
+    fresh?: boolean;
     /** Overrides for this child only; never mutate the runner's environment. */
     env?: NodeJS.ProcessEnv;
     /** Seed synthetic records in the staged copy before the server opens it. */
     prepareRealm?: (dbPath: string) => void | Promise<void>;
   } = {},
 ): Promise<LiveServer> => {
-  const dir = stageRealm(config.seedDir, mode);
+  reapOrphanedRealms();
+  const dir = stageRealm(config.seedDir, mode, fresh);
   const exe = placeBinary(dir, config.binary, config.sidecar);
 
   const dbPath = join(dir, 'verify.db');
@@ -258,26 +402,48 @@ export const bootLiveServer = async (
   let child: ChildProcess | undefined;
   let stopped = false;
 
+  /** The staged daemon's pid, or undefined when its files do not agree on one:
+   *  the pid file must match the realm's own instance lock, on this port. */
+  const ownedDaemonPid = (): number | undefined => {
+    try {
+      const pid = Number(readFileSync(join(dir, 'recued-server.pid'), 'utf8').trim());
+      const lock = JSON.parse(readFileSync(join(dir, 'recued-server.lock'), 'utf8')) as { pid: number; bind_port: number };
+      return Number.isSafeInteger(pid) && pid > 1 && pid !== process.pid && lock.pid === pid && lock.bind_port === port
+        ? pid
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
   const stop = () => {
     if (stopped) return;
     stopped = true;
+    liveServers.delete(stop);
     if (mode === 'daemon') {
-      // ⛔ ASK THE CLI, DO NOT KILL A PID WE NEVER OWNED. `recued start`
-      // detaches; this process is not its parent, so a SIGTERM from here would
-      // be aimed at nothing. `stop` is also the verb an owner uses, so failing
-      // to shut down cleanly is itself worth finding out about.
+      // ⛔ ASK THE CLI FIRST. `recued start` detaches, and `stop` is also the
+      // verb an owner uses, so failing to shut down cleanly is itself worth
+      // finding out about.
+      //
+      // ⛔ AND THEN MAKE SURE. This used to end here, and a `stop` that failed
+      // left the daemon serving a realm that was then deleted from under it, with
+      // nothing left to find it by. Its pid is read BEFORE `stop` (which removes
+      // the file) and checked against the realm's own instance lock.
+      const daemon = ownedDaemonPid();
       try { cli(['stop', '--db', dbPath]); } catch { /* best effort on teardown */ }
-    } else if (mode === 'launcher' && child?.pid !== undefined && !child.killed) {
-      // Negative pid = the process GROUP. Killing only the launcher would leave
+      if (daemon !== undefined) endProcess(daemon);
+    } else if (mode === 'launcher' && child?.pid !== undefined) {
+      // Negative pid = the process GROUP. Ending only the launcher would leave
       // the server it spawned running on the port.
-      try { process.kill(-child.pid, 'SIGTERM'); } catch { /* already gone */ }
-    } else if (child && !child.killed) {
-      child.kill('SIGTERM');
+      endProcess(-child.pid);
+    } else if (child?.pid !== undefined) {
+      endProcess(child.pid);
     }
     child = undefined;
     // The realm copy holds a pairing credential once a browser has paired.
     rmSync(dir, { recursive: true, force: true });
   };
+  stopOnExit(stop);
 
   // The daemon's banner goes to the log file beside the realm, not to a pipe:
   // `start` returns as soon as the child is spawned and healthy.
@@ -345,7 +511,7 @@ export const bootLiveServer = async (
     // a brand-new one banners `Status: Not enrolled` — which for `unit` is the
     // SUCCESS case, because the point is that it serves anyway. Requiring
     // "Running" here would hang until the timeout and report it as a dead boot.
-    const ready = mode === 'unit'
+    const ready = mode === 'unit' || fresh
       ? /Status:\s*(Running|Not enrolled)/.test(text)
       : /Status:\s*Running/.test(text);
     if (m && ready) { code = m[1]; break; }
@@ -372,7 +538,7 @@ export const bootLiveServer = async (
     const wanted = mode === 'unit'
       ? '"Status: Running" or "Status: Not enrolled" (a pre-D-252 binary REFUSES an '
         + 'unenrolled realm under --require-enrolled and exits 0)'
-      : '"Status: Running"';
+      : fresh ? '"Status: Running" or "Status: Not enrolled"' : '"Status: Running"';
     throw new Error(`the binary never reached ${wanted} with a pairing code `
       + `(${mode} mode):\n${why}`);
   }
@@ -392,6 +558,19 @@ export const bootLiveServer = async (
   return {
     url: `http://127.0.0.1:${port}`, port, pairCode: code, recoveryWords,
     log: () => readAll(), stop, mode, cli, cliAsync, dbPath,
+    async crash() {
+      if (mode !== 'daemon') throw new Error('Crash qualification requires an owned daemon realm');
+      const pid = ownedDaemonPid();
+      if (pid === undefined) throw new Error('The staged daemon PID must match its owned instance lock');
+      process.kill(pid, 'SIGKILL');
+      const deadline = Date.now() + 10_000;
+      for (;;) {
+        try { process.kill(pid, 0); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code === 'ESRCH') return; throw error; }
+        if (Date.now() >= deadline) throw new Error('The owned daemon did not die after SIGKILL');
+        await new Promise(resolveCrash => setTimeout(resolveCrash, 25));
+      }
+    },
     freshCode: () => {
       const out = cli(['pair', '--db', dbPath]);
       const found = /Pairing code:\s*([A-Z0-9-]+)/.exec(`${out.stdout}${out.stderr}`)?.[1];

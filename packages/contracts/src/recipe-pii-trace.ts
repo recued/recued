@@ -373,6 +373,13 @@ export const PII_FLOW_RULES: Readonly<Record<string, PiiFlowRule>> = {
   recipe_succeeded_since: { rule: 'destroy' },
   time_within_window: { rule: 'destroy' },
   time_elapsed_since: { rule: 'destroy' },
+  // D-325 series outputs retain deciding source rows as evidence (and distance
+  // matches retain whole rows). Arithmetic is not a redaction: conservatively
+  // taint the entire result, including later reads of nested evidence fields.
+  held: { rule: 'collapse_render', args: ['rows'] },
+  transitions: { rule: 'collapse_render', args: ['rows'] },
+  window_change: { rule: 'collapse_render', args: ['rows'] },
+  within_distance: { rule: 'collapse_render', args: ['rows', 'place'] },
   http_changed: { rule: 'destroy' },
   calendar_changed_since: { rule: 'pass_array', arg: 'events' },
   calendar_new_since: { rule: 'pass_array', arg: 'events' },

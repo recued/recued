@@ -49,11 +49,15 @@ import {
   HARNESS_SERVER_PUBLIC_KEY,
 } from './server-identity.js';
 import { savedViewsDemoReply } from './saved-data-views.js';
+import { ordinaryLocalChatFixture } from './ordinary-local-receipts.js';
+import { localUpdateUndoDemoReply } from './local-update-undo.js';
+import { localChangesDemoReply } from './local-change-sets.js';
 import { recordsBrowseReply } from './records-browse.js';
 import { chatHistorySearchReply } from './chat-history-search.js';
 import { todayDemoReply, todayEmptyDemoReply } from './today-view.js';
 import { chatTurnQueueDemoReply } from './chat-turn-queue.js';
 import { workEntityUpsertDemoReply } from './work-entity-upsert.js';
+import { createYoursFixture } from './yours-fixture.js';
 import { recipeSimulationDemoReply } from './recipe-simulation.js';
 import { preapprovalDemoReply } from './preapproval.js';
 import type { GrantRecipeOpUsageCaller } from '../../src/contracts/contract-grants-panel.js';
@@ -366,7 +370,7 @@ const demoRecipeExecuteResult = (
     ? executeArgs.config.cursor
     : '';
   const secondPage = cursor === 'next-token';
-  const render = editableGrid
+  const render: Array<Record<string, unknown>> = editableGrid
     ? [{
         type: 'table',
         data: {
@@ -442,7 +446,7 @@ const demoRecipeExecuteResult = (
             ? [{
                 type: 'record_fields',
                 label: 'Work order',
-                data: { record: { id: 'job_1' } },
+                data: { record: { id: 'job_1', _record: { entity: 'job' } } },
                 record_fields: {
                   entity: 'job',
                   fields: [
@@ -549,6 +553,19 @@ const demoRecipeExecuteResult = (
                       }],
                     }]
                   : [];
+  const apiRecordSource = new URLSearchParams(location.search).get('api_record_source');
+  if (recordFields && apiRecordSource !== null) {
+    render[0] = {
+      type: 'record_fields', label: 'Contact', data: { id: 'contact-42', email: 'ana@example.test' },
+      record_fields: { entity: 'contact', fields: [
+        { key: 'email', label: 'Email', kind: 'string', present: true, value: 'ana@example.test' },
+      ] },
+      ...(apiRecordSource === 'missing' ? {} : { record_source: {
+        kind: 'api', platform: apiRecordSource, connection_name: 'hubspot-app', entity: 'contact',
+        connection_revision: 'a'.repeat(64),
+      } }),
+    };
+  }
   return {
     recipe_id: resolvedRecipeId,
     recipe_hash: `hash-${resolvedRecipeId}`,
@@ -940,6 +957,9 @@ const buildFakeTransport = (
   let bridgeNotificationsEnabled = false;
   let pairedBridgeModes = { notification: false, approval: false };
   let notificationVerificationPhrase = 'blue lantern';
+  const namedReminderSettings = new URLSearchParams(location.search).get('reminder_settings') === 'named';
+  const yoursReply = createYoursFixture();
+  let namedReminderConnection: { name: string; enrolled_at: number } | null = null;
   let notificationsDescribeFailuresRemaining = failFirstNotificationsDescribe ? 1 : 0;
   const revokedDeviceIds = new Set<string>();
   let devicesListFailuresRemaining = deviceListFailures;
@@ -1955,7 +1975,11 @@ const buildFakeTransport = (
     links: verificationRun.links,
     gateway: {
       policy_result: verificationRun.policy_result,
-      per_call_trace: [],
+      per_call_trace: new URLSearchParams(location.search).has('local_mutation_receipt') ? [{
+        commit_id: 'local-record-update', kind: 'action' as const, ingredient: 'reviewed-notes', tool: 'fixture.note.update',
+        decision: 'allowed' as const, verdict: 'succeeded' as const, dispatched_at: FIXED_NOW - 2_000,
+        local_receipt: { receipt_id: 'lmr_77777777-7777-4777-8777-777777777777', kind: 'records' as const, committed_at: FIXED_NOW - 1_000 },
+      }] : [],
     },
   };
   const olderVerificationRun = {
@@ -2031,6 +2055,11 @@ const buildFakeTransport = (
           { id: 'reject', label: 'Reject' },
         ],
     created_at: FIXED_NOW - 1_000,
+    ...(searchParams.get('resource_review') === 'records-batch' ? {
+      title: 'Review Records batch',
+      text: 'Recipe review-bulk wants to run fixture.note.batch (step bulk).\nThis changes saved data, so Recued held it for you.\n\nApprove?',
+      resource_review: RECORDS_REVIEW_FIXTURE,
+    } : {}),
   };
   let attentionAskPending = true;
   const attentionPlan = {
@@ -2222,6 +2251,8 @@ const buildFakeTransport = (
                     : { overridden: false }),
                 },
                 messages: [],
+                ...(new URLSearchParams(location.search).has('local_mutation_receipt')
+                  ? ordinaryLocalChatFixture(FIXED_NOW, new URLSearchParams(location.search).get('local_mutation_receipt') !== 'live') : {}),
               }
             : rpc.method === 'server.getLLMConfig'
               // A current server: it keeps a slot's provider_name.
@@ -2797,6 +2828,9 @@ const buildFakeTransport = (
             result = { deleted: true };
           }
         }
+        if (rpc.method === 'notification.submitAnswer'
+          && typeof (rpc.args as { ask_id?: unknown }).ask_id === 'string'
+          && (rpc.args as { ask_id: string }).ask_id.startsWith('reminder-demo-')) result = { ok: true };
         if (notificationsDemo && rpc.method === 'notifications.describe') {
           if (notificationsDescribeFailuresRemaining > 0) {
             notificationsDescribeFailuresRemaining -= 1;
@@ -2825,6 +2859,13 @@ const buildFakeTransport = (
                   approval_togglable: false,
                   ready: true,
                 },
+                ...(namedReminderSettings ? [{ channel: 'telegram', capability: 'inline',
+                  notification: false, approval: false, notification_togglable: true, approval_togglable: true,
+                  ready: namedReminderConnection !== null,
+                  connections: [{ name: 'private', display_name: 'My phone', enrolled_at: 100 },
+                    { name: 'household', display_name: 'Family chat', enrolled_at: 200 }],
+                  connection: namedReminderConnection,
+                }] : []),
               ],
               verification_phrase: notificationVerificationPhrase,
             };
@@ -2849,8 +2890,11 @@ const buildFakeTransport = (
           } else {
             const args = rpc.args as {
               channel?: unknown;
-              patch?: { notification?: unknown };
+              patch?: { notification?: unknown; connection?: { name: string; enrolled_at: number } | null };
             };
+            if (namedReminderSettings && args.channel === 'telegram' && args.patch?.connection !== undefined) {
+              namedReminderConnection = args.patch.connection;
+            }
             if (
               args.channel === 'bridge'
               && typeof args.patch?.notification === 'boolean'
@@ -3876,12 +3920,62 @@ const buildFakeTransport = (
         ) {
           result = { recipes: demoRecipeEntries() };
         }
+        if (searchParams.get('run_prefill') === '1' && (rpc.method === 'recipe.list' || rpc.method === 'recipe.get')) {
+          const base = demoRecipeEntries()[0]!;
+          const prefillRecipe = (id: string, name: string, bundle: string, variables: Record<string, unknown>) => ({
+            ...base, recipe_id: id, recipe_hash: `hash-${id}`,
+            recipe: {
+              ...base.recipe, recipe_id: id,
+              metadata: { ...base.recipe.metadata, name, recipe_bundle: bundle },
+              variables, auto_run: undefined, event_triggers: undefined,
+            },
+          });
+          const entries = [
+            { ...base, recipe: { ...base.recipe, metadata: { ...base.recipe.metadata, recipe_bundle: 'publisher-a/same-board' } } },
+            prefillRecipe('job-follow-up', 'Follow up on this job', 'publisher-a/same-board', {
+              job_id: { label: 'Job', type: 'record_ref', entity: 'job' },
+              title: { label: 'Title', type: 'text' },
+              count: { label: 'Count', type: 'number', default: 5 },
+            }),
+            prefillRecipe('foreign-job-follow-up', 'Follow up in another pack', 'publisher-b/same-board', {
+              job_id: { label: 'Job', type: 'record_ref', entity: 'job' },
+            }),
+            prefillRecipe('job-message', 'Draft this job message', 'publisher-a/same-board', {
+              subject_line: { label: 'Subject', type: 'text', page_binding: { kind: 'job', field: 'title' } },
+              recipient: { label: 'Recipient', type: 'text', page_binding: { kind: 'contact', field: 'email' } },
+            }),
+            prefillRecipe('job-json', 'Review this job object', 'publisher-a/same-board', {
+              job: { label: 'Job details', type: 'object' },
+            }),
+            prefillRecipe('asset-check', 'Check this asset', 'owner/tools', {
+              asset_id: { label: 'Asset', type: 'text' }, name: { label: 'Name', type: 'text' },
+            }),
+            prefillRecipe('api-contact-follow-up', 'Follow up with this API contact', 'owner/api-tools', {
+              person: { label: 'Contact', type: 'text', page_binding: { kind: 'contact', field: 'id', platform: 'hubspot' } },
+              email: { label: 'Email', type: 'text', page_binding: { kind: 'contact', field: 'email', platform: 'hubspot' } },
+            }),
+            { ...prefillRecipe('job-context', 'Use this job as context', 'publisher-a/same-board', {}),
+              run_context_targets: ['job_id'],
+              recipe: { ...prefillRecipe('job-context', 'Use this job as context', 'publisher-a/same-board', {}).recipe,
+                steps: [{ id: 'read', type: 'transform', transform: 'identity', input: '{{context.job_id}}' }] } },
+          ];
+          result = rpc.method === 'recipe.list' ? { recipes: entries.map(entry => {
+            const { steps: _steps, prefetch_steps: _prefetch, ...recipe } = entry.recipe;
+            return { ...entry, recipe };
+          }) }
+            : { recipe: entries.find(entry => entry.recipe_id === (rpc.args as { recipe_id: string }).recipe_id) ?? null };
+        }
+        if (searchParams.get('run_prefill') === '1' && rpc.method === 'execute') {
+          sessionStorage.setItem('recued-test-run-prefill-execute', JSON.stringify(rpc.args));
+          result = demoRecipeExecuteResult(rpc.args, false);
+        }
         // `recipe.get` — the Kitchen editor's FIRST read since the list lost its
         // step bodies (f95faec10); the list is only its fallback, taken on an
         // ERROR. Unanswered, the read never settled and the editor sat on
         // "Loading recipe…" in every Kitchen spec that opens one.
         if (
           (runPaletteDemo || recipesRouteDemo || automationRulesDemo)
+          && searchParams.get('run_prefill') !== '1'
           && rpc.method === 'recipe.get'
         ) {
           const wanted = (rpc.args as { recipe_id?: unknown } | undefined)?.recipe_id;
@@ -3947,7 +4041,8 @@ const buildFakeTransport = (
         // answer: no Connection line. `recipe_connections=choice` gives the
         // recipe one slot with two accounts, so the line is drawn.
         if (rpc.method === 'packs.connections.recipe') {
-          const choice = new URLSearchParams(location.search).get('recipe_connections') === 'choice';
+          const connectionMode = new URLSearchParams(location.search).get('recipe_connections');
+          const choice = connectionMode === 'choice';
           result = {
             recipe_id: (rpc.args as { recipe_id: string }).recipe_id,
             slots: choice
@@ -3955,11 +4050,15 @@ const buildFakeTransport = (
                   slot: 'hubspot',
                   variables: ['hubspot'],
                   connections: [
-                    { connection_name: 'hubspot-app', display_name: 'Sales app', is_default: false },
+                    { connection_name: 'hubspot-app', connection_revision: sessionStorage.getItem('recued-test-api-account-revision') ?? 'a'.repeat(64), display_name: 'Sales app', is_default: false },
                     { connection_name: 'hubspot-key', display_name: 'Service Key', is_default: true },
                   ],
                 }]
-              : [],
+              : connectionMode === 'single'
+                ? [{ slot: 'hubspot', variables: [], connections: [
+                    { connection_name: 'hubspot-app', connection_revision: sessionStorage.getItem('recued-test-api-account-revision') ?? 'a'.repeat(64), display_name: 'Sales app', is_default: true },
+                  ] }]
+                : [],
           };
         }
         if (recipesDemo && rpc.method === 'dishes.create') {
@@ -6394,6 +6493,7 @@ const buildFakeTransport = (
               phone?: string;
               company?: string;
             };
+            if (contactsDemo && args.email === contactDemoRecord.email) Object.assign(contactDemoRecord, args);
             result = {
               contact: {
                 id: args.email ?? 'created@example.test',
@@ -7100,6 +7200,10 @@ const buildFakeTransport = (
         }
         const preapprovalReply = preapprovalDemoReply(rpc.method, rpc.args);
         if (preapprovalReply !== null) { result = preapprovalReply.result; error = preapprovalReply.error; }
+        const localChangesReply = localChangesDemoReply(rpc.method,rpc.args);
+        if (localChangesReply !== null) { result = localChangesReply.result; error = localChangesReply.error; }
+        const undoReply = localUpdateUndoDemoReply(rpc.method, rpc.args);
+        if (undoReply !== null) { result = undoReply.result; error = undoReply.error; }
         const todayReply: ReturnType<typeof todayDemoReply> = todayDemoReply(rpc.method, rpc.args)
           ?? todayEmptyDemoReply(rpc.method);
         if (todayReply !== null) { result = todayReply.result; error = todayReply.error; }
@@ -7111,6 +7215,8 @@ const buildFakeTransport = (
         // `work-entity-upsert.ts`. Declines under the paged demo, which owns
         // its own stateful answer for the same method.
         const upsertReply = workEntityUpsertDemoReply(rpc.method, rpc.args);
+        const yoursResult = yoursReply(rpc.method, rpc.args);
+        if (yoursResult) { result = yoursResult.result; error = yoursResult.error; }
         if (upsertReply !== null) { result = upsertReply.result; }
         const simulationReply = recipeSimulationDemoReply(rpc.method, rpc.args);
         if (simulationReply !== null) { result = simulationReply.result; error = undefined; }
@@ -9768,3 +9874,4 @@ void (async (): Promise<void> => {
     });
   }
 })();
+import { RECORDS_REVIEW_FIXTURE } from './fixtures/records-review.js';

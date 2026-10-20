@@ -1,3 +1,5 @@
+import { mountPermissionRegressionPanel } from './permission-regression-panel.js';
+import type { Conn, ServerRpcRegistry } from '@recued/contracts';
 /** Top-level Contracts route: Built-in / Customer / Others inventories, with a
  *  tabbed detail view for one editable contract at a time.
  *
@@ -31,6 +33,7 @@ import {
   type MintContractRequest,
   type UsageCapPeriod,
 } from '@recued/contracts';
+import { mountStandingTasksPanel, type StandingTasksOptions } from './standing-tasks-panel.js';
 import {
   formatClientDateTime,
   USAGE_CAP_PERIOD_OPTION_LABEL,
@@ -113,6 +116,7 @@ import type {
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import type { RunsListCaller } from '../logs/bootstrap-logs-route.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
+import { runPageObject, type RunPageContext } from '../shell/run-page-context.js';
 
 // ════════════════════════════════════════════════════════════════
 // Stable test/host hooks
@@ -927,6 +931,8 @@ const pendingListTabFocusByDocument = new WeakMap<
 
 export interface BootstrapContractsRouteOptions {
   root: HTMLElement;
+  permissionWorkbenchCall?: Conn<ServerRpcRegistry>;
+  beginPermissionWork?(): () => void;
   document?: Document;
   serverUrl: string;
   /** Preferred complete route selection. Positional options remain for narrow
@@ -972,6 +978,7 @@ export interface BootstrapContractsRouteOptions {
   suggestionsListCaller?: SuggestionsListCaller;
   suggestionsAcceptCaller?: SuggestionsAcceptCaller;
   suggestionsDismissCaller?: SuggestionsDismissCaller;
+  standingTasks?: Omit<StandingTasksOptions, 'host' | 'subscribe'>;
   /** D-177 rule 5 — the scoped-grant proposal surface (same all-three gate). */
   scopedSuggestionsListCaller?: ScopedSuggestionsListCaller;
   scopedSuggestionsAcceptCaller?: ScopedSuggestionsAcceptCaller;
@@ -988,6 +995,7 @@ export interface BootstrapContractsRouteOptions {
   grantRecipeListCaller?: GrantRecipeListCaller;
   grantRegistryDescribeCaller?: GrantRegistryDescribeCaller;
   grantSetDoorTypesCaller?: GrantSetDoorTypesCaller;
+  grantSetReadSpheresCaller?: (args: { contract_id: string; read_spheres: import('@recued/contracts').Sphere[] | null }) => Promise<import('@recued/contracts').ContractDefinitionView>;
   /** `cli.reachability.{list,set}` — route CLI ops in the Ops grant panel to the
    *  cli_reachability allowlist (their real authority), not contract_grant. */
   grantCliReachabilityListCaller?: GrantCliReachabilityListCaller;
@@ -1016,11 +1024,13 @@ export interface ContractRowVM {
    *  (backs all). Drives the header door toggle (L1). Absent on self (not a
    *  door). */
   readonly door_types?: ReadonlyArray<DoorType>;
+  readonly read_spheres?: ReadonlyArray<import('@recued/contracts').Sphere>;
 }
 
 export type ContractsViewMode = 'loading' | 'list' | 'detail';
 
 export interface ContractsRoute {
+  getRunPageContext(): RunPageContext | null;
   /** Current rows (self first), after the initial load settles. */
   getContracts(): ReadonlyArray<ContractRowVM>;
   /** The rendered view mode after the initial load. */
@@ -1079,6 +1089,7 @@ const toRowVM = (c: ContractDefinitionView): ContractRowVM => ({
   //   the server sends is invisible to the view unless it appears here too.
   ...(c.use_period !== undefined ? { use_period: c.use_period } : {}),
   ...(c.door_types !== undefined ? { door_types: c.door_types } : {}),
+  ...(c.read_spheres !== undefined ? { read_spheres: c.read_spheres } : {}),
 });
 
 // ── Level-1 door-type math (a door backs a subset of DOOR_TYPES; absent/empty
@@ -1407,9 +1418,11 @@ export const bootstrapContractsRoute = (
   let listPageBusy = false;
   let pendingPageFocus: 'previous' | 'next' | null = null;
   let suggestedRulesPanel: SuggestedRulesPanelMount | null = null;
+  let standingTasksPanel: ReturnType<typeof mountStandingTasksPanel> | null = null;
   let scopedGrantPanel: ScopedGrantPanelMount | null = null;
   let connectPanel: PermissionsPanelMount | null = null;
   let detailGrantPanel: ContractGrantsPanelMount | null = null;
+  let permissionPanel: ReturnType<typeof mountPermissionRegressionPanel> | null = null;
   let routeOwnedMutationCount = 0;
 
   const beginRouteOwnedMutation = (): (() => void) => {
@@ -1423,13 +1436,19 @@ export const bootstrapContractsRoute = (
   };
 
   const hasContractsInFlightWork = (): boolean =>
-    routeOwnedMutationCount > 0
+    permissionPanel?.hasInFlightWork() === true
+    || permissionPanel?.hasUnsavedChanges() === true
+    || routeOwnedMutationCount > 0
     || suggestedRulesPanel?.hasInFlightWork() === true
+    || standingTasksPanel?.hasInFlightWork() === true
+    || standingTasksPanel?.hasUnsavedChanges() === true
     || scopedGrantPanel?.hasInFlightWork() === true
     || connectPanel?.hasInFlightWork() === true
     || detailGrantPanel?.hasInFlightWork() === true;
 
   const clearBody = (): void => {
+    permissionPanel?.dispose(); permissionPanel = null;
+    standingTasksPanel?.dispose(); standingTasksPanel = null;
     if (suggestedRulesPanel !== null) {
       suggestedRulesPanel.dispose();
       suggestedRulesPanel = null;
@@ -1451,6 +1470,10 @@ export const bootstrapContractsRoute = (
 
   // ── Proposals (ambient, dormant when empty) — list view only ──
   const mountProposals = (): void => {
+    if (opts.standingTasks) {
+      const section = doc.createElement('section'); section.setAttribute(CONTRACTS_ROUTE_PROPOSALS_ATTR, ''); body.append(section);
+      standingTasksPanel = mountStandingTasksPanel({ host: section, ...opts.standingTasks, ...(opts.subscribe ? { subscribe: opts.subscribe } : {}) });
+    }
     if (
       opts.suggestionsListCaller !== undefined
       && opts.suggestionsAcceptCaller !== undefined
@@ -2247,6 +2270,40 @@ export const bootstrapContractsRoute = (
       && opts.contractsRevokeCaller !== undefined;
 
     const head = makeEl(doc, 'div', 'contracts-detail-head');
+    let sphereBusy = false;
+    const appendSphereControl = (host: HTMLElement): void => {
+      if (currentRow.is_self || !opts.grantSetReadSpheresCaller) return;
+      const label = makeEl(doc, 'label', 'contracts-sphere-access');
+      label.appendChild(makeEl(doc, 'span', '', 'Read spheres'));
+      const select = doc.createElement('select');
+      select.setAttribute('aria-label', 'Read spheres');
+      select.disabled = sphereBusy || currentRow.lifecycle_state !== 'active';
+      for (const [value, text] of [['all', 'All, including unsorted'], ['personal', 'Personal only'], ['professional', 'Professional only'], ['both', 'Personal and professional'], ['none', 'None']]) {
+        const option = doc.createElement('option'); option.value = value!; option.textContent = text!; select.appendChild(option);
+      }
+      select.value = currentRow.read_spheres === undefined ? 'all' : currentRow.read_spheres.length === 0 ? 'none'
+        : currentRow.read_spheres.length === 2 ? 'both' : currentRow.read_spheres[0]!;
+      select.addEventListener('change', async () => {
+        if (sphereBusy) return;
+        const ownedFocus = doc.activeElement === select;
+        const value = select.value;
+        const spheres: import('@recued/contracts').Sphere[] | null = value === 'all' ? null : value === 'both' ? ['personal', 'professional']
+          : value === 'none' ? [] : [value as import('@recued/contracts').Sphere];
+        sphereBusy = true; select.disabled = true; headError = null;
+        try {
+          const updated = await opts.grantSetReadSpheresCaller!({ contract_id: currentRow.contract_id, read_spheres: spheres });
+          if (disposed) return;
+          const next = { ...currentRow }; delete (next as { read_spheres?: unknown }).read_spheres;
+          currentRow = { ...next, ...(updated.read_spheres !== undefined ? { read_spheres: updated.read_spheres } : {}) };
+        } catch (error) { if (!disposed) headError = `Recued could not change sphere access: ${errMessage(error)}`; }
+        finally { sphereBusy = false; if (!disposed) {
+          const restore = ownedFocus && (doc.activeElement === doc.body || doc.activeElement === select);
+          paintHead(); if (restore) (head.querySelector('[aria-label="Read spheres"]') as HTMLElement | null)?.focus();
+        } }
+      });
+      label.appendChild(select); host.appendChild(label);
+      host.appendChild(makeEl(doc, 'span', 'contracts-sphere-hint', 'Choosing a sphere withholds unsorted items. All also exposes unsorted items. Source grants still apply. Readers without item filtering refuse; use the situation tool or local work reads for scoped records.'));
+    };
     let detailHeading: HTMLElement | null = null;
 
     /** Toggle one L1 door type via `setDoorTypes`, then reconcile `currentRow`
@@ -2437,6 +2494,7 @@ export const bootstrapContractsRoute = (
       detailHeading = nextDetailHeading;
       head.appendChild(nextDetailHeading);
       appendBadgeAndPill(doc, head, currentRow);
+      appendSphereControl(head);
       // L1 door open/close — editable only for an ACTIVE ordinary contract (a non-active
       // door can't dispatch, so its door types are moot).
       if (canEditDoors() && currentRow.lifecycle_state === 'active') {
@@ -2675,6 +2733,18 @@ export const bootstrapContractsRoute = (
     detail.appendChild(tabBody);
     if (activeTab !== null) selectTab(activeTab, false);
 
+    if (opts.permissionWorkbenchCall && !row.is_self && !isCustomerTemplateRow(row) && anonymousDoorType(row) === null) {
+      const permissionHost = doc.createElement('details');
+      const summary = doc.createElement('summary'); summary.textContent = 'Permission tests and reviewed grants'; permissionHost.append(summary);
+      permissionHost.addEventListener('toggle', () => {
+        if (!permissionHost.open || permissionPanel || disposed || !body.contains(permissionHost) || selectedContractId !== row.contract_id) return;
+        permissionPanel = mountPermissionRegressionPanel({ host: permissionHost, contractId: row.contract_id, call: opts.permissionWorkbenchCall!,
+          ...(opts.beginPermissionWork ? { beginWork: opts.beginPermissionWork } : {}),
+          onActivated: () => { void detailGrantPanel?.refresh(); } });
+      });
+      detail.append(permissionHost);
+    }
+
     body.appendChild(detail);
     // Exact contract navigation is asynchronous: the activating list row is
     // gone by the time the detail resolves. Move focus to the new page-level
@@ -2844,6 +2914,13 @@ export const bootstrapContractsRoute = (
       activeListTab === 'built-in' ? [SELF_ROW, ...rows] : rows,
     getViewMode: () => viewMode,
     getSelectedContractId: () => selectedContractId,
+    getRunPageContext: () => {
+      const selected = !disposed && viewMode === 'detail' && loadErrorMessage === null
+        ? rows.find(row => row.contract_id === selectedContractId) : undefined;
+      if (!selected) return null;
+      const object = runPageObject('contract', selected.contract_id, { ...selected, name: selected.display_name });
+      return { label: object.label, objects: [object] };
+    },
     getActiveTab: () => activeTab,
     getListTab: () => activeListTab,
     permissionsPanel: () => connectPanel,
@@ -2854,7 +2931,7 @@ export const bootstrapContractsRoute = (
     hasInFlightWork: hasContractsInFlightWork,
     inFlightWorkPrompt: () =>
       hasContractsInFlightWork()
-        ? 'Something is still happening. Leave anyway?'
+        ? permissionPanel?.hasUnsavedChanges() ? 'Permission tests have unsaved edits. Leave anyway?' : 'Something is still happening. Leave anyway?'
         : null,
     getRecoveryContextFreshness: () =>
       opts.contractsListCaller !== undefined && loadErrorMessage === null
@@ -2866,6 +2943,8 @@ export const bootstrapContractsRoute = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      permissionPanel?.dispose(); permissionPanel = null;
+      standingTasksPanel?.dispose(); standingTasksPanel = null;
       if (suggestedRulesPanel !== null) {
         suggestedRulesPanel.dispose();
         suggestedRulesPanel = null;

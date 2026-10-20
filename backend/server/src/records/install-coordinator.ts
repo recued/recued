@@ -179,6 +179,8 @@ export interface UninstallRecordsPackAtomicDeps {
   registry: Pick<ManifestRegistry, 'unregister'>;
   /** Bounded old-activation drain before retain/export/purge. */
   quiescence_timeout_ms?: number;
+  /** Reviewed pack removal rechecks after quiescence, in the mutation turn. */
+  beforeMutation?(): void;
   applyAudience?: InstallRecordsPackAtomicDeps['applyAudience'];
 }
 
@@ -826,6 +828,7 @@ export const installRecordsPackAtomic = async (
         authored_pack_slug: owner.pack_slug,
         publisher: owner.publisher,
         pack_version: input.manifest.version,
+        dependencies: input.manifest.dependencies ?? [],
         contents: input.by_ref_contents ?? [],
         local_catalogs: [{
           ingredient_id: catalogId,
@@ -956,6 +959,7 @@ export const uninstallRecordsPackAtomic = async (
     deps.contractStore.transaction(() => {
       // Data lifecycle first. If any later capability deletion throws, the
       // outer transaction restores both data state and capabilities.
+      deps.beforeMutation?.();
       if (disposition === 'purge') {
         deps.recordsStore.purgeNamespace(owner, input.confirmation!);
       } else {

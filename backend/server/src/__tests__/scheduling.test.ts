@@ -210,6 +210,10 @@ describe('scheduler loop', () => {
     errors: [],
     duration_ms: 0,
   });
+  const failedExecuteResponse = (recipeId: string) => ({
+    ...successfulExecuteResponse(recipeId), success: false,
+    errors: [{ code: 'fixture_failure', message: 'Synthetic failed execution' }],
+  });
 
   const mkExecuteDeps = (fired: string[]): ExecuteHandlerDeps => ({
     recipeStore: {
@@ -242,7 +246,7 @@ describe('scheduler loop', () => {
 
     const execDeps: ExecuteHandlerDeps = {
       recipeStore: {
-        get: (id: string) => { fired.push(id); return { recipe_id: id, steps: [], version: 1 } as any; },
+        get: (id: string) => ({ recipe_id: id, steps: [], version: 1 }) as any,
         size: () => 1,
       } as unknown as ExecuteHandlerDeps['recipeStore'],
       executorConfig: { manifests: { get: () => undefined, size: () => 0 } as any, vault: {} },
@@ -253,6 +257,7 @@ describe('scheduler loop', () => {
     const sched = createScheduler({
       store,
       executeDeps: execDeps,
+      execute: async (_deps, request) => { fired.push(request.recipe_id!); return failedExecuteResponse(request.recipe_id!); },
       now: () => boundTime,
     });
 
@@ -263,9 +268,7 @@ describe('scheduler loop', () => {
 
     const after = store.get('s1')!;
     expect(after.last_run_at).toBe(boundTime);
-    // last_status reflects what executeRecipe returned — with stubbed deps,
-    // the execute will error out downstream; we only assert that SOMETHING
-    // was written (not null).
+    // The injected execution failure is persisted after exactly one dispatch.
     expect(after.last_status).not.toBeNull();
     // next_run_at must be recomputed on fire so the stored value doesn't
     // drift. For "0 9 * * *" firing at 09:00, next is tomorrow 09:00.
@@ -347,16 +350,14 @@ describe('scheduler loop', () => {
       store,
       executeDeps: {
         recipeStore: {
-          get: (id: string) => {
-            fired.push(id);
-            return { recipe_id: id, steps: [], version: 1 } as any;
-          },
+          get: (id: string) => ({ recipe_id: id, steps: [], version: 1 }) as any,
           size: () => 1,
         } as unknown as ExecuteHandlerDeps['recipeStore'],
         executorConfig: { manifests: { get: () => undefined, size: () => 0 } as any, vault: {} },
         baseVault: {},
         instanceId: 's',
       },
+      execute: async (_deps, request) => { fired.push(request.recipe_id!); return failedExecuteResponse(request.recipe_id!); },
       now: () => runAt + 5_000,
     });
 
@@ -377,7 +378,7 @@ describe('scheduler loop', () => {
     const db = new Database(':memory:');
     const store = createScheduleStore(db);
     const boundTime = new Date(2026, 3, 14, 9, 0, 0).getTime();
-    let recipeGetCalls = 0;
+    let executionCalls = 0;
 
     store.set({
       schedule_id: 's1', recipe_id: 'slow-recipe', publisher_id: 'me',
@@ -388,25 +389,23 @@ describe('scheduler loop', () => {
 
     const execDeps: ExecuteHandlerDeps = {
       recipeStore: {
-        get: (id: string) => {
-          recipeGetCalls++;
-          return { recipe_id: id, steps: [], version: 1 } as any;
-        },
+        get: (id: string) => ({ recipe_id: id, steps: [], version: 1 }) as any,
         size: () => 1,
       } as unknown as ExecuteHandlerDeps['recipeStore'],
       executorConfig: { manifests: { get: () => undefined, size: () => 0 } as any, vault: {} },
       baseVault: {},
       instanceId: 's',
     };
-    const sched = createScheduler({ store, executeDeps: execDeps, now: () => boundTime });
+    const sched = createScheduler({ store, executeDeps: execDeps, now: () => boundTime,
+      execute: async (_deps, request) => { executionCalls++; return failedExecuteResponse(request.recipe_id!); } });
 
     // Two overlapping ticks evaluating at the same cron minute.
     const [firedA, firedB] = await Promise.all([sched.tick(), sched.tick()]);
 
     // Only ONE tick fired the schedule.
     expect(firedA.length + firedB.length).toBe(1);
-    // recipeStore.get was called exactly once — no parallel load.
-    expect(recipeGetCalls).toBe(1);
+    // Count the execution boundary; recipe reads may also support validation.
+    expect(executionCalls).toBe(1);
   });
 
   it('re-reads stale list snapshots before an overlapping tick fires a later schedule', async () => {

@@ -62,6 +62,7 @@ import {
 
 import {
   WebclientReauthRequiredError,
+  WebclientNotConnectedError,
   type WebclientWsClient,
 } from './ws-client.js';
 import type { WebclientConnectionStatusController } from './connection-status.js';
@@ -115,6 +116,9 @@ export interface WebclientRpcResultEnvelope {
 
 interface WebclientRpcConnOptions {
   ws: WebclientWsClient;
+  /** These methods must neither queue offline nor reappear after a connected
+   * send fails. Their callers resolve uncertain delivery through receipts. */
+  nonReplayMethods?: ReadonlySet<string>;
   /** Optional connection-status seam (`realtime/connection-status.ts`).
    *  When supplied the conn fails calls fast instead of parking on the
    *  30s per-call timeout while the paired server is unusable. A NEW call
@@ -419,12 +423,18 @@ export const createWebclientRpcConn = <R extends RpcRegistry = ServerRpcRegistry
       // `WebclientReauthRequiredError`; we catch + reject the pending
       // entry with a typed `RpcError` so callers can switch on
       // `code === 'webclient_reauth_required'`.
-      void options.ws
-        .send(envelope)
+      const dispatch = options.nonReplayMethods?.has(method)
+        ? options.ws.send(envelope, { queue: false })
+        : options.ws.send(envelope);
+      void dispatch
         .catch((err: unknown) => {
           const entry = pending.get(requestId);
           if (!entry) return; // already cleaned up (timeout / abort raced)
           pending.delete(requestId);
+          if (err instanceof WebclientNotConnectedError) {
+            entry.reject(new RpcError('server_offline', err.message, undefined, method));
+            return;
+          }
           if (err instanceof WebclientReauthRequiredError) {
             entry.reject(
               new RpcError(

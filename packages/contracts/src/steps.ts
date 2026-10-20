@@ -70,6 +70,8 @@ export type StepPages = 'all';
  *  fields. Middleware that doesn't care (cache, dispatch) forwards it
  *  unchanged. */
 export interface StepMeta {
+  /** Host checkpoint evidence; never copied from authored step JSON. */
+  resource_review?: import('./resource-review.js').ResourceReview;
   /** Actual external tool chosen at the authenticated host entry point. */
   entry_tool_name?: string;
   /** Exact recipe grant selected by host admission, retained for a deferred
@@ -89,6 +91,8 @@ export interface StepMeta {
    *  through the engine — the audit row simply omits both fields in
    *  that case. */
   recipe_id?: string;
+  /** Actual engine recipe bytes; never read from authored step metadata. */
+  recipe_definition_sha256?: string;
   /** D-181 slice 4 — the execution-request anchor `run_id` for this run,
    *  threaded so the long-op live-control substrate can map a running heavy
    *  call (a `service` subprocess) back to its run: the cli executor

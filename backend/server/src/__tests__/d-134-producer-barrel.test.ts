@@ -296,6 +296,10 @@ describe('D-134 P2 — barrel completeness', () => {
       // bound in `composeListeners` (NOT in the post-listener wire — the mint
       // needs the composition-capable install slice that lives there).
       'mcp-pack-first-mint',
+      // D-110 amendment 11a — each watched folder walked again. Builder ships as
+      // `buildWatchedFolderWalkTask`; gated on `watchedFolders`, the file stack
+      // (absent on a db-less boot).
+      'watched-folder-walk',
     ]);
 
     const missing: string[] = [];

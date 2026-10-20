@@ -26,9 +26,13 @@ import {
   mayHoldAskForQuietHours,
   resolveQuietHoursOccurrence,
   resolveServerTimeZone,
+  shouldSuppressForQuietHours,
 } from '@recued/contracts';
 import { createQuietHoursStore } from '../../storage/quiet-hours-store.js';
 import { createServerTimeZoneStore } from '../../storage/server-timezone-store.js';
+import { authorizeReminderOrigin, resolveOwnerReminderDestinations } from '../../situations/reminder-destinations.js';
+import { createOwnerNotificationConnection } from './owner-email-connection.js';
+import { createHouseholdDeliveryStore } from '../../storage/household-delivery-store.js';
 import type Database from 'better-sqlite3';
 import type {
   BatchAskRecord,
@@ -47,6 +51,7 @@ import { createBatchAskStore } from '@recued/storage';
 import type { ActivityAction, ActivityEntry, AuditLogStore, CheckpointStore } from '@recued/storage';
 import {
   createAskStore,
+  createAskDeliveryStore,
   createBridgeChannel,
   createNotificationBlock,
   createNotificationSettingsStore,
@@ -55,10 +60,13 @@ import {
   type Channel,
   type ChannelName,
   type ChannelReadinessProbe,
+  type ConnectionRosterProbe,
   type NotificationBlock,
+  type PlainConnectionProbe,
   type AnswerAuditRecord,
   type NotificationSettings,
   type PendingAsk,
+  type AskDeliveryRecord,
   type RemoteChannel,
 } from '@recued/notification';
 import {
@@ -113,6 +121,7 @@ import type { ReceptionInboxFanoutMode } from '@recued/contracts';
  *  prerequisites (`db`, `auditLog`, `checkpointStore`,
  *  `annotationStore`) being defined before calling in. */
 export interface ComposeNotificationBlockDeps {
+  isVaultUnlocked?: () => boolean;
   /** D-137 — late-bound chat sink for a run that settled after its turn.
    *  Absent ⇒ late results are not recallable, the behaviour before this. */
   readonly getRunSettledSink?: () => ((settled: PreflightRunSettled) => void) | undefined;
@@ -209,6 +218,10 @@ export interface ComposeNotificationBlockDeps {
    *  Strict-additive capability flip — no behavioral change for the
    *  other channels. */
   emailChannel?: Channel;
+  /** A mailbox's own address, by its slug: where an email connection naming
+   *  no recipient sends (D-158 amendment 2026-10-18). Absent ⇒ such a
+   *  connection gives no reminder destination. */
+  mailboxAddress?: (slug: string) => string | undefined;
   /** D-169 P1 — optional snapshot of currently-connected bridge
    *  `client_token_id`s, used to tag each per-bridge sub-row in
    *  Settings → Notifications with a live presence flag (N.6 UX —
@@ -323,7 +336,7 @@ export const buildAnswerActivity = (record: AnswerAuditRecord): ActivityEntry =>
   // once per ask, inside the once-only `open → answered` dedup window.
   activity_id: `notification.answered-${record.answered_at}-${record.ask_id}`,
   timestamp: record.answered_at,
-  action: answerAuditAction(record.option),
+  action: record.reminder ? 'reminder_answer' : answerAuditAction(record.option),
   target: record.ask_id,
   ...answerActivitySubject(record.handler_payload),
   // Structured beside the prose: the channel that carried the winning answer
@@ -460,6 +473,7 @@ export const composeNotificationBlock = (
             eventBus.emit({
               kind: 'notification.ask',
               ask_id: event.ask_id,
+              ...(event.reminder ? { reminder: true } : {}),
               ...(event.message.title !== undefined
                 ? { title: event.message.title }
                 : {}),
@@ -480,6 +494,7 @@ export const composeNotificationBlock = (
                 ? { note_prompt: event.note_prompt }
                 : {}),
               ...(event.body !== undefined ? { body: event.body } : {}),
+              ...(event.resource_review ? { resource_review: event.resource_review } : {}),
             });
             return;
           case 'notification.ask_closed':
@@ -546,6 +561,22 @@ export const composeNotificationBlock = (
   // declared transport is probed correctly here with no edit — and, because the
   // default is fail-closed, an unwired one reads `not_ready` rather than
   // silently reading ready.
+  const connectionRosterProbe: ConnectionRosterProbe = async channel => {
+    if (!connectionStore || channel === 'ui' || channel === 'bridge') return [];
+    const rows = typeof connectionStore.list === 'function' ? connectionStore.list({ kind: 'notification' })
+      : [connectionStore.get('notification', channel)].filter((row): row is NonNullable<typeof row> => row !== null);
+    return rows.filter(row => row.subtype === channel || (!row.subtype && row.name === channel))
+      .map(row => ({ name: row.name, display_name: row.display_name, enrolled_at: row.enrolled_at }));
+  };
+  // D-158 amendments 2026-10-19/20 — what Settings says plain notifications and
+  // approvals go through, resolved as each channel's plain path resolves it: the
+  // owner's choice for the channel, else the only one, else the one named after
+  // it (`wire-email-channel.ts`, `wire-remote-channel.ts`).
+  const plainConnectionProbe: PlainConnectionProbe = async channel => {
+    if (!connectionStore || !hasAdapter(channel)) return null;
+    const row = await createOwnerNotificationConnection(db, connectionStore, channel)();
+    return 'reason' in row ? null : { name: row.name, display_name: row.display_name };
+  };
   const readinessProbe: ChannelReadinessProbe = async (
     channel: ChannelName,
   ): Promise<boolean> => {
@@ -553,11 +584,11 @@ export const composeNotificationBlock = (
     if (channel === 'bridge') {
       if (!hasAdapter('bridge')) return false;
       if (!clientTokens) return false;
-      return clientTokens.list({ client_kind: 'bridge' }).length > 0;
+      return bridgeChannel.reminderReady();
     }
     if (!hasAdapter(channel)) return false;
     if (!connectionStore) return false;
-    return connectionStore.get('notification', channel) !== null;
+    return (await connectionRosterProbe(channel)).length > 0;
   };
 
   // D-169 P1 — per-bridge roster for Settings → Notifications. The
@@ -635,10 +666,29 @@ export const composeNotificationBlock = (
 
   const block = createNotificationBlock({
     askStore,
+    ...(deps.isVaultUnlocked ? { isVaultUnlocked: deps.isVaultUnlocked } : {}),
+    deliveryStore: createAskDeliveryStore(createSQLiteCollection<AskDeliveryRecord>(db, 'ask_deliveries')),
     settingsStore,
     shouldHoldAsk,
+    shouldHoldReminder: () => shouldSuppressForQuietHours({ policy: quietHoursStore.read(), instant: Date.now(),
+      timeZone: resolveServerTimeZone(serverTimeZoneStore.read(), Intl.DateTimeFormat().resolvedOptions().timeZone) }),
     channels: allChannels,
     readinessProbe,
+    connectionRosterProbe,
+    plainConnectionProbe,
+    authorizeReminderOrigin: (destination, origin, reply) => {
+      const rows = connectionStore ? typeof connectionStore.list === 'function' ? connectionStore.list({ kind: 'notification' })
+        : [connectionStore.get('notification', destination.connection_name ?? '')].filter((row): row is NonNullable<typeof row> => row !== null) : [];
+      return authorizeReminderOrigin(destination, origin, rows, createHouseholdDeliveryStore(db), reply, deps.mailboxAddress);
+    },
+    resolveReminderDestinations: async settings => resolveOwnerReminderDestinations({ settings,
+      isHousehold: row => createHouseholdDeliveryStore(db).isHousehold(row),
+      ...(deps.mailboxAddress ? { mailboxAddress: deps.mailboxAddress } : {}),
+      connections: connectionStore ? typeof connectionStore.list === 'function' ? connectionStore.list({ kind: 'notification' })
+        : (await Promise.all(Object.keys(settings).map(channel => connectionStore.get('notification', channel))))
+          .filter((row): row is NonNullable<typeof row> => row !== null) : [],
+      available_channels: allChannels.filter(channel => channel.deliverAskDelivery || channel.name === 'ui').map(channel => channel.name),
+    }),
     bridgeRosterProbe,
     prepareRecoveredAsk: (ask) => {
       if (ask.handler_kind !== PEER_ASK_HANDLER_KIND) return;

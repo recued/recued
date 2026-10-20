@@ -55,6 +55,8 @@ export type RunModalExecuteCaller = (args: {
   /** D-320 §3.5 — the connection this run uses, by slot, where it moved a
    *  Connection line; this run only. */
   connections?: Record<string, string>;
+  /** Expected source account revisions for page-prefilled arguments. */
+  connection_revisions?: Record<string, string>;
 }) => Promise<ServerExecuteResponse>;
 
 /** Lists ALL schedules; the modal filters to this recipe's. */
@@ -152,6 +154,8 @@ export interface RunModalMailFactDraft {
 
 /** The mutable UI state for one open instance. */
 export interface RunModalState {
+  /** Untouched account-bound page values were cleared after a source change. */
+  prefill_cleared?: boolean;
   /** Active tab. */
   tab: RunModalTab;
   /** D-319 — the dish a run goes as, and a new schedule or trigger is added
@@ -234,6 +238,17 @@ export interface RunModalState {
 
 /** Options for `wireRunModal`. */
 export interface WireRunModalOptions {
+  /** Human-readable source of the opener's argument prefill. */
+  prefillSource?: string;
+  /** Initial Run arguments, including which fields depend on each source account. */
+  pagePrefill?: {
+    config: Readonly<Record<string, unknown>>;
+    context: Readonly<Record<string, unknown>>;
+    connections?: Readonly<Record<string, string>>;
+    /** Source account revisions, by connection slot. */
+    connectionRevisions?: Readonly<Record<string, string>>;
+    connectionFields?: Readonly<Record<string, { config: readonly string[]; context: readonly string[] }>>;
+  };
   /** D-269 step 1 — the server's resolved IANA zone, for the scheduled-run
    *  activation stamp. A thunk because the host fetches it once, asynchronously.
    *  ⚠ Absent ⇒ falls back to THIS browser's zone, which is what every caller
@@ -251,7 +266,8 @@ export interface WireRunModalOptions {
   /** D-319 — the dish it was opened from. Absent ⇒ the main dish. */
   dish_id?: string;
   /** D-320 §4 — the recipe's slots (`packs.connections.recipe`), read when the
-   *  dialog opens: the Run tab's Connection lines, preselected from the dish it
+   *  dialog opens and before submitting page arguments: the Run tab's Connection
+   *  lines, preselected from the dish it
    *  runs as. Absent, or a read that fails ⇒ no lines. */
   connectionSlots?: () => Promise<{ slots: ReadonlyArray<ConnectionLineSlot> }>;
   /** DOM factory — pass for non-browser (test) environments. */

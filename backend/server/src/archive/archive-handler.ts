@@ -1,14 +1,14 @@
 /** Phase G (D-109) — `server.archive.*` rpc handler slice.
  *
- *  Three methods:
+ *  Owner-only archive methods:
  *    - `server.archive.export`  → kick off an async export, return job_id
  *    - `server.archive.status`  → poll progress of an export job
  *    - `server.archive.import`  → drain + restore from a path on disk
+ *    - `server.archive.import_status` → exact durable import outcome
  *
  *  Exports run asynchronously because a full warehouse dump can take
- *  tens of seconds; imports are "blocking" (the rpc resolves once the
- *  in-process restore completes + the server is back up). The
- *  paired extension polls status and shows the progress bar.
+ *  tens of seconds. Imports respond after staging, before drain and swap.
+ *  Their separate outcome lookup reads the swap journal's durable receipt.
  *
  *  The handler wraps the existing `exportArchive` + `importArchive`
  *  helpers — it does NOT reimplement the crypto or the file format.
@@ -22,6 +22,8 @@ import { isAbsolute, join, resolve, sep } from 'node:path';
 import {
   RpcError,
   type ArchiveImportRebind,
+  type ArchiveImportOperationStatus,
+  type ArchiveRemoteTarget,
   type ArchiveJobStatus,
   type ArchiveManifest,
   type ArchiveRealmRelation,
@@ -34,6 +36,9 @@ import type { AuditLogStore } from '@recued/storage';
 import { EXPORT_TTL_MS } from './export-store.js';
 import { SCHEMA_VERSION } from './archive-format.js';
 import { archiveSchemaTooNew } from './archive-import.js';
+import { archiveImportOperationId } from './archive-import-receipts.js';
+import { ArchiveRestoreCleanupError } from './archive-restore.js';
+import type { RemoteBackups } from './remote-backups.js';
 import type { ClientKind } from '../pairing/client-tokens.js';
 import {
   resolveGatedClientInstanceId,
@@ -62,6 +67,11 @@ export interface ArchiveImportDrivingClient {
  *  Kept abstract so tests can inject a spy without bringing up the
  *  full server harness. */
 export interface ArchiveRuntime {
+  /** Production persists these outside the database being restored. Optional
+   * only for legacy in-process adapters; missing support never implies success. */
+  reserveImportOperation?(id: string): void;
+  refuseImportOperation?(id: string): void;
+  importOperationStatus?(id: string): ArchiveImportOperationStatus;
   /** Synchronous pre-flight: does the server have the machinery
    *  (recovery key, db handle, blob store) to run an export right
    *  now? Returns a human reason when the answer is no; the handler
@@ -116,8 +126,8 @@ export interface ArchiveRuntime {
      *  (`realm_mismatch`) vs a fresh-but-non-empty target (`target_not_empty`). */
     reason?: 'realm_mismatch' | 'target_not_empty';
   }>;
-  /** Trigger a restore. Returns the manifest + the restored_at unix-ms
-   *  once the staged restore is committed; the server then restarts and
+  /** Trigger a restore. Returns the manifest + the acceptance timestamp
+   *  before the staged restore commits; the server then restarts and
    *  the caller reconnects after respawn. `recoveryKey` is the user's
    *  mnemonic (derives the decryption key; never persisted).
    *
@@ -128,6 +138,7 @@ export interface ArchiveRuntime {
    *  mint is best-effort: a failure logs + drops `rebind` (the restore still
    *  commits; the client re-pairs) — it never fails the restore. */
   runImport(opts: {
+    operation_id?: string;
     path: string;
     force: boolean;
     recoveryKey: string;
@@ -141,6 +152,7 @@ export interface ArchiveRuntime {
 
 export interface ArchiveRpcDeps {
   runtime: ArchiveRuntime;
+  remoteBackups?: RemoteBackups;
   auditLog?: AuditLogStore;
   /** The data folder (`dirname(dbPath)`) — used purely for resolving relative
    *  user-supplied paths in `server.archive.import`. */
@@ -191,7 +203,12 @@ export interface ArchiveHandler {
 export type ArchiveMethods =
   | 'server.archive.export'
   | 'server.archive.status'
-  | 'server.archive.import';
+  | 'server.archive.import'
+  | 'server.archive.import_status'
+  | 'server.archive.destinations'
+  | 'server.archive.backups'
+  | 'server.archive.backup.check'
+  | 'server.archive.backup.retrieve';
 
 export const makeArchiveHandlers = (
   deps: ArchiveRpcDeps | undefined,
@@ -242,6 +259,7 @@ export const makeArchiveHandlers = (
     includeBlobs: boolean,
     includePassport: boolean,
     recoveryKey: string,
+    remote?: ArchiveRemoteTarget,
   ): Promise<string> => {
     const preflight = deps.runtime.canExport();
     if (!preflight.ok) {
@@ -265,7 +283,13 @@ export const makeArchiveHandlers = (
     // the outer `finally` releases it so a failure never wedges all exports.
     exportInFlight = true;
     let dispatched = false;
+    let remoteReserved = false;
     try {
+      const job_id = `arx-${randomUUID().slice(0, 12)}`;
+      if (remote !== undefined) {
+        if (!deps.remoteBackups) throw new RpcError('not_configured', 'Remote backups are not available on this server.', 503);
+        deps.remoteBackups.reserve(remote, job_id); remoteReserved = true;
+      }
       // Prune FIRST: a TTL-expired export sitting on disk is exactly the kind
       // of dead weight the storage pre-flight should not count against us, so
       // free it (file sweep + in-memory job-record GC) before estimating need
@@ -281,11 +305,11 @@ export const makeArchiveHandlers = (
           507,
         );
       }
-      const job_id = `arx-${randomUUID().slice(0, 12)}`;
       const job: InternalJob = {
         id: job_id,
         started_at: now(),
-        status: { state: 'running', bytes_written: 0, progress_pct: 0 },
+        status: { state: 'running', bytes_written: 0, progress_pct: 0,
+          ...(remote === undefined ? {} : { remote_backup_id: remote.operation_id.toLowerCase() }) },
       };
       jobs.set(job_id, job);
 
@@ -303,12 +327,14 @@ export const makeArchiveHandlers = (
       void (async () => {
         try {
           const res = await deps.runtime.runExport({ includeBlobs, includePassport, recoveryKey });
+          if (remote !== undefined) await deps.remoteBackups!.publish(remote.operation_id.toLowerCase(), res);
           job.status = {
             state: 'done',
             bytes_written: res.bytes_written,
             progress_pct: 100,
             path: res.path,
             expires_at: res.expires_at,
+            ...(remote === undefined ? {} : { remote_backup_id: remote.operation_id.toLowerCase() }),
           };
           await deps.auditLog?.logActivity({
             activity_id: '',
@@ -318,11 +344,14 @@ export const makeArchiveHandlers = (
             detail: `path=${res.path} bytes=${res.bytes_written}`,
           }).catch(() => { /* best-effort */ });
         } catch (err) {
+          if (remote !== undefined) deps.remoteBackups!.failed(remote.operation_id.toLowerCase(), 'export_failed');
           job.status = {
             state: 'error',
             bytes_written: job.status.bytes_written,
             progress_pct: job.status.progress_pct,
-            error: err instanceof Error ? err.message : String(err),
+            error: remote === undefined ? (err instanceof Error ? err.message : String(err))
+              : 'Remote backup delivery is not confirmed. Check the saved backup before starting another.',
+            ...(remote === undefined ? {} : { remote_backup_id: remote.operation_id.toLowerCase() }),
           };
         } finally {
           exportInFlight = false;
@@ -335,18 +364,21 @@ export const makeArchiveHandlers = (
       // Released here ONLY when we bailed before handing off to the export
       // (preflight refusal / audit-or-job setup throw) — so a failed start
       // never leaves the latch stuck closed.
-      if (!dispatched) exportInFlight = false;
+      if (!dispatched) {
+        exportInFlight = false;
+        if (remoteReserved) deps.remoteBackups!.failed(remote!.operation_id.toLowerCase(), 'export_failed');
+      }
     }
   };
 
   const handleExport = async (
-    args: { include_blobs?: unknown; include_passport?: unknown; recoveryKey?: unknown },
+    args: { include_blobs?: unknown; include_passport?: unknown; recoveryKey?: unknown; remote?: ArchiveRemoteTarget },
   ): Promise<{ job_id: string }> => {
     const recoveryKey = requireRecoveryKey(args.recoveryKey);
     // Both toggles default ON — only an explicit `false` opts out.
     const include_blobs = args.include_blobs === false ? false : true;
     const include_passport = args.include_passport === false ? false : true;
-    const job_id = await startExport(include_blobs, include_passport, recoveryKey);
+    const job_id = await startExport(include_blobs, include_passport, recoveryKey, args.remote);
     return { job_id };
   };
 
@@ -357,6 +389,12 @@ export const makeArchiveHandlers = (
       throw new RpcError('bad_request', 'job_id is required', 400);
     }
     const job = jobs.get(args.job_id);
+    // A damaged remote ledger must fail remote work closed without disabling
+    // ordinary local backups, whose live job already carries its own result.
+    if (!job || job.status.remote_backup_id !== undefined) {
+      const remote = deps.remoteBackups?.status(args.job_id);
+      if (remote) return remote;
+    }
     if (!job) {
       throw new RpcError('archive_job_unknown', `no archive job '${args.job_id}'`, 404);
     }
@@ -428,6 +466,7 @@ export const makeArchiveHandlers = (
       dry_run?: unknown;
       recoveryKey?: unknown;
       currentRealmKey?: unknown;
+      operation_id?: unknown;
     },
     ctx: WsClient,
   ): Promise<{
@@ -436,6 +475,7 @@ export const makeArchiveHandlers = (
     realm: ArchiveRealmRelation;
     rebind?: ArchiveImportRebind;
     schema_compat?: ArchiveSchemaCompat;
+    operation_id?: string;
   }> => {
     if (typeof args.path !== 'string' || args.path.length === 0) {
       throw new RpcError('bad_request', 'path is required', 400);
@@ -470,128 +510,145 @@ export const makeArchiveHandlers = (
       return { manifest, restored_at: null, realm, schema_compat };
     }
 
-    // Q2 ownership gate — prove CURRENT-realm ownership BEFORE the
-    // destructive swap, not merely that the archive decrypts. M5 S3 adds the
-    // fresh-but-non-empty target gate (`target_not_empty`).
-    const { realm, authorized, reason } = await deps.runtime.verifyRestoreRealm({
-      recoveryKey,
-      currentRealmKey,
-    });
-    if (!authorized) {
-      if (reason === 'target_not_empty') {
+    const requestedId = args.operation_id === undefined ? randomUUID() : archiveImportOperationId(args.operation_id);
+    if (requestedId === null) throw new RpcError('invalid_args', 'operation_id must be a UUID', 400);
+    try { deps.runtime.reserveImportOperation?.(requestedId); }
+    catch (error) {
+      if (error instanceof Error && error.message.includes('already in use')) {
+        throw new RpcError('invalid_args', 'operation_id is already in use; ask server.archive.import_status instead', 400);
+      }
+      throw error;
+    }
+    try {
+      // Q2 ownership gate — prove CURRENT-realm ownership BEFORE the
+      // destructive swap, not merely that the archive decrypts. M5 S3 adds the
+      // fresh-but-non-empty target gate (`target_not_empty`).
+      const { realm, authorized, reason } = await deps.runtime.verifyRestoreRealm({
+        recoveryKey,
+        currentRealmKey,
+      });
+      if (!authorized) {
+        if (reason === 'target_not_empty') {
+          throw new RpcError(
+            'archive_restore_target_not_empty',
+            'this server already holds data — a destructive restore onto a ' +
+              'not-yet-enrolled server is only allowed when it is empty; enroll a ' +
+              'recovery key and restore through Settings instead',
+            409,
+          );
+        }
         throw new RpcError(
-          'archive_restore_target_not_empty',
-          'this server already holds data — a destructive restore onto a ' +
-            'not-yet-enrolled server is only allowed when it is empty; enroll a ' +
-            'recovery key and restore through Settings instead',
+          'archive_realm_mismatch',
+          'this archive belongs to a different identity — restoring it over this ' +
+            "server requires THIS server's recovery key to authorize the replacement",
+          403,
+        );
+      }
+
+      // ⛔ A CROSS-REALM restore must run OFFLINE. The online path stages while the
+      // server keeps serving: it overlays the archive's blobs into the LIVE CAS,
+      // re-encrypted under the RESTORED realm's key, BEFORE the drain quiesces the
+      // engine. For a FOREIGN realm (a different blob key) that overwrites the
+      // canonical objects the running server still references, so its live reads
+      // of any overlapping hash fail (`aead: decryption failed`) for the whole
+      // staging window — a mid-restore corruption of a server that is still up.
+      // Same-realm restore is safe (same key ⇒ the re-encryption stays readable),
+      // so only the cross-realm case is refused. The offline `archive import` runs
+      // on a STOPPED server, where there are no live reads to break.
+      if (realm === 'cross') {
+        throw new RpcError(
+          'archive_cross_realm_needs_offline',
+          "restoring a DIFFERENT realm's backup over a running server would corrupt " +
+            'its live blob reads mid-restore. Stop the server and run ' +
+            '`recued archive import <path>` instead.',
           409,
         );
       }
-      throw new RpcError(
-        'archive_realm_mismatch',
-        'this archive belongs to a different identity — restoring it over this ' +
-          "server requires THIS server's recovery key to authorize the replacement",
-        403,
-      );
-    }
 
-    // ⛔ A CROSS-REALM restore must run OFFLINE. The online path stages while the
-    // server keeps serving: it overlays the archive's blobs into the LIVE CAS,
-    // re-encrypted under the RESTORED realm's key, BEFORE the drain quiesces the
-    // engine. For a FOREIGN realm (a different blob key) that overwrites the
-    // canonical objects the running server still references, so its live reads
-    // of any overlapping hash fail (`aead: decryption failed`) for the whole
-    // staging window — a mid-restore corruption of a server that is still up.
-    // Same-realm restore is safe (same key ⇒ the re-encryption stays readable),
-    // so only the cross-realm case is refused. The offline `archive import` runs
-    // on a STOPPED server, where there are no live reads to break.
-    if (realm === 'cross') {
-      throw new RpcError(
-        'archive_cross_realm_needs_offline',
-        "restoring a DIFFERENT realm's backup over a running server would corrupt " +
-          'its live blob reads mid-restore. Stop the server and run ' +
-          '`recued archive import <path>` instead.',
-        409,
-      );
-    }
-
-    if (importInFlight) {
-      throw new RpcError(
-        'archive_import_in_progress',
-        'a prior archive import is still running — wait for it to finish',
-        409,
-      );
-    }
-    importInFlight = true;
-    await deps.auditLog?.logActivity({
-      activity_id: '',
-      timestamp: now(),
-      action: 'archive_import_start',
-      target: resolvedPath,
-      detail: [force ? 'force=true' : undefined, `realm=${realm}`]
-        .filter(Boolean)
-        .join(' '),
-    }).catch(() => { /* best-effort */ });
-
-    // M5 S2 — resolve the import-driving client's paired identity so the
-    // runtime can mint it a fresh bearer into the restored db (its old bearer
-    // rode in the swapped-out db). Only when the caller is a verified paired
-    // client (instance + kind + owner all present); else no handoff → the
-    // client re-pairs. `import` is owner-only, so this is normally present.
-    const drivingInstanceId = resolveGatedClientInstanceId(ctx);
-    const drivingOwnerId = resolveGatedClientOwnerId(ctx);
-    const drivingClient: ArchiveImportDrivingClient | undefined =
-      drivingInstanceId && ctx.client_kind && drivingOwnerId
-        ? {
-            instance_id: drivingInstanceId,
-            client_kind: ctx.client_kind,
-            ...(ctx.client_label !== undefined ? { client_label: ctx.client_label } : {}),
-            display_name: ctx.display_name,
-            user_id: drivingOwnerId,
-          }
-        : undefined;
-
-    try {
-      const { manifest, restored_at, rebind } = await deps.runtime.runImport({
-        path: resolvedPath,
-        force,
-        recoveryKey,
-        ...(drivingClient ? { drivingClient } : {}),
-      });
+      if (importInFlight) {
+        throw new RpcError(
+          'archive_import_in_progress',
+          'a prior archive import is still running — wait for it to finish',
+          409,
+        );
+      }
+      importInFlight = true;
       await deps.auditLog?.logActivity({
         activity_id: '',
         timestamp: now(),
-        action: 'archive_import_complete',
+        action: 'archive_import_start',
         target: resolvedPath,
-        detail: `records=${manifest.record_count} realm=${realm}`,
+        detail: [force ? 'force=true' : undefined, `realm=${realm}`]
+          .filter(Boolean)
+          .join(' '),
       }).catch(() => { /* best-effort */ });
-      // SUCCESS keeps `importInFlight` LATCHED — do NOT clear it. A successful
-      // import has scheduled the restart drain (fire-and-forget); the staged db
-      // is not committed until that drain's callback runs, and the process
-      // ALWAYS exit()s at the end of it (→ the supervisor respawns a fresh
-      // handler with `importInFlight=false`). Clearing the latch here would
-      // re-open the window where a second import slips in and overwrites the
-      // staging file before the first commits — the wrong-db-commit race.
-      return { manifest, restored_at, realm, ...(rebind ? { rebind } : {}) };
-    } catch (err) {
-      // FAILURE releases the latch so the user can retry. `runImport` only
-      // throws from the staging phase, BEFORE it schedules any restart, so no
-      // drain is pending — the server stays up and the latch must reopen.
-      importInFlight = false;
-      // M5 S3.0 — a newer-schema archive onto this (older) binary is refused at
-      // the staging stream (checkManifestCompat); map it to an actionable wire
-      // error so the client can tell the user to upgrade the server first. (The
-      // dry-run already surfaces this via `schema_compat`; this is the
-      // server-enforced backstop if a client commits anyway.)
-      if (err instanceof Error && /ARCHIVE_SCHEMA_TOO_NEW/.test(err.message)) {
-        throw new RpcError('archive_schema_too_new', err.message, 409);
+
+      // M5 S2 — resolve the import-driving client's paired identity so the
+      // runtime can mint it a fresh bearer into the restored db (its old bearer
+      // rode in the swapped-out db). Only when the caller is a verified paired
+      // client (instance + kind + owner all present); else no handoff → the
+      // client re-pairs. `import` is owner-only, so this is normally present.
+      const drivingInstanceId = resolveGatedClientInstanceId(ctx);
+      const drivingOwnerId = resolveGatedClientOwnerId(ctx);
+      const drivingClient: ArchiveImportDrivingClient | undefined =
+        drivingInstanceId && ctx.client_kind && drivingOwnerId
+          ? {
+              instance_id: drivingInstanceId,
+              client_kind: ctx.client_kind,
+              ...(ctx.client_label !== undefined ? { client_label: ctx.client_label } : {}),
+              display_name: ctx.display_name,
+              user_id: drivingOwnerId,
+            }
+          : undefined;
+
+      try {
+        const { manifest, restored_at, rebind } = await deps.runtime.runImport({
+          operation_id: requestedId,
+          path: resolvedPath,
+          force,
+          recoveryKey,
+          ...(drivingClient ? { drivingClient } : {}),
+        });
+        await deps.auditLog?.logActivity({
+          activity_id: '',
+          timestamp: now(),
+          action: 'archive_import_accepted',
+          target: resolvedPath,
+          detail: `records=${manifest.record_count} realm=${realm}`,
+        }).catch(() => { /* best-effort */ });
+        // SUCCESS keeps `importInFlight` LATCHED — do NOT clear it. A successful
+        // import has scheduled the restart drain (fire-and-forget); the staged db
+        // is not committed until that drain's callback runs, and the process
+        // ALWAYS exit()s at the end of it (→ the supervisor respawns a fresh
+        // handler with `importInFlight=false`). Clearing the latch here would
+        // re-open the window where a second import slips in and overwrites the
+        // staging file before the first commits — the wrong-db-commit race.
+        return { manifest, restored_at, realm, operation_id: requestedId, ...(rebind ? { rebind } : {}) };
+      } catch (err) {
+        // Ordinary staging failures release the latch. An incomplete unwind
+        // keeps it closed until boot, even if its receipt could not be saved.
+        importInFlight = err instanceof ArchiveRestoreCleanupError;
+        // M5 S3.0 — a newer-schema archive onto this (older) binary is refused at
+        // the staging stream (checkManifestCompat); map it to an actionable wire
+        // error so the client can tell the user to upgrade the server first. (The
+        // dry-run already surfaces this via `schema_compat`; this is the
+        // server-enforced backstop if a client commits anyway.)
+        if (err instanceof Error && /ARCHIVE_SCHEMA_TOO_NEW/.test(err.message)) {
+          throw new RpcError('archive_schema_too_new', err.message, 409);
+        }
+        throw err;
       }
-      throw err;
+    } catch (error) {
+      if (!(error instanceof ArchiveRestoreCleanupError)) {
+        try { deps.runtime.refuseImportOperation?.(requestedId); } catch { /* retain uncertainty if the receipt cannot be written */ }
+      }
+      throw error;
     }
   };
 
   const slice: HandlerSlice<ServerRpcRegistry, ArchiveMethods, WsClient> = {
-    methods: ['server.archive.export', 'server.archive.status', 'server.archive.import'],
+    methods: ['server.archive.export', 'server.archive.status', 'server.archive.import', 'server.archive.import_status',
+      'server.archive.destinations', 'server.archive.backups', 'server.archive.backup.check', 'server.archive.backup.retrieve'],
     handlers: {
       'server.archive.export': async (args) =>
         handleExport(args as Parameters<typeof handleExport>[0]),
@@ -599,6 +656,25 @@ export const makeArchiveHandlers = (
         handleStatus(args as Parameters<typeof handleStatus>[0]),
       'server.archive.import': async (args, ctx) =>
         handleImport(args as Parameters<typeof handleImport>[0], ctx),
+      'server.archive.import_status': async args => {
+        const id = archiveImportOperationId(args?.operation_id);
+        if (id === null) throw new RpcError('invalid_args', 'operation_id must be a UUID', 400);
+        return deps.runtime.importOperationStatus?.(id) ?? { status: 'unknown' };
+      },
+      'server.archive.destinations': async () => ({ destinations: deps.remoteBackups?.destinations() ?? [] }),
+      'server.archive.backups': async () => ({ backups: deps.remoteBackups?.list() ?? [] }),
+      'server.archive.backup.check': async args => {
+        const id = archiveImportOperationId(args?.operation_id);
+        if (!id) throw new RpcError('invalid_args', 'operation_id must be a UUID', 400);
+        if (!deps.remoteBackups) throw new RpcError('not_configured', 'Remote backups are unavailable.', 503);
+        return deps.remoteBackups.check(id);
+      },
+      'server.archive.backup.retrieve': async args => {
+        const id = archiveImportOperationId(args?.operation_id);
+        if (!id) throw new RpcError('invalid_args', 'operation_id must be a UUID', 400);
+        if (!deps.remoteBackups) throw new RpcError('not_configured', 'Remote backups are unavailable.', 503);
+        return deps.remoteBackups.retrieve(id);
+      },
     },
   };
 

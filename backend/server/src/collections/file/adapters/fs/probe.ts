@@ -3,7 +3,9 @@
  *  Runs three cheap checks against the configured root:
  *    1. `stat` — directory exists + readable.
  *    2. Write-read-delete a probe file (`.recued-caps-probe-<uuid>`).
- *    3. Attempt a short-lived recursive `fs.watch` subscription.
+ *    3. Attempt a short-lived recursive `fs.watch` subscription, on macOS
+ *       in a watch process of its own (`watch-host.ts`): a close there can block
+ *       an event loop for seconds, and connecting a folder must not freeze the server.
  *       Report `realtime` only when it attaches; otherwise `none`.
  *       Filesystem polling is deliberately not an automatic fallback:
  *       the user can request a bounded one-shot rescan instead.
@@ -17,9 +19,10 @@
 
 import { randomUUID } from 'node:crypto';
 import { access, stat, writeFile, readFile, unlink } from 'node:fs/promises';
-import { constants as fsConstants, watch, type FSWatcher } from 'node:fs';
+import { constants as fsConstants, watch } from 'node:fs';
 import { join } from 'node:path';
 import type { ProbedCaps } from '../../caps.js';
+import { watchOnce, watchesInOwnProcess } from '../../watch-host.js';
 
 export interface FsProbeConfig {
   /** Absolute directory. Relative paths are rejected so we never
@@ -31,14 +34,43 @@ export interface FsProbeDeps {
   /** Test seam for deterministic supported/unsupported coverage. Production
    *  performs a real short-lived recursive watcher attachment. */
   probeRealtimeWatch?: (path: string) => Promise<boolean>;
+  /** Test hook — swapping in a fake `watch` lets unit tests drive the
+   *  attachment probe itself without opening a real watcher. The factory
+   *  delegates to the watch process by default (`watch-host.ts`). */
+  watchFactory?: (path: string, options: { recursive: true }) => ProbeWatchHandle;
 }
 
+/** What the probe needs of a watch: `fs.watch`'s handle, or a `HostedWatch`,
+ *  whose `ready` settles once its process has attached it (or could not). */
+export interface ProbeWatchHandle {
+  close(): void;
+  once(event: 'error', listener: (error: Error) => void): unknown;
+  removeListener(event: 'error', listener: (error: Error) => void): unknown;
+  readonly ready?: Promise<void>;
+}
+
+/** ⛔ On macOS a watch process of its own, never `fs.watch` on the server's own
+ *  thread: closing a recursive watch there can block the event loop that closes
+ *  it for seconds, and connecting a folder must not freeze the server. Its own,
+ *  not the folders' shared one: the check lets it go instead of closing the
+ *  watch. On Linux and Windows the check watches here (`watchesInOwnProcess`). */
+export const defaultProbeWatchFactory = (
+  platform: NodeJS.Platform = process.platform,
+): NonNullable<FsProbeDeps['watchFactory']> => (watchesInOwnProcess(platform)
+  ? (path) => watchOnce(path)
+  : (path, options) => watch(path, options, () => {}));
+
 /** `fs.watch` can reject synchronously or emit an immediate error after the
- *  handle is created. Keep the probe alive for one event-loop turn to catch
- *  both shapes, then close it without retaining any process state. */
-const probeRealtimeWatch = async (path: string): Promise<boolean> =>
+ *  handle is created. A hosted watch says which through `ready` (its process
+ *  waits one event-loop turn before calling it attached); any other handle is
+ *  kept for one turn here to catch both shapes. Then it is closed, without
+ *  retaining any process state. */
+const probeRealtimeWatch = async (
+  path: string,
+  watchFactory: NonNullable<FsProbeDeps['watchFactory']>,
+): Promise<boolean> =>
   new Promise((resolveProbe) => {
-    let watcher: FSWatcher | undefined;
+    let watcher: ProbeWatchHandle | undefined;
     let settled = false;
 
     const finish = (supported: boolean): void => {
@@ -53,9 +85,10 @@ const probeRealtimeWatch = async (path: string): Promise<boolean> =>
     const onError = (): void => finish(false);
 
     try {
-      watcher = watch(path, { recursive: true }, () => {});
+      watcher = watchFactory(path, { recursive: true });
       watcher.once('error', onError);
-      setImmediate(() => finish(true));
+      if (watcher.ready !== undefined) watcher.ready.then(() => finish(true), () => finish(false));
+      else setImmediate(() => finish(true));
     } catch {
       finish(false);
     }
@@ -99,9 +132,9 @@ export const probeFsCaps = async (
     }
   }
 
-  const realtimeWatch = await (
-    deps.probeRealtimeWatch ?? probeRealtimeWatch
-  )(config.path);
+  const realtimeWatch = deps.probeRealtimeWatch
+    ? await deps.probeRealtimeWatch(config.path)
+    : await probeRealtimeWatch(config.path, deps.watchFactory ?? defaultProbeWatchFactory());
 
   return {
     read: 'yes',

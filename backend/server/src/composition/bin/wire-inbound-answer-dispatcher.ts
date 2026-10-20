@@ -73,6 +73,7 @@ import {
 import type {
   NotificationBlock,
   RemoteChannel,
+  SubmitAnswerOutcome,
 } from '@recued/notification';
 import type { ParsedInbound } from '@recued/transport';
 import type { WarehouseEventBus } from '@recued/warehouse-events';
@@ -97,12 +98,17 @@ export interface MessengerInboundEvent {
 
 /** A vendor's declared post-press ack (Telegram `answerCallbackQuery`) — called
  *  best-effort after a live-control press and after an ask `submitAnswer` to
- *  clear the inline-keyboard spinner. Absent for vendors needing no ack (Slack);
- *  never allowed to propagate (a 502 would re-fire the callback). */
+ *  clear the inline-keyboard spinner. Slack needs no ack; its entry posts only
+ *  when there is `text` to show the presser. Never allowed to propagate (a 502
+ *  would re-fire the callback). */
 export type MessengerCallbackAck = (
   payload: unknown,
   connection_name: string,
+  text?: string,
 ) => Promise<void>;
+
+/** D-325 §5.1 — what a press on a reminder that already closed is told. */
+export const REMINDER_ALREADY_CLOSED = 'This reminder is already closed.';
 
 export interface ComposeInboundAnswerDispatcherDeps {
   /** Host-only D-261 interceptor. This dispatcher receives signature-verified
@@ -122,6 +128,19 @@ export interface ComposeInboundAnswerDispatcherDeps {
    *  degrades to log + drop. Replaces the per-vendor `slackChannel` /
    *  `telegramChannel`. */
   messengerChannels?: Record<string, RemoteChannel>;
+  /** Read from the same authenticated named connection used by the webhook
+   * port. A newly enrolled row cannot answer a previous enrollment's asks. */
+  connectionEnrollment?: (name: string) => number | undefined;
+  /** A selected household reminder group is a narrow surface: no private
+   * approvals, live controls, chat turns or message-trigger ingestion. */
+  householdRemindersOnly?: (name: string) => boolean;
+  /** D-158 amendment 2026-10-20 — the connection a plain ask on `vendor` goes
+   *  out through: the owner's choice for the channel
+   *  (`createOwnerNotificationConnection`), or null when none can carry one. An
+   *  answer to a plain ask that came in on any other connection is not taken;
+   *  a reminder's answer is checked against its own destinations instead.
+   *  Absent ⇒ a plain ask takes an answer from any connection, as before. */
+  plainAskConnection?: (vendor: string) => Promise<{ name: string; enrolled_at: number } | null>;
   /** D-163 polish — Telegram `answerCallbackQuery` ack. Called
    *  best-effort AFTER `submitAnswer` succeeds so the inline-keyboard
    *  spinner on the user's device clears. Absent ⇒ press is recorded
@@ -130,7 +149,10 @@ export interface ComposeInboundAnswerDispatcherDeps {
    *  they MUST NOT propagate (a 502 would cause Telegram to retry the
    *  entire callback, re-firing submitAnswer + the failed ack in
    *  cascade). */
-  telegramAck?: (payload: unknown, connection_name: string) => Promise<void>;
+  telegramAck?: MessengerCallbackAck;
+  /** D-325 §5.1 — Slack's entry in the same table: an ephemeral reply through
+   *  the press's `response_url`, sent only with text. Same never-propagate rule. */
+  slackPressReply?: MessengerCallbackAck;
   /** Optional logger — mirrors `composeVendorWebhookPort`'s contract so
    *  the substrate slice's log lines stay consistent when the
    *  dispatcher takes over. */
@@ -220,12 +242,22 @@ export const composeInboundAnswerDispatcher = (
   // the notification block, so `closeAsk` + `parseInboundReply` hit the same
   // instances). The single dispatch body below looks up `channels[vendor]`.
   // `acks` is the "declared post-press hook": a vendor with an entry acks after
-  // a press / answer, one without (Slack) does not. (`telegramAck` stays a named
-  // dep — the acks registry is a separate seam.)
+  // a press / answer, one without does not. Slack's entry acts only when it has
+  // text to show. (`telegramAck` stays a named dep — the acks registry is a
+  // separate seam.)
   const channels: Record<string, RemoteChannel> = deps.messengerChannels ?? {};
   const acks: Record<string, MessengerCallbackAck> = {
     ...(telegramAck ? { telegram: telegramAck } : {}),
+    ...(deps.slackPressReply ? { slack: deps.slackPressReply } : {}),
   };
+  /** D-325 §5.1 — a press on a reminder that already closed says so. Any other
+   *  ask keeps today's silence. */
+  const lateNotice = async (outcome: SubmitAnswerOutcome, ask_id: string): Promise<string | undefined> =>
+    outcome === 'closed' && (await block?.getAsk(ask_id))?.delivery_group_id ? REMINDER_ALREADY_CLOSED : undefined;
+  /** The ack, with the notice when there is one. ⛔ Never an explicit trailing
+   *  `undefined`: the call's arity is what a caller's assertion sees. */
+  const ackWith = (ack: MessengerCallbackAck, payload: unknown, connection_name: string, notice: string | undefined): Promise<void> =>
+    notice === undefined ? ack(payload, connection_name) : ack(payload, connection_name, notice);
 
   /** Offer a payload to the live-control surface. Defensive catch: a seam bug
    *  must not 502 the webhook into a vendor redelivery loop. `kind: 'press'`
@@ -326,6 +358,29 @@ export const composeInboundAnswerDispatcher = (
     // `update_id`); omitted when the payload carried none.
     const idLog: Record<string, string> = id_value !== null ? { [id_field]: id_value } : {};
 
+    if (deps.householdRemindersOnly?.(connection_name)) {
+      if (!channel || !block) return;
+      await block.restoreAskDeliveries();
+      const enrolled_at = deps.connectionEnrollment?.(connection_name);
+      if (enrolled_at === undefined) return;
+      let reply;
+      try { reply = channel.parseInboundReply(payload, { name: connection_name, enrolled_at }); }
+      catch (error) { log?.('warn', 'Household reminder reply could not be parsed', {
+        connection_name, error: error instanceof Error ? error.message : String(error),
+      }); return; }
+      if (!reply || !(await block.getAsk(reply.ask_id))?.delivery_group_id) return;
+      // The durable delivery controller checks the original audience and
+      // member snapshot against the current connection and member selection.
+      const notice = await lateNotice(await block.submitAnswer(reply), reply.ask_id);
+      if (ack) {
+        try { await ackWith(ack, payload, connection_name, notice); }
+        catch (error) { log?.('warn', 'Household reminder callback acknowledgement failed', {
+          connection_name, error: error instanceof Error ? error.message : String(error),
+        }); }
+      }
+      return;
+    }
+
     if (await deps.preapprovalReview?.(vendor, event)) {
       if (ack) {
         try { await ack(payload, connection_name); }
@@ -375,7 +430,10 @@ export const composeInboundAnswerDispatcher = (
       });
       return;
     }
-    const reply = channel.parseInboundReply(payload);
+    await block?.restoreAskDeliveries();
+    const enrolled_at = deps.connectionEnrollment?.(connection_name);
+    const reply = channel.parseInboundReply(payload, enrolled_at === undefined ? undefined
+      : { name: connection_name, enrolled_at });
     if (reply === null) {
       // Not an interactive callback. A plain user message emits onto the
       // warehouse bus (WatchSource messenger push source) AND is offered for a
@@ -420,17 +478,35 @@ export const composeInboundAnswerDispatcher = (
       });
       return;
     }
+    // D-158 amendment 2026-10-20 — a plain ask went out through the owner's
+    // connection for this channel, so only an answer that came in on it settles
+    // the ask. A reminder's delivery group checks its own destinations.
+    if (deps.plainAskConnection && !(await block.getAsk(reply.ask_id))?.delivery_group_id) {
+      const plain = await deps.plainAskConnection(vendor);
+      if (plain === null || plain.name !== connection_name || plain.enrolled_at !== enrolled_at) {
+        log?.('warn', `messenger inbound (${vendor}) — an answer to a plain ask came in on another connection; not taken`, {
+          ask_id: reply.ask_id,
+          connection_name,
+        });
+        if (ack) {
+          try { await ack(payload, connection_name); }
+          catch (e) { log?.('warn', `messenger inbound (${vendor}) — ack failed`, { connection_name, error: e instanceof Error ? e.message : String(e) }); }
+        }
+        return;
+      }
+    }
     // Per the contract, submitAnswer no-ops on stale press / unknown / option-
     // mismatch + handler throws internally. The only reject path is a storage-
     // layer failure; let it propagate so the vendor provider converts it to
     // `{ ok: false }` ⇒ 502 ⇒ vendor retries.
-    await block.submitAnswer(reply);
+    const notice = await lateNotice(await block.submitAnswer(reply), reply.ask_id);
     // Best-effort post-answer ack (Telegram `answerCallbackQuery`) — clears the
-    // inline-keyboard spinner. A failure is logged + dropped: an ack failure must
+    // inline-keyboard spinner, and carries the notice for a press on a reminder
+    // that already closed. A failure is logged + dropped: an ack failure must
     // never propagate (a 502 would re-fire submitAnswer + the ack in cascade).
     if (ack) {
       try {
-        await ack(payload, connection_name);
+        await ackWith(ack, payload, connection_name, notice);
       } catch (e) {
         log?.('warn', `messenger inbound (${vendor}) — answerCallbackQuery failed`, {
           ask_id: reply.ask_id,

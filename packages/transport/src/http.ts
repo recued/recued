@@ -52,8 +52,19 @@ export interface HttpGetBytesOptions {
  *  Optional + additive, so no existing consumer changes. */
 export type HttpPostOutcome =
   | { ok: true; status: number; json: unknown }
-  | { ok: false; kind: 'timeout' | 'network'; detail: string }
+  | { ok: false; kind: 'timeout' | 'network'; detail: string; not_sent?: true }
   | { ok: false; kind: 'http_error'; status: number; detail: string; json?: unknown; retry_after_ms?: number };
+
+/** Connect-stage failures: the request never left this machine, so a send that
+ *  failed with one was definitely not delivered. A reset, a closed socket or a
+ *  timeout may have reached the vendor, so those stay unmarked (D-325 §5.1). */
+const NOT_SENT_CODES: ReadonlySet<string> = new Set([
+  'ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'UND_ERR_CONNECT_TIMEOUT',
+]);
+
+/** Spread onto a send failure so the `not_sent` mark reaches the caller. */
+export const notSentMark = (outcome: HttpPostOutcome): { not_sent?: true } =>
+  !outcome.ok && outcome.kind === 'network' && outcome.not_sent ? { not_sent: true } : {};
 
 /** Normalise a vendor's retry-after hint to MILLISECONDS.
  *
@@ -232,7 +243,7 @@ const requestJson = async (
         redirect: 'error',
       });
     } catch (e) {
-      const err = e as { name?: string; message?: string };
+      const err = e as { name?: string; message?: string; cause?: { code?: unknown } };
       if (err?.name === 'AbortError') {
         return {
           ok: false,
@@ -240,7 +251,9 @@ const requestJson = async (
           detail: `request timed out after ${opts.timeoutMs}ms`,
         };
       }
-      return { ok: false, kind: 'network', detail: err?.message ?? 'network error' };
+      const code = err?.cause?.code;
+      return { ok: false, kind: 'network', detail: err?.message ?? 'network error',
+        ...(typeof code === 'string' && NOT_SENT_CODES.has(code) ? { not_sent: true as const } : {}) };
     }
 
     if (!response.ok) {

@@ -134,13 +134,13 @@ describe('the card for a held send', () => {
     }, describe);
     expect(rows).toEqual([
       { label: 'subject', value: 'Sandhurst kickoff notes' },
-      { label: 'sender_mail_instance', value: 'bench-mail' },
+      { label: 'from', value: 'bench-mail' },
       { label: 'to', value: 'dana@sandhurst.test' },
       { label: 'body', value: 'Hi Dana,\n\nPlease find attached the notes from our kickoff.' },
       { label: 'body_format', value: 'text' },
       { label: 'attachments', value: 'kickoff-notes.md (clients folder: Sandhurst/kickoff-notes.md)' },
-      { label: 'Not set', value: 'Reconciliation id' },
-      { label: 'Empty', value: 'Cc, Bcc, In reply to, References, Reply to' },
+      { label: 'Not set', value: 'Reconciliation ID' },
+      { label: 'Empty', value: 'CC, BCC, In reply to, References, Reply to' },
     ]);
   });
 

@@ -1,8 +1,13 @@
 /** One owner review for a concrete execution. Only the explicit decision
  * controls call decide; navigation, selection and refresh cannot approve. */
 import type { Conn, PreapprovalDecision, PreapprovalDecisionRequest, PreapprovalInspection,
-  PreapprovalReview, ServerPendingAsk, ServerRpcRegistry } from '@recued/contracts';
+  PreapprovalContinuationRequest, PreapprovalReview, ServerPendingAsk, ServerRpcRegistry } from '@recued/contracts';
 import { serializeShellRoute } from '../shell/route.js';
+import { renderResourceReview, parsePreapprovalContinuation, PREAPPROVAL_LIMITS } from '@recued/contracts';
+import { localUpdateUndoControl } from './local-update-undo.js';
+import { localChangesHref } from './local-change-sets-route.js';
+import { hasLocalUpdateResources, type LocalChangeSetPrepare } from '@recued/contracts';
+import { stampZone } from '@recued/ui-shared';
 
 export const preapprovalHref = (proposalId?: string): string =>
   serializeShellRoute('approvals', 'preapproval', proposalId);
@@ -51,6 +56,7 @@ export const renderPreapprovalAsk = (doc: Document, ask: ServerPendingAsk): HTML
 
 export const bootstrapPreapprovalRoute = (opts: {
   root: HTMLElement; document?: Document; proposalId?: string; call: Conn<ServerRpcRegistry>; now?: () => number;
+  serverTimeZone?: () => string | undefined;
 }) => {
   const doc = opts.document ?? document; const now = opts.now ?? Date.now;
   const host = doc.createElement('section'); host.setAttribute('data-recued-preapproval-route', '');
@@ -63,6 +69,11 @@ export const bootstrapPreapprovalRoute = (opts: {
   let selection = new Set<string>();
   let pendingDecision: PreapprovalDecisionRequest | null = null;
   let pendingRevoke: { grant_id: string; expected_revision: number; request_id: string } | null = null;
+  let continuationTime = '';
+  let pendingContinuation: { time: string; request: PreapprovalContinuationRequest } | null = null;
+  let pendingAtomic: LocalChangeSetPrepare | null = null;
+  const verificationMessages = new Map<string, string>();
+  let pendingVerification: string | null = null;
   let loaded: Promise<void> = Promise.resolve();
   let renderedExpired = false;
   const node = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string): HTMLElementTagNameMap[K] => {
@@ -80,9 +91,11 @@ export const bootstrapPreapprovalRoute = (opts: {
     && selection.has(member.member_id) !== review!.selected_member_ids.includes(member.member_id));
   const render = (): void => {
     if (disposed) return;
+    const focused = host.contains(doc.activeElement) ? (doc.activeElement as HTMLElement).dataset.preapprovalVerifyFocus : undefined;
     host.replaceChildren(); host.append(link('Approvals', serializeShellRoute('approvals')));
     host.append(node('h1', opts.proposalId ? review?.recipe.display_name ?? inspection?.retired_review?.recipe_name ?? 'Run you have looked at' : 'Runs you have looked at'));
     host.append(button(busy ? 'Loading…' : 'Refresh', () => { void refresh(); }));
+    host.append(link('Atomic local changes',localChangesHref()));
     if (error) { const message = node('p', error); message.setAttribute('role', 'alert'); host.append(message); }
     if (!opts.proposalId) {
       if (!busy && entries.length === 0 && !error) host.append(node('p', 'You have not looked at any runs yet.'));
@@ -104,6 +117,21 @@ export const bootstrapPreapprovalRoute = (opts: {
       if (inspection.retired_review) host.append(node('p', `This stopped being valid on ${date(inspection.retired_review.at)}. The decision and operation outcomes remain available.`));
     }
     if (review) {
+      if (review.continuation) {
+        host.append(node('p', 'This continues an earlier run. The unfinished changes below need a new decision.'),
+          link('Original review', preapprovalHref(review.continuation.proposal_id)));
+        if (review.continuation.completed.length) {
+          host.append(node('h2', 'Completed earlier'));
+          const completed = node('ul'); completed.setAttribute('data-preapproval-completed', '');
+          for (const item of review.continuation.completed) {
+            const row = node('li', item.label + ' · Receipt ' + (item.commit_id ?? item.action_ref) + ' · ');
+            row.append(link('Original review', preapprovalHref(item.proposal_id)));
+            if (item.run_id) row.append(doc.createTextNode(' · '), link('View run', serializeShellRoute('logs', item.run_id)));
+            completed.append(row);
+          }
+          host.append(completed);
+        }
+      }
       const selectable = (id: string, ancestors = new Set<string>()): boolean => {
         const member = review!.members.find(item => item.member_id === id);
         if (!member?.eligible || ancestors.has(id)) return false;
@@ -117,6 +145,18 @@ export const bootstrapPreapprovalRoute = (opts: {
         : `Applies to the ${status(review.activation.kind)} occurrence.`));
       if (review.activation.kind !== 'one_shot') host.append(node('p',
         'This says yes to the next run only. Later runs still ask you as usual.'));
+      if (inspection?.status === 'awaiting_owner' && review.activation.kind === 'one_shot' && !review.continuation
+        && review.coverage === 'complete' && review.selected_member_ids.length === review.members.length
+        && review.members.length > 0 && review.members.every(member => !member.parent_member_id && !member.conditional
+          && member.required_child_ids.length === 0 && member.resource_review && hasLocalUpdateResources(member.resource_review))) {
+        host.append(button('Review as one atomic change set',() => {
+          void mutate(async () => {
+            pendingAtomic ??= { proposal_id: opts.proposalId!,request_id: crypto.randomUUID() };
+            const next = await opts.call('local_changes.prepare',pendingAtomic);
+            if (!disposed) doc.defaultView?.location.assign(localChangesHref(next.change_set_id));
+          });
+        },changedSelection()));
+      }
       host.append(node('p', `Decide by ${date(review.decision_deadline, review.time_zone)}. Operations must start by ${date(review.dispatch_deadline, review.time_zone)}.`));
       host.append(node('p', review.coverage === 'complete'
         ? 'One yes covers everything listed here, and the files it needs to read.'
@@ -127,7 +167,7 @@ export const bootstrapPreapprovalRoute = (opts: {
         const section = node('article'); section.style.cssText = 'border:1px solid var(--border);padding:16px;margin:12px 0';
         if (member.parent_member_id) section.style.marginLeft = '20px';
         const label = node('label');
-        if (member.parent_member_id === null && inspection?.status === 'awaiting_owner') {
+        if (member.parent_member_id === null && inspection?.status === 'awaiting_owner' && !review.continuation) {
           const check = node('input'); check.type = 'checkbox'; check.checked = selection.has(member.member_id);
           check.disabled = busy || !selectable(member.member_id);
           check.setAttribute('data-preapproval-member', member.member_id);
@@ -154,6 +194,15 @@ export const bootstrapPreapprovalRoute = (opts: {
         if (!selectedByServer.has(member.member_id)) section.append(node('p', member.reason ?? 'Not covered: you did not pick it.'));
         const content = node('pre', JSON.stringify(member.arguments, null, 2));
         content.style.cssText = 'white-space:pre-wrap;overflow-wrap:anywhere'; section.append(content);
+        if (member.resource_review) {
+          const changes = node('pre', renderResourceReview(member.resource_review));
+          changes.setAttribute('data-preapproval-resource-review', member.member_id);
+          changes.setAttribute('role', 'region');
+          changes.setAttribute('aria-label', 'Reviewed changes for ' + member.label);
+          changes.tabIndex = 0;
+          changes.style.cssText = 'max-width:100%;max-height:24rem;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere';
+          section.append(changes);
+        }
         if (Object.keys(member.output).length) section.append(node('pre', JSON.stringify(member.output, null, 2)));
         if (member.connection_id) section.append(node('p', `Connection: ${member.connection_id}`));
         if (member.account_id) section.append(node('p', `Account: ${member.account_id}`));
@@ -194,10 +243,80 @@ export const bootstrapPreapprovalRoute = (opts: {
       host.append(node('h2', 'What happened'));
       for (const member of inspection.members) {
         const row = node('p', `${member.label}: ${status(member.status)}${member.status_message ? ` · ${member.status_message}` : ''}`);
+        if (member.reconciled_outcome) row.append(doc.createTextNode(' · Verified outcome: ' + status(member.reconciled_outcome)));
+        if (member.status === 'in_doubt' && !member.reconciled_outcome && member.provider_verification === 'mail' && !inspection.retired_review) {
+          const verify = button('Verify mail outcome', () => { pendingVerification = member.member_id;void mutate(async () => {
+            const result = await opts.call('preapproval.reconcile', { proposal_id: inspection!.proposal_id, member_id: member.member_id });
+            if (!disposed) verificationMessages.set(member.member_id, result.message);
+          }).finally(() => { pendingVerification = null;render(); }); });
+          verify.dataset.preapprovalVerifyFocus = member.member_id;
+          row.append(verify);
+        }
+        if (member.status === 'in_doubt' && member.op_id === 'core.mail.send') {
+          const notice = node('span', pendingVerification === member.member_id ? 'Checking the original attempt…' : verificationMessages.get(member.member_id) ?? 'Verification does not send mail or resume this run.');
+          notice.setAttribute('role', 'status');notice.tabIndex = -1;notice.dataset.preapprovalVerifyStatus = member.member_id;
+          notice.dataset.preapprovalVerifyFocus = member.member_id;row.append(notice);
+        }
+        if (member.local_receipt) {
+          const receipt = member.local_receipt;
+          const proof = node('span', ` · ${receipt.kind === 'records' ? 'Records' : 'Calendar'} change confirmed · ${date(receipt.committed_at)}`);
+          proof.setAttribute('data-local-mutation-receipt', receipt.receipt_id);
+          row.append(proof);
+          row.append(localUpdateUndoControl(doc, {
+            get: args => opts.call('local_undo.get', args),
+            review: args => opts.call('local_undo.review', args), decide: args => opts.call('local_undo.decide', args),
+          }, receipt.receipt_id));
+        }
         if (member.commit_id) row.append(doc.createTextNode(` · Receipt ${member.commit_id}`));
         if (member.run_id) row.append(doc.createTextNode(' · '), link('View run', serializeShellRoute('logs', member.run_id)));
         host.append(row);
       }
+    }
+    if (inspection?.recovery) {
+      const recovery = inspection.recovery;
+      if (recovery.successor_proposal_id) host.append(link('Open continuation review', preapprovalHref(recovery.successor_proposal_id)));
+      else if (recovery.eligible) {
+        host.append(node('h2', 'Review unfinished changes'), node('p',
+          'Completed operations keep their receipts. The next review uses current data and the original requester’s permissions. It applies no changes until you decide.'));
+        const form = node('form');
+        const label = node('label', 'Run at (your time) ');
+        const runAt = node('input'); runAt.type = 'datetime-local'; runAt.required = true; runAt.disabled = busy;
+        runAt.style.cssText = 'display:block;width:100%;max-width:100%;min-width:0;box-sizing:border-box;padding:8px;font:inherit';
+        runAt.setAttribute('data-preapproval-continuation-time', '');
+        if (!continuationTime) {
+          const value = new Date(now() + 10 * 60_000);
+          continuationTime = new Date(value.getTime() - value.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+        }
+        runAt.value = continuationTime;
+        runAt.addEventListener('input', () => { continuationTime = runAt.value; pendingContinuation = null; });
+        label.append(runAt); form.append(label);
+        const submit = button('Prepare continuation review', () => form.requestSubmit());
+        form.append(submit);
+        form.addEventListener('submit', event => {
+          event.preventDefault();
+          void mutate(async () => {
+            const time = new Date(continuationTime).getTime();
+            if (!Number.isFinite(time) || time <= now()) throw new Error('Pick a run time in the future.');
+            if (!pendingContinuation || pendingContinuation.time !== continuationTime) pendingContinuation = {
+              time: continuationTime, request: parsePreapprovalContinuation({
+                proposal_id: inspection!.proposal_id, idempotency_key: crypto.randomUUID(),
+                // D-269 — the SERVER's zone: the continuation runs server-side,
+                // so a run arranged from a laptop abroad must not carry the travel zone.
+                activation: { kind: 'one_shot', run_at: time, time_zone: stampZone(opts.serverTimeZone) },
+                decision_deadline: Math.min(time, now() + PREAPPROVAL_LIMITS.default_decision_ms),
+                dispatch_deadline: time + PREAPPROVAL_LIMITS.default_dispatch_grace_ms,
+              }),
+            };
+            const next = await opts.call('preapproval.continue', pendingContinuation.request);
+            if (!disposed) doc.defaultView?.location.assign(preapprovalHref(next.proposal_id));
+          });
+        });
+        host.append(form);
+      } else if (recovery.reason) host.append(node('p', recovery.reason));
+    }
+    if (focused && (!doc.activeElement || doc.activeElement === doc.body || host.contains(doc.activeElement))) {
+      const target = [...host.querySelectorAll<HTMLElement>('[data-preapproval-verify-status]')].find(item => item.dataset.preapprovalVerifyStatus === focused);
+      target?.focus({ preventScroll: true });
     }
   };
   const load = async (cursor?: string): Promise<void> => {

@@ -23,6 +23,7 @@ import {
   DEFAULT_TIMEOUT_MS,
   classifyHttpError,
   downloadToFile,
+  notSentMark,
   postJson,
   retryAfterMs,
   type HttpPostOutcome,
@@ -125,7 +126,7 @@ const handleTelegramOutcome = (
         : outcome.kind;
     const retryAfter = outcome.kind === 'http_error' ? Math.max(outcome.retry_after_ms ?? 0,
       retryAfterMs((outcome.json as TelegramEnvelope | undefined)?.parameters?.retry_after) ?? 0) : 0;
-    return { ok: false, error: { kind, detail: `Telegram: ${outcome.detail}`,
+    return { ok: false, error: { kind, detail: `Telegram: ${outcome.detail}`, ...notSentMark(outcome),
       ...(retryAfter > 0 ? { retry_after_ms: retryAfter } : {}),
     } };
   }
@@ -147,6 +148,18 @@ const handleTelegramOutcome = (
   return typeof id === 'number'
     ? { ok: true, vendor_message_id: String(id) }
     : { ok: true };
+};
+
+/** A replayed edit may already be applied. The provider explicitly compares
+ * both content and markup; acknowledge that exact result only for edits.
+ * https://github.com/tdlib/telegram-bot-api/blob/master/telegram-bot-api/Client.cpp */
+const handleTelegramEditOutcome = (outcome: HttpPostOutcome): TransportSendResult => {
+  const envelope = outcome.ok ? outcome.json
+    : outcome.kind === 'http_error' && outcome.status === 400 ? outcome.json : undefined;
+  const error = envelope as TelegramEnvelope | undefined;
+  if (error?.ok === false && error.error_code === 400
+    && /^Bad Request: message is not modified(?::|$)/i.test(error.description ?? '')) return { ok: true };
+  return handleTelegramOutcome(outcome);
 };
 
 const numericSize = (value: unknown): number => {
@@ -296,6 +309,7 @@ export const createTelegramTransport = (
 
   const sendPrompt = async (
     prompt: OutboundPrompt,
+    vendor_message_id?: string,
   ): Promise<TransportSendResult> => {
     // One option per inline-keyboard row — a vertical button list.
     // `callback_data` round-trips the correlation id + option id and
@@ -303,7 +317,7 @@ export const createTelegramTransport = (
     // front rather than let the vendor reject the whole send.
     const inline_keyboard: Array<Array<{ text: string; callback_data: string }>> = [];
     for (const opt of prompt.options) {
-      const callback_data = encodeChoice(prompt.correlation_id, opt.id);
+      const callback_data = encodeChoice(opt.correlation_id ?? prompt.correlation_id, opt.id);
       if (new TextEncoder().encode(callback_data).length > CALLBACK_DATA_MAX_BYTES) {
         return {
           ok: false,
@@ -318,15 +332,16 @@ export const createTelegramTransport = (
       inline_keyboard.push([{ text: opt.label, callback_data }]);
     }
     const outcome = await post(
-      'sendMessage',
+      vendor_message_id === undefined ? 'sendMessage' : 'editMessageText',
       {
         chat_id: prompt.recipient,
+        ...(vendor_message_id === undefined ? {} : { message_id: Number(vendor_message_id) }),
         text: composeTelegramText(prompt),
         reply_markup: { inline_keyboard },
       },
       prompt.token,
     );
-    return handleTelegramOutcome(outcome);
+    return vendor_message_id === undefined ? handleTelegramOutcome(outcome) : handleTelegramEditOutcome(outcome);
   };
 
   const closePrompt = async (ref: ClosePrompt): Promise<TransportSendResult> => {
@@ -348,7 +363,7 @@ export const createTelegramTransport = (
       },
       ref.token,
     );
-    return handleTelegramOutcome(outcome);
+    return handleTelegramEditOutcome(outcome);
   };
 
   const fetchMedia = async (ref: MediaRef, token: string): Promise<FetchedMedia> => {
@@ -489,6 +504,7 @@ export const createTelegramTransport = (
     parseConversationId,
     fetchMedia,
     sendPrompt,
+    updatePrompt: prompt => sendPrompt(prompt, prompt.vendor_message_id),
     parseInboundChoice,
     parseCallbackConversationId,
     closePrompt,

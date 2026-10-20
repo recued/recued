@@ -22,13 +22,13 @@
  */
 
 import { IngredientError, createConnectionAdapter, createConnectionApiHandler, createConnectionMcpHandler, createConnectionNotificationHandler, createIngredientExecutor, createKernelAdapter, executeHTTP, executeMCP, withIngredientCache } from '@recued/ingredients';
-import type { ConnectionAdapterDeps, ConnectionAdapterStore, ConnectionApiHandlerDeps, ConnectionAuditEmission, ConnectionMcpHandlerDeps, ConnectionNotificationHandlerDeps, IngredientCacheOptions, IngredientExecutor, Adapter, ResolvedCall } from '@recued/ingredients';
+import type { ConnectionAdapterDeps, ConnectionApiHandlerDeps, ConnectionAuditEmission, ConnectionMcpHandlerDeps, ConnectionNotificationHandlerDeps, IngredientCacheOptions, IngredientExecutor, Adapter, ResolvedCall, McpStreamHandle } from '@recued/ingredients';
 import { createAdapterRegistry } from '@recued/engine';
 import { createBridgeDomAdapter } from './bridges/dom-adapter.js';
 import {
   executeLLM, createDefaultRegistry, createQuotaTracker,
   executeEmbedding, createDefaultEmbeddingsRegistry, isEmbeddingsManifest, LLMError,
-  type ContentPart, type LLMConfig, type QuotaTracker, type TokenUsage,
+  type AdapterRegistry, type EmbeddingsAdapterRegistry, type ContentPart, type LLMConfig, type QuotaTracker, type TokenUsage,
 } from '@recued/llm';
 import { tokenUsageToReport } from './chat-token-usage.js';
 import type { RunTokenUsageSink } from './run-token-usage.js';
@@ -47,27 +47,99 @@ import type { WsServerHandle } from './ws-server.js';
 import { assertPreapprovalOrdinaryRun, currentPreapprovalIo } from './preapproval-io-context.js';
 import { describeProcessBinding } from './process-binding-identity.js';
 import { preapprovalHash } from './preapproval-invocations.js';
+import { createConnectionCacheScopes, markConnectionWriteAdmitted, withConnectionRecoveryFetch, withConnectionWriteCache, type ConnectionCacheStore } from './connection-cache-scope.js';
 import { buildStdioMcpEnvironment } from './mcp-stdio-spawner.js';
+import { currentRunAbortContext } from './execution/run-abort-context.js';
+import { assertProviderHandoffActive, captureProviderHandoffFence } from './execution/provider-handoff.js';
 export { resolveLLMConfigFromEnv } from './llm-env.js';
 export { resolveVaultFromEnv, mergeVault } from './vault-env.js';
 
-const reviewedMcpDeps = (deps: ConnectionMcpHandlerDeps): ConnectionMcpHandlerDeps => ({
+/** Pooled sessions consult the dispatching call's ambient binding, so a warm
+ * channel never retains the recovery or cancellation state of its opener. */
+const recoveryMcpStream = (handle: McpStreamHandle, scopes?: ReturnType<typeof createConnectionCacheScopes>): McpStreamHandle => ({
+  send: data => { scopes?.assertRecoveryActive(); assertProviderHandoffActive(); return handle.send(data); },
+  onMessage: listener => handle.onMessage(listener),
+  onClose: listener => handle.onClose(listener),
+  onError: listener => handle.onError(listener),
+  close: () => handle.close(),
+});
+
+const reviewedMcpDeps = (deps: ConnectionMcpHandlerDeps,
+  cacheScopes?: ReturnType<typeof createConnectionCacheScopes>,
+  checkConnectionRevisions?: () => void): ConnectionMcpHandlerDeps => ({
   ...deps,
+  decodeAuth: async row => {
+    await cacheScopes?.validateRecord(row);
+    checkConnectionRevisions?.();
+    cacheScopes?.assertRecoveryActive();
+    assertProviderHandoffActive();
+    const auth = await deps.decodeAuth(row);
+    checkConnectionRevisions?.();
+    assertProviderHandoffActive();
+    return auth;
+  },
+  fetchImpl: cacheScopes ? async (...args) => {
+    await cacheScopes.validate();
+    checkConnectionRevisions?.();
+    cacheScopes.assertRecoveryActive();
+    return withConnectionRecoveryFetch(deps.fetchImpl ?? globalThis.fetch)(...args);
+  } : withConnectionRecoveryFetch(deps.fetchImpl ?? globalThis.fetch),
+  ...(deps.wsConnect ? { wsConnect: async (...args) => {
+    await cacheScopes?.validate();
+    checkConnectionRevisions?.();
+    cacheScopes?.assertRecoveryActive();
+    assertProviderHandoffActive();
+    return recoveryMcpStream(await deps.wsConnect!(...args), cacheScopes);
+  } } : {}),
+  ...(deps.spawnStdioMcp ? { spawnStdioMcp: async (...args) => {
+    await cacheScopes?.validate();
+    checkConnectionRevisions?.();
+    cacheScopes?.assertRecoveryActive();
+    assertProviderHandoffActive();
+    return recoveryMcpStream(await deps.spawnStdioMcp!(...args), cacheScopes);
+  } } : {}),
   beforeConnect: async call => {
+    assertProviderHandoffActive();
     await deps.beforeConnect?.(call);
     assertPreapprovalOrdinaryRun();
     await currentPreapprovalIo()?.validateProvider('mcp', call);
+    await cacheScopes?.validate();
+    checkConnectionRevisions?.();
+    assertProviderHandoffActive();
   },
   processIdentity: spec => preapprovalHash([deps.processIdentity?.(spec) ?? null, currentPreapprovalIo()
-    ? describeProcessBinding({ ...spec, env: buildStdioMcpEnvironment(spec.env) }) : null]),
+    ? describeProcessBinding({ ...spec, env: buildStdioMcpEnvironment(spec.env) }) : null,
+    cacheScopes?.currentProcessIdentity(spec) ?? null]),
   beforeRequest: async call => {
+    assertProviderHandoffActive();
+    cacheScopes?.validateCall(call);
     await deps.beforeRequest?.(call);
     assertPreapprovalOrdinaryRun();
     await currentPreapprovalIo()?.beforeProvider('mcp', call);
+    await cacheScopes?.validate();
+    checkConnectionRevisions?.();
+    cacheScopes?.validateCall(call);
+    assertProviderHandoffActive();
+    markConnectionWriteAdmitted();
   },
 });
-const reviewedApiDeps = (deps: ConnectionApiHandlerDeps): ConnectionApiHandlerDeps => ({
+const reviewedApiDeps = (deps: ConnectionApiHandlerDeps, checkConnectionRevisions?: () => void,
+  cacheScopes?: ReturnType<typeof createConnectionCacheScopes>): ConnectionApiHandlerDeps => ({
   ...deps,
+  fetchImpl: withConnectionRecoveryFetch(deps.fetchImpl ?? globalThis.fetch),
+  ...(deps.managedOAuthFetch ? { managedOAuthFetch: (...args) => {
+    cacheScopes?.assertRecoveryActive();
+    assertProviderHandoffActive();
+    return deps.managedOAuthFetch!(...args);
+  } } satisfies Partial<ConnectionApiHandlerDeps> : {}),
+  decodeAuth: async row => {
+    await cacheScopes?.validateRecord(row);
+    cacheScopes?.assertRecoveryActive();
+    assertProviderHandoffActive();
+    const auth = await deps.decodeAuth(row);
+    assertProviderHandoffActive();
+    return auth;
+  },
   readFileBytes: async recordId => {
     const reviewed = currentPreapprovalIo();
     if (reviewed) {
@@ -78,13 +150,28 @@ const reviewedApiDeps = (deps: ConnectionApiHandlerDeps): ConnectionApiHandlerDe
     return deps.readFileBytes(recordId);
   },
   beforeRequest: async (call, target) => {
+    assertProviderHandoffActive();
+    cacheScopes?.validateCall(call);
     await deps.beforeRequest?.(call, target);
     assertPreapprovalOrdinaryRun();
     await currentPreapprovalIo()?.beforeProvider('http', call, target);
+    await cacheScopes?.validate();
+    checkConnectionRevisions?.();
+    cacheScopes?.validateCall(call);
+    assertProviderHandoffActive();
+    markConnectionWriteAdmitted();
   },
 });
-const reviewedHttp: Adapter = call => executeHTTP(call,
-  async () => { assertPreapprovalOrdinaryRun(); await currentPreapprovalIo()?.beforeProvider('http', call); });
+const reviewedHttp: Adapter = call => {
+  const assertHandoff = captureProviderHandoffFence();
+  return executeHTTP(call, async () => {
+    assertPreapprovalOrdinaryRun(); await currentPreapprovalIo()?.beforeProvider('http', call); assertHandoff();
+  }, (...args) => { assertHandoff(); return globalThis.fetch(...args); });
+};
+const runMcp: Adapter = call => {
+  const assertHandoff = captureProviderHandoffFence();
+  return executeMCP(call, (...args) => { assertHandoff(); return globalThis.fetch(...args); });
+};
 
 /** D-172 P5 / N.8 — the Gateway-gated `file.read` surface, narrowed to what
  *  the ai-* multimodal overload needs (base64 bytes + MIME + name). The
@@ -100,6 +187,9 @@ export type FileReadFn = (
 ) => Promise<{ bytes_b64: string; mime_type: string; filename: string }>;
 
 export interface ServerExecutorConfig {
+  /** Host-only synchronous commit participant after asynchronous preparation. */
+  prepareLocalCalendarUpdate?: (input: Parameters<NonNullable<import('@recued/ingredients').KernelDispatchers['calendarUpdate']>>[0]) =>
+    Promise<import('./local-transaction.js').PreparedLocalWrite>;
   manifests: ManifestRegistry;
   /** Base vault entries from env vars / vault file. */
   vault?: Record<string, unknown>;
@@ -172,6 +262,7 @@ export interface ServerExecutorConfig {
   /** Kernel dispatchers for the D-103 shared-* ingredient family. The
    *  server runtime wires these to direct in-process store calls. Left
    *  undefined → kernel ingredient calls surface SERVER_NOT_REACHABLE. */
+  resourceReview?: import('@recued/contracts').ResourceReviewHooks;
   kernelDispatchers?: import('@recued/ingredients').KernelDispatchers;
   /** D-125 P3.1 — connection store reference. The connection adapter
    *  looks up enrolled records at dispatch time via `.get(kind, name)`.
@@ -182,7 +273,7 @@ export interface ServerExecutorConfig {
    *  `INGREDIENT_ADAPTER_ALL_FAILED` naming the unwired store. (This read
    *  "surfaces `KIND_NOT_YET_IMPLEMENTED` until P4 wires per-kind
    *  handlers" — P4.1/4.2/4.3 all shipped.) */
-  connectionStore?: ConnectionAdapterStore;
+  connectionStore?: ConnectionCacheStore;
   /** D-125 P3.2 — audit sink for connection adapter dispatch. When
    *  wired, every adapter call lands one `connection_<kind>` activity
    *  row with the structured detail per `ConnectionAuditDetail`. The
@@ -668,6 +759,17 @@ const createLLMAdapter = (
   const adapters = createDefaultRegistry();
   const embeddingsAdapters = createDefaultEmbeddingsRegistry();
   return async (resolved) => {
+    const signal = currentRunAbortContext()?.signal;
+    const assertHandoff = captureProviderHandoffFence();
+    assertHandoff();
+    const guardedAdapters: AdapterRegistry = key => {
+      const adapter = adapters(key);
+      return { ...adapter, complete: (...args) => { assertHandoff(); return adapter.complete(...args); } };
+    };
+    const guardedEmbeddings: EmbeddingsAdapterRegistry = key => {
+      const adapter = embeddingsAdapters(key);
+      return { ...adapter, embed: (...args) => { assertHandoff(); return adapter.embed(...args); } };
+    };
     // D-250 § D — ONE sink for both consumers of a provider result, so a future
     // call path cannot wire the budget counter and forget the anchor (or the
     // reverse). The two branches are independent: either may be unwired.
@@ -714,7 +816,7 @@ const createLLMAdapter = (
     if (isEmbeddingsManifest(manifest)) {
       return executeEmbedding(manifest, resolved.input, {
         config,
-        adapters: embeddingsAdapters,
+        adapters: signal ? guardedEmbeddings : embeddingsAdapters,
         quota,
         onTokenUsage: emitUsage,
       });
@@ -733,6 +835,7 @@ const createLLMAdapter = (
       resolved.stepMeta?.run_id,
       { textAsText: !reviewed },
     );
+    assertHandoff();
     // The run's shared matcher when the call carries its run id (the same
     // `stepMeta.run_id` the token sink keys on); else one built for this call.
     const knownValues = piiKnownValuesRuns
@@ -740,7 +843,7 @@ const createLLMAdapter = (
       : piiKnownValues;
     return executeLLM(manifest, input, {
       config,
-      adapters,
+      adapters: signal ? guardedAdapters : adapters,
       quota,
       tabProbe,
       webChatSupported,
@@ -749,6 +852,7 @@ const createLLMAdapter = (
       ...(reviewed ? { matchContext: () => ({ pinSlot: reviewed.aiSlot() }) } : {}),
       beforeComplete: async (request: import('@recued/llm').LLMProviderInvocation) => {
         assertPreapprovalOrdinaryRun(); await reviewed?.beforeAiProvider(resolved, request);
+        assertHandoff();
       },
     });
   };
@@ -784,7 +888,7 @@ export const createServerExecutor = (
   // INGREDIENT_ADAPTER_ALL_FAILED placeholders from the factory.
   const adapterRegistry = createAdapterRegistry({
     http: reviewedHttp,
-    mcp: executeMCP,
+    mcp: runMcp,
     // D-174 R28 — always wire the AI adapter; it resolves config PER-USE
     // (`resolveLlmConfig`) and surfaces AI_LLM_UNAVAILABLE when nothing is
     // configured, rather than gating on a boot `slot_1` snapshot (which never
@@ -856,10 +960,10 @@ export const createServerExecutor = (
           // (clean `INGREDIENT_ADAPTER_ALL_FAILED`).
           handlers: {
             ...(config.connectionApi
-              ? { api: createConnectionApiHandler(reviewedApiDeps(config.connectionApi)) }
+              ? { api: withConnectionWriteCache(config.connectionStore, createConnectionApiHandler(reviewedApiDeps(config.connectionApi))) }
               : {}),
             ...(config.connectionMcp
-              ? { mcp: createConnectionMcpHandler(reviewedMcpDeps(config.connectionMcp)) }
+              ? { mcp: withConnectionWriteCache(config.connectionStore, createConnectionMcpHandler(reviewedMcpDeps(config.connectionMcp))) }
               : {}),
             ...(config.connectionNotification
               ? { notification: createConnectionNotificationHandler(config.connectionNotification) }
@@ -913,7 +1017,20 @@ export const createBoundExecutor = (
    *  on the cache-enabled branch below (cacheStore + instanceId +
    *  recipeContext all set); ignored otherwise. */
   onCacheStatus?: IngredientCacheOptions['onStatus'],
+  resultEvidence?: IngredientCacheOptions['resultEvidence'],
+  /** Host freshness fence, checked across cache awaits and before provider I/O. */
+  checkConnectionRevisions?: () => void,
+  /** Host run signal; never supplied through recipe arguments or step metadata. */
+  runAbortSignal?: AbortSignal,
 ): IngredientExecutor => {
+  const cacheScopes = createConnectionCacheScopes(config.connectionStore, {
+    manifest: slug => config.manifests.get(slug),
+    gateDispatch: config.connectionGateDispatch,
+    recoverySignal: runAbortSignal,
+    checkRecovery: () => { assertPreapprovalOrdinaryRun(); checkConnectionRevisions?.(); },
+    processIdentity: spec => preapprovalHash([config.connectionMcp?.processIdentity?.(spec) ?? null,
+      describeProcessBinding({ ...spec, env: buildStdioMcpEnvironment(spec.env) })]),
+  });
   // D-103 Phase A: bound executor must also register the kernel adapter
   // when the server wires in-process shared-store dispatchers. Without
   // this, recipes invoked via handleExecute (MCP / rpc / scheduler) hit
@@ -921,7 +1038,7 @@ export const createBoundExecutor = (
   // the non-bound createServerExecutor path works fine.
   const adapterRegistry = createAdapterRegistry({
     http: reviewedHttp,
-    mcp: executeMCP,
+    mcp: runMcp,
     // D-174 R28 — always wire the AI adapter (per-use config resolution); see
     // createServerExecutor for the rationale.
     ai: createLLMAdapter(
@@ -991,10 +1108,16 @@ export const createBoundExecutor = (
           // (clean `INGREDIENT_ADAPTER_ALL_FAILED`).
           handlers: {
             ...(config.connectionApi
-              ? { api: createConnectionApiHandler(reviewedApiDeps(config.connectionApi)) }
+              ? { api: withConnectionWriteCache(config.connectionStore, createConnectionApiHandler(reviewedApiDeps(config.connectionApi, checkConnectionRevisions, cacheScopes))) }
               : {}),
             ...(config.connectionMcp
-              ? { mcp: createConnectionMcpHandler(reviewedMcpDeps(config.connectionMcp)) }
+              ? { mcp: (() => {
+                const handler = createConnectionMcpHandler(reviewedMcpDeps(config.connectionMcp, cacheScopes, checkConnectionRevisions));
+                return withConnectionWriteCache(config.connectionStore!, async (...args: Parameters<typeof handler>) => {
+                  await cacheScopes.validateRecord(args[0]);
+                  return handler(...args);
+                });
+              })() }
               : {}),
             ...(config.connectionNotification
               ? { notification: createConnectionNotificationHandler(config.connectionNotification) }
@@ -1010,17 +1133,39 @@ export const createBoundExecutor = (
   const resolveRefs = (obj: Record<string, unknown>) => resolveDeep(obj, stores) as Record<string, unknown>;
 
   const raw = createIngredientExecutor({
-    manifestLoader: asManifestLoader(config.manifests),
+    manifestLoader: async slug => {
+      const manifest = config.manifests.get(slug);
+      cacheScopes.validateManifest(manifest);
+      return manifest;
+    },
     adapterRegistry,
     kernelAdapter,
-    resolveRefs,
+    resolveRefs: obj => {
+      const resolved = resolveRefs(obj);
+      cacheScopes.validateInput(resolved);
+      return resolved;
+    },
   });
 
+  const guard = (executor: IngredientExecutor): IngredientExecutor => checkConnectionRevisions
+    ? async (...args) => {
+      checkConnectionRevisions();
+      const result = await executor(...args);
+      checkConnectionRevisions();
+      return result;
+    }
+    : executor;
+  const guardedRaw = guard(raw);
   if (!config.cacheStore || !config.instanceId || !recipeContext) {
-    return raw;
+    return async (slug, input, stepOutput, stepOptions, stepMeta) => {
+      // Fresh calls also capture the source account before asynchronous work.
+      try { resultEvidence?.({ slug, input, stepMeta }); } catch { /* optional host metadata */ }
+      return guardedRaw(slug, input, stepOutput, stepOptions, stepMeta);
+    };
   }
 
-  return withIngredientCache(raw, {
+  return guard(withIngredientCache(guardedRaw, {
+    cacheScope: cacheScopes.cacheScope,
     manifestLoader: async (slug) => config.manifests.get(slug) ?? null,
     store: config.cacheStore,
     recipe_ttl: recipeContext.recipe_ttl,
@@ -1032,5 +1177,6 @@ export const createBoundExecutor = (
     // commit Gateway. Conditional spread keeps the option absent when
     // no observer is wired (the cache wrapper's own default).
     ...(onCacheStatus ? { onStatus: onCacheStatus } : {}),
-  });
+    ...(resultEvidence ? { resultEvidence } : {}),
+  }));
 };

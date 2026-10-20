@@ -74,6 +74,7 @@ export interface WorkEntityPageProps {
    *  straight through; the page knows nothing about its contents. */
   history_html?: string;
   task_completion?: WorkEntityDialogProps['task_completion'];
+  commitment_lifecycle?: WorkEntityDialogProps['commitment_lifecycle'];
 }
 
 export const renderWorkEntityPage = (props: WorkEntityPageProps): string => {
@@ -135,6 +136,8 @@ export const renderWorkEntityPage = (props: WorkEntityPageProps): string => {
           discard_guard: props.discard_guard === true,
           ...(props.task_completion !== undefined
             ? { task_completion: props.task_completion } : {}),
+          ...(props.commitment_lifecycle !== undefined
+            ? { commitment_lifecycle: props.commitment_lifecycle } : {}),
           ...(props.history_html !== undefined
             ? { history_html: props.history_html }
             : {}),

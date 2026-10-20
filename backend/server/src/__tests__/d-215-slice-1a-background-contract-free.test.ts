@@ -148,13 +148,20 @@ describe('D-215 slice 1a — the schedulers emit contract-free sources', () => {
     void sources;
   });
 
-  it('⛔ RATCHET — no background automation producer may stamp a contract_id', async () => {
+  it('⛔ RATCHET — no background automation producer may stamp a contract_id but a subscriber’s chosen one', async () => {
     // Source-level ratchet: these are the three production producers of cron,
     // periodic auto-run, and event-trigger recipe dispatch. A re-stamp would
     // silently reintroduce the outage. Reading
     // the source is deliberate — the behavioural test above proves the effect,
     // this proves the CAUSE stays removed even if a future gate change hides
     // the symptom.
+    //
+    // 🔑 AMENDED 2026-10-18 (owner ruling, D-325 §6.7): an event subscriber may
+    // run under the read contract the owner selected for it. That contract has a
+    // real definition and always travels with its snapshot, so it cannot become
+    // the snapshot-less stamp this file exists for. `wire-event-triggers.test.ts`
+    // pins both halves: it dispatches with that contract's snapshot, and without
+    // the reads to build one it does not run. The owner sentinel stays banned.
     const { readFileSync } = await import('node:fs');
     for (const file of [
       'scheduler.ts',
@@ -169,7 +176,9 @@ describe('D-215 slice 1a — the schedulers emit contract-free sources', () => {
         .split('\n')
         .map((l) => l.replace(/\/\/.*$/, ''))
         .join('\n');
-      expect(code).not.toMatch(/contract_id\s*:/);
+      const stamps = [...code.matchAll(/contract_id\s*:\s*([^,}\n]+)/g)].map(match => match[1]!.trim());
+      const chosen = file === 'composition/bin/wire-event-triggers.ts' ? /\bread_contract_id\b|\breadContract\b/ : null;
+      expect(stamps.filter(value => !chosen?.test(value)), file).toEqual([]);
       expect(code).not.toMatch(/OWNER_CONTRACT_ID/);
     }
   });

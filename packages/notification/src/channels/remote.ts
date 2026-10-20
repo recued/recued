@@ -50,10 +50,13 @@ import type {
   NotificationMessage,
 } from '../types.js';
 import { isChannelName, type AskOption } from '../types.js';
+import type { AskDeliveryDestination, AskDeliveryEnvelope, AskDeliveryOutcome } from '../ask-delivery-store.js';
 
 /** The BYO credential a remote channel sends with — resolved fresh per
  *  delivery from `connection.notification` (D-125). */
 export interface RemoteChannelCredential {
+  connection_name?: string;
+  connection_enrolled_at?: number;
   /** The send token, already decrypted — resolved through the messenger
    *  send-credential seam (`resolveMessengerSendToken`), never read off a raw
    *  `auth.token` field. */
@@ -81,7 +84,7 @@ export interface RemoteChannelCredential {
  *  credential, or `null` when none is enrolled (the channel was
  *  enabled, then its credential later deleted). Injected — the block is
  *  a leaf and cannot reach the connection store. */
-export type CredentialResolver = () => Promise<RemoteChannelCredential | null>;
+export type CredentialResolver = (destination?: AskDeliveryDestination) => Promise<RemoteChannelCredential | null>;
 
 /** A remote `Channel` plus its inbound parsers. The block consumes the
  *  `Channel` surface; the server's webhook port uses
@@ -92,7 +95,7 @@ export interface RemoteChannel extends Channel {
   /** Decode an already-authenticated (I-9) inbound vendor callback
    *  payload into an `InboundReply`, or `null` when the payload is not
    *  a recognizable option selection. */
-  parseInboundReply(payload: unknown): InboundReply | null;
+  parseInboundReply(payload: unknown, connection?: { name: string; enrolled_at: number }): InboundReply | null;
   /** Decode an already-authenticated (I-9) inbound vendor payload into
    *  a plain user message, or `null` for anything that is not one
    *  (control events, bot echoes, button presses — the vendor payload
@@ -195,6 +198,14 @@ export const createRemoteChannel = (
        *  force WHEN THE ASK WENT OUT, because `parseInboundReply` is sync and
        *  cannot resolve one. Undefined ⇒ typed answers refused for this ask. */
       expected_sender: string | undefined;
+      destination?: AskDeliveryDestination;
+      group_id?: string;
+      item?: number;
+      group_size?: number;
+      /** How a reminder delivery was shown. Only a text delivery printed the
+       *  options a typed reply may name; a button delivery is answered by the
+       *  vendor's authenticated press, never by matching chat text. */
+      presentation?: 'buttons' | 'text';
     }
   >();
 
@@ -220,6 +231,51 @@ export const createRemoteChannel = (
       );
     }
   };
+
+  const pinnedCredential = async (destination: AskDeliveryDestination): Promise<RemoteChannelCredential | null> => {
+    const credential = await resolveCredential(destination);
+    return credential && destination.channel === name
+      && credential.connection_name === destination.connection_name
+      && credential.connection_enrolled_at === destination.connection_enrolled_at
+      && credential.recipient === destination.recipient
+      && credential.expected_sender === destination.expected_sender ? credential : null;
+  };
+  const senderAllowed = (entry: { expected_sender?: string; destination?: AskDeliveryDestination }, sender: string): boolean =>
+    entry.destination?.audience === 'household' ? entry.destination.allowed_senders?.includes(sender) === true
+      : !!entry.expected_sender && entry.expected_sender === sender;
+  const clip = (value: string, max: number): string => value.length <= max ? value
+    : `${value.slice(0, Math.max(1, max - 1)).replace(/\s+\S*$/u, '')}…`;
+  /** §5.1 — every item says why; §15.6 — a bundle has one link, to Today. Each item
+   * gets an equal share of a body that stays well inside Telegram's limit, which
+   * refuses a longer message rather than trimming it. */
+  const deliveryBody = (envelope: AskDeliveryEnvelope) => {
+    const links = [...new Set(envelope.asks.map(ask => ask.message.link_url).filter((url): url is string =>
+      typeof url === 'string' && /^https?:\/\//.test(url)))];
+    const link = envelope.asks.length === 1 ? links[0] : links[0] && `${links[0].split('#')[0]}#today`;
+    const room = Math.floor(3400 / envelope.asks.length) - 6;
+    const titleRoom = Math.min(72, Math.max(24, Math.floor(room / 3)));
+    return [
+      envelope.repeat ? 'Repeat — the previous delivery could not be confirmed.' : undefined,
+      ...envelope.asks.map((ask, index) => envelope.closed_ask_ids?.includes(ask.ask_id) ? `${index + 1}. Closed`
+        : envelope.asks.length === 1
+        ? composeCloseText(ask.message)
+        : `${index + 1}. ${clip(ask.message.title ?? 'Reminder', titleRoom)}\n${clip(ask.message.text, Math.max(40, room - titleRoom))}`),
+      link,
+    ].filter(Boolean).join('\n\n');
+  };
+  const deliveryOptions = (envelope: AskDeliveryEnvelope, closed: readonly string[] = envelope.closed_ask_ids ?? []) => envelope.asks.flatMap((ask, index) =>
+    closed.includes(ask.ask_id) ? [] : ask.options.map(option => ({ id: option.id,
+      label: envelope.asks.length > 1 ? `${index + 1} ${option.label}` : option.label,
+      correlation_id: ask.ask_id })));
+  const deliveryOutcome = (result: TransportSendResult): AskDeliveryOutcome => result.ok
+    ? { outcome: 'delivered', ...(result.vendor_message_id ? { provider_message_id: result.vendor_message_id } : {}) }
+    : { outcome: ['auth', 'invalid_request', 'rate_limited'].includes(result.error.kind)
+        // A connection that never opened sent nothing, so it retries instead of using the one repeat.
+        || (result.error.kind === 'network' && result.error.not_sent === true) ? 'not_delivered' : 'unknown',
+      error: result.error.detail.slice(0, 500) };
+  const managedButtons = (envelope: AskDeliveryEnvelope) => isInteractive(transport)
+    && transport.updatePrompt !== undefined
+    && deliveryOptions(envelope).length <= (transport.max_prompt_options ?? Infinity);
 
   return {
     name,
@@ -350,7 +406,83 @@ export const createRemoteChannel = (
       });
     },
 
-    parseInboundReply(payload) {
+    async deliverAskDelivery(envelope) {
+      let credential: RemoteChannelCredential | null;
+      try { credential = await pinnedCredential(envelope.destination); }
+      catch { return { outcome: 'not_delivered', error: 'The pinned notification credential is unavailable' }; }
+      if (!credential) return { outcome: 'not_delivered', error: 'The pinned notification connection is unavailable or changed', permanent: true };
+      const { token, recipient } = credential;
+      if (isInteractive(transport) && managedButtons(envelope)) {
+        const result = deliveryOutcome(await transport.sendPrompt({ token, recipient,
+          text: deliveryBody(envelope), correlation_id: envelope.group_id,
+          options: deliveryOptions(envelope) }));
+        return result.outcome === 'delivered' ? { ...result, presentation: 'buttons' } : result;
+      }
+      const instructions = envelope.asks.length > 1
+        ? 'Reply with the item number and answer, for example: 2 done.'
+        : renderAnswerHint(envelope.asks[0]!.options);
+      const choices = envelope.asks.map((ask, index) => `${envelope.asks.length > 1 ? `${index + 1}: ` : ''}`
+        + ask.options.map(option => option.label).join(', ')).join('\n');
+      const result = deliveryOutcome(await transport.send({ token, recipient, delivery_id: envelope.attempt_id,
+        text: `${instructions}\n${choices}\n\n${deliveryBody(envelope)}` }));
+      return result.outcome === 'delivered' ? { ...result, presentation: 'text' } : result;
+    },
+
+    restoreAskDelivery(receipt, closed) {
+      for (const [index, ask] of receipt.asks.entries()) delivered.set(ask.ask_id, {
+        vendor_message_id: receipt.provider_message_id ?? '', close_text: deliveryBody(receipt),
+        options: ask.options, closed: closed.includes(ask.ask_id),
+        expected_sender: receipt.destination.expected_sender, destination: receipt.destination,
+        group_id: receipt.group_id, item: index + 1, group_size: receipt.asks.length,
+        ...(receipt.presentation ? { presentation: receipt.presentation } : {}),
+      });
+    },
+
+    async withdrawAskDelivery(receipt, closed) {
+      for (const ask of receipt.asks) {
+        const entry = delivered.get(ask.ask_id);
+        if (entry && closed.includes(ask.ask_id)) entry.closed = true;
+      }
+      if (receipt.presentation === 'text' || !isInteractive(transport) || !managedButtons(receipt)) return true;
+      if (!receipt.provider_message_id) return false;
+      const credential = await pinnedCredential(receipt.destination);
+      if (!credential) return false;
+      const options = deliveryOptions(receipt, closed);
+      const text = deliveryBody({ ...receipt, closed_ask_ids: closed });
+      const result = options.length > 0 && transport.updatePrompt
+        ? await transport.updatePrompt({ token: credential.token, recipient: credential.recipient,
+          text, correlation_id: receipt.group_id, vendor_message_id: receipt.provider_message_id, options })
+        : options.length === 0
+          ? await transport.closePrompt({ token: credential.token, recipient: credential.recipient,
+            text, vendor_message_id: receipt.provider_message_id }) : null;
+      return result?.ok === true;
+    },
+
+    parseInboundReply(payload, connection) {
+      // A surface with too few editable buttons receives the same numbered
+      // questions as text. Match only its pinned conversation/principal, and
+      // require a reply-to when more than one envelope could own a number.
+      const message = connection ? transport.parseInbound(payload) : null;
+      if (message && connection) {
+        const recipient = transport.parseConversationId(payload);
+        const candidates = [...delivered.entries()].filter(([, entry]) => entry.destination && !entry.closed
+          && entry.presentation === 'text'
+          && entry.destination.connection_name === connection.name
+          && entry.destination.connection_enrolled_at === connection.enrolled_at
+          && entry.destination.recipient === recipient && senderAllowed(entry, message.from)
+          && (!message.reply_to_message_id || entry.vendor_message_id === message.reply_to_message_id));
+        const numbered = /^(\d+)\s+(.+)$/.exec(message.text.trim());
+        const groupIds = new Set(candidates.map(([, entry]) => entry.group_id));
+        const eligible = candidates.filter(([, entry]) => numbered
+          ? groupIds.size === 1 && entry.item === Number(numbered[1])
+          : entry.group_size === 1);
+        const outcome = matchTextAnswer(numbered?.[2] ?? message.text, eligible.map(([ask_id, entry]) => ({ ask_id, options: entry.options })));
+        if (outcome.kind === 'answer' && recipient) return { ask_id: outcome.ask_id, option: outcome.option, via: name,
+          origin: { connection_name: connection.name, connection_enrolled_at: connection.enrolled_at,
+            recipient, sender: message.from,
+            ...(message.reply_to_message_id ? { provider_message_id: message.reply_to_message_id } : {}),
+          } };
+      }
       // D-238 — a channel with no buttons answers by TYPING. The matcher is
       // deliberately strict (exact option, alone, one open ask); everything else
       // is ordinary conversation and returns null so it passes through.
@@ -368,16 +500,21 @@ export const createRemoteChannel = (
         // open set entirely, so "we do not know who may approve" resolves to
         // "nobody may", never to "anyone may".
         const sender = parsed.from.trim();
+        const recipient = transport.parseConversationId(payload);
         const open = [...delivered.entries()]
           .filter(([, entry]) => !entry.closed)
           .filter(([, entry]) =>
-            entry.expected_sender !== undefined
-            && entry.expected_sender.length > 0
-            && entry.expected_sender === sender)
+            senderAllowed(entry, sender))
+          .filter(([, entry]) => !entry.destination || (!!connection
+            && entry.destination.connection_name === connection.name
+            && entry.destination.connection_enrolled_at === connection.enrolled_at
+            && entry.destination.recipient === recipient))
           .map(([ask_id, entry]) => ({ ask_id, options: entry.options }));
         const outcome = matchTextAnswer(parsed.text, open);
         if (outcome.kind !== 'answer') return null;
-        return { ask_id: outcome.ask_id, option: outcome.option, via: name };
+        return { ask_id: outcome.ask_id, option: outcome.option, via: name,
+          ...(connection && recipient ? { origin: { connection_name: connection.name,
+            connection_enrolled_at: connection.enrolled_at, recipient, sender } } : {}) };
       }
       const choice = transport.parseInboundChoice(payload);
       if (choice === null) return null;
@@ -388,6 +525,11 @@ export const createRemoteChannel = (
         ask_id: choice.correlation_id,
         option: choice.option_id,
         via: name,
+        ...(connection && transport.parseCallbackConversationId(payload) ? { origin: {
+          connection_name: connection.name, connection_enrolled_at: connection.enrolled_at,
+          recipient: transport.parseCallbackConversationId(payload)!, sender: choice.from,
+          ...(choice.vendor_message_id ? { provider_message_id: choice.vendor_message_id } : {}),
+        } } : {}),
       };
     },
 

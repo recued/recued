@@ -59,6 +59,29 @@
  *  omitted `'string'` — the largest gap, by 2×.) */
 import type { MailTemplateDefinition } from './mail-facts.js';
 
+/** An editable Run argument seeded from the object selected on the page.
+ * `id` names the selection's identity; other fields are own-property paths.
+ * This is a UI convenience, never execution authority or a saved setting. */
+export interface RecipePageBinding {
+  kind: string;
+  field: string;
+  /** Omit for local objects. API objects must name their vendor domain. */
+  platform?: string;
+}
+
+export const isRecipePageBinding = (value: unknown): value is RecipePageBinding => {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const binding = value as Record<string, unknown>;
+  const safePart = (part: string): boolean => /^[a-zA-Z][a-zA-Z0-9_-]*$/.test(part)
+    && part !== 'constructor' && part !== 'prototype';
+  return Object.keys(binding).every(key => key === 'kind' || key === 'field' || key === 'platform')
+    && Object.prototype.hasOwnProperty.call(binding, 'kind')
+    && Object.prototype.hasOwnProperty.call(binding, 'field')
+    && typeof binding.kind === 'string' && safePart(binding.kind)
+    && typeof binding.field === 'string' && binding.field.split('.').every(safePart)
+    && (binding.platform === undefined || (typeof binding.platform === 'string' && safePart(binding.platform)));
+};
+
 export type ValueHintType =
   | 'secret' | 'url' | 'text' | 'number' | 'boolean' | 'enum' | 'oauth'
   | 'file_slug'
@@ -116,6 +139,10 @@ export type ValueHintType =
 export interface ValueHint {
   label: string;
   type: ValueHintType;
+  /** Recipe variables only: map a selected page object's field to this input,
+   * even when their names differ. Missing/ambiguous values stay manual. A
+   * record_ref still obeys its entity, equality filter and pack namespace. */
+  page_binding?: RecipePageBinding;
   /** If true, user can skip this and the recipe still works (e.g., Exa anonymous queries). Default: required. */
   optional?: boolean;
   default?: unknown;
@@ -187,6 +214,7 @@ export const VALUE_HINT_KEYS = [
   'label', 'type', 'optional', 'default', 'help', 'link',
   'options', 'provider', 'scopes', 'accept_mime_types', 'connection_kind',
   'entity', 'entity_filter', 'starter',
+  'page_binding',
 ] as const satisfies ReadonlyArray<keyof ValueHint>;
 
 /** `satisfies` above proves the list contains only REAL members. It does not

@@ -1,6 +1,6 @@
 /** Small DOM fixture for the picker; production mounts and event handlers run unchanged. */
 export class PickerElement {
-  children:PickerElement[]=[];attrs=new Map<string,string>();ownText='';value='';type='';name='';id='';htmlFor='';className='';disabled=false;checked=false;focused=false;
+  children:PickerElement[]=[];attrs=new Map<string,string>();ownText='';value='';type='';name='';id='';htmlFor='';className='';disabled=false;checked=false;focused=false;open=false;
   listeners=new Map<string,((event:{key?:string;preventDefault():void})=>void)[]>();
   get textContent():string{return this.ownText+this.children.map(c=>c.textContent).join(' ');}
   set textContent(value:string|null){this.ownText=value??'';this.children=[];}

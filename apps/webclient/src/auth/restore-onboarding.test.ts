@@ -6,8 +6,8 @@
  *  preview → commit → done), the recoverable bounces (bad code / channel / upload
  *  / wrong-key), the terminal states (already-paired / server-changed / a
  *  non-empty target), the resume memory (no re-POST after a finalize failure, no
- *  re-upload on a wrong-key retry), the commit semantics (a real socket drop is
- *  success; a timeout is NOT), the schema-too-new gate, and the footgun invariant
+ *  re-upload on a wrong-key retry), uncertain commit outcomes, the schema-too-new
+ *  gate, and the footgun invariant
  *  (the archive key NEVER reaches pairCode; only `importArchive`). */
 
 import { describe, expect, it, vi } from 'vitest';
@@ -28,6 +28,7 @@ import {
 } from './restore-onboarding.js';
 import { createInMemoryWebclientLocalStore } from '../storage/local-store.js';
 import type { WebclientTokenStore } from '../storage/token-store.js';
+import type { WebclientWsState, WebclientWsTransport } from '../realtime/ws-client.js';
 import type {
   ArchiveImportCaller,
   ArchiveUploadFile,
@@ -613,23 +614,25 @@ describe('restore-onboarding — schema gate', () => {
 // ════════════════════════════════════════════════════════════════
 
 describe('restore-onboarding — commit semantics', () => {
-  for (const code of ['transport', 'transport_disposed', 'webclient_reauth_required']) {
-    it(`a '${code}' drop after commit is SUCCESS (server restarted), no rebind`, async () => {
+  for (const code of ['transport', 'transport_disposed', 'webclient_reauth_required', 'connection_lost', 'timeout']) {
+    it(`a '${code}' commit outcome stays unknown without a false handoff or automatic retry`, async () => {
       const { onboarding, f, restoredCalls } = await drivenToPreview();
       f.commitImpl = async () => {
         throw rpcErr(code, 'socket dropped');
       };
       await onboarding.confirm();
-      expect(onboarding.getState().phase).toBe('done');
+      expect(onboarding.getState()).toMatchObject({ phase: 'collect', error: RESTORE_ONBOARDING_COPY.restore_uncertain, errorStage: null });
       expect(f.stashCalls).toHaveLength(0);
-      expect(restoredCalls()).toBe(1);
+      expect(restoredCalls()).toBe(0);
+      await onboarding.confirm();
+      expect(f.importCalls.filter(call => call.dry_run === false)).toHaveLength(1);
     });
   }
 
-  it('a commit timeout is NOT treated as success — bounces to a recoverable error', async () => {
+  it('a commit refused before dispatch cannot claim a successful restore', async () => {
     const { onboarding, f, restoredCalls } = await drivenToPreview();
     f.commitImpl = async () => {
-      throw rpcErr('timeout', 'deadline');
+      throw rpcErr('server_offline', 'not delivered');
     };
     await onboarding.confirm();
     expect(onboarding.getState().phase).toBe('collect');
@@ -725,6 +728,56 @@ describe('restore-onboarding — lifecycle + guards', () => {
 });
 
 describe('restore-onboarding — browser boot wiring', () => {
+  for (const failure of ['disconnect', 'late_send_rejection', 'send_failure'] as const) {
+  it.each([true, false])(`settles a dry_run=%s import (${failure}) without waiting for the deadline or replaying it`, async dry_run => {
+    vi.useFakeTimers();
+    let channel: RestoreChannel | undefined;
+    const states = new Set<(state: WebclientWsState) => void>();
+    const messages = new Set<(message: unknown) => void>();
+    const sent: unknown[] = [];
+    let rejectSend: ((error: Error) => void) | undefined;
+    const transport: WebclientWsTransport = {
+      async open() { for (const listener of states) listener('connected'); },
+      async close() {},
+      async send(message) {
+        sent.push(message);
+        if (failure === 'send_failure') throw new Error('fixture send failure');
+        if (failure === 'late_send_rejection') await new Promise<void>((_resolve, reject) => { rejectSend = reject; });
+      },
+      onState(listener) { states.add(listener); return () => { states.delete(listener); }; },
+      onMessage(listener) { messages.add(listener); return () => { messages.delete(listener); }; },
+    };
+    try {
+      const localStore = createInMemoryWebclientLocalStore();
+      await localStore.ensureProfile('ws://restore.fixture.test/ws');
+      await localStore.set('server_public_key', 'fixture-public-key');
+      await localStore.set('webclient_token', { token_id: 'fixture-token', ciphertext_b64: 'fixture', iv_b64: 'fixture', issued_at: 1 });
+      const tokenStore: WebclientTokenStore = {
+        async wrap() { throw new Error('Not part of this channel'); },
+        async unwrap() { return 'fixture-bearer'; },
+      };
+      const ops = createBrowserRestoreOps({ localStore, tokenStore, instanceId: 'fixture-browser', transportFactory: () => transport });
+      channel = await ops.openChannel();
+      const outcomes: unknown[] = [];
+      const pending = channel.importArchive({ path: 'fixture.recued.archive', recoveryKey: INPUTS().archiveKey, dry_run })
+        .then(result => outcomes.push(result), error => outcomes.push({ code: error.code }));
+      await vi.advanceTimersByTimeAsync(0); expect(sent).toHaveLength(1);
+      if (failure !== 'send_failure') for (const listener of states) listener('reconnecting');
+      await vi.advanceTimersByTimeAsync(0);
+      // No timer has advanced: the real WS/RPC composition must reject now.
+      expect(outcomes).toEqual([{ code: failure === 'send_failure' ? 'transport' : 'connection_lost' }]);
+      await pending;
+      rejectSend?.(new Error('fixture rejection after the caller was already told the outcome is unknown'));
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(sent).toHaveLength(1);
+    } finally {
+      rejectSend?.(new Error('fixture cleanup'));
+      await channel?.close(); vi.useRealTimers();
+    }
+    expect(states.size).toBe(0); expect(messages.size).toBe(0);
+  });
+  }
+
   it('selects the restored server through ensureProfile, not a server_url field write', async () => {
     const localStore = createInMemoryWebclientLocalStore();
     const ensureProfile = vi.spyOn(localStore, 'ensureProfile');

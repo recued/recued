@@ -170,6 +170,7 @@ const rowTextForBooking = (
 /** Per-kind row-text projection. */
 export const projectRowText = (entity: WorkEntity): RowText => {
   switch (entity._kind) {
+    case 'asset': return { primary: entity.name, secondary: entity.class_id ?? '', meta: entity.status };
     case 'task':
       return rowTextForTask(entity);
     case 'note':

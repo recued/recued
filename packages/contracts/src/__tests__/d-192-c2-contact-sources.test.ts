@@ -403,12 +403,9 @@ describe('D-192 C-2 slice 5 — the shipped registry', () => {
     const google = getContactSourceDeclaration('google');
     expect(google?.supplies.attributes).toContain('photo');
 
-    // ⚠ …but NOT `birthday`, and that is a STATEMENT, not an oversight. The People
-    // API carries birthdays; the PACK's `entities.person` field map does not declare
-    // them, so no code can produce one. `supplies` is a promise the runner VERIFIES
-    // per record — promising it would fail every record on the first cycle. Closing
-    // it is a visible two-line pack edit, not a discovery six months on.
-    expect(google?.supplies.attributes).not.toContain('birthday');
+    // D-325 adds the People birthday mapping, preserving yearless dates.
+    // Its runtime import and projection are qualified by the day-one drive.
+    expect(google?.supplies.attributes).toContain('birthday');
     expect(google?.supplies.attributes).not.toContain('title');
   });
 

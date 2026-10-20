@@ -59,6 +59,9 @@ export class WebclientReauthRequiredError extends Error {
   }
 }
 
+/** A connected-only send was refused before it entered any transport queue. */
+export class WebclientNotConnectedError extends Error {}
+
 export interface WebclientWsTransport {
   /** Open a connection. Resolves once the transport has reached the
    *  `connected` state (auth handshake complete). Rejects on auth
@@ -95,7 +98,7 @@ export interface WebclientWsClient {
    *  + drains on the next `connected` transition. Caller can detect
    *  drop via the returned promise resolving without dispatch (the
    *  state listener is the source of truth). */
-  send(message: unknown): Promise<void>;
+  send(message: unknown, options?: { queue?: boolean }): Promise<void>;
   /** Apply a freshly-rotated bearer (received via the `token.rotated`
    *  broadcast event). Clears the `reauth_required` state + resumes
    *  the reconnect loop. No-op when the client isn't in
@@ -129,6 +132,9 @@ interface WsClientOptions {
   random?(): number;
   /** Override the offline queue cap (tests). */
   send_queue_max?: number;
+  /** Keep a failed connected send for replay on reconnect (default true).
+   *  Set false when the caller owns uncertain delivery and explicit retries. */
+  queue_on_send_error?: boolean;
 }
 
 const DEFAULT_BACKOFF = [
@@ -325,7 +331,7 @@ export const createWebclientWsClient = (options: WsClientOptions): WebclientWsCl
       await options.transport.close();
       setState('closed');
     },
-    async send(message) {
+    async send(message, sendOptions) {
       if (cur_state === 'reauth_required') {
         // Spec § A.4.4 line 569 — discard with caller-visible drop.
         // We model this as a thrown error so the UI's "Retry?"
@@ -343,9 +349,11 @@ export const createWebclientWsClient = (options: WsClientOptions): WebclientWsCl
             setState('reauth_required');
             throw err;
           }
+          if (options.queue_on_send_error === false || sendOptions?.queue === false) throw err;
           // Transport drop mid-send — fall through to enqueue.
         }
       }
+      if (sendOptions?.queue === false) throw new WebclientNotConnectedError('This request was not sent because the socket is disconnected');
       // Codex P2 #2 fold — queue while not connected; drains on
       // next `connected`.
       if (outbound.length >= queueMax) {

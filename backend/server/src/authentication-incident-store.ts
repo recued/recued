@@ -1,15 +1,23 @@
 import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { RpcError, oauthAppSecretExpiry, isAuthenticationIncidentHistoryQuery, authenticationIncidentScope,
+  authenticationIncidentHistoryFilters, authenticationHistoryEntryMatches,
+  isAuthenticationHistoryExportQuery, authenticationHistoryExportRecord, authenticationHistoryEntryType, authenticationHistoryEntryOutcome,
+  AUTHENTICATION_HISTORY_EXPORT_MAX_BYTES, AUTHENTICATION_HISTORY_EXPORT_MAX_ENTRIES,
+  type AuthenticationHistoryExportQuery, type AuthenticationHistoryExport,
   type AuthenticationIncident, type AuthenticationIncidentHistoryQuery, type AuthenticationIncidentHistoryPage,
-  type AuthenticationIncidentScope, type AuthenticationIncidentLevel, type AuthenticationRepairAction } from '@recued/contracts';
+  type AuthenticationIncidentScope, type AuthenticationIncidentLevel, type AuthenticationRepairAction,
+  type AuthenticationIncidentHistoryFilters, type AuthenticationHistoryEntry } from '@recued/contracts';
 import type { Episode } from './authentication-alert-store.js';
 import { ensureAuthenticationHistorySchema } from './authentication-history-schema.js';
 
 const RETENTION_DAYS = 90;
 const digest = (value: string): string => createHash('sha256').update(value).digest('hex');
 const scopeKey = (scope: AuthenticationIncidentScope): string => JSON.stringify(authenticationIncidentScope(scope));
-const scopeHash = (scope: AuthenticationIncidentScope, renewals = false): string => digest(renewals ? JSON.stringify([scopeKey(scope), 'renewals']) : scopeKey(scope));
+const scopeHash = (scope: AuthenticationIncidentScope, renewals = false, filters: AuthenticationIncidentHistoryFilters = {}): string => {
+  const base = renewals ? JSON.stringify([scopeKey(scope), 'renewals']) : scopeKey(scope);
+  return digest(Object.keys(filters).length ? JSON.stringify([base, 'filters-v1', filters]) : base);
+};
 const unique = <T>(values: readonly T[], key: (v: T) => string): T[] => [...new Map(values.map(v => [key(v), v])).values()];
 const incidentLevel = (episode: Episode, now: number, previous?: AuthenticationIncident): AuthenticationIncidentLevel => {
   // A closed alert retains its last known classification. Importing it later
@@ -30,6 +38,17 @@ const incidentLevel = (episode: Episode, now: number, previous?: AuthenticationI
  * resource hash, raw provider error or notification delivery claim is copied. */
 export const createAuthenticationIncidentStore = (db: Database.Database) => {
   ensureAuthenticationHistorySchema(db);
+  const candidates = (scope: AuthenticationIncidentScope, filters: AuthenticationIncidentHistoryFilters, renewals: boolean, before: number, now: number) => {
+    const predicate = scope.kind === 'all' ? '' : scope.kind === 'group' ? ` AND (h.group_id = @group_id OR EXISTS
+      (SELECT 1 FROM authentication_repair_incidents r WHERE r.repair_id = h.id AND r.group_id = @group_id) OR EXISTS
+      (SELECT 1 FROM authentication_history_groups g WHERE g.entry_id = h.id AND g.group_id = @group_id))`
+      : ' AND EXISTS (SELECT 1 FROM authentication_incident_targets t WHERE t.incident_id = h.id AND t.scope_key = @scope_key)';
+    return db.prepare(`SELECT h.sequence, h.id, h.kind, h.data FROM authentication_incident_history h WHERE h.sequence < @before
+      AND (h.ended_at IS NULL OR h.ended_at >= @cutoff)${renewals ? '' : " AND h.kind <> 'renewal'"}${predicate}
+      ${filters.type ? ' AND h.kind = @kind' : ''} ORDER BY h.sequence DESC`)
+      .iterate({ before, cutoff: now - RETENTION_DAYS * 86_400_000, group_id: scope.kind === 'group' ? scope.id : null,
+        scope_key: scopeKey(scope), ...(filters.type ? { kind: filters.type } : {}) }) as Iterable<{ sequence: number; id: string; kind: string; data: string }>;
+  };
   return {
     record(episode: Episode, now: number, onlyIfMissing = false): void {
       const stored = db.prepare('SELECT data, signature FROM authentication_incident_history WHERE id = ?').get(episode.id) as { data: string; signature: string } | undefined;
@@ -99,24 +118,24 @@ export const createAuthenticationIncidentStore = (db: Database.Database) => {
     history(query: AuthenticationIncidentHistoryQuery, now = Date.now()): AuthenticationIncidentHistoryPage {
       if (!isAuthenticationIncidentHistoryQuery(query)) throw new RpcError('bad_request', 'Choose a valid incident history filter and page.');
       const scope = authenticationIncidentScope(query.scope);
+      const filters = authenticationIncidentHistoryFilters(query.filters); const filtered = Object.keys(filters).length > 0;
       let before = Number.MAX_SAFE_INTEGER;
       if (query.cursor) {
         try {
           const value: unknown = JSON.parse(Buffer.from(query.cursor, 'base64url').toString('utf8'));
           if (!value || typeof value !== 'object' || !('before' in value) || !Number.isSafeInteger(value.before) || Number(value.before) <= 0
-            || !('scope' in value) || value.scope !== scopeHash(scope, query.include_renewals)) throw new Error('cursor');
+            || !('scope' in value) || value.scope !== scopeHash(scope, query.include_renewals, filters)) throw new Error('cursor');
           before = Number(value.before);
         } catch { throw new RpcError('bad_request', 'This history page is invalid for the selected connection. Refresh the history.'); }
       }
       const limit = query.limit ?? 20;
-      const predicate = scope.kind === 'all' ? '' : scope.kind === 'group' ? ` AND (h.group_id = @group_id OR EXISTS
-        (SELECT 1 FROM authentication_repair_incidents r WHERE r.repair_id = h.id AND r.group_id = @group_id) OR EXISTS
-        (SELECT 1 FROM authentication_history_groups g WHERE g.entry_id = h.id AND g.group_id = @group_id))`
-        : ' AND EXISTS (SELECT 1 FROM authentication_incident_targets t WHERE t.incident_id = h.id AND t.scope_key = @scope_key)';
-      const rows = db.prepare(`SELECT h.sequence, h.id, h.kind, h.data FROM authentication_incident_history h WHERE h.sequence < @before
-        AND (h.ended_at IS NULL OR h.ended_at >= @cutoff)${query.include_renewals ? '' : " AND h.kind <> 'renewal'"}${predicate}
-        ORDER BY h.sequence DESC LIMIT @limit`).all({ before, cutoff: now - RETENTION_DAYS * 86_400_000,
-          limit: limit + 1, group_id: scope.kind === 'group' ? scope.id : null, scope_key: scopeKey(scope) }) as Array<{ sequence: number; id: string; kind: string; data: string }>;
+      const rows: Array<{ sequence: number; id: string; kind: string; data: string }> = [];
+      // Scan retained candidates before paging, stopping after one lookahead
+      // match. Never filter only a fetched page or load the whole corpus into memory.
+      for (const row of candidates(scope, filters, query.include_renewals === true, before, now)) {
+        if (filtered && !authenticationHistoryEntryMatches(JSON.parse(row.data) as AuthenticationHistoryEntry, filters)) continue;
+        rows.push(row); if (rows.length > limit) break;
+      }
       const page = rows.slice(0, limit);
       const repair = (row: { data: string }): AuthenticationRepairAction => {
         const value = JSON.parse(row.data) as AuthenticationRepairAction;
@@ -133,12 +152,39 @@ export const createAuthenticationIncidentStore = (db: Database.Database) => {
         }
         return value;
       };
-      return { scope, observed_at: now, incidents: page.filter(row => row.kind === 'incident').map(row => JSON.parse(row.data) as AuthenticationIncident),
+      return { scope, ...(filtered ? { filters } : {}), observed_at: now, incidents: page.filter(row => row.kind === 'incident').map(row => JSON.parse(row.data) as AuthenticationIncident),
         repairs: page.filter(row => row.kind === 'repair').map(repair),
         verifications: page.filter(row => row.kind === 'verification').map(row => JSON.parse(row.data) as import('@recued/contracts').AuthenticationAccessVerification),
         ...(query.include_renewals ? { renewals: page.filter(row => row.kind === 'renewal').map(row => JSON.parse(row.data) as import('@recued/contracts').AuthenticationRenewalHistory) } : {}),
         order: page.map(row => row.id), retention_days: RETENTION_DAYS,
-        ...(rows.length > limit ? { next_cursor: Buffer.from(JSON.stringify({ before: page.at(-1)!.sequence, scope: scopeHash(scope, query.include_renewals) })).toString('base64url') } : {}) };
+        ...(rows.length > limit ? { next_cursor: Buffer.from(JSON.stringify({ before: page.at(-1)!.sequence, scope: scopeHash(scope, query.include_renewals, filters) })).toString('base64url') } : {}) };
+    },
+    export(query: AuthenticationHistoryExportQuery, now = Date.now()): AuthenticationHistoryExport {
+      if (!isAuthenticationHistoryExportQuery(query)) throw new RpcError('bad_request', 'Choose a valid history scope and filters to export.');
+      const scope = authenticationIncidentScope(query.scope); const filters = authenticationIncidentHistoryFilters(query.filters);
+      const entries: AuthenticationHistoryExport['entries'] = []; let bytes = 0;
+      const tooLarge = (): never => { throw new RpcError('payload_too_large', 'This history export is too large. Narrow the applied filters and try again.', 413); };
+      // One SELECT holds a SQLite read snapshot until its iterator closes. No
+      // paged RPC traversal, current-auth projection, credential decode or writes.
+      for (const row of candidates(scope, filters, true, Number.MAX_SAFE_INTEGER, now)) {
+        if (Buffer.byteLength(row.data, 'utf8') > AUTHENTICATION_HISTORY_EXPORT_MAX_BYTES) tooLarge();
+        let record: AuthenticationHistoryEntry | null;
+        try { record = authenticationHistoryExportRecord(JSON.parse(row.data)); }
+        catch { record = null; }
+        if (!record || record.id !== row.id || authenticationHistoryEntryType(record) !== row.kind) {
+          throw new RpcError('internal_error', 'Retained history could not be exported. No partial report was created.');
+        }
+        if (!authenticationHistoryEntryMatches(record, filters)) continue;
+        const entry = { type: authenticationHistoryEntryType(record), outcome: authenticationHistoryEntryOutcome(record), record };
+        bytes += Buffer.byteLength(JSON.stringify(entry), 'utf8') + 1;
+        if (entries.length >= AUTHENTICATION_HISTORY_EXPORT_MAX_ENTRIES || bytes > AUTHENTICATION_HISTORY_EXPORT_MAX_BYTES) tooLarge();
+        entries.push(entry);
+      }
+      const report: AuthenticationHistoryExport = { format: 'recued.connection-history', version: 1, exported_at: now, scope, filters,
+        retention_days: 90, finished_record_limit: 10000, complete: true, evidence: 'retained_local_observations', current_authentication: 'not_checked',
+        entry_count: entries.length, entries };
+      if (Buffer.byteLength(JSON.stringify(report), 'utf8') > AUTHENTICATION_HISTORY_EXPORT_MAX_BYTES) tooLarge();
+      return report;
     },
   };
 };

@@ -63,6 +63,8 @@ export interface ContractRow {
 }
 
 export interface ContractStore {
+  /** Host-only identity for synchronous multi-store commits. */
+  readonly realmDatabase?: Database.Database;
   /** Write a DATA row. Validates `(scope, segments, value)` against the schema
    *  (structural — segments satisfy the scope's required/optional_tail, value
    *  matches the value_shape); throws `ContractWriteInvalidError` on any issue.
@@ -296,6 +298,7 @@ export const createContractStore = (
   };
 
   return {
+    realmDatabase: db,
     putIfAbsent(scope, segments, value) {
       // Same validation the ordinary `put` runs — a seed must not be able to
       // write a shape the write path would have rejected.

@@ -1,7 +1,6 @@
 import Database from 'better-sqlite3';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { createStorageGate } from '@recued/storage-gate';
 import { TIER1_TOOL_DESCRIPTORS, type ToolEntry, type InternalToolRegistry } from '@recued/contracts';
@@ -14,6 +13,10 @@ import { createChatOrchestrator, type ChatBroadcastEmitter } from '../../../../b
 import { createChatMessengerBridge } from '../../../../backend/server/src/chat-messenger-bridge.js';
 import { withQueuedChatTurns } from '../../../../backend/server/src/chat-turn-queue.js';
 import { handleChatDelivery, handleChatQueue, handleClearSessionBrief, handleGetSessionBrief, handleSessionCreate, handleSend, handleSessionGet, handleSessionsList } from '../../../../backend/server/src/chat-handler.js';
+import { ownedTempFolder, reapOrphanedFolders } from './live-binary.js';
+
+/** The folder a backend with attachment delivery keeps its received files in. */
+const CHAT_FILES_PREFIX = 'chat-file-browser-';
 
 export const createQueueFixture = (broadcast: ChatBroadcastEmitter, delivery = false, attachmentDelivery = false,
   options: { holdInModel?: boolean; holdClosingBrief?: boolean; answer?: string; beforeAnswer?: () => Promise<void>; registry?: InternalToolRegistry;
@@ -89,7 +92,10 @@ export const createQueueFixture = (broadcast: ChatBroadcastEmitter, delivery = f
     } } : {}) });
   const executions: string[] = [];
   let deliveries = 0;
-  const dir = attachmentDelivery ? mkdtempSync(join(tmpdir(), 'chat-file-browser-')) : undefined;
+  // Owned by this worker, so a worker killed before `close()` leaves a folder the
+  // next backend deletes.
+  if (attachmentDelivery) reapOrphanedFolders(CHAT_FILES_PREFIX);
+  const dir = attachmentDelivery ? ownedTempFolder(CHAT_FILES_PREFIX) : undefined;
   const blobs = dir ? createEncryptedBlobStore(join(dir, 'cas'), () => new Uint8Array(32).fill(68)) : undefined;
   const files = dir ? createInboundFileCollection({ db, slug: 'received',
     blobs: blobs!, bus: createWarehouseEventBus(),

@@ -49,6 +49,7 @@ import {
 import type { ChatDispatchResult, Checkpoint, RecipeDefinition, RecipeError } from '@recued/contracts';
 import {
   executionSourceHasContract,
+  RpcError,
   isGatedActionTerminal,
   isEphemeralDishId,
 } from '@recued/contracts';
@@ -598,6 +599,7 @@ const TERMINAL_RUN_ANCHOR_STATUSES = new Set<AuditEntry['commit_status']>([
   'succeeded',
   'failed',
   'cancelled',
+  'killed',
   'in_doubt',
 ]);
 
@@ -813,6 +815,7 @@ export const createPreflightResumer = (
       // The resumer feeds it straight back so the resumed gated step
       // dispatches against the same values the gate evaluated.
       config: { ...anchor.config_snapshot },
+      ...(anchor.connection_revisions ? { connection_revisions: { ...anchor.connection_revisions } } : {}),
       // Targeting guard follow-on (design § 8 / codex HIGH fold) — replay
       // the paused run's caller context (persisted on awaiting anchors
       // only). Context is run-scoped input frozen at dispatch: a gated
@@ -896,6 +899,7 @@ export const createPreflightResumer = (
           ? { exchange_ref: anchor.exchange_ref }
           : {}),
         resume_from: {
+          ...(checkpoint.resource_review ? { resource_review: checkpoint.resource_review } : {}),
           gated_step_id: checkpoint.gated_step_id!,
           ...(checkpoint.execution_phase ? { execution_phase: checkpoint.execution_phase } : {}),
           ...(checkpoint.trigger_state ? { trigger_state: checkpoint.trigger_state } : {}),
@@ -1045,6 +1049,7 @@ export const createPreflightResumer = (
     delete terminal.checkpoint_id;
     delete terminal.ask_id;
     delete terminal.context_snapshot;
+    delete terminal.connection_revisions;
     try {
       await deps.auditLog.append(terminal);
     } catch (error) {
@@ -1500,6 +1505,13 @@ export const createPreflightResumer = (
             detail: 'fresh authority returned no contract snapshot',
           };
         }
+        if (authority.admitted && authority.contract_snapshot !== undefined) {
+          const scopeKey = (spheres: readonly ('personal' | 'professional')[] | undefined): string => spheres === undefined ? 'all' : JSON.stringify([...new Set(spheres)].sort());
+          if (scopeKey(decision.anchor.contract_snapshot?.read_spheres) !== scopeKey(authority.contract_snapshot.read_spheres)) {
+            authority = { admitted: false, reason: 'contract_read_scope_changed',
+              detail: 'The contract read spheres changed while the run was waiting. Start a fresh run so earlier data is read under the current scope' };
+          }
+        }
         if (!authority.admitted) {
           const authorityError: RecipeError = {
             error_id:
@@ -1637,6 +1649,24 @@ export const createPreflightResumer = (
       try {
         response = await handleExecute(executeDeps, request, internal);
       } catch (error) {
+        // The handler checks page account revisions before starting the engine.
+        // This refusal proves no resumed effect ran, even after a durable claim.
+        if (error instanceof RpcError && error.code === 'connection_changed') {
+          const failure: RecipeError = {
+            error_id: `page-account-changed-${checkpoint.run_id}`,
+            code: 'RECIPE_POLICY_DENIED', message: error.message, severity: 'fatal',
+            source: { recipe_id: resumeAnchor.recipe_id, step_id: checkpoint.gated_step_id ?? null, ingredient_slug: null },
+            details: { reason: 'connection_changed' }, timestamp: new Date().toISOString(), retryable: false,
+          };
+          await appendFailedAnchor({ checkpoint, anchor: resumeAnchor, recipe_hash: resumeAnchor.recipe_hash, error: failure });
+          if (reviewed) await executeDeps.preapprovalRuntime!.finish(reviewed.handle, 'failed');
+          await settleFailedGatedAction(gatedStore, checkpoint, { status_message: failure.message,
+            result: { code: failure.code, message: failure.message } });
+          await updateMcpAction(actionStoreFor(executeDeps), checkpoint.run_id,
+            actions => actions.finish(checkpoint.run_id, { status: 'failed', status_message: failure.message,
+              result: { code: failure.code, message: failure.message } }));
+          return;
+        }
         if (dispatchClaim.kind === 'legacy_without_receipt') {
           // Additive compatibility only: old checkpoints have no durable claim,
           // so retain their established retry behavior.

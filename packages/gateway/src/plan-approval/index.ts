@@ -232,6 +232,11 @@ export const buildPlanProposal = (
 export type MaybePromise<T> = T | Promise<T>;
 
 export interface PlanApprovalStore {
+  /** Optional host-only participant for a consumed, version-reviewed local
+   * action. A callback, never a marker accepted from Chat or tool JSON. */
+  runLocalMutation?<T>(plan_id: string, turn_id: string,
+    source: import('@recued/contracts').ExecutionSource, validate: () => void,
+    dispatch: () => T | Promise<T>): Promise<T>;
   /** Lookup by `plan_id`. Returns the current state OR undefined. */
   get(plan_id: string): MaybePromise<ChatPlanProposal | undefined>;
   /** List every pending plan for a session. Used by the renderer to

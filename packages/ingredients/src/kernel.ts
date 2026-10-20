@@ -39,6 +39,7 @@ import type { Adapter } from './dispatch.js';
 import type { StepMeta } from '@recued/contracts';
 import type { QuoteSignoffReleaseInput, QuoteSignoffReleaseResult } from '@recued/contracts';
 import type { ReminderView } from '@recued/contracts';
+import type { AssetCreateInput, AssetUpdateInput, AssetObservationInput } from '@recued/contracts';
 import {
   parsePreparePreapproval,
   parseMailDraftCreate, parseMailDraftGet, parseMailDraftUpdate, parseMailDraftDelete,
@@ -678,6 +679,8 @@ export interface KernelCustomerAccessCloseInput extends KernelCustomerAccessTarg
 }
 
 export interface KernelDispatchers {
+  /** Host-only item-scope admission before a raw collection reader runs. */
+  assertReadScope?: (slug: string, source: ExecutionSource | undefined) => void;
   customerRefundCorrect?: (input: import('@recued/contracts').CustomerRefundCorrectionApplyInput,meta?: StepMeta) => Promise<import('@recued/contracts').CustomerRefundCorrectionApplyResult>;
   customerRefundApply?: (input: import('@recued/contracts').CustomerRefundApplyInput,meta?: StepMeta) => Promise<import('@recued/contracts').CustomerRefundApplyResult>;
   approvalWorkflowContinue?: (input: import('@recued/contracts').ApprovalWorkflowContinueInput) => Promise<import('@recued/contracts').ApprovalWorkflowContinueResult>;
@@ -1773,11 +1776,13 @@ export interface KernelDispatchers {
     parent_project_id?: string;
     limit?: number;
     offset?: number;
+    origin_execution_source?: ExecutionSource;
   }) => Promise<{ entities: WorkEntity[]; total: number }>;
   /** Recipe-callable by-id native read. */
   workEntityGet?: (input: {
     kind: WorkEntityKind;
     id: string;
+    origin_execution_source?: ExecutionSource;
   }) => Promise<{ entity: WorkEntity | null; found: boolean }>;
 
   // ── D-145 PA3 — work-entity CRUD dispatcher slots ───────────────
@@ -1997,6 +2002,11 @@ export interface KernelDispatchers {
     id: string;
     tombstone?: boolean;
   }) => Promise<{ ok: true; id: string; tombstoned: boolean }>;
+  situationQuery?: (input: unknown, source: ExecutionSource | undefined) => Promise<import('@recued/contracts').SituationResult>;
+  assetCreate?: (input: AssetCreateInput & { origin_execution_source?: ExecutionSource }) => Promise<{ asset: { id: string } }>;
+  assetUpdate?: (input: AssetUpdateInput & { origin_execution_source?: ExecutionSource }) => Promise<{ asset: { id: string } }>;
+  assetDelete?: (input: { id: string; tombstone?: boolean }) => Promise<{ ok: true; id: string; tombstoned: boolean }>;
+  assetObserve?: (input: AssetObservationInput, actorRef: string, recipeHash?: string) => Promise<{ asset_id: string; changed_fields: string[] }>;
 }
 
 /** D-315 — `mail-fact-list`'s input, checked before dispatch. Every filter is
@@ -2069,6 +2079,7 @@ const parseMailFactListInput = (raw: unknown, slug: string): MailFactListInput =
 export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => {
   return async (call: ResolvedCall): Promise<unknown> => {
     const slug = call.slug;
+    dispatchers.assertReadScope?.(slug, call.stepMeta?.execution_source);
     // §5 — a `core-<bare>` kernel alias (e.g. `core-notification-send`) dispatches
     // to the same case as its bare slug; `slug` stays the raw value for error context.
     switch (stripCorePrefix(slug)) {
@@ -5534,7 +5545,7 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
         if (typeof raw.kind !== 'string' || !isWorkEntityKind(raw.kind)) {
           throw new IngredientError(
             'BAD_INPUT',
-            'work-entity-list: kind must be task, note, commitment, project, or booking',
+            'work-entity-list: kind must be task, note, commitment, project, booking, or asset',
             { slug },
           );
         }
@@ -5608,7 +5619,7 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
         if (typeof raw.parent_project_id === 'string') input.parent_project_id = raw.parent_project_id;
         if (typeof raw.limit === 'number') input.limit = raw.limit;
         if (typeof raw.offset === 'number') input.offset = raw.offset;
-        return dispatchers.workEntityList(input);
+        return dispatchers.workEntityList(withCreateOrigin(input, call.stepMeta));
       }
       case 'work-entity-get': {
         if (!dispatchers.workEntityGet) {
@@ -5622,14 +5633,14 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
         if (typeof raw.kind !== 'string' || !isWorkEntityKind(raw.kind)) {
           throw new IngredientError(
             'BAD_INPUT',
-            'work-entity-get: kind must be task, note, commitment, project, or booking',
+            'work-entity-get: kind must be task, note, commitment, project, booking, or asset',
             { slug },
           );
         }
         if (typeof raw.id !== 'string' || raw.id.length === 0) {
           throw new IngredientError('BAD_INPUT', 'work-entity-get: id is required', { slug });
         }
-        return dispatchers.workEntityGet({ kind: raw.kind, id: raw.id });
+        return dispatchers.workEntityGet(withCreateOrigin({ kind: raw.kind, id: raw.id, origin_execution_source: undefined as ExecutionSource | undefined }, call.stepMeta));
       }
 
       // ── D-145 PA3 — work-entity CRUD kernel ingredients ────────
@@ -5948,6 +5959,42 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
           throw new IngredientError('BAD_INPUT', 'booking-delete: id is required', { slug });
         }
         return dispatchers.bookingDelete(input);
+      }
+
+      case 'situation-query': {
+        if (!dispatchers.situationQuery) throw new IngredientError('SERVER_NOT_REACHABLE', 'Situation query unavailable', { slug });
+        return dispatchers.situationQuery(call.input, call.stepMeta?.execution_source);
+      }
+      case 'asset-create':
+      case 'asset-update': {
+        const input = call.input as AssetCreateInput | AssetUpdateInput;
+        const isCreate = slug === 'asset-create';
+        if (isCreate ? !dispatchers.assetCreate : !dispatchers.assetUpdate) {
+          throw new IngredientError('SERVER_NOT_REACHABLE', `${slug} unavailable`, { slug });
+        }
+        if (!input.source || input.source.kind !== 'extracted') {
+          throw new IngredientError('BAD_INPUT', `${slug}: recipe facts require an explicit extracted source; owner confirmation is a direct owner action`, { slug });
+        }
+        const out = isCreate
+          ? await dispatchers.assetCreate!(withCreateOrigin(input as AssetCreateInput & { origin_execution_source?: ExecutionSource }, call.stepMeta))
+          : await dispatchers.assetUpdate!(withCreateOrigin(input as AssetUpdateInput & { origin_execution_source?: ExecutionSource }, call.stepMeta));
+        // Write permission grants no read of the rest of an existing asset.
+        return { asset_id: out.asset.id };
+      }
+      case 'asset-delete': {
+        if (!dispatchers.assetDelete) throw new IngredientError('SERVER_NOT_REACHABLE', `${slug} unavailable`, { slug });
+        const input = call.input as { id: string; tombstone?: boolean };
+        if (typeof input.id !== 'string' || !input.id.trim()) throw new IngredientError('BAD_INPUT', `${slug}: id is required`, { slug });
+        return dispatchers.assetDelete({ id: input.id, ...(input.tombstone !== undefined ? { tombstone: input.tombstone } : {}) });
+      }
+      case 'asset-observe': {
+        if (!dispatchers.assetObserve) throw new IngredientError('SERVER_NOT_REACHABLE', `${slug} unavailable`, { slug });
+        const input = call.input as Record<string, unknown>;
+        assertOnlyKernelInputFields(input, ['binding_id', 'readings', 'observations'], slug);
+        if (typeof input.binding_id !== 'string' || !input.binding_id.trim() || !call.stepMeta?.recipe_id) {
+          throw new IngredientError('BAD_INPUT', `${slug}: an installed recipe and binding_id are required`, { slug });
+        }
+        return dispatchers.assetObserve(input as unknown as AssetObservationInput, `recipe:${call.stepMeta.recipe_id}`, call.stepMeta.recipe_definition_sha256);
       }
 
       default:

@@ -25,6 +25,7 @@ import { buildAuditEntry } from '@recued/storage';
 import type { AuditEntry, AuditLogStore } from '@recued/storage';
 import {
   executionSourceHasContract,
+  RpcError,
   isEphemeralDishId,
   type Checkpoint,
   type RecipeDefinition,
@@ -106,6 +107,7 @@ const settleClaimedContinuationInDoubt = async (
     duration_ms: Math.max(0, at - original.started_at),
     errors: [error],
     context_snapshot: undefined,
+    connection_revisions: undefined,
     checkpoint_id: undefined,
     ask_id: undefined,
     now: at,
@@ -138,6 +140,7 @@ const appendPeerContinuationFailure = async (
     duration_ms: Math.max(0, at - original.started_at),
     errors: [error],
     context_snapshot: undefined,
+    connection_revisions: undefined,
     checkpoint_id: undefined,
     ask_id: undefined,
     now: at,
@@ -454,6 +457,7 @@ export const resumePeerHold = async (
     // ordinary case, not the exceptional one; the resume must degrade to "no
     // config" rather than strand a run whose answer already came home.
     config: { ...(resumeAnchor.config_snapshot ?? {}) },
+    ...(resumeAnchor.connection_revisions ? { connection_revisions: { ...resumeAnchor.connection_revisions } } : {}),
     ...(resumeAnchor.context_snapshot != null
       && Object.keys(resumeAnchor.context_snapshot).length > 0
       ? { context: { ...resumeAnchor.context_snapshot } }
@@ -547,6 +551,17 @@ export const resumePeerHold = async (
       } as never,
     );
   } catch (error) {
+    if (error instanceof RpcError && error.code === 'connection_changed') {
+      const failure: RecipeError = {
+        error_id: `page-account-changed-${checkpoint.run_id}`,
+        code: 'RECIPE_POLICY_DENIED', message: error.message, severity: 'fatal',
+        source: { recipe_id: resumeAnchor.recipe_id, step_id: checkpoint.gated_step_id ?? null, ingredient_slug: null },
+        details: { reason: 'connection_changed' }, timestamp: new Date().toISOString(), retryable: false,
+      };
+      await appendPeerContinuationFailure(resumeAnchor, checkpoint, failure, deps);
+      if (reviewed) await executeDeps.preapprovalRuntime!.finish(reviewed.handle, 'failed');
+      return { kind: 'skipped', reason: 'page account changed before continuation dispatch' };
+    }
     if (!continuationClaimed || target.exchange_ref === undefined) throw error;
     if (reviewed) await executeDeps.preapprovalRuntime!.finish(reviewed.handle, 'in_doubt');
     await settleClaimedContinuationInDoubt(

@@ -62,7 +62,7 @@ const S3_FIELDS: readonly ConnectionField[] = [
     label: 'Bucket',
     type: 'text',
     placeholder: 'my-bucket',
-    help: 'The S3 bucket name to mirror file metadata from.',
+    help: 'The S3 bucket for this connection. Remote backups use a separate Recued folder inside it.',
   },
   {
     key: 'config.endpoint',
@@ -131,7 +131,7 @@ export const s3Schema: VendorConnectionSchema = {
   kind: 'api',
   label: 'Amazon S3',
   description:
-    'Object storage — mirror object metadata from an S3 (or S3-compatible: MinIO / R2 / B2) bucket; object bytes stay remote and are fetched only for an explicit read. Access-key auth.',
+    'S3 object storage with access-key authentication. Use this connection for encrypted remote backups or a supported file source.',
   fields: S3_FIELDS,
   initialValues: S3_SCHEMA_INITIAL_VALUES,
 };

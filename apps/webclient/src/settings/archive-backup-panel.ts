@@ -42,16 +42,11 @@
  *    • Export identity passport only — a lightweight `passport.export`
  *      (`support_redacted`) → signed JSON for copy / download (support / audit).
  *
- *  ★ The committing import RESTARTS the server. `import { dry_run: false }`
- *  responds with `{ manifest, restored_at }` and THEN the server drains, swaps
- *  the db, and restarts — the WS connection drops right after the response, BY
- *  DESIGN (see memory `project_online_server_op_invariants` +
- *  internal design notes). So the commit path treats both
- *  a resolved call AND a transport-family rejection (the response racing the
- *  drain) as "restore committed — restarting; reconnecting…", leaning on the
- *  global pair/reconnect logic to re-establish the socket. A dropped WS here is
- *  NEVER an error. Only a genuine pre-commit rejection (wrong key / bad path)
- *  surfaces as a failure — the old db is fully intact in that case.
+ *  A committing import responds BEFORE drain, swap and restart. Its reply
+ *  acknowledges acceptance; it cannot prove the later swap completed. If the
+ *  request or reply is lost, the outcome stays unknown. The panel requires a
+ *  new preview and confirmation before another import, and the owner checks
+ *  the server first. A known pre-commit rejection leaves the old db intact.
  *
  *  Style: mirrors `backup-recovery-panel.ts` — a self-scoped `*_STYLES` sheet
  *  under `[data-recued-archive-backup-panel]`, shared `rx-btn` primitives,
@@ -60,6 +55,7 @@
 
 import { isValidRecoveryKey } from '@recued/crypto';
 import { formatClientDateTime } from '@recued/ui-shared';
+import { mountArchiveImportReceipt, type ArchiveImportReceiptController } from './archive-import-receipt.js';
 import type {
   ArchiveImportRebind,
   ArchiveJobStatus,
@@ -150,6 +146,7 @@ export type ArchiveExportCaller = (input: {
   include_blobs?: boolean;
   include_passport?: boolean;
   recoveryKey: string;
+  remote?: import('@recued/contracts').ArchiveRemoteTarget;
 }) => Promise<{ job_id: string }>;
 
 /** `server.archive.status` — polls an in-flight / completed export. */
@@ -162,6 +159,7 @@ export type ArchiveStatusCaller = (input: {
  *  server). `currentRealmKey` authorizes a destructive swap of a `cross`-realm
  *  archive (a foreign identity) — the Q2 ownership gate; omit it for `same`. */
 export type ArchiveImportCaller = (input: {
+  operation_id?: string;
   path: string;
   recoveryKey: string;
   currentRealmKey?: string;
@@ -169,6 +167,7 @@ export type ArchiveImportCaller = (input: {
   dry_run?: boolean;
 }) => Promise<{
   manifest: ArchiveManifest;
+  operation_id?: string;
   restored_at: number | null;
   realm: ArchiveRealmRelation;
   /** M5 S2b — present only on a COMMITTING import (`dry_run: false`) when the
@@ -278,6 +277,7 @@ export type ArchiveBackupView =
   | 'passport-error';
 
 export interface MountArchiveBackupPanelOptions {
+  importReceipt?: ArchiveImportReceiptController;
   /** Host element the panel renders into. */
   host: HTMLElement;
   /** DOM document seam. Defaults to `globalThis.document`. */
@@ -318,6 +318,8 @@ export interface MountArchiveBackupPanelOptions {
   /** Release the boot-scoped work lease once the server reports a terminal
    * outcome (including an expired/unknown job). */
   onExportSettled?: (jobId?: string) => void;
+  /** Snapshot of the visible storage choice, only after a new owner action. */
+  remoteTarget?: () => import('@recued/contracts').ArchiveRemoteTarget | undefined;
 }
 
 export interface ArchiveBackupPanelMount {
@@ -350,6 +352,8 @@ export interface ArchiveBackupPanelMount {
   // Restore affordances
   clickRestore(): void;
   setRestorePath(value: string): void;
+  /** Open a staged remote copy for ordinary key entry and read-only preview. */
+  openStagedRestore(stagedName: string): boolean;
   setRestoreMnemonic(value: string): void;
   setRestoreCurrentRealmKey(value: string): void;
   /** M4b.2 — drive a restore-via-upload of the picked file (the file <input>
@@ -393,6 +397,7 @@ const COPY = {
   run_backup_cta: 'Start backup',
   export_running: 'Backing up your data…',
   export_done_prefix: 'Backup ready:',
+  export_remote_done_without_download: 'Remote delivery was verified. Review Remote backup history for its current status.',
   export_done_download_by: 'download by',
   export_expired:
     'That backup is gone. It ran out, or it was tidied away. Make a new one.',
@@ -424,7 +429,9 @@ const COPY = {
   restore_arm_confirm_cross: 'Yes, replace everything and its identity.',
   commit_cta: 'Put it back, and replace everything',
   restore_committed:
-    'Done. The server is restarting to load it. Reconnecting…',
+    'The server accepted the backup and is restarting to load it. Reconnecting…',
+  restore_uncertain:
+    'Recued could not confirm whether your backup was put back. It may already have completed. Check the server before trying again. Reload this page if you need to reconnect.',
   // Q2 cross-realm
   cross_realm_warning:
     'This backup belongs to a different server. Putting it back gives this server that identity. Your other paired devices would all have to pair again. Type THIS server’s current 24 words to allow it.',
@@ -606,14 +613,14 @@ const messageOf = (err: unknown): string =>
 const isWrongKeyError = (err: unknown): boolean =>
   /ARCHIVE_INVALID_SIGNATURE/.test(messageOf(err));
 
-/** Codes the rpc-conn rejects with when the socket drops / the conn is torn
- *  down / a call times out — i.e. the server-restart drop after a committing
- *  import. Treated as "committed; restarting", never as a hard error. */
-const isTransportDropError = (err: unknown): boolean => {
+/** A lost request and a lost reply have the same client-side failure. Neither
+ *  proves that the destructive restore was accepted or completed. */
+const isRestoreOutcomeUnknown = (err: unknown): boolean => {
   const code = errorCodeOf(err);
   return (
     code === 'transport' ||
     code === 'transport_disposed' ||
+    code === 'connection_lost' ||
     code === 'timeout' ||
     code === 'webclient_reauth_required'
   );
@@ -733,6 +740,7 @@ export const mountArchiveBackupPanel = (
   let exportJobId: string | null = null;
   let exportProgress = { pct: 0, bytes: 0 };
   let exportPath: string | null = null;
+  let exportRemoteDeliveryVerified = false;
   let exportExpiresAt: number | null = null;
   let pollCancel: (() => void) | null = null;
   // M4 browser download (export-done view).
@@ -762,6 +770,18 @@ export const mountArchiveBackupPanel = (
   wrapper.setAttribute(ARCHIVE_BACKUP_PANEL_ATTR, '');
   wrapper.setAttribute(ARCHIVE_BACKUP_VIEW_ATTR, view);
   opts.host.appendChild(wrapper);
+  const receiptHost = doc.createElement('aside'); receiptHost.setAttribute('hidden', ''); wrapper.appendChild(receiptHost);
+  const detachReceipt = opts.importReceipt === undefined ? () => undefined
+    : mountArchiveImportReceipt({ host: receiptHost, document: doc, controller: opts.importReceipt,
+      onDismissFocus: () => {
+        for (const attr of [ARCHIVE_RESTORE_START_BTN_ATTR, ARCHIVE_RESTORE_MNEMONIC_ATTR,
+          ARCHIVE_BACKUP_MNEMONIC_ATTR, ARCHIVE_RESTORE_ARM_ATTR, ARCHIVE_BACKUP_CANCEL_BTN_ATTR]) {
+          const target = flowHost.querySelector<HTMLElement>(`[${attr}]`);
+          if (target) { target.focus(); return; }
+        }
+      },
+    });
+  const flowHost = doc.createElement('div'); wrapper.appendChild(flowHost);
 
   const cancelPoll = (): void => {
     if (pollCancel) {
@@ -962,6 +982,7 @@ export const mountArchiveBackupPanel = (
     exportJobId = null;
     exportProgress = { pct: 0, bytes: 0 };
     exportPath = null;
+    exportRemoteDeliveryVerified = false;
     exportExpiresAt = null;
     restorePath = '';
     restoreMnemonic = '';
@@ -1014,6 +1035,7 @@ export const mountArchiveBackupPanel = (
     };
     if (status.state === 'done') {
       exportPath = status.path ?? '';
+      exportRemoteDeliveryVerified = status.remote_backup_id !== undefined;
       exportExpiresAt =
         typeof status.expires_at === 'number' ? status.expires_at : null;
       notifyExportSettled();
@@ -1060,6 +1082,15 @@ export const mountArchiveBackupPanel = (
       if (returnFromRun) focusControl(ARCHIVE_BACKUP_MNEMONIC_ATTR);
       return;
     }
+    let remote: import('@recued/contracts').ArchiveRemoteTarget | undefined;
+    try { remote = opts.remoteTarget?.(); }
+    catch (error) {
+      resultLine = messageOf(error); resultTone = 'bad';
+      const existing = wrapper.querySelector(`[${ARCHIVE_BACKUP_RESULT_ATTR}]`);
+      if (existing) { existing.textContent = resultLine; existing.setAttribute('data-tone', resultTone); }
+      else { const result = makeResultLine(); if (result) wrapper.appendChild(result); }
+      return;
+    }
     clearResult();
     exportProgress = { pct: 0, bytes: 0 };
     setView(
@@ -1072,6 +1103,7 @@ export const mountArchiveBackupPanel = (
         recoveryKey: key,
         include_blobs: includeBlobs,
         include_passport: includePassport,
+        ...(remote === undefined ? {} : { remote }),
       });
       jobId = res.job_id;
     } catch (err) {
@@ -1238,13 +1270,12 @@ export const mountArchiveBackupPanel = (
       restoreCurrentRealmKey = '';
       if (disposed) return;
       const returnFromBusy = controlHasFocus(ARCHIVE_BACKUP_BUSY_ATTR);
-      // ★ The server restarts on commit, so the WS drops right after the
-      // response. A transport-family rejection here means the response raced
-      // the drain — the restore committed; treat it as success, NOT an error.
-      if (isTransportDropError(err)) {
+      if (isRestoreOutcomeUnknown(err)) {
+        resultLine = COPY.restore_uncertain;
+        resultTone = 'neutral';
         setView(
-          'restore-committed',
-          returnFromBusy ? ARCHIVE_RESTORE_COMMITTED_ATTR : undefined,
+          'restore-error',
+          returnFromBusy ? ARCHIVE_BACKUP_CANCEL_BTN_ATTR : undefined,
         );
         return;
       }
@@ -1326,7 +1357,7 @@ export const mountArchiveBackupPanel = (
 
   // ── Render ─────────────────────────────────────────────────────
   const clearChildren = (): void => {
-    while (wrapper.firstChild) wrapper.removeChild(wrapper.firstChild);
+    while (flowHost.firstChild) flowHost.removeChild(flowHost.firstChild);
   };
 
   const makeButton = (
@@ -1595,7 +1626,9 @@ export const mountArchiveBackupPanel = (
     done.setAttribute('data-tone', 'ok');
     done.setAttribute('role', 'status');
     done.className = 'archive-backup-result';
-    done.textContent = [COPY.export_done_prefix, parts.join(' · ')].join(' ');
+    done.textContent = exportRemoteDeliveryVerified && !exportPath
+      ? COPY.export_remote_done_without_download
+      : [COPY.export_done_prefix, parts.join(' · ')].join(' ');
     block.appendChild(done);
 
     // The archive also stays on the server — surface the full path so an
@@ -2047,7 +2080,7 @@ export const mountArchiveBackupPanel = (
         break;
     }
 
-    wrapper.appendChild(block);
+    flowHost.appendChild(block);
   };
 
   render();
@@ -2081,6 +2114,7 @@ export const mountArchiveBackupPanel = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      detachReceipt();
       cancelPoll();
       cancelDownload();
       cancelUpload();
@@ -2121,6 +2155,13 @@ export const mountArchiveBackupPanel = (
     setRestorePath: (value: string) => {
       if (disposed) return;
       restorePath = value;
+    },
+    openStagedRestore: (stagedName: string) => {
+      if (disposed || !/^recued-upload-[0-9a-f]{32}\.recued\.archive$/u.test(stagedName)
+        || ['export-running', 'restore-busy', 'restore-committed', 'passport-exporting'].includes(view)
+        || restoreUploadCancel !== null || downloading) return false;
+      resetFlowState(); restorePath = stagedName;
+      setView('restore-entry', ARCHIVE_RESTORE_MNEMONIC_ATTR); return true;
     },
     setRestoreMnemonic: (value: string) => {
       if (disposed) return;

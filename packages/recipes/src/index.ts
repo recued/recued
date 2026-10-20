@@ -3,6 +3,7 @@ export {
   isValidRecipe,
   assertValidRecipe,
 } from './validate.js';
+export { reverseLocalUpdate } from './local-update-compensation.js';
 export type {
   ValidationSeverity,
   ValidationIssue,

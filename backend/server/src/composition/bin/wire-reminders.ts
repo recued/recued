@@ -27,6 +27,7 @@ export interface ReminderWiringDeps {
   serverTimeZoneStore?: Pick<ServerTimeZoneStore, 'read'>;
   quietHoursStore?: Pick<QuietHoursStore, 'read'>;
   now?: () => number;
+  publicBaseUrl?: () => string | null;
 }
 
 const ownerZone = (store: Pick<ServerTimeZoneStore, 'read'>): string =>
@@ -85,6 +86,7 @@ export const wireReminderDelivery = async (
   const delivery = createReminderDelivery({
     store: createReminderStore(deps.db),
     send: (message) => handleNotificationSend(deps.notification, message),
+    ...(deps.publicBaseUrl ? { publicBaseUrl: deps.publicBaseUrl } : {}),
     isQuiet: (at) => shouldSuppressForQuietHours({
       policy: quiet.read(),
       instant: at,

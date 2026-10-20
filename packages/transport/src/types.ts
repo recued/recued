@@ -89,6 +89,10 @@ export interface TransportError {
   detail: string;
   /** Vendor-directed minimum wait before a safe retry. */
   retry_after_ms?: number;
+  /** A `network` failure before the request left this machine (DNS, refused,
+   *  unreachable, connect timeout): definitely not delivered, unlike a failure
+   *  mid-request, whose outcome is unknown. */
+  not_sent?: true;
 }
 
 /** Discriminated send outcome — a failure is `{ ok: false }`, never a
@@ -153,6 +157,9 @@ export interface OutboundPromptOption {
   id: string;
   /** The button label shown to the user. */
   label: string;
+  /** An independent question inside a shared message. Omitted for the usual
+   * one-question prompt, which uses OutboundPrompt.correlation_id. */
+  correlation_id?: string;
 }
 
 /** An interactive prompt — a message rendered with selectable option
@@ -237,6 +244,7 @@ export interface Transport {
  *  so extending the transport with interactivity left `messenger`
  *  untouched. */
 export interface InteractiveTransport extends Transport {
+  readonly max_prompt_options?: number;
   /** Send an interactive prompt — a message with selectable option
    *  buttons. The reply (a button press) arrives as a vendor callback
    *  payload `parseInboundChoice` decodes. Same discriminated-result
@@ -256,4 +264,7 @@ export interface InteractiveTransport extends Transport {
    *  stale prompt cannot be pressed after the question is answered, and
    *  leave `ClosePrompt.text` as the message body. */
   closePrompt(ref: ClosePrompt): Promise<TransportSendResult>;
+  /** Replace the options on this exact provider message. Used to remove only
+   * the answered item's buttons from a bundle. */
+  updatePrompt?(prompt: OutboundPrompt & { vendor_message_id: string }): Promise<TransportSendResult>;
 }

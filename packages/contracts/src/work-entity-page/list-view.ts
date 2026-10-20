@@ -36,6 +36,7 @@ const matchableFields: Readonly<Record<WorkEntityKind, readonly string[]>> = {
   commitment: ['statement'],
   project: ['title', 'description'],
   booking: ['title'],
+  asset: ['name', 'class_id'],
 };
 
 /** Filter entities by the search query. Empty-or-whitespace query
@@ -67,6 +68,10 @@ export const sortEntitiesByDefault = (
 ): readonly WorkEntity[] => {
   const out = entities.slice();
   switch (kind) {
+    case 'asset':
+      out.sort((a, b) => a._kind === 'asset' && b._kind === 'asset'
+        ? a.name.localeCompare(b.name) || a.id.localeCompare(b.id) : 0);
+      break;
     case 'task':
       // Undone first; among undone, due_at ASC (rows without due_at
       // sink); among done, completed_at DESC.

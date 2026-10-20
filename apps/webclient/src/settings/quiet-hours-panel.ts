@@ -443,7 +443,7 @@ export const QUIET_HOURS_PANEL_STYLES = `
 [${QUIET_HOURS_PANEL_ATTR}] input[type="text"],
 [${QUIET_HOURS_PANEL_ATTR}] input[type="time"] {
   font: inherit;
-  width: 6.5em;
+  width: 120px;
   padding: 3px 6px;
   border: 1px solid var(--border);
   border-radius: 4px;

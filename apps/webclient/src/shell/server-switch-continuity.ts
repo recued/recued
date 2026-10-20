@@ -166,6 +166,7 @@ const SURFACE_LABELS: Readonly<Record<
   data: 'Data',
   views: 'Saved views',
   today: 'Today',
+  yours: 'Yours',
   logs: 'Runs',
   stats: 'Stats',
   chat: 'Chat',

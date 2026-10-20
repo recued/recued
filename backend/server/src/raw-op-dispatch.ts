@@ -176,12 +176,16 @@ const RAW_OP_DISPATCH_CONNECTION_KIND = 'api';
  *  policy_matrix admission AND the catalog gateway's per-op preflight — so the
  *  posture is identical: a held action is the expected outcome (NOT a failure),
  *  route it through a recipe, and do NOT retry (anti-loop, per
- *  `[[feedback_substrate_support_inferior_models]]`). `reason` is the one clause
- *  that differs (which gate asked). */
-const approvalNotWiredAsk = (opId: string, reason: string): string =>
-  `'${opId}' ${reason}, and approval is not yet available on the direct operation route. `
-  + 'Ask the user to run this through a recipe (which can hold for approval), or use a read-only '
-  + 'operation instead. Do NOT retry this call.';
+ *  `[[feedback_substrate_support_inferior_models]]`).
+ *
+ *  ⛔ IT QUOTES NO REASON. It used to carry the hold's reason as its one varying
+ *  clause, and that reason is now the OWNER's sentence for the approval ("… can
+ *  only read without asking you"), whose "you" a model reads as itself. Which gate
+ *  asked never changed what the agent should do. */
+const approvalNotWiredAsk = (opId: string): string =>
+  `'${opId}' requires the user's approval, and approval is not yet available on the direct `
+  + 'operation route. Ask the user to run this through a recipe (which can hold for approval), '
+  + 'or use a read-only operation instead. Do NOT retry this call.';
 
 /** The fields this module needs off the MCP/execute deps. Picked from
  *  {@link ExecuteHandlerDeps} so the field TYPES stay in lockstep with it —
@@ -472,7 +476,10 @@ export const dispatchRawOp = async (
           : {}),
       },
       {
-        reason: `requires the user's approval under the contract policy (${admission.detail})`,
+        // The decision's own sentence, as a recipe hold carries it. It was wrapped
+        // as "requires the user's approval under the contract policy (…)", which
+        // the owner read on the approval's Reason line as "the user's".
+        reason: admission.detail,
         risk_tier: manifest.risk_tier,
         authorization_provenance: admission.authorization_provenance,
       },
@@ -514,7 +521,11 @@ export const dispatchRawOp = async (
         ...(correlationId !== undefined ? { correlationId } : {}),
       },
       {
-        reason: sig.reason ?? "requires the user's approval before it can run",
+        // The catalog gateway gives no reason on purpose (its ask names the
+        // operation and what its tier means), so neither does this hold: the old
+        // stand-in, "requires the user's approval before it can run", restated the
+        // ask to the owner in the third person.
+        ...(sig.reason !== undefined ? { reason: sig.reason } : {}),
         risk_tier: sig.risk_tier ?? manifest.risk_tier,
         ...(sig.arg_shape_hash !== undefined ? { arg_shape_hash: sig.arg_shape_hash } : {}),
         ...(sig.canonical_payload_hash !== undefined
@@ -1208,7 +1219,8 @@ const buildRawOpHold = async (
   deps: RawOpDispatchDeps,
   hold: RawOpHoldInput,
   ctx: {
-    reason: string;
+    /** The approval's Reason line, for the owner. Absent ⇒ no Reason line. */
+    reason?: string;
     risk_tier: string;
     arg_shape_hash?: string;
     canonical_payload_hash?: string;
@@ -1218,7 +1230,7 @@ const buildRawOpHold = async (
   },
 ): Promise<RawOpDispatchOutcome> => {
   if (deps.checkpointStore === undefined || deps.preflightNotifier === undefined) {
-    return { kind: 'ask', op_id: hold.opId, message: approvalNotWiredAsk(hold.opId, ctx.reason) };
+    return { kind: 'ask', op_id: hold.opId, message: approvalNotWiredAsk(hold.opId) };
   }
   const newId = deps.newId ?? randomUUID;
   const createdAt = (deps.now ?? Date.now)();
@@ -1231,7 +1243,7 @@ const buildRawOpHold = async (
       tool_slug: hold.operation,
       connection_name: hold.connectionName,
       risk_tier: ctx.risk_tier,
-      reason: ctx.reason,
+      ...(ctx.reason !== undefined ? { reason: ctx.reason } : {}),
       // Raw-op exposure fences CLI/service execution, so a returned value is
       // always the completed provider result. Persist the trusted fact rather
       // than inferring from provider-controlled JSON on resume.
@@ -1292,7 +1304,7 @@ const buildRawOpHold = async (
       `[raw-op-hold] checkpoint write failed for '${hold.opId}': `
         + (e instanceof Error ? e.message : String(e)),
     );
-    return { kind: 'ask', op_id: hold.opId, message: approvalNotWiredAsk(hold.opId, ctx.reason) };
+    return { kind: 'ask', op_id: hold.opId, message: approvalNotWiredAsk(hold.opId) };
   }
   let actionRef: string | undefined;
   if (deps.gatedActionStore !== undefined) {
@@ -1334,7 +1346,7 @@ const buildRawOpHold = async (
     raw_op: { op_id: hold.opId },
     tool_slug: hold.operation,
     risk_tier: ctx.risk_tier,
-    reason: ctx.reason,
+    ...(ctx.reason !== undefined ? { reason: ctx.reason } : {}),
     ...(offer !== undefined ? { session_grant: offer } : {}),
     ...(ctx.owner_override_offer !== undefined
       ? { owner_override_offer: ctx.owner_override_offer }
@@ -1385,7 +1397,7 @@ const buildRawOpHold = async (
       `[raw-op-hold] ask raise failed for '${hold.opId}': `
         + (e instanceof Error ? e.message : String(e)),
     );
-    return { kind: 'ask', op_id: hold.opId, message: approvalNotWiredAsk(hold.opId, ctx.reason) };
+    return { kind: 'ask', op_id: hold.opId, message: approvalNotWiredAsk(hold.opId) };
   }
   return { kind: 'held', op_id: hold.opId, run_id };
 };

@@ -7,6 +7,7 @@ import type {
   RecipeDefinition,
 } from '@recued/contracts';
 import { hashRecipe } from '@recued/recipes';
+import { RpcError } from '@recued/contracts';
 import {
   buildAuditEntry,
   createAuditLogStore,
@@ -615,6 +616,22 @@ describe('PreflightResumer.resumeRun', () => {
       details: { authority_reason: 'bearer_inactive' },
     });
   });
+  it('D-325 refuses to replay earlier step data when a waiting contract changes spheres', async () => {
+    const log = auditLog(); const source: ExecutionSource = { channel: 'chat', actor: 'contracted_user',
+      chat_session_id: 'llm_gateway:tok-1:request-1', user_id: 'customer-1', contract_id: 'contract-1' };
+    await append(log, pausedAnchor({ execution_source: source, contract_snapshot: { ...contractSnapshot, read_spheres: ['personal'] } }));
+    const deps = executeDeps();
+    vi.mocked(deps.recipeStore.get).mockReturnValue({ recipe_id: 'recipe-1', version: 1, ttl: 0,
+      metadata: { name: 'Scoped recipe', description: 'held action', author: 'seller', supported_platforms: [] },
+      variables: {}, prefetch_steps: [], steps: [], output: { sidebar: [] } });
+    deps.approvalResumeAuthority = { resolve: () => ({ admitted: true, execution_source: source,
+      contract_snapshot: { ...contractSnapshot, read_spheres: ['professional'] } }) };
+    const resumer = createPreflightResumer({ auditLog: log, getExecuteDeps: () => deps });
+    await resumer.resumeRun(checkpoint(), askContext());
+    expect(handleExecuteMock).not.toHaveBeenCalled();
+    expect(await log.get('run-1')).toMatchObject({ commit_status: 'failed' });
+    expect(JSON.stringify(await log.get('run-1'))).toContain('read spheres changed');
+  });
 
   it('repairs a live-authority failure receipt before consuming a terminal-anchor retry', async () => {
     const log = auditLog();
@@ -847,6 +864,34 @@ describe('PreflightResumer.resumeRun', () => {
       entity_id: 'deal-9',
       tabs: [],
     });
+  });
+
+  it('retains page account revisions when an approved run resumes', async () => {
+    const log = auditLog();
+    await append(log, pausedAnchor({ connection_revisions: { sales: 'a'.repeat(64) } }));
+    const resumer = createPreflightResumer({ auditLog: log, getExecuteDeps: () => executeDeps() });
+    await resumer.resumeRun(checkpoint(), askContext());
+    const [, request] = handleExecuteMock.mock.calls[0]!;
+    expect(request.connection_revisions).toEqual({ sales: 'a'.repeat(64) });
+  });
+
+  it.each([false, true])('settles an account-change refusal as failed before resumed dispatch (receipt=%s)', async receipt => {
+    const log = auditLog();
+    await append(log, pausedAnchor({ connection_revisions: { sales: 'a'.repeat(64) } }));
+    const actions = createGatedActionStore(createInMemoryCollection<GatedActionRecord>(),
+      { newActionRef: () => 'account-changed-action' });
+    const held = receipt ? await actions.createHeld({ run_id: 'run-1', recipe_id: 'recipe-1',
+      gated_step_id: 'gated_step', checkpoint_id: 'checkpoint-1' }) : undefined;
+    handleExecuteMock.mockRejectedValueOnce(new RpcError('connection_changed', 'The source account changed.', 409));
+    const resumer = createPreflightResumer({ auditLog: log, gatedActionStore: actions,
+      getExecuteDeps: () => ({ ...executeDeps(), gatedActionStore: actions }) });
+    await resumer.resumeRun(checkpoint(), askContext());
+    expect(await log.get('run-1')).toMatchObject({ commit_status: 'failed',
+      errors: [expect.objectContaining({ details: { reason: 'connection_changed' }, retryable: false })] });
+    expect((await log.get('run-1'))?.connection_revisions).toBeUndefined();
+    if (held) expect(await actions.get(held.action_ref)).toMatchObject({ status: 'failed' });
+    await resumer.resumeRun(checkpoint(), askContext());
+    expect(handleExecuteMock).toHaveBeenCalledOnce();
   });
 
   it('omits context on a pre-fold anchor with no snapshot (byte-identical resume)', async () => {

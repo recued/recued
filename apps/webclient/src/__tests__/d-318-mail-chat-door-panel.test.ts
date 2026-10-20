@@ -276,7 +276,7 @@ const pickChat = (host: FakeEl, slug: string): void => {
 };
 
 describe('switching the email chat on', () => {
-  it('offers as the chat mailbox only one that can send, and never it as one of yours', async () => {
+  it('offers as the chat mailbox only one that can send, and it among yours too — writing to yourself', async () => {
     const h = mount();
     await flush();
     expect(h.host.getAttribute(MAIL_CHAT_DOOR_STATE_ATTR)).toBe('off');
@@ -287,7 +287,47 @@ describe('switching the email chat on', () => {
     expect(options[3]!.textContent).toBe('archive@owner.example (cannot send)');
     pickChat(h.host, CHAT);
     expect(byAttr(h.host, MAIL_CHAT_DOOR_OWNER_PICK_ATTR).map((box) => box.getAttribute(MAIL_CHAT_DOOR_OWNER_PICK_ATTR)))
-      .toEqual(['me', 'archive']);
+      .toEqual([CHAT, 'me', 'archive']);
+    // §8.18 — the chat mailbox is offered as one of yours, said for what it means.
+    expect(allText(one(h.host, MAIL_CHAT_DOOR_OWNER_PICK_ATTR, CHAT).parent!).trim())
+      .toBe('recued@chat.example (the chat mailbox: you write to yourself)');
+    expect(allText(h.host)).not.toContain('You write to yourself at');
+  });
+
+  it('§8.18 — one mailbox: the chat mailbox ticked as yours, checked and saved, and on to write to yourself', async () => {
+    const h = mount();
+    await flush();
+    pickChat(h.host, CHAT);
+    one(h.host, MAIL_CHAT_DOOR_OWNER_PICK_ATTR, CHAT).dispatchEvent({ type: 'change' });
+    expect(allText(h.host)).toContain('You write to yourself at recued@chat.example. Only an email to that address alone');
+    // P20 still: only they send from it.
+    expect(one(h.host, MAIL_CHAT_DOOR_TURN_ON_ATTR).disabled).toBe(true);
+    one(h.host, MAIL_CHAT_DOOR_CONFIRM_ATTR).dispatchEvent({ type: 'change' });
+    one(h.host, MAIL_CHAT_DOOR_TURN_ON_ATTR).click();
+    await flush();
+    expect(h.runCheck).toHaveBeenCalledWith({ chat_mailbox: CHAT, owner_mailboxes: [CHAT] });
+    expect(h.sets).toEqual([{ chat_mailbox: CHAT, owner_mailboxes: [CHAT] }]);
+    expect(allText(h.host)).toContain('Email chat is on. Write to yourself at recued@chat.example.');
+    expect(allText(h.host)).toContain('Send an email to yourself, recued@chat.example, with the subject');
+  });
+
+  it('§8.18 — one mailbox keeps the prefix on: no control turns it off, and Save never sends none', async () => {
+    const h = mount({ settings: { ...ON, owner_mailboxes: [CHAT, 'me'] } });
+    await flush();
+    expect(allText(h.host)).toContain('Email chat is on. Write to recued@chat.example from itself or me@owner.example.');
+    const prefixOn = one(h.host, MAIL_CHAT_DOOR_PREFIX_ON_ATTR);
+    expect(prefixOn.checked).toBe(true);
+    expect(prefixOn.disabled).toBe(true);
+    expect(allText(h.host)).toContain('You write to yourself, so the prefix stays on');
+    // Even unticked from outside the control, Save sends the prefix.
+    prefixOn.checked = false;
+    one(h.host, MAIL_CHAT_DOOR_PREFIX_ATTR).value = 'recued:';
+    one(h.host, MAIL_CHAT_DOOR_SAVE_ATTR).click();
+    await flush();
+    expect(h.sets).toEqual([{ ask_prefix: 'recued:', stale_after_minutes: 60 }]);
+    one(h.host, MAIL_CHAT_DOOR_TURN_OFF_ATTR).click();
+    expect(allText(h.host)).toContain(
+      'Turn off email chat? Recued stops answering the emails you write to yourself at recued@chat.example.');
   });
 
   it('⛔ stays off until the owner confirms only they send from their mailboxes, and says where answers are kept', async () => {

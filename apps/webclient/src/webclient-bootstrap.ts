@@ -1,5 +1,6 @@
 import { parseRecordsRecordAddress } from './data/records-navigation.js';
 import { createManagedOAuthCaller } from './settings/managed-oauth-panel.js';
+import { createConnectionReplacementCaller } from './connections/connection-replacement-caller.js';
 import { createAccountSetupContinuity } from './connections/account-setup-continuity.js';
 /** D-148 § A.4 — PWA-wide webclient bootstrap.
  *
@@ -149,6 +150,12 @@ import { createAccountSetupContinuity } from './connections/account-setup-contin
  *  Spec: D-148 § A.4 (Thin Webclient). */
 
 import { createRecipeSimulationCaller } from './kitchen/recipe-editor/recipe-simulation-caller.js';
+import { createRecipeRegressionCaller } from './kitchen/recipe-editor/recipe-regression-caller.js';
+import { createRecipeRunCaptureCaller } from './kitchen/recipe-editor/recipe-run-capture-caller.js';
+import { createRecipeReleaseCaller } from './kitchen/recipe-editor/recipe-release-caller.js';
+import { createPackUpdateCaller } from './settings/pack-update-caller.js';
+import { createPackRemovalCaller } from './settings/pack-removal-caller.js';
+import { createPackRepairCaller } from './settings/pack-repair-caller.js';
 import type {
   InstancePrefs,
   Conn,
@@ -295,6 +302,8 @@ import { parseReceptionAddress } from './reception/navigation.js';
 import { createArchiveDownload } from './settings/archive-download.js';
 import { createArchiveUpload } from './settings/archive-upload.js';
 import { createArchiveRebindStash } from './settings/archive-rebind-stash.js';
+import { prepareBrowserArchiveImportReceipt } from './settings/archive-import-receipt.js';
+import type { RemoteBackupsPorts } from './settings/remote-backups-panel.js';
 import {
   bootstrapSettingsRoute,
   type SettingsRoute,
@@ -328,6 +337,7 @@ import { bootstrapMailRoute } from './mail/bootstrap-mail-route.js';
 import { bootstrapMailWorkRoute } from './mail/mail-work-route.js';
 import { MAIL_WORK_REVIEW_TIMEOUT_MS } from '@recued/contracts';
 import { bootstrapPreapprovalRoute, preapprovalHref, removePreapproval } from './approvals/preapproval-route.js';
+import { bootstrapLocalChangesRoute } from './approvals/local-change-sets-route.js';
 import {
   listComposeFiles,
   openFilePickPanel,
@@ -364,8 +374,9 @@ import {
   serializeConnectionsCredentialRotationRetry,
   serializeConnectionsPostSafeStopRecovery,
 } from './connections/bootstrap-connections-route.js';
-import { parseConnectionsAddress, parseConnectionsReviewAccess, parseConnectionsFileAuthentication, parseConnectionsPermissionRepair, parseConnectionsOAuthApps, parseConnectionsIncidentHistory,
-  connectionsPermissionRepairAddress, parseConnectionsOAuthApp, parseConnectionsAccountAuthentication, parseConnectionsRenewalRepairReturn, parseConnectionsVerifyAccess } from './connections/connections-navigation.js';
+import { parseConnectionsAddress, parseConnectionsReviewAccess, parseConnectionsFileAuthentication, parseConnectionsPermissionRepair, parseConnectionsOAuthApps, parseConnectionsIncidentHistoryView,
+  connectionsPermissionRepairAddress, parseConnectionsOAuthApp, parseConnectionsAccountAuthentication, parseConnectionsRenewalRepairReturn, parseConnectionsVerifyAccess,
+  parseConnectionsAccessRepairReturn, parseConnectionsAccessResult, parseConnectionsAccessCheck } from './connections/connections-navigation.js';
 import { createPackPermissionRepairContinuity } from './settings/pack-permission-repair.js';
 import { createReconnectWorklistContinuity, isWorklistRepair } from './settings/reconnect-worklist-continuity.js';
 import type { SignInGridCallers } from './connections/sign-in-grid-controls.js';
@@ -533,6 +544,7 @@ import {
   mountGlobalRunPalette,
   type GlobalRunPaletteHandle,
 } from './shell/global-run-palette.js';
+import type { RunPageContextProvider } from './shell/run-page-context.js';
 import {
   mountUniversalSearchShortcut,
   type UniversalSearchShortcutHandle,
@@ -654,6 +666,7 @@ import {
   type ApprovalAttentionPopoverMount,
 } from './attention/approval-attention-popover.js';
 import { bootstrapTodayRoute } from './today/bootstrap-today-route.js';
+import { bootstrapYoursRoute } from './yours/bootstrap-yours-route.js';
 import {
   createBrowserInactiveProfileRecoveryDiscovery,
   createInactiveProfileRecoveryReviewContinuity,
@@ -1066,6 +1079,7 @@ const WEBCLIENT_DRAWER_SECTIONS: ReadonlyArray<WebclientDrawerSection> = [
       { id: 'create', label: 'Create', glyph: '✎', route: null, action: 'create' },
       { id: 'find', label: 'Find', glyph: '🔍', route: 'data', segments: ['search'] },
       { id: 'today', label: 'Today', route: 'today' },
+      { id: 'yours', label: 'Yours', route: 'yours' },
       { id: 'tasks', label: 'Tasks', route: 'data', segments: ['task'] },
       { id: 'notes', label: 'Notes', route: 'data', segments: ['note'] },
       { id: 'contacts', label: 'Contacts', route: 'data', segments: ['contact'] },
@@ -2965,6 +2979,9 @@ export const buildRecipeExecuteArgs = (
   if (args.connections !== undefined) {
     executeArgs.connections = args.connections;
   }
+  if (args.connection_revisions !== undefined) {
+    executeArgs.connection_revisions = args.connection_revisions;
+  }
   return executeArgs;
 };
 
@@ -3018,6 +3035,10 @@ export const bootstrapWebclient = async (
     }
   }
   const aad = buildAad(pair);
+  // Async browser storage/crypto must finish before connection grace starts;
+  // otherwise a slow scope digest can make initial route reads fail offline.
+  const bindArchiveImportReceipt = options.enableArchiveBackupPanel === false ? null
+    : await prepareBrowserArchiveImportReceipt({ localStore: options.localStore });
 
   // 2. WS client — `resolveBearer` re-unwraps on every reconnect (DD#2).
   const ws: WebclientWsClient = createWebclientWsClient({
@@ -3129,7 +3150,7 @@ export const bootstrapWebclient = async (
   // whichever screen called it (`webhook-door-notices.ts`). The toast stack
   // mounts further down; it is read when a result arrives.
   const rpcConn: WebclientRpcConn<ServerRpcRegistry> = withWebhookDoorNotices(
-    createWebclientRpcConn({ ws, connectionStatus }),
+    createWebclientRpcConn({ ws, connectionStatus, nonReplayMethods: new Set(['server.archive.import', 'server.archive.export']) }),
     (toast) => presentWebhookDoor(toast),
   );
   // A self-`pair.revoke` intentionally closes this session. Keep that known
@@ -3251,6 +3272,7 @@ export const bootstrapWebclient = async (
       host: options.root,
       document: doc,
       subscribe: subscriber.on,
+      answerReminder: (ask_id, option_id) => rpcConn.call('notification.submitAnswer', { ask_id, option_id }),
     });
     let actionReceiptDeliveryStorage: ActionReceiptDeliveryStorage | undefined;
     if (options.actionReceiptDeliveryStorage !== null) {
@@ -3389,6 +3411,7 @@ export const bootstrapWebclient = async (
       : options.reauthRecovery;
   let pendingChatRecovery = reauthRecovery;
   let pendingChatFile: { hash: string; file: import('@recued/contracts').FileAttachmentSelection } | undefined;
+  let pendingAssetChatDraft: { hash: string; draft: ChatRouteRecoveryDraft } | undefined;
   let pendingWorkPrompt: { hash: string; prompt: string; repeat?: boolean; mailWork?: import('@recued/contracts').MailWorkReadRequest } | undefined;
   const navigateHash = (hash: string): void => {
     if (hashSource?.setHash !== undefined) {
@@ -4847,6 +4870,7 @@ export const bootstrapWebclient = async (
       // the same kind of work; what differs is where "return" sends you.
       views: { label: 'Saving a Data change', returnLabel: 'Return to Saved views' },
       today: { label: 'Saving a task change', returnLabel: 'Return to Today' },
+      yours: { label: 'Saving a Yours change', returnLabel: 'Return to Yours' },
       logs: { label: 'Finishing a run action', returnLabel: 'Return to Runs' },
       stats: { label: 'Finishing a stats action', returnLabel: 'Return to Stats' },
       chat: { label: 'Finishing a Chat action', returnLabel: 'Return to Chat' },
@@ -6570,17 +6594,47 @@ export const bootstrapWebclient = async (
   // panel header). `include_passport` embeds the identity passport in the
   // archive; `currentRealmKey` authorizes a Q2 cross-realm restore.
   const archiveBackupOff = options.enableArchiveBackupPanel === false;
+  const assertArchivePair = async (): Promise<void> => {
+    const current = await options.localStore.inspect();
+    if (current.server_url !== pair.serverUrl || current.server_public_key !== pair.serverPublicKey) {
+      throw new Error('The selected server changed. Reload before starting or checking a remote backup.');
+    }
+  };
+  const archiveImportReceipt = bindArchiveImportReceipt?.({
+    verify: operation_id => rpcConn.call('server.archive.import_status', { operation_id }),
+    isConnected: () => connectionStatus.status() === 'connected',
+    onConnected: listener => connectionStatus.onStatus(status => { if (status === 'connected') listener(); }),
+  }) ?? null;
   const archiveExportCaller = archiveBackupOff
     ? undefined
-    : (args: {
+    : async (args: {
         include_blobs?: boolean;
         include_passport?: boolean;
         recoveryKey: string;
-      }) => rpcConn.call('server.archive.export', args);
+        remote?: import('@recued/contracts').ArchiveRemoteTarget;
+      }) => {
+        if (args.remote !== undefined) await assertArchivePair();
+        return rpcConn.call('server.archive.export', args);
+      };
+  const archiveRemoteBackups: RemoteBackupsPorts | undefined = archiveBackupOff ? undefined : {
+    destinations: async () => {
+      await assertArchivePair(); const result = await rpcConn.call('server.archive.destinations', {}); await assertArchivePair(); return result;
+    },
+    list: async () => {
+      await assertArchivePair(); const result = await rpcConn.call('server.archive.backups', {}); await assertArchivePair(); return result;
+    },
+    check: async args => {
+      await assertArchivePair(); const result = await rpcConn.call('server.archive.backup.check', args); await assertArchivePair(); return result;
+    },
+    retrieve: async args => {
+      await assertArchivePair(); const result = await rpcConn.call('server.archive.backup.retrieve', args, { timeout: 1_800_000 }); await assertArchivePair(); return result;
+    },
+    onConnected: listener => connectionStatus.onStatus(status => { if (status === 'connected') listener(); }),
+  };
   const archiveStatusCaller = archiveBackupOff
     ? undefined
     : (args: { job_id: string }) => rpcConn.call('server.archive.status', args);
-  const archiveImportCaller = archiveBackupOff
+  const rawArchiveImportCaller = archiveBackupOff
     ? undefined
     : (args: {
         path: string;
@@ -6588,7 +6642,10 @@ export const bootstrapWebclient = async (
         currentRealmKey?: string;
         force?: boolean;
         dry_run?: boolean;
-      }) => rpcConn.call('server.archive.import', args);
+        operation_id?: string;
+      }) => rpcConn.call('server.archive.import', args, { timeout: 900_000 });
+  const archiveImportCaller = rawArchiveImportCaller === undefined ? undefined
+    : archiveImportReceipt?.wrapImport(rawArchiveImportCaller) ?? rawArchiveImportCaller;
 
   // An archive export is longer-lived than its start rpc. Keep the start
   // promise + server job id at boot scope so leaving Settings does not orphan
@@ -7065,6 +7122,12 @@ export const bootstrapWebclient = async (
       if (result.action !== 'authentication_history') throw new Error('Connection incident history could not be read. Update the server.');
       return result.history;
     };
+  const authenticationHistoryExportCaller: import('@recued/contracts').AuthenticationHistoryExportCaller | undefined =
+    options.enableConnectionsEnrollPanel === false ? undefined : async query => {
+      const result = await rpcConn.call('collection.connection.managedOAuth', { action: 'authentication_history_export', ...query });
+      if (result.action !== 'authentication_history_export') throw new Error('History export is unavailable. Update the server.');
+      return result.report;
+    };
   // D-304 — the Delete confirmation's "also removes …". A server predating it
   // rejects the method, which the panel reads as "no line".
   const packsUninstallPreviewCaller: PacksUninstallPreviewCaller | undefined =
@@ -7174,6 +7237,10 @@ export const bootstrapWebclient = async (
     switchWorkTracker.track(
       (input: typeof args) => rpcConn.call('work_entity.task.mark_done', input),
     )(args);
+  const dataCommitmentCloseCaller: import('./data/bootstrap-data-route.js').DataCommitmentCloseCaller = (args) =>
+    switchWorkTracker.track((input: typeof args) => input.outcome === 'fulfill'
+      ? rpcConn.call('work_entity.commitment.fulfill', { id: input.id })
+      : rpcConn.call('work_entity.commitment.cancel', { id: input.id }))(args);
   const dataContactListCaller: DataContactListCaller = (args) =>
     rpcConn.call('contact.list', args);
   const dataContactGetCaller: DataContactGetCaller = (args) =>
@@ -7680,9 +7747,13 @@ export const bootstrapWebclient = async (
     portal: (doc as { body?: HTMLElement }).body ?? appShell.root,
     prepareOpen: appShell.closeDrawer,
     palette: {
+      pageContext: () => mountedRouteHandle.getRunPageContext?.() ?? null,
+      fileRefSearch: fileRefSearchCaller,
+      recordRefSearch: entry => bindRecordRefSearchToRecipe(recordRefSearchCaller, entry.recipe),
       // D-269 — the SERVER's zone for a scheduled run's activation stamp.
       serverTimeZone: getServerTimeZone,
       recipeList: recipesListCaller,
+      recipeGet: args => rpcConn.call('recipe.get', args),
       execute: trackGlobalRunWrite('Running a recipe', recipeExecuteCaller),
       // D-320 — the Run tab's Connection lines.
       recipeConnections: (args) => rpcConn.call('packs.connections.recipe', args),
@@ -8759,6 +8830,7 @@ export const bootstrapWebclient = async (
   // D-322 — optional broker profiles and Connect sessions.
   const connectionsManagedOAuthCaller: import('./settings/managed-oauth-panel.js').ManagedOAuthCaller | undefined =
     options.enableConnectionsEnrollPanel === false ? undefined : createManagedOAuthCaller(rpcConn.call);
+  const connectionReplacementCaller = createConnectionReplacementCaller(rpcConn.call);
   // R26.2 Option B — the pure code-exchange rpc. Wired unconditionally with the
   // enroll panel: the PANEL decides whether to use it (loopback only), so the
   // cloud path is untouched for every other origin.
@@ -9821,7 +9893,8 @@ export const bootstrapWebclient = async (
     route: WebclientRouteId,
     chatFile?: import('@recued/contracts').FileAttachmentSelection,
     workPrompt?: { prompt: string; repeat?: boolean; mailWork?: import('@recued/contracts').MailWorkReadRequest },
-  ): RecoveryContextProbe & {
+    assetDraft?: ChatRouteRecoveryDraft,
+  ): RecoveryContextProbe & RunPageContextProvider & {
     update?: () => void;
     dispose: () => void;
     /** Leave-guard seam — a route with unsaved work returns true and the
@@ -9894,6 +9967,8 @@ export const bootstrapWebclient = async (
         : parseContractsAddress(parseShellRoute(hashSource.getHash()));
       return withTrackedServerSwitchWork(bootstrapContractsRoute({
         root: appShell.contentRoot,
+        permissionWorkbenchCall: rpcConn.call,
+        beginPermissionWork: () => switchWorkTracker.begin({ label: 'Updating permission tests and grants', returnHref: activeHash }),
         serverUrl: pair.serverUrl,
         ...(options.document !== undefined ? { document: options.document } : {}),
         navigate: navigateHash,
@@ -9995,6 +10070,7 @@ export const bootstrapWebclient = async (
                 : {}),
               ...(grantSetDoorTypesCaller !== undefined
                 ? {
+                    grantSetReadSpheresCaller: switchWorkTracker.track(args => rpcConn.call('collection.contract.setReadSpheres', args)),
                     grantSetDoorTypesCaller: switchWorkTracker.track(
                       grantSetDoorTypesCaller,
                     ),
@@ -10029,6 +10105,8 @@ export const bootstrapWebclient = async (
               ),
             }
           : {}),
+        standingTasks: { read: input => rpcConn.call('yours.read', input),
+          change: switchWorkTracker.track(input => rpcConn.call('yours.change', input)) },
         ...(scopedSuggestionsListCaller !== undefined
           && scopedSuggestionsAcceptCaller !== undefined
           && scopedSuggestionsDismissCaller !== undefined
@@ -10060,7 +10138,8 @@ export const bootstrapWebclient = async (
         ? connectionsAddress.segments
         : [];
       const renewalReturn = parseConnectionsRenewalRepairReturn(rawConnectionsSegments);
-      const connectionsSegments = renewalReturn?.segments ?? rawConnectionsSegments;
+      const accessRepairReturn = parseConnectionsAccessRepairReturn(rawConnectionsSegments);
+      const connectionsSegments = renewalReturn?.segments ?? accessRepairReturn?.segments ?? rawConnectionsSegments;
       const initialConnectionsAddress = connectionsAddress === null
         ? null
         : parseConnectionsAddress(connectionsAddress);
@@ -10069,9 +10148,14 @@ export const bootstrapWebclient = async (
       const initialOAuthAppReview = parseConnectionsOAuthApp(connectionsSegments);
       const initialAccountAuthentication = parseConnectionsAccountAuthentication(connectionsSegments);
       const isIncidentHistory = connectionsSegments[0] === 'others' && connectionsSegments[1] === 'incident-history';
-      const initialIncidentHistory = isIncidentHistory ? parseConnectionsIncidentHistory(connectionsSegments) : undefined;
+      const historyView = isIncidentHistory ? parseConnectionsIncidentHistoryView(connectionsSegments) : undefined;
+      const initialIncidentHistory = historyView === undefined ? undefined : historyView?.scope ?? null;
       const initialAccessVerification = connectionsSegments[0] === 'others' && connectionsSegments[1] === 'verify-access'
         ? parseConnectionsVerifyAccess(connectionsSegments) : undefined;
+      const initialAccessResult = connectionsSegments[0] === 'others' && connectionsSegments[1] === 'access-result'
+        ? parseConnectionsAccessResult(connectionsSegments) : undefined;
+      const initialAccessCheck = connectionsSegments[0] === 'others' && connectionsSegments[1] === 'access-check'
+        ? parseConnectionsAccessCheck(connectionsSegments) : undefined;
       const initialFileAuthenticationSwitch = parseConnectionsFileAuthentication(connectionsSegments);
       const permissionRepairTarget = parseConnectionsPermissionRepair(connectionsSegments);
       const permissionRepair = permissionRepairTarget ? packPermissionRepairs.read(permissionRepairTarget.id, permissionRepairTarget.name)
@@ -10154,6 +10238,7 @@ export const bootstrapWebclient = async (
       }
       const connectionsRoute = bootstrapConnectionsRoute({
         root: appShell.contentRoot,
+        sourceSpheres: { read: () => rpcConn.call('yours.read', {}), change: switchWorkTracker.track(input => rpcConn.call('yours.change', input)) },
         accountSetupContinuity,
         listCloudFiles: () => rpcConn.call('data.file.attachments.sources', undefined),
         ...(options.document !== undefined ? { document: options.document } : {}),
@@ -10166,9 +10251,14 @@ export const bootstrapWebclient = async (
         ...(initialOAuthAppReview ? { initialOAuthAppReview } : {}),
         ...(initialAccountAuthentication ? { initialAccountAuthentication } : {}),
         ...(renewalReturn ? { initialRenewalReturn: renewalReturn.app } : {}),
+        ...(accessRepairReturn ? { initialAccessRepairReturn: accessRepairReturn.reference } : {}),
         ...(initialIncidentHistory !== undefined ? { initialIncidentHistory } : {}),
+        ...(historyView ? { initialIncidentHistoryFilters: historyView.filters } : {}),
         ...(initialAccessVerification !== undefined ? { initialAccessVerification } : {}),
+        ...(initialAccessResult !== undefined ? { initialAccessResult } : {}),
+        ...(initialAccessCheck !== undefined ? { initialAccessCheck } : {}),
         ...(authenticationIncidentHistoryCaller ? { authenticationIncidentHistoryCaller } : {}),
+        ...(authenticationHistoryExportCaller ? { authenticationHistoryExportCaller } : {}),
         ...(authenticationRepairsCaller ? { authenticationRepairsCaller } : {}),
         ...(initialFileAuthenticationSwitch !== null ? { initialFileAuthenticationSwitch } : {}),
         ...(permissionRepair ? { initialPermissionRepair: permissionRepair } : {}),
@@ -10415,6 +10505,7 @@ export const bootstrapWebclient = async (
             }
           : {}),
         ...(connectionsManagedOAuthCaller !== undefined ? { connectionsManagedOAuthCaller: switchWorkTracker.track(connectionsManagedOAuthCaller) } : {}),
+        ...(options.enableConnectionsEnrollPanel !== false ? { connectionReplacementCaller: { inspect: switchWorkTracker.track(connectionReplacementCaller.inspect), review: switchWorkTracker.track(connectionReplacementCaller.review), rollback: switchWorkTracker.track(connectionReplacementCaller.rollback), apply: switchWorkTracker.track(connectionReplacementCaller.apply) } } : {}),
         ...(webhooksListCaller !== undefined
           && webhooksCreateCaller !== undefined
           && webhooksCredentialWriteCaller !== undefined
@@ -10552,6 +10643,13 @@ export const bootstrapWebclient = async (
           ? { packsUninstallCaller: switchWorkTracker.track(packsUninstallCaller) }
           : {}),
         ...(packsResolveCaller !== undefined ? { packsResolveCaller } : {}),
+        ...(options.enablePacksPanel !== false ? (() => {
+          const caller = createPackUpdateCaller(rpcConn.call), tests = createRecipeRegressionCaller(rpcConn.call),removal = createPackRemovalCaller(rpcConn.call),repair = createPackRepairCaller(rpcConn.call);
+          return { packUpdateCaller: { get: switchWorkTracker.track(caller.get),stage: switchWorkTracker.track(caller.stage),test: switchWorkTracker.track(caller.test),apply: switchWorkTracker.track(caller.apply),release: switchWorkTracker.track(caller.release),restore: switchWorkTracker.track(caller.restore) },
+            packUpdateRegressionCaller: { get: switchWorkTracker.track(tests.get),save: switchWorkTracker.track(tests.save),remove: switchWorkTracker.track(tests.remove),run: switchWorkTracker.track(tests.run) },
+            packRemovalCaller: { review: switchWorkTracker.track(removal.review),apply: switchWorkTracker.track(removal.apply) },
+            packRepairCaller: { inspect: switchWorkTracker.track(repair.inspect),review: switchWorkTracker.track(repair.review),apply: switchWorkTracker.track(repair.apply) } };
+        })() : {}),
         ...(packsInstallPreviewCaller !== undefined
           ? { packsInstallPreviewCaller }
           : {}),
@@ -11001,11 +11099,18 @@ export const bootstrapWebclient = async (
         workEntitySourceListCaller: dataWorkEntitySourceListCaller,
         workEntityListCaller: dataWorkEntityListCaller,
         workEntityGetCaller: dataWorkEntityGetCaller,
+        onOwnerRecordOpened: ref => { void rpcConn.call('yours.change', { action: 'navigation.open', ref }).catch(() => {}); },
         workEntityUpsertCaller: dataWorkEntityUpsertCaller,
         taskMarkDoneCaller: dataTaskMarkDoneCaller,
+        commitmentCloseCaller: dataCommitmentCloseCaller,
+        spheres: { read: ref => rpcConn.call('yours.sphere', { ref }),
+          readMany: async refs => (await rpcConn.call('yours.spheres', { refs })).placements,
+          change: switchWorkTracker.track(input => rpcConn.call('yours.change', input)) },
         workEntityDeleteCaller: dataWorkEntityDeleteCaller,
         contactListCaller: dataContactListCaller,
         contactGetCaller: dataContactGetCaller,
+        contactHistoryCaller: id => rpcConn.call('yours.read', { contact_id: id }),
+        contactEpisodeHideCaller: switchWorkTracker.track(id => rpcConn.call('yours.change', { action: 'episode.hide', id })),
         contactContributionsCaller: dataContactContributionsCaller,
         contactUpsertCaller: dataContactUpsertCaller,
         contactDeleteCaller: dataContactDeleteCaller,
@@ -11170,6 +11275,8 @@ export const bootstrapWebclient = async (
         (args) => rpcConn.call('triggers.create', args);
       return withTrackedServerSwitchWork(bootstrapAutomationRoute({
         root: appShell.contentRoot,
+        rehearsalCall: rpcConn.call,
+        beginRehearsalWork: () => switchWorkTracker.begin({ label: 'Updating automation rehearsal and configuration', returnHref: activeHash }),
         // A timer's window opens on the server's clock (D-269).
         serverTimeZone: getServerTimeZone,
         ...(options.document !== undefined ? { document: options.document } : {}),
@@ -11271,19 +11378,49 @@ export const bootstrapWebclient = async (
         subscribe: subscriber.on,
       }));
     }
+    if (route === 'yours') {
+      activeSettingsRoute = null;
+      return withTrackedServerSwitchWork(bootstrapYoursRoute({
+        container: appShell.contentRoot,
+        segments: hashSource ? parseShellRoute(hashSource.getHash()).segments : [],
+        read: input => rpcConn.call('yours.read', input),
+        recordOpened: ref => { void rpcConn.call('yours.change', { action: 'navigation.open', ref }).catch(() => {}); },
+        askAsset: assetContext => {
+          const hash = serializeShellRoute('chat', 'new');
+          pendingAssetChatDraft = { hash, draft: { text: 'What should I know about this asset?', protected: true, modelSourceId: null, assetContext } };
+          navigateHash(hash);
+        },
+        change: input => switchWorkTracker.track((args: typeof input) => rpcConn.call('yours.change', args))(input),
+        closeCommitment: dataCommitmentCloseCaller,
+        contacts: async () => (await dataContactListCaller({ limit: 200 })).contacts,
+        links: async id => (await rpcConn.call('link.forRecord', { collection: 'asset', id, direction: 'outbound' })).links,
+        files: { get: args => rpcConn.call('data.file.attachments.get', args),
+          list: args => rpcConn.call('data.file.attachments.list', args),
+          preview: args => rpcConn.call('data.file.attachments.preview', args, { timeout: 150_000 }),
+          read: args => rpcConn.call('data.file.read', args, { timeout: 150_000 }) },
+        timeline: dataTimelineCaller,
+        subscribe: subscriber.on,
+      }));
+    }
     if (route === 'today') {
       activeSettingsRoute = null;
       return withTrackedServerSwitchWork(bootstrapTodayRoute({
         container: appShell.contentRoot,
         callers: {
+          proactiveTodayCaller: input => rpcConn.call('yours.today', input),
+          spheres: { read: ref => rpcConn.call('yours.sphere', { ref }), readMany: async refs => (await rpcConn.call('yours.spheres', { refs })).placements,
+            change: switchWorkTracker.track(input => rpcConn.call('yours.change', input)) },
           workEntitySourceListCaller: dataWorkEntitySourceListCaller,
           workEntityListCaller: dataWorkEntityListCaller,
           workEntityGetCaller: dataWorkEntityGetCaller,
           workEntityUpsertCaller: dataWorkEntityUpsertCaller,
           taskMarkDoneCaller: dataTaskMarkDoneCaller,
+        commitmentCloseCaller: dataCommitmentCloseCaller,
           collectionListInstancesCaller: dataCollectionListInstancesCaller,
           collectionListCaller: dataCollectionListCaller,
           openCreateOverlay: () => createSeatHandler?.(),
+          situationChangeCaller: switchWorkTracker.track(input => rpcConn.call('yours.change', input)),
+          situationOpenedCaller: input => { void rpcConn.call('yours.change', input).catch(() => {}); },
         },
         subscribe: subscriber.on,
       }));
@@ -11321,6 +11458,11 @@ export const bootstrapWebclient = async (
         ...(options.document !== undefined ? { document: options.document } : {}),
         listCaller: runsListCaller,
         getCaller: runsGetCaller,
+        localUndo: {
+          get: args => rpcConn.call('local_undo.get', args),
+          review: args => rpcConn.call('local_undo.review', args),
+          decide: args => rpcConn.call('local_undo.decide', args),
+        },
         activeCaller: runsActiveCaller,
         killCaller: runsKillCaller,
         cancelCaller: runsCancelCaller,
@@ -11442,6 +11584,11 @@ export const bootstrapWebclient = async (
       const chatRoute = bootstrapChatRoute({
         root: appShell.contentRoot,
         conn: chatConn,
+        localUndo: {
+          get: args => rpcConn.call('local_undo.get', args),
+          review: args => rpcConn.call('local_undo.review', args),
+          decide: args => rpcConn.call('local_undo.decide', args),
+        },
         filePreviewCallers: {
           preview: args => rpcConn.call('data.file.attachments.preview', args, { timeout: 150_000 }),
           read: args => rpcConn.call('data.file.read', args, { timeout: 150_000 }),
@@ -11472,6 +11619,7 @@ export const bootstrapWebclient = async (
         reconnect,
         ...(chatRecovery !== undefined
           ? { initialRecoveryDraft: chatRecovery }
+          : assetDraft !== undefined ? { initialRecoveryDraft: assetDraft }
           : workPrompt !== undefined && chatSessionId !== undefined ? {
             initialRecoveryDraft: { text: workPrompt.prompt, protected: true, modelSourceId: null },
             initialWorkSubmission: { sessionId: chatSessionId, message: workPrompt.prompt, repeat: workPrompt.repeat, mailWork: workPrompt.mailWork },
@@ -11864,6 +12012,16 @@ export const bootstrapWebclient = async (
         // guard every other settings mutation does.
         kindPolicyGetCaller,
         kindPolicySetCaller: switchWorkTracker.track(kindPolicySetCaller),
+        situationDelivery: { read: () => rpcConn.call('yours.delivery', undefined),
+          save: switchWorkTracker.track(settings => rpcConn.call('yours.change', { action: 'delivery.update', settings })),
+          sendNow: switchWorkTracker.track(() => rpcConn.call('yours.change', { action: 'delivery.send_now' })) },
+        lastTime: { read: () => rpcConn.call('yours.learning', undefined),
+          save: switchWorkTracker.track(last_time => rpcConn.call('yours.change', { action: 'settings.update', last_time })) },
+        householdDelivery: { read: async () => {
+          const value = (await rpcConn.call('yours.read', { limit: 1 })).household;
+          if (!value) throw new Error('Household delivery is unavailable on this server');
+          return value;
+        }, save: switchWorkTracker.track(input => rpcConn.call('yours.change', input)) },
         quietHoursGetCaller,
         quietHoursSetCaller: switchWorkTracker.track(quietHoursSetCaller),
         mailChatDoorGetCaller,
@@ -12480,6 +12638,8 @@ export const bootstrapWebclient = async (
                 activeArchiveExport?.start ?? null,
               archiveExportSettled: settleActiveArchiveExport,
               archiveImportCaller: switchWorkTracker.track(archiveImportCaller),
+              ...(archiveRemoteBackups === undefined ? {} : { archiveRemoteBackups }),
+              ...(archiveImportReceipt === null ? {} : { archiveImportReceipt }),
               ...(passportExportCaller !== undefined
                 ? {
                     passportExportCaller: switchWorkTracker.track(
@@ -12532,10 +12692,18 @@ export const bootstrapWebclient = async (
         },
       };
     }
+    if (route === 'approvals' && deepLinkSegment('approvals') === 'local-changes') {
+      activeSettingsRoute = null;
+      return withTrackedServerSwitchWork(bootstrapLocalChangesRoute({ root: appShell.contentRoot,call: rpcConn.call,
+        ...(options.document !== undefined ? { document: options.document } : {}),
+        ...(deepLinkSegment('approvals',1) !== undefined ? { changeSetId: deepLinkSegment('approvals',1) } : {}),
+        ...(options.now !== undefined ? { now: options.now } : {}),
+      }));
+    }
     if (route === 'approvals' && deepLinkSegment('approvals') === 'preapproval') {
       activeSettingsRoute = null;
       return withTrackedServerSwitchWork(bootstrapPreapprovalRoute({
-        root: appShell.contentRoot, call: rpcConn.call,
+        root: appShell.contentRoot, call: rpcConn.call, serverTimeZone: getServerTimeZone,
         ...(options.document !== undefined ? { document: options.document } : {}),
         ...(deepLinkSegment('approvals', 1) !== undefined ? { proposalId: deepLinkSegment('approvals', 1) } : {}),
         ...(options.now !== undefined ? { now: options.now } : {}),
@@ -12712,6 +12880,17 @@ export const bootstrapWebclient = async (
         savedKey: (recipeId: string) => JSON.stringify([bootProfileId ?? pair.serverUrl, recipeId]),
       } : undefined;
       const simulateCaller = switchWorkTracker.track(createRecipeSimulationCaller(rpcConn.call));
+      const regression = createRecipeRegressionCaller(rpcConn.call);
+      const regressionCaller = { get: switchWorkTracker.track(regression.get),save: switchWorkTracker.track(regression.save),
+        remove: switchWorkTracker.track(regression.remove),run: switchWorkTracker.track(regression.run) };
+      const captures = createRecipeRunCaptureCaller(rpcConn.call);
+      const captureCaller = { prepare: switchWorkTracker.track(captures.prepare),run: switchWorkTracker.track(captures.run),
+        list: switchWorkTracker.track(captures.list),get: switchWorkTracker.track(captures.get),remove: switchWorkTracker.track(captures.remove),
+        import: switchWorkTracker.track(captures.import) };
+      const releases = createRecipeReleaseCaller(rpcConn.call);
+      const releaseCaller = { get: switchWorkTracker.track(releases.get),save: switchWorkTracker.track(releases.save),
+        restore: switchWorkTracker.track(releases.restore),test: switchWorkTracker.track(releases.test),
+        prepare: switchWorkTracker.track(releases.prepare),activate: switchWorkTracker.track(releases.activate) };
       let editor: ReturnType<typeof mountRecipeEditorRoute> | null = null;
       if (kitchenRecipeSeed?.kind === 'execution_case') {
         // D-219 item 2b — an AI-written draft the Settings panel already
@@ -12809,6 +12988,9 @@ export const bootstrapWebclient = async (
           recovery: kitchenDraftRecovery,
           root: kitchenChrome.contentRoot,
           recipeId: kitchenRecipeId,
+          regressionCaller,
+          captureCaller,
+          releaseCaller,
           listCaller: recipesListCaller,
           getCaller: (args) => rpcConn.call('recipe.get', args),
           validateCaller: switchWorkTracker.track(
@@ -12943,7 +13125,11 @@ export const bootstrapWebclient = async (
     }));
   };
 
-  let mountedRouteHandle: RecoveryContextProbe & {
+  if (archiveImportReceipt?.reviewOnBoot) {
+    activeRoute = 'settings'; activeHash = '#settings/backup';
+    navigateHashInPlace(activeHash); appShell.setActiveRoute(activeRoute, ['backup']);
+  }
+  let mountedRouteHandle: RecoveryContextProbe & RunPageContextProvider & {
     update?: () => void;
     dispose: () => void;
     hasUnsavedChanges?: () => boolean;
@@ -14530,6 +14716,8 @@ export const bootstrapWebclient = async (
     ? hashSource.onChange((hash) => {
         const chatFile = pendingChatFile?.hash === hash ? pendingChatFile.file : undefined;
         pendingChatFile = undefined;
+        const assetDraft = pendingAssetChatDraft?.hash === hash ? pendingAssetChatDraft.draft : undefined;
+        pendingAssetChatDraft = undefined;
         const workPrompt = pendingWorkPrompt?.hash === hash ? pendingWorkPrompt : undefined;
         pendingWorkPrompt = undefined;
         if (
@@ -14636,7 +14824,7 @@ export const bootstrapWebclient = async (
         activeRoute = next;
         activeHash = hash;
         appShell.setActiveRoute(next, parseShellRoute(hash).segments);
-        mountedRouteHandle = mountRoute(next, chatFile, workPrompt);
+        mountedRouteHandle = mountRoute(next, chatFile, workPrompt, assetDraft);
         finishPendingRecoveryReturnAction(hash);
       })
     : (): void => undefined;
@@ -14747,6 +14935,7 @@ export const bootstrapWebclient = async (
       eventsSubscribeGeneration += 1;
       cancelEventsSubscribeRetry();
       detachResubscribe();
+      archiveImportReceipt?.dispose();
       detachHash();
       if (typeof beforeUnloadView?.removeEventListener === 'function') {
         beforeUnloadView.removeEventListener('beforeunload', onBeforeUnload);

@@ -36,10 +36,11 @@
  *  Idempotency. The dispatcher's `idempotency_key` is the bridge's
  *  24h dedup primary — a retry of the SAME logical step should hit the
  *  bridge's idempotency cache and replay the prior result. The runner
- *  builds a STABLE per-entry key from `recipe_id:step_id:slug:entry_index`
+ *  builds a STABLE per-entry key from `run_id:step_id:slug:entry_index`
  *  + a SHA-256 of the resolved input + the entry key/value pair, so:
  *
- *    - same step + same input on retry → same key → bridge replays
+ *    - same run + step + input on retry → same key → bridge replays
+ *    - separate runs → distinct keys → fresh dispatches
  *    - distinct steps + distinct inputs → distinct keys → fresh dispatches
  *
  *  Late binding. The dispatcher is composed inside `createWebSocketUpgrade`
@@ -55,8 +56,10 @@
  *  § N.9 / A.8 (multi-bridge fall-through); composes with the dispatcher
  *  from `backend/server/src/bridges/dispatcher.ts` (`ce5bb9a3`). */
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { currentPreapprovalIo } from '../preapproval-io-context.js';
+import { captureProviderHandoffFence } from '../execution/provider-handoff.js';
+import { currentRunAbortContext } from '../execution/run-abort-context.js';
 
 import type {
   BridgeAction,
@@ -252,6 +255,8 @@ export const createBridgeDomAdapter = (
   options: CreateBridgeDomAdapterOptions,
 ): Adapter => {
   return async (resolved: ResolvedCall): Promise<unknown> => {
+    const assertHandoff = captureProviderHandoffFence();
+    assertHandoff();
     const dispatcher = options.getDispatcher();
     if (!dispatcher) {
       throw new IngredientError(
@@ -283,6 +288,7 @@ export const createBridgeDomAdapter = (
     // entry gets its own dispatch + its own bridge idempotency cell.
     const outcomes: PerEntryOutcome[] = [];
     for (const { entry, action, args, expects_output_keys } of entries) {
+      assertHandoff();
       const idempotency_key = buildIdempotencyKey({
         recipe_run_id,
         step_id,
@@ -305,6 +311,7 @@ export const createBridgeDomAdapter = (
 
       const scope = currentPreapprovalIo();
       const reviewed = scope ? await scope.prepareDomCommand(resolved, request, entry.index - 1) : undefined;
+      assertHandoff();
       const outcome = await dispatcher.dispatch(request, reviewed);
       const outputs = translateDispatchOutcome(outcome, resolved.slug, entry);
       outcomes.push({ entry, action, outputs });
@@ -490,32 +497,28 @@ const buildIngredientRef = (
   };
 };
 
-/** Build a stable `recipe_run_id`. The engine doesn't yet thread a true
- *  per-invocation run id through `ResolvedCall`/`StepMeta` (separate
- *  follow-on); for v0 we synthesize from `stepMeta.recipe_id`+`step_id`
- *  so audit cross-reference + cancellation routing have a deterministic
- *  prefix to anchor on. The dispatcher's `inflight` map keys by
- *  `command_id` (a per-dispatch random) so colliding run_id strings
- *  across concurrent step retries can't cross-talk on cancel. */
+/** Use the host's actual run identity so retries within a run remain stable
+ * while separate runs cannot reuse an earlier browser result. Reviewed calls
+ * require explicit engine metadata. Ordinary calls may inherit the host's
+ * ambient run; callers without either anchor get one fresh identity for the
+ * entire adapter invocation, shared by its entries and transport retries. */
 const buildRecipeRunId = (resolved: ResolvedCall): string => {
+  if (resolved.stepMeta?.run_id) return resolved.stepMeta.run_id;
   if (currentPreapprovalIo()) {
-    if (!resolved.stepMeta?.run_id) throw new IngredientError('DOM_WRITE_FAILED', 'The reviewed DOM call has no actual run id.');
-    return resolved.stepMeta.run_id;
+    throw new IngredientError('DOM_WRITE_FAILED', 'The reviewed DOM call has no actual run id.');
   }
-  const recipe_id = resolved.stepMeta?.recipe_id ?? 'dom';
-  const step_id = resolved.stepMeta?.step_id ?? resolved.slug;
-  return `${recipe_id}:${step_id}`;
+  return currentRunAbortContext()?.run_id || randomUUID();
 };
 
 /** Build a STABLE idempotency key. Hashed inputs:
  *
- *    - recipe_run_id (deterministic from stepMeta)
+ *    - recipe_run_id (host run identity, or fresh for an unanchored invocation)
  *    - step_id
  *    - slug
  *    - entry.index + entry.selector + entry.marker (per-entry uniqueness)
  *    - resolved.input (input value drift = fresh dedup cell)
  *
- *  Two retries of the SAME logical step produce the SAME key →
+ *  Two retries of the SAME logical step in the SAME run produce the SAME key →
  *  the bridge's 24h `idempotency_key → result` cache replays the prior
  *  outcome instead of re-executing the side effect. Input drift (page
  *  context changed, retry with new context) yields a fresh dedup cell.
@@ -550,9 +553,8 @@ const buildIdempotencyKey = (input: {
  *  the mapping table without spinning up a dispatcher.
  *
  *  Codex 2026-05-28 Angle 1 fold (DOM-runner consumer slice):
- *  unified timeout-flavor mapping — both bridge `status: 'timeout'`
- *  AND dispatcher `outcome.kind === 'timeout'` map to
- *  `INGREDIENT_ADAPTER_ALL_FAILED` with explicit "timed out" messaging.
+ *  Both timeout flavors preserve read failures. A write/click timeout cannot
+ *  establish whether the page changed, so it reports delivery uncertainty.
  *  Pre-fold the bridge path defaulted to the generic recipe code while
  *  the dispatcher path returned the misleading `DOM_SELECTOR_NOT_FOUND`. */
 export const translateDispatchOutcome = (
@@ -560,15 +562,24 @@ export const translateDispatchOutcome = (
   slug: string,
   entry: DomEntry,
 ): Record<string, unknown> | undefined => {
+  const mayChangePage = classifyEntryAction(entry) !== 'read_dom';
+  const timeoutCode = mayChangePage ? 'ACTION_DELIVERY_UNCERTAIN' : 'INGREDIENT_ADAPTER_ALL_FAILED';
+  const timeoutAdvice = mayChangePage ? ' The page may have changed; check it before retrying.' : '';
   if (outcome.kind === 'completed') {
     const { result } = outcome;
+    if (result.error?.code === 'delivery_uncertain' || (mayChangePage && result.error?.code === 'mv3_lifecycle_killed')) {
+      throw new IngredientError('ACTION_DELIVERY_UNCERTAIN', result.error.message, {
+        slug, bridge_client_token_id: outcome.bridge_client_token_id, selector: entry.selector,
+        bridge_error_code: result.error.code, ...(result.error.detail ? { detail: result.error.detail } : {}),
+      });
+    }
     if (result.status === 'ok') {
       return result.outputs ?? {};
     }
     if (result.status === 'cancelled') {
       throw new IngredientError(
-        'ROLE_RESTRICTION',
-        `DOM ingredient '${slug}' was cancelled by the bridge (selector '${entry.selector}')`,
+        mayChangePage ? 'ACTION_DELIVERY_UNCERTAIN' : 'ROLE_RESTRICTION',
+        `DOM ingredient '${slug}' was cancelled by the bridge (selector '${entry.selector}').${timeoutAdvice}`,
         {
           slug,
           status: result.status,
@@ -590,8 +601,8 @@ export const translateDispatchOutcome = (
     }
     if (result.status === 'timeout') {
       throw new IngredientError(
-        'INGREDIENT_ADAPTER_ALL_FAILED',
-        `DOM ingredient '${slug}' timed out at the bridge (selector '${entry.selector}')`,
+        timeoutCode,
+        `DOM ingredient '${slug}' timed out at the bridge (selector '${entry.selector}').${timeoutAdvice}`,
         {
           slug,
           bridge_client_token_id: outcome.bridge_client_token_id,
@@ -643,11 +654,11 @@ export const translateDispatchOutcome = (
     );
   }
   // outcome.kind === 'timeout' — server-side wait timeout (bridge never
-  // returned in time). Mirror the bridge-side timeout mapping above so
-  // recipe error policy treats both timeout flavors uniformly.
+  // returned in time). A successful send admits an effect, so a missing reply
+  // must not become a retryable failure for writes and clicks.
   throw new IngredientError(
-    'INGREDIENT_ADAPTER_ALL_FAILED',
-    `DOM ingredient '${slug}' timed out waiting for the bridge (selector '${entry.selector}')`,
+    timeoutCode,
+    `DOM ingredient '${slug}' timed out waiting for the bridge (selector '${entry.selector}').${timeoutAdvice}`,
     {
       slug,
       command_id: outcome.command_id,

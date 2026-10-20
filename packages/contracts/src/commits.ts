@@ -16,6 +16,7 @@
  */
 
 import { isMessengerSourceVendor } from './messenger-vendors.js';
+import { isLocalMutationReceiptSummary } from './resource-review.js';
 // Type-only: `ingredient-catalog`'s own import of this module is type-only too,
 // so no runtime cycle materialises.
 import type { TrustCeiling } from './ingredient-catalog.js';
@@ -722,6 +723,8 @@ export interface ContractSnapshot {
    *  contract version. Item shape is `string` for P1; grammar
    *  formalises with the contracts substrate (open question #21). */
   scope_restrictions: ReadonlyArray<string>;
+  /** D-325 item boundary. Undefined permits all; [] permits none. */
+  read_spheres?: ReadonlyArray<import('./assets.js').Sphere>;
   /** Dispatch-time unix-ms — when the Gateway resolved + inlined this
    *  snapshot. Pairs with the commit's own `dispatched_at`. */
   resolved_at: number;
@@ -878,6 +881,8 @@ export const isContractSnapshot = (
   if (!isStringArray(v.allowed_tools)) return false;
   if (!isStringArray(v.approval_required)) return false;
   if (!isStringArray(v.scope_restrictions)) return false;
+  if (v.read_spheres !== undefined && (!Array.isArray(v.read_spheres)
+    || v.read_spheres.some(sphere => sphere !== 'personal' && sphere !== 'professional'))) return false;
   if (v.max_risk_without_approval !== undefined
     && !isSnapshotTrustCeiling(v.max_risk_without_approval)) return false;
   return isFinite(v.resolved_at);
@@ -952,6 +957,8 @@ export const nextDispatchDepth = (parent: number): number => parent + 1;
  *
  *  Spec: D-153 § Commit substrate (atomic). */
 export interface Commit {
+  /** Verified local effect, independent of an interrupted caller's result. */
+  local_receipt?: import('./resource-review.js').LocalMutationReceiptSummary;
   /** UUID — the commit's stable identity, Gateway-generated when the
    *  `'pending'` row is written. */
   commit_id: string;
@@ -1114,6 +1121,7 @@ export const isCommit = (value: unknown): value is Commit => {
     typeof x === 'number' && Number.isFinite(x);
 
   if (!nonEmpty(v.commit_id)) return false;
+  if (v.local_receipt !== undefined && !isLocalMutationReceiptSummary(v.local_receipt)) return false;
   if (!isCommitKind(v.kind)) return false;
   if (!nonEmpty(v.ingredient)) return false;
   if (!nonEmpty(v.tool)) return false;

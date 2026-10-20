@@ -146,6 +146,32 @@ describe('#today capture', () => {
   });
 });
 
+describe('#today opens', () => {
+  // D-325 Option A — the click tells the learner; the link itself still navigates. The
+  // click is read off the link the view drew, so the two cannot drift apart.
+  it('reports a bill opened from Today, from the link the view drew', async () => {
+    const opened = vi.fn();
+    const none = { value: null, verdict: 'unknown' as const, basis: 'declared' as const, evidence: [] };
+    const bill = { ref: { collection: 'mail_fact', id: 'mthing_bill' }, kind: 'bill', basis: 'derived', what: { ...none, value: 'Bill: Acme Power', verdict: 'match' },
+      when: none, where: none, who: none, reasons: ['due'], evidence: [], consequence: 'routine', updated_at: NOW };
+    const rig = mount({ workEntityListCaller: async () => ({ entities: [], total: 0 }),
+      proactiveTodayCaller: async () => ({ situations: { clusters: [{ id: 'bills', subjects: [], span: null, omitted: 0, items: [bill] }], omitted: 0, ambiguous: [] },
+        summaries: {}, occurrences: [], proposal_count: 0, newest_proposal: null, unmatched_replies: [], phone_ready: true }),
+      situationChangeCaller: async () => ({ message: '' }), situationOpenedCaller: opened } as never);
+    await rig.route.whenLoaded();
+    const link = /<a href="#data\/mail_fact\/thing\/mthing_bill" ([^>]*)>/u.exec(rig.html())?.[1];
+    expect(link).toBeDefined();
+    const attrs = Object.fromEntries([...link!.matchAll(/([\w-]+)="([^"]*)"/gu)].map((m) => [m[1]!, m[2]!]));
+    const control = { tagName: 'A', getAttribute: (k: string) => attrs[k] ?? null };
+    const root = (rig.container.children as Array<Record<string, unknown>>)[0]!;
+    for (const fn of ((root.listeners as Map<string, Array<(e: unknown) => void>>).get('click') ?? [])) {
+      fn({ target: { closest: (sel: string) => sel === '[data-recued-today-action]' ? control : null } });
+    }
+    expect(opened).toHaveBeenCalledWith({ action: 'navigation.open', ref: { collection: 'mail_fact', id: 'mthing_bill' }, from: 'today' });
+    rig.route.dispose();
+  });
+});
+
 describe('#today route read ownership', () => {
   it('paints the current read and coalesces source changes into one follow-up', async () => {
     const { subscribe, listeners } = makeSubscribe();

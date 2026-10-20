@@ -274,6 +274,9 @@ export const runReminderSweep = (deps: ReminderSweepDeps): ReminderSweepResult =
   const commitmentPolicy = deps.policy('commitment');
   if (deps.listCommitments && commitmentPolicy.enabled) {
     for (const c of deps.listCommitments()) {
+      // D-325 owns only the reminder schedule. Lifecycle, due status and
+      // commitment events still use the ordinary commitment pipeline.
+      if (c.derivation === 'rule_emitted') continue;
       // ⚠ Only a PENDING promise is owed a reminder — the same gate the
       // due-status sweep applies before it transitions a row. A kept or
       // released commitment with a past date is history, not a deadline.

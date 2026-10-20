@@ -1,6 +1,6 @@
 import { FLAGS_WITH_VALUES, getArg } from '../cli/parse.js';
 import type { BootTrace } from '../cli/boot-trace.js';
-import { openDatabase } from '../open-database.js';
+import { openApplicationDatabase } from '../open-application-database.js';
 import { cmdLLM } from '../commands/llm.js';
 import { createBundleStore } from '../bundle-store.js';
 import { resolveIdentityKeysPath } from '../identity/boot.js';
@@ -43,7 +43,7 @@ export async function runLlmProfile(options: LlmProfileOptions): Promise<void> {
   const dbPath = resolveRealmDbPath(getArg(options.args, 'db') ?? env.DB_PATH);
 
   options.bootTrace?.markDbOpenAttempted('configured-db-path');
-  const db = await openDatabase(dbPath, { keyEnvironment: env });
+  const db = await openApplicationDatabase({ dbPath, env });
   try {
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');

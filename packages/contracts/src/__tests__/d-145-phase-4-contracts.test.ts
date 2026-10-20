@@ -96,6 +96,7 @@ describe('PA4 — EnrichmentScope widening', () => {
 
   it('WORK_ENTITY_ENRICHMENT_SCOPES is the closed list of work-entity scopes', () => {
     expect([...WORK_ENTITY_ENRICHMENT_SCOPES].sort()).toEqual([
+      'asset',
       'booking',
       'commitment',
       'note',

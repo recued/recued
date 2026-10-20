@@ -97,6 +97,7 @@ describe('D-137 P1 — TIER1_TOOL_NAMES closed list (§ A.1.1)', () => {
     'account.search',
     'work.search',
     'work.read',
+    'situation.query',
     'work.create',
     'calendar.create',
     'calendar.update',
@@ -116,7 +117,7 @@ describe('D-137 P1 — TIER1_TOOL_NAMES closed list (§ A.1.1)', () => {
     'recipe.schedule',
   ];
 
-  it('lists exactly twenty canonical primitives in spec order (P1 six + mail.read/document.read + deal/account.search + work.search/read/create/update + calendar.create/update + memory.write + file.search + recipe.stop + recipe.schedule)', () => {
+  it('lists exactly twenty-one canonical primitives in spec order (P1 six + mail.read/document.read + deal/account.search + work.search/read/create/update + calendar.create/update + memory.write + file.search + recipe.stop + recipe.schedule)', () => {
     expect(TIER1_TOOL_NAMES).toEqual(expected);
   });
 

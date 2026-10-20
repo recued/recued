@@ -74,6 +74,7 @@ export interface WorkEntityDialogProps {
   history_html?: string;
   /** Owner task lifecycle action, separate from saving the form's edits. */
   task_completion?: { done: boolean; can_change: boolean; busy?: boolean; notice?: string };
+  commitment_lifecycle?: { state: string; can_change: boolean };
 }
 
 /** Render the dialog. The dialog body is wrapped in a backdrop +
@@ -148,6 +149,13 @@ export const renderWorkEntityDialog = (props: WorkEntityDialogProps): string => 
         }>${completion.busy ? (completion.done ? 'Reopening…' : 'Completing…')
           : (completion.done ? 'Reopen' : 'Complete')}</button>` : ''}
     </section>`;
+  const commitment = props.kind === 'commitment' && props.state.mode === 'edit' ? props.commitment_lifecycle : undefined;
+  const commitmentHtml = commitment === undefined ? '' : `
+    <section aria-label="Commitment status">
+      <p data-commitment-status role="status" tabindex="-1">${e(commitment.state)}</p>
+      ${commitment.can_change ? `<button type="button" data-action="fulfill-work-entity-commitment"${props.state.submitting ? ' disabled' : ''}>Done</button>
+      <button type="button" data-action="cancel-work-entity-commitment"${props.state.submitting ? ' disabled' : ''}>Cancel commitment</button>` : ''}
+    </section>`;
   return `
     <div
       class="work-entity-dialog-backdrop"
@@ -175,6 +183,7 @@ export const renderWorkEntityDialog = (props: WorkEntityDialogProps): string => 
         <form class="work-entity-dialog-form" data-form-kind="${e(props.kind)}"${editorStateAttr}>
           ${sourcePicker}
           ${completionHtml}
+          ${commitmentHtml}
           ${renderForm(props.definition, {
             values: props.state.values,
             errors: props.state.errors,

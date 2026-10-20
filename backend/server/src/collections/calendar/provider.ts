@@ -179,6 +179,7 @@ export type CreateEventInput = Omit<
 /** Payload for `updateEvent` — a partial patch on the canonical
  *  event, applied by the adapter to the provider. */
 export interface UpdateEventInput {
+  expected_etag?: string;
   /** Which calendar on the account the event lives on. Resolved by
    *  the dispatcher from the warehouse row before the adapter call
    *  — adapters need it to build the provider path. */
@@ -190,6 +191,7 @@ export interface UpdateEventInput {
 }
 
 export interface DeleteEventInput {
+  expected_etag?: string;
   calendar_id: string;
   source_id: string;
   scope?: CalendarMutationScope;
@@ -209,6 +211,11 @@ export interface RsvpEventInput {
 export interface CalendarProvider {
   readonly kind: CalendarProviderKind;
   readonly slug: string;
+  /** The address the account signed in as, once the provider has read it:
+   *  Google's primary calendar is named by it, Microsoft's default calendar
+   *  carries it as its owner, and a CalDAV username may be one. '' or absent
+   *  while unknown, and for a calendar with no account (`local`). */
+  readonly accountEmail?: string;
 
   /** Bring the provider online. Throws typed
    *  `CalendarAdapterError('auth_expired' | 'io_error')` on failure
@@ -297,3 +304,32 @@ export type ProbedCalendarCaps = Pick<
   | 'auth'
   | 'recurrence'
 >;
+
+/** The labels a calendar's provider goes by. Recued's own calendar has no
+ *  account: told just "Recued", the model called it "Recued account" (live,
+ *  2026-10-19), so its label says where it is instead. */
+const CALENDAR_PROVIDER_LABELS: Readonly<Record<CalendarProviderKind, string>> = {
+  gcal: 'Google Calendar',
+  graph: 'Outlook',
+  caldav: 'CalDAV',
+  local: 'Recued, on this server',
+};
+
+/** What the owner knows a calendar by, read from its live provider: the address
+ *  its account signed in as and the provider, each '' when it does not say.
+ *
+ *  ⛔ A calendar's slug is whatever it was connected under, and the owner says
+ *  "my Google calendar" or an address (owner, 2026-10-18: the model should see
+ *  the address too, because the name does not always match how the owner
+ *  refers to one). */
+export const calendarAddressOf = (calendar: object): { address: string; provider: string } => {
+  const provider = 'provider' in calendar && typeof calendar.provider === 'object' && calendar.provider !== null
+    ? calendar.provider : undefined;
+  const address = provider !== undefined && 'accountEmail' in provider && typeof provider.accountEmail === 'string'
+    ? provider.accountEmail.trim() : '';
+  const kind = provider !== undefined && 'kind' in provider && typeof provider.kind === 'string' ? provider.kind : '';
+  return {
+    address,
+    provider: Object.hasOwn(CALENDAR_PROVIDER_LABELS, kind) ? CALENDAR_PROVIDER_LABELS[kind as CalendarProviderKind] : '',
+  };
+};

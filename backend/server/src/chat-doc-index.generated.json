@@ -173,7 +173,7 @@
     "section": "Session grants",
     "eyebrow": "Concepts",
     "url": "https://recued.com/docs/concepts/grants-and-approvals#session-grants",
-    "body": "When you work in chat, you can choose to relax the asking for the rest of\nthat session:\n\n- **Exact** means approve this one exact action, once.\n- **Batch** means approve this shape of action for the burst it belongs to.\n- **Open** means allow this kind of action, within one area you set, for the session.\n\nIf you approve the same thing many times, Recued may suggest a standing rule.\nOnly you can make one. A suggestion never switches itself on."
+    "body": "When you work in chat, you can choose to relax the asking for the rest of\nthat session:\n\n- **Exact** means approve this one exact action, once.\n- **Batch** means approve this shape of action for the burst it belongs to.\n- **Open** means allow this kind of action, within one area you set, for the session.\n\nAn approval that offers **Allow this session** says what it lets happen. It\nnames the recipe that may go ahead without asking, how many more times, and\nfor how long. It lists what must stay the same on each later run. For an email, that is who it\ngoes to and the mailbox it is sent from. It also names what may change, such\nas the subject and the text. A change to anything on the list asks you\nagain. Some actions allow only the same thing again, with every detail the\nsame, and the approval says that instead. The approval email and the Approvals page show\nthis. The approvals pop-up in the top bar leaves it out to stay short.\n\nIf you approve the same thing many times, Recued may suggest a standing rule.\nOnly you can make one. A suggestion never switches itself on."
   },
   {
     "id": "concepts/grants-and-approvals#doors",
@@ -621,7 +621,7 @@
     "section": "Chat platforms",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/ai-chat-and-mcp#chat-platforms",
-    "body": "Slack and Telegram connect as messenger doors. Messages and slash commands\n(commands that start with /) POST straight to your server. They never go through Recued's cloud. Replies,\nnotifications, and approvals can reach you in the same channel."
+    "body": "Slack and Telegram connect as messenger doors. Messages and slash commands\n(commands that start with /) POST straight to your server. They never go through Recued's cloud. Replies,\nnotifications, and approvals can reach you in the same channel.\n\nYou can also chat by email, from your own mailbox. See\n[Chat by email](email-chat.md)."
   },
   {
     "id": "guides/ai-chat-and-mcp#why-this-stays-safe-in-one-paragraph",
@@ -1272,6 +1272,78 @@
     "body": "Open a finished renewal result or its history card.\nChoose **Verify access**. This opens a new read check.\nIt does not run a new token-renewal check.\nThe review uses the sign-ins saved now.\nIt lists the accounts from that saved result.\nTheir sign-ins may have changed since then.\nIt can include sign-ins that renewal skipped or could not check.\nOther uses of that app stay outside this list.\n\nReview the API URLs and the Mail and Calendar accounts shown.\nReview its file sources too.\nThe review keeps the old links to accounts and files.\nIt says when some links are missing.\nFor file bytes, choose a file yourself. Recued does not pick one.\nChoose **Run checks** when ready.\nBefore that, this review makes no vendor reads.\n\nA running check can be opened again. This reads its saved status.\nIt does not start a new job.\nReading a running job does not need a fresh review.\nIts saved status can still be read if older links are gone.\nIf current keys cannot be read, the comparison stays unknown.\nFind finished access checks in connection history.\nRead results also stay in the saved app's history.\nThey stay in each checked account's history too.\nOld token-renewal results are kept separate.\nA read does not prove send or edit access.\nIt does not run workflows or start sync.\nIt does not prove that an old problem is fixed."
   },
   {
+    "id": "guides/connections#open-settings-from-a-failed-read",
+    "doc": "Connections",
+    "section": "Open settings from a failed read",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#open-settings-from-a-failed-read",
+    "body": "Some reads fail or have no clear result. They can show **Review API authentication**,\n**Review Mail authentication**, **Review Calendar authentication**, or\n**Review file authentication**.\nFind these in saved checks, history and **Authentication repairs**.\nWait for a batch to finish, or stop it first.\n\nThe shortcut reads the saved result again.\nIt checks that the saved sign-in is still the same.\nThen it opens the resource's normal sign-in review.\nYou choose whether to sign in again or make a change.\nNo vendor request runs when you open it. No keys are changed.\n\nIf the sign-in changed, refresh the result first.\nDo the same if Recued cannot read the saved keys.\nIf the result is gone, open the resource in **Connections**.\nA file shortcut needs a known link to its saved API connection.\nAn older server may lack that link.\n\nSome reads need a URL or a chosen file.\nThey may not need another sign-in.\nAfter a repair, choose **Verify access** for a new read review.\nEarlier results stay in history.\nOpening settings does not clear old problems or prove that sync works."
+  },
+  {
+    "id": "guides/connections#return-to-the-failed-read-after-repair",
+    "doc": "Connections",
+    "section": "Return to the failed read after repair",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#return-to-the-failed-read-after-repair",
+    "body": "When you open settings from a saved read, a return link stays above the form.\nChoose **Return to saved access check** when ready.\nIt opens the original result for that resource. It does not run a new check.\nThe old result may say **Superseded** after the sign-in changes.\nThat is still the old result. It does not say whether the repair worked.\n\nChoose **Review current access for this resource** for a fresh review.\nOnly that resource starts selected. You can include other failed reads too.\nReview the current account and URLs. Choose a file again to check its bytes.\nChoose **Run checks** when ready. Each run keeps its own result in history.\n\nYou can reload the saved-result link and read it again.\nIf it is gone, open connection history or **Authentication repairs**.\nStart a fresh review from there."
+  },
+  {
+    "id": "guides/connections#compare-saved-checks",
+    "doc": "Connections",
+    "section": "Compare saved checks",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#compare-saved-checks",
+    "body": "Open a finished recheck and choose **Compare with original check**.\nYou can do this in history or after a batch has finished or stopped.\nFrom **Authentication repairs**, choose **View saved check** first.\nOpening a comparison reads two saved results. It starts no vendor check.\n\nThe view puts the old and new read results side by side.\nEach has its own start and finish time.\nIt shows whether each result still matches the saved sign-in.\n**Superseded** means the sign-in or source has changed.\n**Unknown** means Recued could not compare the saved sign-in.\nIf the two status reads conflict, Recued marks both **Unknown**.\nRefresh the comparison after changing a sign-in.\nAn old pass stays an old pass.\n**Not checked in this attempt** means that read was left out.\n\nA URL or chosen file may differ between attempts.\nA pass covers only the read from that attempt.\nThe view does not prove which repair helped, or that sync works.\nSend, edit and workflow checks stay separate.\n\nChoose **Refresh comparison** to read both saved results again.\nChoose **Hide comparison** to close the view.\nIf an old result is gone, you can still read the newer result.\nOpen history or start a fresh access review when needed."
+  },
+  {
+    "id": "guides/connections#find-entries-in-connection-history",
+    "doc": "Connections",
+    "section": "Find entries in connection history",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#find-entries-in-connection-history",
+    "body": "Use **Search saved history** to find a name or saved ID.\nChoose **Event type** and **Recorded outcome** to narrow the list.\nThe date fields use when an entry first started, in UTC.\nBoth dates are included.\nChoose **Apply filters** to read the matches.\nThis searches retained history, including older pages.\n\nThe page address keeps your filters.\nReload the page, or use Back and Forward, to open that view again.\n**Clear filters** keeps the same account or connection.\nAn old passed check stays an old result.\nIt does not prove current access or that a repair helped.\nApplied repairs and recorded recovery have their own filters.\n\nIf no entries match, try a wider date range or clear the filters.\nIf the server cannot use filters, update it or clear the filters.\nSearching history does not start vendor checks or retry failed work."
+  },
+  {
+    "id": "guides/connections#open-a-saved-check-from-a-link",
+    "doc": "Connections",
+    "section": "Open a saved check from a link",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#open-a-saved-check-from-a-link",
+    "body": "Choose **Open saved check page** beside a saved result.\nThis also works for checks that passed.\nYou can bookmark the page or reload it to read that exact result again.\nThe link reads saved status. It does not run a new check.\nA running result follows the same job until it finishes.\n\nChoose **Open comparison page** to keep a link to an old and new result.\nReloading that page opens their comparison again.\nIf the old result is gone, the newer result stays visible.\nA link for one resource also has **View all results in this check**.\n\nAfter you choose **Run checks** on a check page, Recued opens its saved result.\nUse the same Recued server when opening a saved link.\nThe link works while Recued keeps that result.\nIf it is gone, open history or **Authentication repairs** for a fresh review."
+  },
+  {
+    "id": "guides/connections#retry-failed-or-unconfirmed-reads",
+    "doc": "Connections",
+    "section": "Retry failed or unconfirmed reads",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#retry-failed-or-unconfirmed-reads",
+    "body": "Open a finished access check or its history card.\nChoose **Review failed or unconfirmed reads**.\nOnly accounts with a failed or unconfirmed read are listed.\nUnchecked send and edit tests do not add an account.\nAll listed accounts start selected. Clear any you want to skip.\nChoose at least one account.\n\nReview the current URLs, folders and calendars.\nChoose a file again if you want to check file bytes.\nOld URLs and file choices are not kept in history.\nChoose **Run checks** when ready. Until then, no vendor reads run.\nAn earlier file metadata read may run again to check file bytes.\nPassed reads on other accounts do not run again.\n\nEach recheck has its own result. It does not replace old results.\nEarlier passes stay in history. They are not new proof of access.\nIf a start reply is lost, retry keeps the same choices.\nChoose **Review again** to change them.\nOpening a running recheck reads its saved status.\nIt does not start the reads again.\nIf its old result is gone, open **Authentication repairs**.\nStart a fresh **Verify access** review there."
+  },
+  {
+    "id": "guides/connections#see-the-latest-saved-access",
+    "doc": "Connections",
+    "section": "See the latest saved access",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#see-the-latest-saved-access",
+    "body": "Open **Authentication repairs**. Find **Latest saved access** on an account.\nSaved repair cards in history show it too.\nEach row uses that target's newest saved check.\nA retry can update one row while other rows keep their older checks.\nEach row shows when its own check ran.\nOld results keep their original times in history.\n\nOpen **Check details** to see the reads and their results.\n**Superseded result** means the saved sign-in or source changed.\nAn unknown match needs review before you rely on the result.\nChoose **View saved check** to read its full saved result.\nThis reads local status. It does not run the vendor reads again.\nA running check can still finish in the background.\n\n**Not checked** means no read check is still kept for that target.\nThe page says when some targets or checks could not be shown.\nChoose **Verify access** for a new resource review.\nOnly **Run checks** starts vendor reads.\nA new file metadata check does not keep an old download pass.\nChoose a file again to check its bytes.\n\nSaved problems can stay visible beside a passed read.\nA read does not clear an incident or prove that sync works.\nSending, editing and workflows stay separate."
+  },
+  {
+    "id": "guides/connections#check-several-accounts",
+    "doc": "Connections",
+    "section": "Check several accounts",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#check-several-accounts",
+    "body": "Open **Authentication repairs** and choose **Verify multiple accounts**.\nThe list includes saved accounts with no recorded problems.\nChoose up to 16 accounts across your OAuth apps.\nSelect **Review selected accounts** to see their resources.\nOpening this review does not contact vendors.\n\nEnter a protected API resource URL for each API read you want checked.\nA blank URL stays unconfirmed.\nChoose a file to check its download or export.\nWithout a file choice, Recued checks file metadata.\nEach resource is included once, up to 128 resources in total.\nUnavailable reviews are shown and do not start.\n\nChoose **Run checks** to begin.\nRecued checks one account at a time and shows each saved result.\nA failed read continues to the next account.\nIf a start or status reply is lost, the queue pauses.\nChoose **Recover saved outcome and continue** to recover the same job.\nThis keeps the original resource choices.\n\n**Stop remaining checks** stops accounts that have not started.\nStarted jobs keep running on the server and stay in history.\nAfter stopping, **Refresh saved outcomes** reads their local status.\nIt does not start new checks.\nLeaving or reloading stops the unstarted part of the queue.\nChoose **Review accounts again** for a new resource review.\nAPI URLs and file choices are cleared for that review.\n\nThese checks do not send mail, edit files or run workflows.\nThey do not clear recorded incidents or prove that sync works."
+  },
+  {
+    "id": "guides/connections#recheck-several-saved-reads",
+    "doc": "Connections",
+    "section": "Recheck several saved reads",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#recheck-several-saved-reads",
+    "body": "Open **Authentication repairs**, then **Verify multiple accounts**.\nChoose **Recheck failed or unconfirmed reads**.\nAfter a batch, you can also choose **Review failed or unconfirmed reads**.\nThat shortcut selects results that still need a read check.\n\nChoose up to 16 saved checks, then **Review selected reads**.\nThe list uses the latest saved result for each resource.\nIt skips resources whose reads all passed and checks still running.\nSending and editing permissions are not retried.\nMissing or incomplete results are shown as unavailable.\nOpening or reviewing the list does not contact vendors.\nRecued refreshes the saved results before preparing the review.\nIf selected results changed, review the updated selections and choose\n**Review selected reads** again.\n\nReview **Earlier saved check** to see the source results.\nEnter API resource URLs and choose files again.\nRecued does not reuse old resource choices.\nA blank API URL stays unconfirmed.\nA file download check can repeat its metadata read.\n\nChoose **Run checks** to start the selected reads.\nEach saved check gets a separate result linked to its source.\nEarlier passes stay in their original history entries.\nA failed read continues to the next saved check.\nUncertain replies pause for recovery with the same request.\n**Stop remaining checks** leaves started jobs running on the server.\nLeaving or reloading stops checks that have not started."
+  },
+  {
     "id": "guides/connections#review-app-permissions",
     "doc": "Connections",
     "section": "Review app permissions",
@@ -1512,6 +1584,326 @@
     "body": "Incident history also shows repair actions and their results.\nThese include reauthorization, app changes, sign-in changes and secret rotation.\nEach bulk change keeps a result for each connection.\nAn action can appear even if no problem was recorded first.\nIt shows the old and new sign-in, when known.\nIt links to open incidents known when the repair started.\n\n**Authentication updated** means the local change was saved.\nIt does not confirm that all affected work can run again.\nA secret change does not check vendor access.\nLater success appears only when all linked incidents record recovery.\nThe operation itself must happen after the repair was saved.\nA later background status update alone is not enough.\nThis does not prove which repair caused the recovery.\nAn unfinished collection restart is shown separately.\n**Repair failed** means the saved sign-in was kept.\nEarlier repairs and closed consent windows may not be in this history.\n\nChoose **Refresh history** to read the saved state again.\nChoose **Load older history** for more entries.\nThese reads do not call vendors or change your sign-in.\nClosed incidents, finished repairs, renewal and access checks stay for up to 90 days.\nUp to 10,000 finished records are kept.\nLong entries may omit some details; the page says when it does.\nEvents from before this history was enabled may not be available."
   },
   {
+    "id": "guides/connections#export-connection-history",
+    "doc": "Connections",
+    "section": "Export connection history",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#export-connection-history",
+    "body": "Set **Export privacy**, then choose **Preview export** by **Refresh history**.\n**Privacy mode (aliases)** is the default.\nThis opens a report. It does not save a file yet.\nThe file uses the scope and filters shown on the page.\nIt includes all saved rows that match.\nIt also includes older pages you have not loaded.\nChoose **Apply filters** first to use any edits you made.\n\nExporting reads saved local history. It does not check vendor access or run work.\nA past pass does not prove access works now.\nIt lists each step on its own.\nSaved repairs, read checks and new tokens stay distinct.\nLater success stays distinct too.\nThe file does not say if the sign-in works now.\n\nIf the report is too large, narrow the applied filters and try again.\nYou get all saved rows that match, or an error.\nIt does not download a partial report.\nIf you leave this page, the preview is cleared.\nIf your browser cannot save the file, try a browser that allows downloads."
+  },
+  {
+    "id": "guides/connections#open-a-saved-history-file",
+    "doc": "Connections",
+    "section": "Open a saved history file",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#open-a-saved-history-file",
+    "body": "In **Connection incident history**, use **Choose history JSON**.\nPick a full history export or a related history bundle saved by Recued.\nFiles with names and IDs and files with aliases both work.\nExports, bundles and records with source context must use version 1.\nThe file must fit within 8 MiB.\nYou can also open one complete saved record, as described below.\n\nRecued checks the file before showing it.\nIt opens in this browser tab and is not sent to your server or a vendor.\nThe saved fields stay as recorded.\nReports also keep their export dates, privacy mode and limits.\nA record without source context marks missing details as unknown.\nA related bundle keeps its original root and source snapshot limits.\nIts saved records remain a subset of that snapshot.\nFile contents can be edited, so they do not prove current access or recovery.\n\nUse the same search, pages, fields and copy actions as an export preview.\n**Download this preview (JSON)** saves the checked JSON.\nA related bundle's root also offers its original bundle copy and download.\nRefreshing live history keeps the opened file and your place in it.\nThe live export privacy setting does not change an opened file.\nIf a new file replaces one you were reading, focus moves to the new preview.\nFields outside that preview keep their focus and edits.\n\nIf another file fails its checks, the earlier valid file stays open.\nChoose the file again to retry.\n**Clear opened history** or **Close preview** removes it from the page.\nLeaving this history page also closes the file.\nOpening a file does not add saved history, run checks or change any accounts."
+  },
+  {
+    "id": "guides/connections#open-pasted-history-json",
+    "doc": "Connections",
+    "section": "Open pasted history JSON",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#open-pasted-history-json",
+    "body": "In **Connection incident history**, open **Paste history JSON**.\nPaste the complete report into **History JSON**.\nThen choose **Open pasted history**.\nFull exports, files with aliases and related history bundles all work.\nThey use the same checks as saved files.\nThe JSON must fit within 8 MiB.\nOne complete saved record also works.\n\nThe text stays in this browser tab.\nEditing it does not change the opened preview.\nChoosing **Open pasted history** replaces any pending file read.\nAn older read cannot replace the pasted result or its error message.\nIf the JSON fails its checks, the earlier valid preview stays open.\nYour pasted text stays in the box so you can fix it and try again.\nText that is too large stays in the box.\nYou can edit it. It is not cut down.\n\nThe preview labels pasted JSON as its source.\nSaved fields stay as recorded.\nReports keep their saved aliases, dates and limits.\nA record without source context marks missing details as unknown.\nSearch, copy and download use that checked JSON.\nThey use it even if you later edit the text.\nPasting does not add server history, run access checks or change accounts.\n\n**Clear pasted text** clears the box. The opened preview stays.\n**Clear opened history** or **Close preview** closes the preview.\nYour text stays in the box.\nFor a pasted report, focus returns to the text box.\nRefreshing live history keeps the text, its selection and the opened preview.\nLeaving this history page clears the text and preview."
+  },
+  {
+    "id": "guides/connections#open-one-saved-history-record",
+    "doc": "Connections",
+    "section": "Open one saved history record",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#open-one-saved-history-record",
+    "body": "Use JSON from **Copy record as JSON** or **Download record as JSON**.\nChoose its file, or paste it into **History JSON**.\nFor pasted text, choose **Open pasted history**.\nIncidents, repairs, access checks and token renewals all work.\nKeep the whole record, with its type and outcome.\nBoth names and IDs and saved aliases work.\nThe JSON must fit within 8 MiB.\n\nThe preview shows **Saved history record** or **Pasted history record**.\nIt shows just that record and its saved fields.\nIts source report is not included.\nWithout source context, the export date, scope, filters and retention are unknown.\nSo are its original position and privacy setting.\nAliases from separate files do not prove a link between records.\nRelated history actions are not shown for a lone record.\nReferences stay as saved text and cannot open other records.\n\nSearch and copy work within this record.\nBoth download actions save the complete checked record.\nAny source context stays as recorded.\nNo position is guessed for its filename.\nA search that finds no match still keeps the full download.\nEditing the paste box leaves the opened record unchanged.\nIf a new file or paste fails, the valid preview stays open.\nOpening a record stays in this tab and changes no accounts.\nIt does not add server history or check current access."
+  },
+  {
+    "id": "guides/connections#include-source-context-with-a-record",
+    "doc": "Connections",
+    "section": "Include source context with a record",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#include-source-context-with-a-record",
+    "body": "Open a record in a report or a related bundle.\nSelect **Include source context** beside its copy and download actions.\nThis option starts off.\nBoth actions then save one record in a version 1 file.\nIts source date, scope, filters, privacy mode and limits are included.\nOther records are not.\nNames and aliases stay as shown. Aliases are not renumbered.\nFull data can include saved names and search text. Review it before sharing.\nClear the option to save the bare entry again.\n\nThe source position is included only when known.\nA reopened related bundle knows its root's position.\nOther positions remain unknown.\nSource counts describe the source report, rather than this one-record file.\n\nOpen this file or paste its JSON in **Open saved history**.\n**Source snapshot details** shows its saved context.\nThis context is a saved claim. It does not prove the source or current access.\nMatching aliases across files do not prove a link.\nSearch covers the entry fields. Source details are not searched.\n**Download this preview (JSON)** keeps the checked file and its context.\nThe record's own copy and download actions still start without context.\nSelect the option to include it again.\n\nA bare entry has no context to add, so the option is not shown.\nIf adding context would exceed 8 MiB, the bare actions stay usable.\nNothing is sent to a server, imported or checked with a vendor."
+  },
+  {
+    "id": "guides/connections#review-an-export-preview",
+    "doc": "Connections",
+    "section": "Review an export preview",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#review-an-export-preview",
+    "body": "The preview shows its date, file size and counts of saved records.\nOpen **Report details** to see its scope and applied filters.\nOpen a record to see its saved fields and gaps.\nUse **Next records** and **Previous records** to read more.\nLarge lists within a record have their own pages.\nReference buttons open linked records within this preview.\nA record outside this snapshot is marked as absent.\nThese reads do not call vendors or change your sign-in.\n\nChoose **Download this preview (JSON)** to save that exact report.\nIt uses the same bytes you reviewed. It does not fetch a new report.\nRefreshing history keeps the preview you already opened.\nChoose **Refresh export preview** to read a new snapshot instead.\nChanging privacy or applied filters clears the old preview.\nSo do **Close preview** and leaving this page.\nEdits not yet applied to filters do not change it.\nIf the download fails, you can try again from the same preview."
+  },
+  {
+    "id": "guides/connections#search-an-export-preview",
+    "doc": "Connections",
+    "section": "Search an export preview",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#search-an-export-preview",
+    "body": "Type an alias, ID, name or saved reason in **Search this preview**.\nChoose **Search preview** or press Enter.\nThis searches all saved records in that report.\nUse `verification` to find saved access checks.\nIt includes fields in closed details and on later pages.\nIt ignores case changes. Symbols count as plain text.\nUse up to 128 characters. Edits take effect when you search.\n**Applied preview search** shows the text used for these results.\nNames can match only in **Names and IDs (local use)** mode.\n\nChoose **Clear preview search** to remove the text search.\nYour type and outcome filters stay in place.\nMatch counts describe the list you see.\nThe download still includes all records in the captured report.\nSearch does not change its bytes or fetch new data.\nIt stays in this preview and is not saved in the file.\nHistory refresh keeps your search and edits.\nA new preview starts with no preview search.\n\nA linked record may be outside your search results.\nIts button explains that opening it clears your preview search.\nThe button then opens that record in the full snapshot.\nIf the record is absent from the snapshot, no lookup starts."
+  },
+  {
+    "id": "guides/connections#filter-a-full-history-report-preview",
+    "doc": "Connections",
+    "section": "Filter a full history report preview",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#filter-a-full-history-report-preview",
+    "body": "Choose **Record type** or **Recorded outcome** under **Filter this preview**.\nThese choices work in export previews, opened files, pasted reports and full\ncomparison source reports. A single record keeps its field search.\nBoth choices start at All and list the values found in the whole report.\nChoices stay available when a search or another filter hides those records.\nRecorded outcomes describe saved observations, not current vendor access.\n\nFilters apply right away to the last text search you applied.\nText you are still typing stays in the search field, with any query error.\nEnter on a filter keeps that draft. Search or Enter in the text field applies it.\nType, outcome and text must all match. No matches leaves your choices in place.\nEach change starts at the first matching page, in saved order.\nThe count separates matching records from the complete snapshot count.\n\n**Clear type and outcome filters** removes both choices and keeps the text search,\nunfinished text and query errors. With no filters set, it keeps open details.\nEach preview keeps its own choices. History refresh keeps them too.\nA new or closed preview starts again at All.\nWhen reset removes a record that still has focus, the visible count takes focus.\nA newer focus choice stays in place."
+  },
+  {
+    "id": "guides/connections#filter-report-dates-in-utc",
+    "doc": "Connections",
+    "section": "Filter report dates in UTC",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#filter-report-dates-in-utc",
+    "body": "Under **Filter this preview**, set **Started from (UTC)** or\n**Started through (UTC)**. Both days are included. Leave either end empty\nfor no limit. The dates use each record's original start time in UTC.\nFinish dates, the snapshot date and your local timezone do not change this.\nThese controls work in full export, file, pasted and comparison source reports.\nA single record keeps its field search.\n\nYour browser chooses the format shown in each date field.\nRecued compares the selected days in UTC.\nChoose **Apply date range**, or press Enter in a date field.\nEditing a date alone keeps the earlier results.\nIncomplete, invalid or reversed dates show an error and keep those results.\nThe applied caption shows the dates currently used.\nDates, type, outcome and applied text must all match.\nNo matches leaves your choices in place.\nA changed range starts at the first matching page, in saved order.\n\nApplying dates keeps your unfinished text and any query error.\nSearch and type/outcome changes keep applied dates and unfinished date edits.\n**Clear date range** clears applied dates, date edits and date errors.\nIt keeps the text search, unfinished text, type and outcome.\nThe text and type/outcome reset buttons each keep applied dates.\nAn unchanged range or empty date reset keeps open record details.\nHistory refresh keeps the dates and edits; a new preview starts with empty dates.\nDownloads still include the complete saved report."
+  },
+  {
+    "id": "guides/connections#follow-references-from-a-filtered-report",
+    "doc": "Connections",
+    "section": "Follow references from a filtered report",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#follow-references-from-a-filtered-report",
+    "body": "Saved references can open a record outside these results.\nThe button explains this before you open it.\nOnly the search or filter choices hiding that record are cleared.\nBack and Forward restore the saved search, filters, complete date edits, errors and page.\nA saved reference clears only a date boundary that hides its target.\nA date field you have not edited follows that cleared boundary.\nA newer complete date draft stays in place.\nIf a partly entered date cannot be restored, enter it again or clear the date range.\nApply keeps the earlier results until you do.\nBack also restores your earlier choices after a reference needed to clear them.\nIf no selected record remains, navigation returns to the visible count.\n\nDownloads and copies keep their complete saved contents.\nRecord source positions and aliases stay the same.\nRelated bundles still use the whole captured snapshot, including hidden records.\nTheir own filters stay separate from these report filters.\nFiltering fetches no more history and does not check current vendor access."
+  },
+  {
+    "id": "guides/connections#open-a-matching-field",
+    "doc": "Connections",
+    "section": "Open a matching field",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#open-a-matching-field",
+    "body": "Each search result shows how many fields match.\nIt also shows the first matching path.\nOpen the record to read **Matching fields**.\nUse **Next matches** and **Previous matches** to see more.\nThere are five fields per page. Each field is counted once.\n\nPaths show the saved field and item numbers.\nFor example, **Group › Uses › Item 45 › Label** names a pack label.\nMatches are highlighted in field names and saved text.\nLong values show nearby text around the first match.\nOther matches in that short view are highlighted too.\nAn ellipsis means some text was left out.\nLong matches can also be cut short.\nChoose **View field** to see the full saved value.\nIt opens the needed details and list pages.\nThe field gets focus and an outline.\nThis also works for lists inside other lists.\n\nYour search and match page stay in place.\nIf you page away, **View field** can open the field again.\nHistory refresh keeps that view and focus.\nA new search or privacy choice clears the old match view.\nNames removed by privacy mode cannot appear in these matches.\n\nThese reads stay in the captured report.\nThey do not fetch data, check access or change the download."
+  },
+  {
+    "id": "guides/connections#find-text-in-a-full-value",
+    "doc": "Connections",
+    "section": "Find text in a full value",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#find-text-in-a-full-value",
+    "body": "Choose **View field** to highlight hits in the full value.\nThe first hit scrolls into view. The field keeps focus.\nThe full text keeps its original characters, including accents.\nMatches elsewhere in that value are highlighted too.\n\nSometimes a saved code differs from the readable words.\nFor example, `false` appears as **No**.\nIf only the saved form matches, **Saved value** shows it.\nThe readable value stays beside that saved form.\nDates still show UTC time.\nIf only the field name matches, unrelated values get no highlights.\n\nReturning to the match list keeps the highlights.\nSo does refreshing history.\nOpening another field clears the prior value's highlights.\nPaging away from a field clears its highlights too.\nA new search or privacy choice clears the old view.\nThese highlights leave the saved file unchanged."
+  },
+  {
+    "id": "guides/connections#move-between-hits-in-a-value",
+    "doc": "Connections",
+    "section": "Move between hits in a value",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#move-between-hits-in-a-value",
+    "body": "After **View field**, the opened value shows **Hit 1 of N**.\nChoose **Next hit** or **Previous hit** to move within it.\nThe current hit has an outline and scrolls into view.\nThe controls stay beside long values as you move.\nThe buttons stop at the first and last hit.\nKeyboard focus moves to the count at each end.\nFor one hit, both buttons are off.\nIf only a field name matches, these controls stay hidden.\n\nHits next to each other count separately.\nHits within one saved symbol count as one highlighted range.\nThese counts refer to hits in this value.\nField and record counts stay the same.\n\nReturning to the match list keeps the chosen hit.\nSo does changing match pages or refreshing history.\nOpening a field again starts at its first hit.\nSearch, privacy and list changes clear the old controls.\nThe full saved file stays unchanged."
+  },
+  {
+    "id": "guides/connections#export-one-record-from-live-history",
+    "doc": "Connections",
+    "section": "Export one record from live history",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#export-one-record-from-live-history",
+    "body": "In **Connection incident history**, find the row you need.\nOpen **Export this record**.\nChoose **Copy record as JSON** or **Download record as JSON**.\nUse this for incidents, repairs, access checks and token renewals.\nYou do not need to prepare a full export.\nYou do not need another server request.\n\nThe row uses **Export privacy**.\nIt starts with **Privacy mode (aliases)**.\nNames and IDs become aliases for that one record file.\nEach file has its own aliases.\nEqual aliases across files do not prove a match.\nDates, providers and outcomes remain. Review the file before sharing.\nChoose **Names and IDs (local use)** to keep saved names and IDs.\nKeep that file for local use.\n\nThe file keeps the whole saved entry.\nIt has its type and recorded outcome.\nCredentials and raw provider errors are left out.\nLive rows have no known source snapshot details.\nIts date, scope and row position are unknown.\nYou cannot add source context.\nThe filename uses the record type and privacy mode.\nYou can reopen the JSON with **Choose history JSON**.\nYou can also use **Open pasted history**.\nThis does not check access now. It does not prove recovery.\n\nClosing the row clears its old actions and copy text.\nChanging privacy does too.\nA successful history refresh uses the newly loaded records.\nFocus in an old record moves to its **Export this record** control.\nIf the row is gone, focus goes to **Refresh history**.\nNewer focus stays where you put it.\nIf a refresh fails, the old record stays.\nYou can still export it.\nIf the browser cannot copy, choose **Select record JSON**.\nThen copy the text yourself.\nIf a full record exceeds 8 MiB, try aliases."
+  },
+  {
+    "id": "guides/connections#preview-a-live-history-record",
+    "doc": "Connections",
+    "section": "Preview a live history record",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#preview-a-live-history-record",
+    "body": "In **Connection incident history**, open **Export this record** on a row.\nChoose **Preview this record**.\n**History record preview** shows the exact entry you can export.\nIt works for incidents, repairs, access checks and token renewals.\nNo new server request is needed.\n\nThe preview uses the selected **Export privacy** mode.\nIt keeps the row's same JSON and filename.\nSearch it, inspect fields, or copy and download the whole entry.\nA search with no match still lets you download it.\nSource snapshot details and other records are not included.\nThis does not check access now or prove recovery.\n\nHistory refreshes do not change this captured preview.\nThey also keep any newer focus choice.\nOpening another live record replaces it.\nChanging export privacy clears it. Open it again for the new mode.\nFull exports and files you opened keep their own previews.\n\n**Close preview** returns to the row's preview button if still shown.\nThe control is brought into view too.\nIf that button changed or closed, focus goes to the row's export control.\nIf the row is gone, focus goes to **Refresh history**.\nNewer focus stays where you put it.\nIf the preview fails to open, you can still copy or download the row."
+  },
+  {
+    "id": "guides/connections#compare-two-saved-history-reports",
+    "doc": "Connections",
+    "section": "Compare two saved history reports",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#compare-two-saved-history-reports",
+    "body": "Open **History**. Go to **Open saved history**.\nChoose or paste a whole report.\nUse a file saved with **Names and IDs (local use)**.\nOpen **Compare saved snapshots**.\nChoose **Use opened report as baseline**.\nOpen the second report. Choose **Compare with baseline**.\nUse two files from the same Recued server.\nThe files stay in this browser tab.\n\nThe view matches saved types and IDs. It shows four groups:\n\n- **Only in comparison**: the second file has this record. The first file lacks it.\n- **Changed saved data**: matching IDs have different saved fields.\n- **Only in baseline**: the first file has this record. The second file lacks it.\n- **Same saved data**: matching IDs have the same saved fields.\n\nA missing record does not prove recovery, deletion or lost access.\nThe second file may hold an old event. It may have been saved later.\nThe view flags scopes or filters that differ.\nIt shows if the second capture time is earlier or the same.\nIt keeps your chosen sides.\nThese dates and limits are what each file says.\nThis does not test access now.\n\nUse **Show records** to pick a group.\nUse **Find saved record ID** to find one.\nUse the page buttons to browse.\n**Inspect baseline record** shows the first saved copy.\n**Inspect comparison record** shows the other saved copy.\nChoose **Include source context** to keep source details in the saved JSON.\nThese include the record's place in its source file.\n\nEach alias file gives names on its own.\nThose names cannot link records across files.\nSingle records cover just one row.\nRelated bundles cover just some rows.\nYou can still open and read them.\n**Clear baseline and comparison** drops the pair. It keeps the opened file.\n**Clear opened history** clears both sources.\nClosing the main file preview does this too."
+  },
+  {
+    "id": "guides/connections#read-changed-saved-values",
+    "doc": "Connections",
+    "section": "Read changed saved values",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#read-changed-saved-values",
+    "body": "Compare two saved reports as shown above.\nIn a changed row, open a field by its name.\n**Baseline saved value** comes from the first file.\n**Comparison saved value** comes from the second file.\nEach side shows the row's place in its source report.\n\nThe text is saved JSON. It keeps nested lists and details.\nFor example, `false` is not a missing value.\n**Not saved in this report** means that file lacks the field.\nThis does not prove that access was lost or data was removed.\nIt does not check access now.\n\nLarge values use less space between their parts. No value is cut off.\nFocus the value with Tab to scroll with the arrow keys.\nOn a small screen, the two sides stack.\nYou can still inspect either whole record and save its JSON.\nClose the field when done. The source files stay the same."
+  },
+  {
+    "id": "guides/connections#copy-a-comparison-summary",
+    "doc": "Connections",
+    "section": "Copy a comparison summary",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#copy-a-comparison-summary",
+    "body": "Compare two saved reports, then choose **Copy comparison summary**.\nThe text covers all changes in that pair.\nThe row filter, ID search and page do not change it.\nIt lists changed field names and each side's saved outcome.\nIt keeps source dates, scopes, row places and limits.\nRows with the same data are counted but not listed.\n\nThe text has saved IDs and scope names. Review it before you share it.\nIt leaves out field values, app labels, file names and search text.\nIt does not check access now or prove that a missing record was fixed.\nUse the source JSON for all saved fields.\n\nChoose **Download comparison summary (.txt)** to save the same text as a file.\nIts name shows the two saved capture times, with the baseline first.\nIt leaves out account names, IDs and source file names from the file name.\nThe text inside still has saved IDs and scope names. Review it before sharing.\nThis text file cannot be opened as a history JSON report.\nRecued shows when it asks the browser to download the file.\nCheck your browser's downloads to confirm that it was saved.\nIf download is blocked, retry or use **Copy comparison summary**.\n\nIf copy is blocked, Recued shows plain text you can select and copy.\n**Select comparison summary** selects all of that text.\nUse Arrow, Page, Home or End keys to scroll the focused text.\nIf the pair is too large, save smaller reports and compare them again.\nOpening a new valid report or clearing the pair drops the old summary.\nA history refresh keeps it."
+  },
+  {
+    "id": "guides/connections#save-and-reopen-a-comparison-pair",
+    "doc": "Connections",
+    "section": "Save and reopen a comparison pair",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#save-and-reopen-a-comparison-pair",
+    "body": "Compare two Names and IDs reports, then choose **Save comparison pair (JSON)**.\nOne file keeps both complete reports, with the baseline first.\nIt keeps their saved values, account and app labels, IDs and source search text.\nReview the file before sharing it. It is for local use.\nThe text summary above leaves out more details.\n\nThe whole pair must fit within 8 MiB. Neither side is cut off.\nIf it is too large, keep the two source files or use smaller reports.\nThe file name has both saved capture times, with no account names or IDs.\nRow filters, ID search, paging and a history refresh do not change the saved pair.\n\nChoose that file in **Open saved history**, or paste its JSON there.\nRecued checks both reports and compares them again.\nIt opens the saved pair in the same order, even if the second date is earlier.\nThe main file preview shows the comparison report as saved in that pair.\n**Download comparison report (JSON)** saves just that report.\nUse **Save comparison pair (JSON)** in the results to keep both reports.\nUse **Inspect baseline record** to read a saved row from the first report.\nUse **Inspect comparison record** to read one from the other report.\n\nThe pair opens with all differences on the first page.\nIt does not save row filters, ID searches or page choices.\nAn invalid file keeps the earlier pair open.\nClearing the baseline keeps the comparison report in the file preview.\nClosing that preview or clearing opened history drops both sides.\nOpening a pair does not check access now or verify the source server.\nUse reports from the same Recued server."
+  },
+  {
+    "id": "guides/connections#swap-baseline-and-comparison",
+    "doc": "Connections",
+    "section": "Swap baseline and comparison",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#swap-baseline-and-comparison",
+    "body": "After comparing reports, choose **Swap baseline and comparison**.\nIt works for two opened reports or a reopened pair.\nRecued compares the same saved data in the reverse order.\nIt does not read the files again.\nCounts, saved values and source positions follow the new sides.\nCapture dates do not choose the order for you.\nThe source labels in a reopened pair name its original saved sides.\n\nCopy, text download and **Save comparison pair (JSON)** use the displayed order.\nSwap again to restore the first order.\nReopening a saved pair keeps the order you saved.\nEach swap shows all differences on the first page and clears the ID search.\nIt also closes any inspected record.\n\nThe new baseline stays selected when you open another report.\nThe main file preview stays on the report you opened.\nIts download still saves just that source.\n**Use opened report as baseline** refers to that preview.\nIf that report is already the baseline, open another report to compare.\nYou can also swap the displayed pair again.\n\nSwapping pauses while a file is being read.\nA failed read keeps the current pair and lets you swap again.\nOpening a valid report or clearing the pair drops the old result.\nDraft edits and a history refresh keep its order.\nSwapping does not check current access or change any connection."
+  },
+  {
+    "id": "guides/connections#open-a-full-comparison-source-report",
+    "doc": "Connections",
+    "section": "Open a full comparison source report",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#open-a-full-comparison-source-report",
+    "body": "Compare two reports or reopen a saved pair.\nChoose **Open baseline report** or **Open comparison report**.\nThe whole source opens in the inspector below the comparison records.\nIts title, source label and saved date show which report you chose.\nIt does not read the file again or check access now.\n\nSearch and page through that source to read its saved fields.\nIts search and paging stay separate from the comparison view.\nChanging the comparison filter, ID search or page keeps the source open.\nA history refresh keeps it too.\n\n**Download baseline report (JSON)** saves the whole baseline source.\n**Download comparison report (JSON)** saves the whole comparison source.\nSearch and paging do not limit these downloads.\nEach file keeps saved values, names, IDs, app labels and source search text.\nKeep it for local use and review it before sharing.\nUse **Save comparison pair (JSON)** to keep both reports together.\n\nClose the inspector to return to its source button.\nOpening the other source or inspecting a comparison record replaces this view.\nEach source opens on its first page with no search applied.\nThe main opened-file preview stays on its own report.\n\nSwapping or replacing the pair closes the source view.\nClearing the pair or closing the main file preview closes it too.\nThe source buttons then follow the new roles.\nAn invalid file or a draft edit keeps the earlier source open.\nThe saved dates, scope and limits remain source claims."
+  },
+  {
+    "id": "guides/connections#open-a-comparison-record-in-its-full-source",
+    "doc": "Connections",
+    "section": "Open a comparison record in its full source",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#open-a-comparison-record-in-its-full-source",
+    "body": "Find a record in **Compare saved snapshots**.\nChoose **Open baseline record in full source** or **Open comparison record in full source**.\nEach action shows only when that source includes the record.\nThe full report opens on that record's page.\nThe record opens and shows its source position.\nYou can browse other records and follow saved links.\nDownloads still save the whole report.\n\nChoose **Back to comparison** beside the record or above the search.\nYour comparison keeps its filters, ID text and page.\nFocus returns to that row when it is still shown.\nIf you changed the view, the row may be hidden.\nRecued then explains this and keeps your current view.\nThat note clears when you inspect another record.\nYou can also use **Inspect baseline record** or **Inspect comparison record**.\nThose actions open just one saved record.\nNo action here checks current vendor access."
+  },
+  {
+    "id": "guides/connections#return-to-the-previous-record",
+    "doc": "Connections",
+    "section": "Return to the previous record",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#return-to-the-previous-record",
+    "body": "Open a full history report and follow **View referenced …** in a record.\nChoose **Back to previous record** to return.\nYou can find it beside the linked record or above the page controls.\nIt opens the previous record and restores its search and page.\nSearch text you had not yet applied comes back too.\nYou can search or change pages before going back.\nIf a field outside these records takes focus during your click, it keeps focus.\n\nEach saved link adds a step to this trail.\nBack and Forward share the last 20 steps.\nIf you follow more links, it drops the oldest steps and shows a note.\nOnce those steps are gone, you cannot go back to them.\nClosing or replacing the preview clears the trail.\nThe trail stays in this browser tab and is not saved in downloads.\n\nBack builds a fresh view of that page.\nNested field details and copy messages start fresh.\nThe saved values and source context stay the same.\nDownloads still save the whole report.\nIn a comparison source, **Back to comparison** returns to the comparison view.\nThat view keeps its filters and page.\nA file with just one record has no other records to follow.\nThese links do not check current vendor access."
+  },
+  {
+    "id": "guides/connections#go-forward-after-back",
+    "doc": "Connections",
+    "section": "Go forward after Back",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#go-forward-after-back",
+    "body": "After going back, choose **Forward to next record**.\nFind it above the page controls or beside the open record.\nIt restores the page, search and draft you left.\nIf the record was still on that page, it opens.\nIf you had moved away, your saved page comes back.\nAn empty search stays empty.\nFocus then goes to the record count.\n\nSearch and page changes keep Forward ready.\nFollowing another saved link drops the old Forward steps.\nBack and Forward share 20 steps in all.\nClosing or replacing this preview clears both.\nBoth build fresh views of the same saved data.\nOld buttons and copy replies stay retired.\nA field you choose outside the records keeps focus.\nThis also holds while the record list changes.\nDownloads and source context keep the same saved values.\nNo step checks current vendor access."
+  },
+  {
+    "id": "guides/connections#copy-an-incident-timeline-for-support",
+    "doc": "Connections",
+    "section": "Copy an incident timeline for support",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#copy-an-incident-timeline-for-support",
+    "body": "Open a saved incident in a preview.\nChoose **Support timeline**, then **Copy support timeline**.\nThe text shows saved events and their UTC times.\nIt keeps that preview's privacy mode.\nAliases stay the same.\nNames and IDs stay marked for local use.\nRead the text before you share it.\n\nA full report follows saved links to find more records.\nIt also finds those hidden by preview search.\nA shared repair may link two incidents. The text may include both.\nFor an opened bundle, its main incident uses the saved links.\nOther incidents in that bundle copy just their own events.\nA single record copies only that incident.\nIt keeps any known source details. It does not invent what is missing.\n\nRepairs, read checks, renewal and recovery stay separate.\nTheir order does not prove that a repair caused recovery.\nSome old records lack saved success times. The text says when those times are missing.\nThis does not check access now.\nUse saved JSON if you need all the saved fields.\n\nIf copy fails, choose **Select support timeline**.\nThen copy the text yourself.\nThe text must fit within 8 MiB.\nIt makes no new server or vendor call."
+  },
+  {
+    "id": "guides/connections#read-a-single-history-record",
+    "doc": "Connections",
+    "section": "Read a single history record",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#read-a-single-history-record",
+    "body": "Live, opened and pasted records show a short summary first.\nIt lists the record type, saved outcome, ID and UTC dates.\nPrivacy mode and the access-check notice stay visible.\nChoose **Inspect record fields** to read or copy the full entry.\nSearch still looks inside closed fields.\nSearch and clear keep the focused control in view.\nChoose **About this record** for its source, size and privacy details.\nThese details start closed.\nSingle records have no report counts or record-page buttons.\nDownloads keep the same complete JSON."
+  },
+  {
+    "id": "guides/connections#copy-one-saved-record",
+    "doc": "Connections",
+    "section": "Copy one saved record",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#copy-one-saved-record",
+    "body": "Open a record in the history preview, then choose **Copy record as JSON**.\nYou can do this without a search.\nIt copies that whole saved entry, with its type and recorded outcome.\nUnopened details and later list pages are included.\nFrom a report, it keeps that report's names or aliases.\nFrom a lone record, it keeps the saved fields as opened.\nSaved aliases have meaning only within their source snapshot.\nReferences can point to other records outside this copy.\nThe copy is one entry, rather than a full history export.\n\nIf your browser cannot copy, choose **Select record JSON**.\nThen use your browser's copy command on the selected text.\nThe JSON field is read-only. Refresh keeps your selected text.\nYou can still search, open fields and copy a single value.\nThe full saved file stays unchanged."
+  },
+  {
+    "id": "guides/connections#download-one-saved-record",
+    "doc": "Connections",
+    "section": "Download one saved record",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#download-one-saved-record",
+    "body": "Open a record in the history preview, then choose **Download record as JSON**.\nThis saves one entry, with its type and recorded outcome.\nIt contains the same data as **Copy record as JSON**.\nUnopened details and later list pages are included.\nIt keeps the names or aliases shown in the preview.\nSaved aliases have meaning only within their source snapshot.\nReferences may point to other records outside this file.\n\nFrom a report, the filename uses its date, record type and known source position.\nA reopened related bundle may not know a record's source position.\nIf unknown, that part is left out of the name.\nWithout source context, a lone record's filename uses only its record type.\nWith source context, the name can use its saved date and known position.\nSearching the preview or refreshing history keeps that name and saved data.\nRecued says when the download is requested. Your browser controls the saved file.\nIf the download cannot start, try again or choose **Copy record as JSON**.\nUse **Download this preview (JSON)** to save all records in the preview."
+  },
+  {
+    "id": "guides/connections#download-related-history",
+    "doc": "Connections",
+    "section": "Download related history",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#download-related-history",
+    "body": "Open an incident in the history preview, then open **Related history bundle**.\nReview the record counts, missing references and saved detail limits.\nChoose **Download related history (JSON)** to save the bundle.\n\nThe bundle follows saved links between incidents, repairs and access checks.\nIt follows links in both directions, including checks of earlier checks.\nA shared repair may bring other incidents and their linked records into the file.\nMatching an account, app or group alone does not create a link.\nRecords stay in snapshot order and appear once each.\n\nThis uses the whole prepared snapshot, including pages you have not opened.\nSearching the preview does not remove linked records from the bundle.\nThe selected privacy mode still applies. Aliases keep their snapshot meanings.\nThe filename uses the snapshot date and the incident's original position.\n\nThe file includes its source scope, filters and retention limits.\nMissing references are marked. Saved incomplete-detail flags stay visible.\nRecords excluded from the snapshot cannot be found by this action.\nZero missing references does not mean the history is complete.\nRelated records do not prove that a repair caused recovery.\nCurrent vendor access is not checked.\n\nRefresh keeps the reviewed bundle and its saved values.\nA refused download can be retried. Bundles must fit within 8 MiB.\nYou can use **Download this preview (JSON)** to save the source snapshot instead.\nRecued reports a download request; your browser controls the saved file."
+  },
+  {
+    "id": "guides/connections#copy-related-history",
+    "doc": "Connections",
+    "section": "Copy related history",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#copy-related-history",
+    "body": "Open **Related history bundle**, then choose **Copy related history as JSON**.\nIt copies the same whole bundle as the download.\nThe root, saved records, missing links and report limits are included.\nIt keeps the snapshot's privacy mode and aliases.\nSearch and open pages do not change what is copied.\n\nIf your browser blocks copying, choose **Select related history JSON**.\nThen use your browser's copy command on the selected text.\nThe JSON is read-only. You can retry copying or use the download.\nCopy and download keep their own messages.\nRefresh keeps your place and selected text.\nNewer focus and edits stay in place when a pending copy ends.\n\nThe bundle must fit within 8 MiB, just like its download.\nIf it is too large, capture a smaller history export.\nNo more history is fetched and vendor access is not checked."
+  },
+  {
+    "id": "guides/connections#browse-related-records",
+    "doc": "Connections",
+    "section": "Browse related records",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#browse-related-records",
+    "body": "In **Related history bundle**, open **Browse related records**.\nThis lists the exact records included in that bundle, in snapshot order.\nThe chosen incident is marked **Selected incident**.\nOpen a record to read its saved details, including its recorded outcome.\nNames appear only if you chose the mode that includes names and IDs.\nAliases keep the same meaning as in the source snapshot.\n\nThe list shows 20 records at a time.\nUse **Previous related records** and **Next related records** for other pages.\nLong detail lists have their own page controls.\nThe preview search stays as you left it, even for records it would hide.\nRefresh and closing then opening the list keep your page and open details.\n\nChoose **Return to bundle download** to focus the download button.\nThis does not start a download.\nBrowsing does not change the file, fetch more history or check vendor access.\nThe bundle's missing references and saved detail limits still apply."
+  },
+  {
+    "id": "guides/connections#search-related-records",
+    "doc": "Connections",
+    "section": "Search related records",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#search-related-records",
+    "body": "Inside **Browse related records**, enter text in **Search related records**.\nChoose the search button or press Enter.\nSearch finds saved IDs, aliases, labels, outcomes and fields inside closed\ndetails. It ignores case and matches plain text, with no special patterns.\nNames that were removed in alias mode cannot be found.\n\nThe count shows matching records and the total in the bundle.\nPage controls move through matches in their saved order.\n**Clear related search** removes the text search and keeps your type and\noutcome filters. It brings you back to the search field.\nUse up to 128 characters. A longer query leaves earlier results in place.\nTyping alone does not apply a new search.\n\nEach open bundle has its own search and pages.\nRefresh and closing then opening the list keep your search and draft text.\nThe main preview search stays as you left it.\nEven with no matches, the bundle download still saves all its records.\n**Return to bundle download** remains available.\nSearch does not fetch more history or check current vendor access."
+  },
+  {
+    "id": "guides/connections#filter-related-records",
+    "doc": "Connections",
+    "section": "Filter related records",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#filter-related-records",
+    "body": "Inside **Browse related records**, choose a **Record type** or **Recorded outcome**.\nBoth start at All. They offer the types and outcomes found in the whole bundle.\nChoices stay available when your search or another filter hides those records.\nAn outcome describes a saved observation. It does not confirm current access.\n\nFilters apply right away to your last applied text search.\nText you are still typing stays in the search field until you choose Search.\nPressing Enter on a filter keeps that unfinished text. Enter in the search\nfield applies it.\nA query error stays in place until you fix or clear that text.\nEach change starts at the first page of matches, in saved order.\nThe count also shows how many records are in the complete bundle.\n\nType, outcome and search must all match.\nIf nothing matches, change a choice or clear the text.\n**Clear type and outcome filters** removes both choices and keeps the text search.\nIt also keeps text you are still typing and any query error.\nWith no filters set, this button leaves open details in place.\nWhen reset removes a record that still has focus, the visible count takes focus.\nA newer focus choice stays in place.\n\nEach bundle keeps its own choices. Refresh and closing then opening the list\nkeep them. Back and Forward keep your current results and filters.\nSaved links can still open records outside the filters.\nThose views name the filters used when they opened and explain the difference.\nBack keeps any newer choices you made in the related results.\n\nFiltering changes the list you see. Downloads and copies keep the complete\nsaved record, bundle or source report they describe.\nOriginal aliases and source positions stay the same.\nNo more history is fetched and current vendor access is not checked."
+  },
+  {
+    "id": "guides/connections#view-matching-fields-in-related-records",
+    "doc": "Connections",
+    "section": "View matching fields in related records",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#view-matching-fields-in-related-records",
+    "body": "After a related search, each result shows how many saved fields match.\nOpen the record to see the field names and nearby matching text.\nLong values show an ellipsis where text was left out of the preview.\nUse **Previous matches** and **Next matches** to review more fields.\nAt a page boundary, the focused count stays in view.\n\nChoose **View field** to open the full saved value.\nRecued opens any closed details and the right page of a long list.\nMatching text is highlighted. A field name can also match on its own.\nUse **Previous hit** or **Next hit** for repeated text in a value.\n**Return to matching fields** brings you back to the field's result page.\n\nEach bundle keeps its own search, highlights and return path.\nThe main preview stays as you left it. Refresh keeps your place and draft text.\nChanging the related search or record page replaces those results.\nThe downloaded files still contain their original saved records.\nThis view does not fetch more history or check vendor access."
+  },
+  {
+    "id": "guides/connections#follow-linked-history-records",
+    "doc": "Connections",
+    "section": "Follow linked history records",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#follow-linked-history-records",
+    "body": "Open a record inside **Browse related records**.\nIts **Linked saved records** section shows two kinds of link:\n\n- **References** points to another record named in this saved entry.\n- **Referenced by** points to a saved entry that names this record.\n\nChoose **View linked incident**, **View linked repair** or **View linked access\ncheck**. The record opens inside the same bundle, even if it is outside your\nrelated search. The search stays as you left it.\n\nUse **Back to related results** or **Back to previous record** to return.\nRecued restores the view you left, including its search draft, pages and open\ndetails. Focus returns to the link you followed.\nYou can follow more links from each opened record.\nBack and Forward share up to 20 linked records.\nAt the limit, use Back before following another link.\n\nLong link lists use **Previous links** and **Next links**, 20 at a time.\nMissing records and references with a different record type cannot be opened.\nNo lookup is made for them. The bundle's saved limits still apply.\n\nEach bundle keeps its own navigation and search.\nRefresh and collapsing then opening the list keep your place.\n**Return to bundle download** remains available, and the files stay unchanged.\nFollowing a link does not check current vendor access or prove that a repair\ncaused recovery."
+  },
+  {
+    "id": "guides/connections#go-forward-through-linked-records",
+    "doc": "Connections",
+    "section": "Go forward through linked records",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#go-forward-through-linked-records",
+    "body": "After Back, choose **Forward to next record**.\nFind it above the related search or beside the linked record.\nIt returns to the same view, with its open details.\nLink pages, array pages, copy text and source choices stay in place.\nA copy you started may finish while its view is hidden.\nForward shows that result without starting another copy.\nHidden views cannot run their controls.\n\nSearch and page changes in the related results keep Forward.\nEach linked view keeps the field search it opened with.\nBack keeps your current related results.\nIf its old link is gone or inside closed details, focus goes to the count\nor the previous heading. The details stay closed.\nA field you choose outside this view keeps focus.\n\nFollowing a new link after Back drops the old Forward steps.\nBoth directions share the limit of 20 linked records.\nRefresh and closing then opening the list keep your place.\nReplacing or closing the preview clears both directions.\n**Return to bundle download** keeps the trail and starts no download.\nThe files and saved source details stay the same.\nNo step checks current vendor access."
+  },
+  {
+    "id": "guides/connections#copy-or-save-a-related-record",
+    "doc": "Connections",
+    "section": "Copy or save a related record",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#copy-or-save-a-related-record",
+    "body": "Open a record in **Browse related records** or follow a saved link.\nChoose **Copy record as JSON** or **Download record as JSON**.\nBoth use the whole saved entry, with its type and outcome.\nThey keep the snapshot's privacy mode and aliases.\nThe file name is the same as in the main preview.\nLinks in this one record may point to records outside the file.\n\nThese actions keep your search, pages and open details in place.\nEach view keeps its own copy and download messages.\nIf you follow a link while a copy is pending, it can still finish.\nUse **Back** to see its result.\nIf copying fails, select the shown JSON and copy it yourself.\nA failed download can be tried again.\nThe whole preview and bundle files stay unchanged.\nNo more history is fetched, and vendor access is not checked."
+  },
+  {
+    "id": "guides/connections#copy-a-saved-field-value",
+    "doc": "Connections",
+    "section": "Copy a saved field value",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#copy-a-saved-field-value",
+    "body": "Choose **View field**, then **Copy saved value**.\nThis copies the whole saved value from this snapshot.\nThe field name and buttons are left out.\nPrivacy aliases stay aliases. Codes keep their saved spelling.\nDates copy their saved number.\nValues shown as **Yes** or **No** copy as `true` or `false`.\nIf the saved form differs, the copy controls show it.\n\nIf your browser cannot copy, it shows a field for manual copy.\nYou can select its text but cannot edit it.\nChoose **Select saved value**, then use your browser's copy command.\nControl+A or Command+A inside the field selects that value.\nSelecting text alone does not copy it.\nRefresh keeps the manual field and your selected text.\n\nA new field, search or privacy choice clears old copy controls.\nCopying leaves the full saved file unchanged."
+  },
+  {
+    "id": "guides/connections#return-to-matching-fields",
+    "doc": "Connections",
+    "section": "Return to matching fields",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#return-to-matching-fields",
+    "body": "Choose **Return to matching fields** beside the opened value.\nIt takes you back to that match's **View field** button.\nIf you changed match pages, it restores the right page.\nYour search, draft text and opened lists stay in place.\nHistory refresh keeps this button and its focus.\n\nOpening another field moves the return button to that field.\nPaging away from a field removes its return button.\nChoose **View field** again to open it with a new button.\nOld buttons cannot act after a search or privacy change.\nReturning reads the captured report and leaves the download unchanged."
+  },
+  {
+    "id": "guides/connections#history-export-privacy",
+    "doc": "Connections",
+    "section": "History export privacy",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#history-export-privacy",
+    "body": "Privacy mode replaces names and IDs with short aliases, such as `connection-1`.\nIt removes labels, messages, search text and original ID fingerprints.\nThe same alias links known records within one file.\nAliases have no meaning across files. They cannot open accounts in Recued.\nThe file has no key that maps them back to names.\nSome saved references lack enough detail to link them. Those stay separate.\nDates, vendors, results and gaps in the saved facts remain.\nReview the file before sharing. These facts may still reveal details.\n\nFor local use, choose **Names and IDs (local use)**.\nThen choose **Preview export** and review it before downloading.\nThis file keeps account and app names, IDs, known uses and applied search text.\nBoth file types omit credentials and raw provider errors.\nThe choice stays while you read this page. A new visit starts in privacy mode."
+  },
+  {
     "id": "guides/connections#verify-access-after-a-repair",
     "doc": "Connections",
     "section": "Verify access after a repair",
@@ -1621,7 +2013,7 @@
     "section": "Sending mail",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/connections#sending-mail",
-    "body": "A mail account says whether it can send. The server checks that at the\nmoment it sends, and refuses a send from an account that cannot. A guard also\nrefuses mail sent from an address to that same address, so it cannot loop.\nOutgoing mail goes from your server straight to your mail provider. It never\ngoes through Recued's cloud."
+    "body": "A mail account says whether it can send. The server checks that at the\nmoment it sends, and refuses a send from an account that cannot. A guard also\nrefuses mail a recipe sends from an address to that same address, so it cannot\nloop. Your own notifications are the one exception. An email notification\nconnection with no recipient sends them to the mailbox it sends from, so one\nmailbox is enough. Recued marks each one as its own, so nothing that watches\nthat mailbox reacts to it. You can answer by replying from the same mailbox.\nOutgoing mail goes from your server straight to your mail provider.\nIt never goes through Recued's cloud."
   },
   {
     "id": "guides/connections#choosing-a-mailbox",
@@ -2230,6 +2622,102 @@
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/customer-signoffs#browse-larger-job-lists",
     "body": "Open **Customer work → Jobs** and choose a view or search.\nLarge lists load in small parts.\nChoose **Older jobs** to keep looking.\nChoose **Newer jobs** to go back.\n\nA short or empty page can still have more jobs.\nA note tells you when more jobs remain to check.\nChoose **Older jobs** to continue with the same view.\nEach card still checks its saved scope and balances.\nWork status and money owed stay separate.\n\nYour unsaved delivery edits stay in place as you browse.\nA failed read keeps the last page on screen.\nUse **Refresh jobs** to retry that page.\nChanging the search or view starts from the newest jobs."
+  },
+  {
+    "id": "guides/email-chat",
+    "doc": "Chat by email",
+    "section": "Chat by email",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/email-chat",
+    "body": "You can chat with Recued by email. You write from your own mailbox to the\nchat mailbox. Recued reads it, runs your email as a chat, and answers from it\nin the same thread.\n\nWe recommend a second mailbox for chat, connected just for this. Your\nconversations with Recued then stay apart from your own mail, and each\nmessage clearly comes from you or from Recued. The chat mailbox can also be\nyour own mailbox, and then you write to yourself. That saves a mailbox, but\nthe conversation is harder to read. See [Use one mailbox](#use-one-mailbox).\n\nEmail chat is off until you turn it on. It needs Recued 26.10.16 or later."
+  },
+  {
+    "id": "guides/email-chat#what-you-need",
+    "doc": "Chat by email",
+    "section": "What you need",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/email-chat#what-you-need",
+    "body": "- **A mailbox you write from**, connected to Recued. Recued looks in its Sent\n  folder to know an email is yours. You can name up to 10 of them.\n- **A chat mailbox**, also connected. Recued answers from it, so it must be\n  one Recued can send from. We recommend a second mailbox, only for chat. It\n  can also be your own.\n- **AI set up**, as for any chat. See [Set up AI](../setup/ai-setup.md).\n\nConnect both mailboxes first. See\n[Connect Gmail and Google Calendar](../setup/connect-google.md) or\n[Connect Outlook and Microsoft 365](../setup/connect-microsoft.md).\n\nA second chat mailbox is only for this. Once email chat is on, Recued stops\ntreating its mail as yours. Its mail makes no contacts and starts no recipe."
+  },
+  {
+    "id": "guides/email-chat#turn-it-on",
+    "doc": "Chat by email",
+    "section": "Turn it on",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/email-chat#turn-it-on",
+    "body": "1. Open **Settings → Email chat**.\n2. Under **Chat mailbox**, pick the mailbox Recued answers from. A mailbox\n   Recued cannot send from shows \"(cannot send)\", and you cannot pick it.\n3. Under **Your mailboxes**, tick the ones you write from. To write to\n   yourself, tick the chat mailbox here too.\n4. Tick **Only I send email from these mailboxes**. Anyone who can send from\n   them could ask Recued to act as you. That includes an assistant, a shared\n   login, or an app with send access. Email chat stays off until you tick it.\n5. Choose **Check and turn on**. Recued checks each part and marks it ✓ or ✗.\n   Something marked ✗? Fix it, then try again.\n\nBefore you turn it on, know where the answers go. Each answer is an email.\nIt stays in the chat mailbox's Sent folder and in your inbox, like any email.\nAn answer can quote anything Recued can read for you. That means a CRM\nrecord, a file, or another mailbox's mail."
+  },
+  {
+    "id": "guides/email-chat#how-recued-knows-an-email-is-yours",
+    "doc": "Chat by email",
+    "section": "How Recued knows an email is yours",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/email-chat#how-recued-knows-an-email-is-yours",
+    "body": "Recued answers only an email it can show you sent. It looks for your copy in\nthe Sent folder of one of your mailboxes. The copy must be the same email,\nfound within a day of its arrival.\n\nSome emails are never answered:\n\n- One that is not from your mailboxes or an address you added.\n- One that fails the sender check (DMARC) where it arrives.\n- One sent to the chat mailbox by Cc, or to an alias. Put the chat\n  mailbox's own address in To.\n- One that arrives twice. Recued answers neither copy.\n\nThe screen says which of these stopped an email."
+  },
+  {
+    "id": "guides/email-chat#use-one-mailbox",
+    "doc": "Chat by email",
+    "section": "Use one mailbox",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/email-chat#use-one-mailbox",
+    "body": "We recommend two mailboxes. One mailbox saves connecting a second, but the\nconversation is harder to read. Every request and every answer is from you\nand to you, so the thread does not show who said what. In Gmail, each one is\nin your inbox and your Sent folder at once. In Outlook, each one comes twice:\na copy in your inbox and a copy in Sent Items. And the conversation mixes with\nthe rest of your mail.\n\nIf you still want one mailbox, pick it as the chat mailbox, and tick it under\n**Your mailboxes** too. Then you write to yourself, and Recued answers in the\nsame thread, in the same mailbox.\n\nWith one mailbox:\n\n- A new conversation starts only with an email to your own address alone,\n  whose subject begins with `ask:`. You can change the prefix, but you cannot\n  turn it off. Otherwise every email you send yourself would start one.\n- A reply in a conversation needs no prefix, as with two mailboxes.\n- The rest of your mail stays yours. Notes you send yourself, and mail from\n  others, make contacts and start recipes as before.\n- Your requests and Recued's answers make no contacts and start no recipe.\n- Recued trusts your mail provider to stop mail that only pretends to be\n  from you. If such an email gets through, Recued does not act on it. It\n  tells you, and treats the email as your mail again.\n- Email notifications work as before. You can get them in the same mailbox\n  and answer them by reply. A reply to a notification is never a chat\n  request."
+  },
+  {
+    "id": "guides/email-chat#write-from-an-address-recued-does-not-read",
+    "doc": "Chat by email",
+    "section": "Write from an address Recued does not read",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/email-chat#write-from-an-address-recued-does-not-read",
+    "body": "You may write from an address Recued cannot read. A personal Yahoo or iCloud\naddress is one example. Add it once email chat is on. You can add up to 5.\n\n1. Under **Other addresses you write from**, enter it in **Add an address**.\n2. Choose **Add**. Recued shows a 6-digit code.\n3. From that address, send an email to the chat mailbox. Put the code in\n   the subject.\n\nThe code works for 30 minutes. After 5 emails with a wrong code, the address\nis not added. Choose **Send a new code** to try again.\n\nAfter that, each email from the address must pass a sender check. The chat\nmailbox's provider makes that check. The address's own provider decides who\ncan send as it. Anyone it lets send as you could write to your chat. Others\non a company mail server are one example."
+  },
+  {
+    "id": "guides/email-chat#test-it",
+    "doc": "Chat by email",
+    "section": "Test it",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/email-chat#test-it",
+    "body": "Under **Test it**, choose **Watch for my test email**. Then send an email to\nthe chat mailbox with the subject the screen shows, such as `ask: ping`.\nRecued answers it in the same thread.\n\nThe screen shows each step as it happens. It shows when the email arrived,\nhow Recued knew it was yours, and when the answer went out.\n\n**Recent emails to the chat mailbox** lists your latest emails and how far\neach got. It never shows a subject or a body."
+  },
+  {
+    "id": "guides/email-chat#start-and-continue-a-conversation",
+    "doc": "Chat by email",
+    "section": "Start and continue a conversation",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/email-chat#start-and-continue-a-conversation",
+    "body": "A new conversation starts only with a subject that begins with `ask:`. You\ncan change that prefix to 1 to 32 characters. With two mailboxes, you can\nalso turn it off. Then any email you send the chat mailbox starts a\nconversation. That includes one a forwarding rule sends.\n\nTo continue a conversation, reply in its thread. A reply needs no prefix.\n\nRecued reads only what you wrote. It leaves out the quoted history, your\nsignature, and footers such as \"Sent from my iPhone\". Forwarded mail in your\nemail is read as mail, not as your request. See\n[Untrusted input](../concepts/untrusted-input.md).\n\nThe email's attachments come with your request. Images that belong to your\nsignature stay out. Automatic mail, such as an out-of-office reply, starts\nnothing."
+  },
+  {
+    "id": "guides/email-chat#the-answer",
+    "doc": "Chat by email",
+    "section": "The answer",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/email-chat#the-answer",
+    "body": "The answer comes from the chat mailbox to your address only. It comes in\nthe same thread, as plain text. It is marked as automatic, so other\nauto-replies stay quiet. Recued sends it once.\n\nDoes a request need your approval? Recued asks you as it does in any chat:\nin the app, and by email when Approvals is on for email in **Settings →\nNotifications**. To answer by email, reply to the approval email with one of\nits options, such as Approve. The answer to your request says where you can\napprove. When the run finishes, the result comes by email and names what was\ndone.\n\nCan Recued not tell whether an answer went out? It asks you, rather than\nrisk sending it twice. An answer that could not go out within a day is not\nsent late."
+  },
+  {
+    "id": "guides/email-chat#late-emails-and-a-pause",
+    "doc": "Chat by email",
+    "section": "Late emails and a pause",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/email-chat#late-emails-and-a-pause",
+    "body": "An email is late after 60 minutes, unless you change it. You can set 5\nminutes up to a day. Recued answers a late email in one line. It does not\nact on it. This covers Recued being off, or its vault locked, when you wrote.\nChoose **Save** after a change.\n\nMore than 10 of your emails within a minute pauses email chat. A person\nwriting does not do that. A mail rule, a script, or a mail app sending its\noutbox again can. Emails that arrive while it is paused are not answered.\nStop whatever sent them, then choose **Resume**.\n\nA server restored from a backup, or a second copy of it, does not answer an\nemail again."
+  },
+  {
+    "id": "guides/email-chat#turn-it-off",
+    "doc": "Chat by email",
+    "section": "Turn it off",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/email-chat#turn-it-off",
+    "body": "Choose **Turn off email chat**, then **Turn off**. Recued stops answering\nthe chat mailbox. A second chat mailbox's mail is treated as yours again.\n\nTo change the mailboxes, turn email chat off and on again. This is also how\nyou switch between one mailbox and two. The addresses you added stay added\nfor that chat mailbox.\n\nAfter a switch, Recued answers only the new chat mailbox. A reply in a thread\nwith the old one is not answered. Start a new email with `ask:` instead."
+  },
+  {
+    "id": "guides/email-chat#next",
+    "doc": "Chat by email",
+    "section": "Next",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/email-chat#next",
+    "body": "See how chat works in [AI chat and MCP](ai-chat-and-mcp.md). See how a yes\nahead of time works in [Grants and approvals](../concepts/grants-and-approvals.md)."
   },
   {
     "id": "guides/exposing-recipes-to-chat",

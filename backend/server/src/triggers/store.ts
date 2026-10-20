@@ -9,6 +9,7 @@
  *  table implicitly via the `SELECT * FROM event_triggers` table sweep. */
 
 import type Database from 'better-sqlite3';
+import { applyDatabaseMigrationStatements, DATABASE_MIGRATIONS } from '../database-schema.js';
 import type { EventTrigger, EventTriggerOrigin } from '@recued/contracts';
 import {
   assertPreapprovalLegacyEnable, initializePreapprovalLifecycle, mutatePreapprovalResource,
@@ -19,11 +20,13 @@ export const triggerPreapprovalMaterial = (row: EventTrigger): Record<string, un
   recipe_id: row.recipe_id, publisher_id: row.publisher_id, pattern: row.pattern,
   enabled: row.enabled, dish_id: row.dish_id ?? null, watch_interval_ms: row.watch_interval_ms ?? null,
   filter: row.filter ?? null, fields: row.fields ?? null, origin: row.origin ?? 'user',
+  read_contract_id: row.read_contract_id ?? null,
 });
 
 const TABLE = 'event_triggers';
 
 export interface EventTriggersStore {
+  readonly realmDatabase?: Database.Database;
   /** Create a trigger row. Returns the persisted row (including the
    *  server-assigned ULID + created_at). `origin` defaults to
    *  `'user'`; the declarative reconciler passes `'recipe'` for rows
@@ -60,6 +63,7 @@ export interface EventTriggersStore {
       watch_interval_ms?: number | null;
       last_fired_at?: number;
       last_error?: string | null;
+      read_contract_id?: string | null;
       /** D-315 §5.1 — the dispatch-filter halves, recompiled with a new
        *  `pattern` by `triggers.update`. Null clears. */
       filter?: Record<string, unknown> | null;
@@ -138,6 +142,7 @@ interface Row {
   origin: string;
   filter: string | null;
   fields: string | null;
+  read_contract_id?: string | null;
 }
 
 const rowToTrigger = (row: Row): EventTrigger => {
@@ -153,6 +158,7 @@ const rowToTrigger = (row: Row): EventTrigger => {
     last_fired_at: row.last_fired_at,
     last_error: row.last_error,
     ...(row.dish_id != null && row.dish_id.length > 0 ? { dish_id: row.dish_id } : {}),
+    ...(row.read_contract_id ? { read_contract_id: row.read_contract_id } : {}),
     ...(row.watch_interval_ms != null ? { watch_interval_ms: row.watch_interval_ms } : {}),
     origin: row.origin === 'recipe' ? 'recipe' : 'user',
     ...(filter !== undefined ? { filter } : {}),
@@ -162,55 +168,9 @@ const rowToTrigger = (row: Row): EventTrigger => {
 
 export const createEventTriggersStore = (db: Database.Database): EventTriggersStore => {
   initializePreapprovalLifecycle(db);
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS ${TABLE} (
-      trigger_id     TEXT PRIMARY KEY,
-      recipe_id      TEXT NOT NULL,
-      publisher_id   TEXT NOT NULL,
-      pattern        TEXT NOT NULL,
-      enabled        INTEGER NOT NULL DEFAULT 1,
-      created_at     INTEGER NOT NULL,
-      last_fired_at  INTEGER,
-      last_error     TEXT,
-      dish_id        TEXT,
-      watch_interval_ms INTEGER,
-      origin         TEXT NOT NULL DEFAULT 'user',
-      filter         TEXT,
-      fields         TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_event_triggers_recipe
-      ON ${TABLE}(recipe_id, publisher_id);
-    CREATE INDEX IF NOT EXISTS idx_event_triggers_enabled
-      ON ${TABLE}(enabled) WHERE enabled = 1;
-  `);
-  // Poll-manager / G6 — `origin` provenance column on a table that
-  // pre-dates it. Pragma-guarded idempotent ALTER (the
-  // `ensureBistemporalSchema` idiom); pre-existing rows default to
-  // 'user' (every pre-G6 row was authored via `triggers.create`).
-  // Authoring sugar — `filter` + `fields` dispatch-filter columns,
-  // same idiom; pre-existing rows have neither (NULL = pass-all).
-  const columns = new Set(
-    (db.prepare(`PRAGMA table_info(${TABLE})`).all() as Array<{ name: string }>)
-      .map((c) => c.name),
-  );
-  if (!columns.has('origin')) {
-    db.exec(`ALTER TABLE ${TABLE} ADD COLUMN origin TEXT NOT NULL DEFAULT 'user'`);
-  }
-  if (!columns.has('filter')) {
-    db.exec(`ALTER TABLE ${TABLE} ADD COLUMN filter TEXT`);
-  }
-  if (!columns.has('fields')) {
-    db.exec(`ALTER TABLE ${TABLE} ADD COLUMN fields TEXT`);
-  }
-  // D-179 P2 — dish binding + lifted poll-interval knob. The retired
-  // `config_patch` column is dropped from fresh DDL and simply lingers
-  // unused (NULL) in pre-P2 dev databases — pre-launch, no migration.
-  if (!columns.has('dish_id')) {
-    db.exec(`ALTER TABLE ${TABLE} ADD COLUMN dish_id TEXT`);
-  }
-  if (!columns.has('watch_interval_ms')) {
-    db.exec(`ALTER TABLE ${TABLE} ADD COLUMN watch_interval_ms INTEGER`);
-  }
+  // The immutable version-3 initializer also supports isolated store fixtures
+  // and legacy/lazy construction. Managed boot applies it transactionally first.
+  db.transaction(() => applyDatabaseMigrationStatements(db, DATABASE_MIGRATIONS[0]!.statements))();
 
   const insertStmt = db.prepare<[
     string, string, string, string, number, number, string | null, number | null,
@@ -233,6 +193,7 @@ export const createEventTriggersStore = (db: Database.Database): EventTriggersSt
   };
 
   return {
+    realmDatabase: db,
     create(row) {
       return mutatePreapprovalResource(db, 'next_trigger', row.trigger_id, () => material(row.trigger_id), () => {
         assertPreapprovalLegacyEnable(db, 'next_trigger', row.trigger_id, row.enabled);
@@ -274,7 +235,7 @@ export const createEventTriggersStore = (db: Database.Database): EventTriggersSt
       return mutatePreapprovalResource(db, 'next_trigger', trigger_id, () => material(trigger_id), () => {
         assertPreapprovalLegacyEnable(db, 'next_trigger', trigger_id, patch.enabled === true);
         if (patch.enabled !== undefined || patch.pattern !== undefined || patch.dish_id !== undefined
-          || patch.watch_interval_ms !== undefined || patch.filter !== undefined || patch.fields !== undefined) {
+          || patch.watch_interval_ms !== undefined || patch.filter !== undefined || patch.fields !== undefined || patch.read_contract_id !== undefined) {
           notePreapprovalOwnerMutation(db, 'next_trigger', trigger_id);
         }
         const existing = selectOne.get(trigger_id) as Row | undefined;
@@ -283,6 +244,7 @@ export const createEventTriggersStore = (db: Database.Database): EventTriggersSt
         if (patch.enabled !== undefined) next.enabled = patch.enabled ? 1 : 0;
         if (patch.pattern !== undefined) next.pattern = patch.pattern;
         if (patch.dish_id !== undefined) next.dish_id = patch.dish_id;
+        if (patch.read_contract_id !== undefined) next.read_contract_id = patch.read_contract_id;
         if (patch.watch_interval_ms !== undefined) {
           next.watch_interval_ms = patch.watch_interval_ms;
         }
@@ -300,7 +262,8 @@ export const createEventTriggersStore = (db: Database.Database): EventTriggersSt
              last_fired_at = ?,
              last_error = ?,
              filter = ?,
-             fields = ?
+             fields = ?,
+             read_contract_id = ?
            WHERE trigger_id = ?`,
         ).run(
           next.pattern,
@@ -311,6 +274,7 @@ export const createEventTriggersStore = (db: Database.Database): EventTriggersSt
           next.last_error,
           next.filter,
           next.fields,
+          next.read_contract_id ?? null,
           trigger_id,
         );
         return rowToTrigger(next);

@@ -22,6 +22,7 @@ import {
   composeInboundEmailAnswer,
   createLateEmailAnswerHook,
   dmarcPassFor,
+  emailAnswerAccountsOf,
   emailAnswerProof,
   type EmailAnswerAccounts,
 } from '../composition/bin/wire-inbound-email-answer.js';
@@ -103,13 +104,17 @@ const makeHarness = (opts: {
   ask?: PendingAsk | null;
   accounts?: EmailAnswerAccounts | null;
   getAsk?: ReturnType<typeof vi.fn>;
+  /** The connection a plain ask went out on — the owner's choice — among those enrolled. */
+  owner?: { accounts: EmailAnswerAccounts | null; enrolled: readonly EmailAnswerAccounts[] };
 } = {}): Harness => {
   const submitAnswer = vi.fn(async () => ({ outcome: 'accepted' as const }));
   const getAsk = opts.getAsk ?? vi.fn(async () => (opts.ask === undefined ? openAsk() : opts.ask));
-  const block = { getAsk, submitAnswer } as unknown as NotificationBlock;
+  const block = { getAsk, submitAnswer, restoreAskDeliveries: async () => {} } as unknown as NotificationBlock;
   const log = vi.fn();
   const accounts = opts.accounts === undefined ? ACCOUNTS : opts.accounts;
-  const funnel = composeInboundEmailAnswer({ block, resolveAccounts: () => accounts, now: () => NOW, log });
+  const { owner } = opts;
+  const funnel = composeInboundEmailAnswer({ block, resolveAccounts: () => accounts, now: () => NOW, log,
+    ...(owner ? { resolveOwnerAccounts: async () => owner.accounts, resolveAccountCandidates: () => owner.enrolled } : {}) });
   return { submitAnswer, getAsk, log, funnel };
 };
 
@@ -325,5 +330,116 @@ describe('createLateEmailAnswerHook — mail read before the check is bound', ()
     late.bind(hook);
     expect(hook).toHaveBeenCalledTimes(50);
     expect((hook.mock.calls[0]![0] as CanonicalMessage).rfc_message_id).toBe('<m10@x>');
+  });
+});
+
+// ── D-158 amendment 2026-10-18 — one address ─────────────────────────
+
+/** The connection names no recipient: notifications go to the owner's own
+ *  mailbox, `personal`, and they answer from it. */
+const ONE_ADDRESS: EmailAnswerAccounts = {
+  sender_slug: 'personal',
+  sender_address: 'owner@example.com',
+  recipient_address: 'Owner <OWNER@example.com>',
+};
+/** The owner's reply as their mailbox keeps it: its own Sent record, to itself. */
+const selfSent = (over: Partial<CanonicalMessage> = {}): CanonicalMessage => sentCopy({ to: ['owner@example.com'], ...over });
+
+describe('emailAnswerProof — one address (D-158 amendment 2026-10-18)', () => {
+  it('(c) the notification mailbox’s own Sent record, addressed to itself', () => {
+    expect(emailAnswerProof(selfSent(), ctxIn('personal'), ONE_ADDRESS)).toBe('self_sent_record');
+  });
+
+  it('(c) never Recued’s own notification, a draft, a Sent record addressed elsewhere, or an unstamped inbox copy', () => {
+    expect(emailAnswerProof(selfSent({ reconciliation_id: 'owner-notification:1' }), ctxIn('personal'), ONE_ADDRESS)).toBeNull();
+    expect(emailAnswerProof(selfSent({ direction: 'draft' }), ctxIn('personal'), ONE_ADDRESS)).toBeNull();
+    expect(emailAnswerProof(selfSent({ to: ['someone@else.example'] }), ctxIn('personal'), ONE_ADDRESS)).toBeNull();
+    expect(emailAnswerProof(selfSent({ direction: 'inbound' }), ctxIn('personal'), ONE_ADDRESS)).toBeNull();
+  });
+
+  it('⛔ (c) only for one address: with a recipient elsewhere the sending mailbox’s Sent record proves nothing', () => {
+    expect(emailAnswerProof(selfSent({ to: [ACCOUNTS.sender_address] }), ctxIn('alerts'), ACCOUNTS)).toBeNull();
+  });
+});
+
+describe('composeInboundEmailAnswer — one address', () => {
+  it('(c) answers the ask from the owner’s Sent record in the same mailbox', async () => {
+    const h = makeHarness({ accounts: ONE_ADDRESS });
+    h.funnel.onMessageUpserted(selfSent(), ctxIn('personal'));
+    await settle(h.funnel);
+    expect(h.submitAnswer.mock.calls[0]![0]).toMatchObject({ ask_id: ASK_ID, option: 'approve' });
+  });
+
+  it('reads neither Recued’s own notification nor the inbox copy of a reply as one, and warns of neither', async () => {
+    const h = makeHarness({ accounts: ONE_ADDRESS });
+    const own = selfSent({ direction: 'inbound', from: 'owner@example.com', body_text: 'approve', reconciliation_id: 'owner-notification:1' });
+    h.funnel.onMessageUpserted(own, ctxIn('personal'));
+    h.funnel.onMessageUpserted(selfSent({ direction: 'inbound' }), ctxIn('personal'));
+    await settle(h.funnel);
+    expect(h.getAsk).not.toHaveBeenCalled();
+    expect(h.log).not.toHaveBeenCalledWith('warn', expect.anything(), expect.anything());
+  });
+
+  it('still warns of a reply from someone else in that mailbox', async () => {
+    const h = makeHarness({ accounts: ONE_ADDRESS });
+    h.funnel.onMessageUpserted(selfSent({ direction: 'inbound', from: 'mallory@example.com' }), ctxIn('personal'));
+    await settle(h.funnel);
+    expect(h.log).toHaveBeenCalledWith('warn', expect.stringContaining('not proven'), { ask_id: ASK_ID });
+  });
+});
+
+describe('emailAnswerAccountsOf — who sends and who answers, from the connection', () => {
+  const row = (config: Record<string, unknown>, subtype: string | undefined = 'email') =>
+    ({ name: 'owner-mail', enrolled_at: 40, ...(subtype ? { subtype } : {}), config_json: JSON.stringify(config) });
+  const mailbox = (slug: string) => slug === 'personal' ? 'owner@example.com' : undefined;
+  it('takes the mailbox itself as the recipient when the connection names none', () => {
+    for (const blank of [{}, { default_recipient: '' }, { default_recipient: [] }, { default_recipient: null }]) {
+      expect(emailAnswerAccountsOf(row({ sender_mail_instance: 'personal', ...blank }), mailbox)).toEqual({ sender_slug: 'personal',
+        sender_address: 'owner@example.com', recipient_address: 'owner@example.com', connection_name: 'owner-mail', connection_enrolled_at: 40 });
+    }
+  });
+  it('keeps a named recipient, and gives nothing it cannot pin', () => {
+    expect(emailAnswerAccountsOf(row({ sender_mail_instance: 'personal', default_recipient: ['phone@example.com'] }), mailbox)?.recipient_address)
+      .toBe('phone@example.com');
+    expect(emailAnswerAccountsOf(row({ sender_mail_instance: 'personal', default_recipient: ['a@x.test', 'b@x.test'] }), mailbox)).toBeNull();
+    expect(emailAnswerAccountsOf(row({ sender_mail_instance: 'unknown' }), mailbox)).toBeNull();
+    expect(emailAnswerAccountsOf(row({ default_recipient: 'phone@example.com' }), mailbox)).toBeNull();
+    expect(emailAnswerAccountsOf(row({ sender_mail_instance: 'personal' }, 'telegram'), mailbox)).toBeNull();
+    expect(emailAnswerAccountsOf({ ...row({}), config_json: '{not json' }, mailbox)).toBeNull();
+  });
+});
+
+// ── D-158 amendment 2026-10-19 — a plain ask went out on the owner's choice ──
+
+/** The owner chose the `home` mailbox's connection for email; `alerts` is
+ *  still enrolled as the one named `email`. */
+const HOME: EmailAnswerAccounts = {
+  sender_slug: 'home',
+  sender_address: 'home@recued-owner.example',
+  recipient_address: 'owner@example.com',
+};
+
+describe('composeInboundEmailAnswer — a plain ask is answered on the connection it went out on', () => {
+  it('answers from a reply proven for the owner’s chosen connection', async () => {
+    const h = makeHarness({ owner: { accounts: HOME, enrolled: [ACCOUNTS, HOME] } });
+    h.funnel.onMessageUpserted(inboxReply({ to: [HOME.sender_address] }), ctxIn('home'));
+    await settle(h.funnel);
+    expect(h.submitAnswer).toHaveBeenCalledTimes(1);
+    expect(h.submitAnswer.mock.calls[0]![0]).toMatchObject({ ask_id: ASK_ID, option: 'approve', via: 'email' });
+  });
+
+  it('⛔ not from a reply proven only for the one named email, and says so', async () => {
+    const h = makeHarness({ owner: { accounts: HOME, enrolled: [ACCOUNTS, HOME] } });
+    h.funnel.onMessageUpserted(inboxReply(), ctxIn('alerts'));
+    await settle(h.funnel);
+    expect(h.submitAnswer).not.toHaveBeenCalled();
+    expect(h.log).toHaveBeenCalledWith('warn', 'inbound email reply ignored: not proven for this notification destination', { ask_id: ASK_ID });
+  });
+
+  it('answers nothing while no email connection can carry asks', async () => {
+    const h = makeHarness({ owner: { accounts: null, enrolled: [ACCOUNTS, HOME] } });
+    h.funnel.onMessageUpserted(inboxReply(), ctxIn('alerts'));
+    await settle(h.funnel);
+    expect(h.submitAnswer).not.toHaveBeenCalled();
   });
 });

@@ -141,6 +141,13 @@ describe('handleContactGet', () => {
       handleContactGet({ store }, { email: '' }),
     ).rejects.toThrow(RpcError);
   });
+
+  it('D-325 — reads the same record by contact id, as Today and occasions reference it', async () => {
+    store.observe({ email: 'bob@x.com', source: 'email_from', event_at: 100 });
+    const contact_id = store.get('bob@x.com')!.contact_id!;
+    expect((await handleContactGet({ store }, { email: contact_id })).contact?.email).toBe('bob@x.com');
+    expect((await handleContactGet({ store }, { email: 'not-a-contact' })).contact).toBeNull();
+  });
 });
 
 describe('handleContactDelete', () => {

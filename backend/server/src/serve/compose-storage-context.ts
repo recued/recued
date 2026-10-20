@@ -19,6 +19,7 @@ import {
   type VaultStore,
 } from '@recued/storage';
 import type Database from 'better-sqlite3';
+import { createOrdinaryLocalMutations, type OrdinaryLocalMutations } from '../ordinary-local-mutations.js';
 import { createMailWorkStore, type MailWorkStore } from '../storage/mail-work-store.js';
 import { createPreapprovalCodec } from '../storage/preapproval-codec.js';
 import {
@@ -43,28 +44,8 @@ import {
 
 import type { ServerAccountStore } from '../account-store.js';
 import { createServerAccountStore } from '../account-store.js';
-import { copyFileSync, existsSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { copyDatabaseForSnapshot, openDatabase } from '../open-database.js';
-import { SERVER_VERSION } from '../server-version.js';
-import { deriveInFlightEntry } from '../update/apply-orchestrator.js';
-import {
-  legacyRealmSnapshotPath,
-  prepareRealmForRelease,
-  readReleaseGenerationTransition,
-  realmSnapshotMatchesTransition,
-  realmSnapshotPath,
-  snapshotRealmOnNewRelease,
-  writeReleaseGenerationTransition,
-} from '../update/realm-generation-snapshot.js';
-import {
-  completeSnapshotReceiptEpochAfterKeyedOpen,
-  consumePendingSnapshotRestore,
-  markSnapshotRestorePending,
-  reconcileSnapshotReceiptEpochBeforeOpen,
-} from '../update/binary-apply-executor.js';
-import { resolveUpdateBinaryPath } from '../update/install-paths.js';
-import { createUpdateLedger, UPDATE_LEDGER_FILE } from '../update/update-ledger.js';
+import { join } from 'node:path';
+import { openApplicationDatabase } from '../open-application-database.js';
 import {
   createAuditRetention,
   type AuditRetention,
@@ -279,6 +260,7 @@ export interface StorageContext {
    *  compose request. */
   executeRecuedRequestPersist: (plan: RecuedPlan) => Promise<void>;
   commitStore: CommitStore | undefined;
+  localMutations?: OrdinaryLocalMutations;
   checkpointStore: CheckpointStore | undefined;
   /** One generic JSON table carrying token-bound deferred MCP results. */
   mcpActionStore: McpActionStore;
@@ -347,140 +329,13 @@ const readCloudBaseUrl = (
   }
 };
 
-const storagePathIdentity = (path: string): string => {
-  const resolved = resolve(path);
-  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
-};
-
 export const composeStorageContext = async (
   options: ComposeStorageContextOptions,
 ): Promise<StorageContext> => {
   const { dbPath, bootTrace, runtimeConfig, vaultQuotas, getVaultKey } = options;
 
-  // A snapshot restore can rewind receipt change sequences. Its two-phase
-  // journal is reconciled before the first handle, then completed only after
-  // the canonical encrypted/keyless open has supplied the correct key.
-  reconcileSnapshotReceiptEpochBeforeOpen(dbPath);
-
-  // ⛔ BEFORE THE FIRST DATABASE HANDLE. A rollback swaps the host executable,
-  // not one realm, so a realm that did not initiate it may still hold the newer
-  // schema. Its generation-bound snapshot is the only safe bridge back.
-  const updateBinaryPath = resolveUpdateBinaryPath(process.env);
-  let transition = readReleaseGenerationTransition(updateBinaryPath);
-
-  // A deployed N-1 release predates the host-generation witness but still left
-  // a complete apply ledger and pre-migration snapshot. Reconstruct the exact
-  // transition before downgrade preparation or the first database handle, so a
-  // stale scoped marker cannot make recovery refuse before it sees the proof.
-  // A malformed or unreadable ledger remains fail-closed below.
-  let inFlightApply = false;
-  try {
-    const ledgerPath = join(dirname(resolve(dbPath)), UPDATE_LEDGER_FILE);
-    if (existsSync(ledgerPath)) {
-      const entry = deriveInFlightEntry(createUpdateLedger(ledgerPath));
-      if (entry !== null) {
-        if (
-          transition === null
-          && entry.to_version === SERVER_VERSION
-          && typeof entry.migration === 'boolean'
-        ) {
-          transition = {
-            schema: 1,
-            from_version: entry.from_version,
-            to_version: entry.to_version,
-            migration: entry.migration,
-          };
-          writeReleaseGenerationTransition(updateBinaryPath, transition);
-        }
-        const scopedSnapshot = storagePathIdentity(realmSnapshotPath(dbPath));
-        const legacySnapshot = storagePathIdentity(legacyRealmSnapshotPath(dbPath));
-        const declaredSnapshot = typeof entry.snapshot_ref === 'string'
-          ? storagePathIdentity(entry.snapshot_ref)
-          : null;
-        if (declaredSnapshot === scopedSnapshot) {
-          inFlightApply = true;
-        } else if (
-          entry.migration === true
-          && (declaredSnapshot === null || declaredSnapshot === legacySnapshot)
-        ) {
-          // A deployed N-1 entry did not carry a scoped owner. While its flat
-          // snapshot exists, the snapshot module performs the conservative
-          // single-SQLite-realm proof. After adoption, only the realm whose
-          // scoped metadata matches this transition remains the applying realm.
-          inFlightApply = existsSync(legacySnapshot)
-            || (transition !== null && realmSnapshotMatchesTransition(dbPath, transition));
-        }
-      }
-    }
-  } catch {
-    // Unreadable means an apply may be in flight. Skipping a fresh snapshot is
-    // safer than overwriting a real pre-migration recovery copy before DDL.
-    inFlightApply = true;
-  }
-
-  const prepared = await prepareRealmForRelease({
-    dbPath,
-    releaseIdentity: SERVER_VERSION,
-    transition,
-    restoreSnapshot: (snapshotPath) => {
-      markSnapshotRestorePending(dbPath, snapshotPath);
-      const restored = consumePendingSnapshotRestore(
-        dbPath,
-        (from, to) => copyFileSync(from, to),
-        (message) => console.error(`[update] ${message}`),
-      );
-      if (!restored.restored) throw new Error('the generation-bound snapshot restore did not complete');
-    },
-  });
-  if (prepared.action === 'downgrade-prepared') {
-    console.error(
-      `[update] prepared this realm for host rollback ${prepared.from} → ${prepared.to}`
-      + (prepared.restoredSnapshot ? ' (pre-migration snapshot restored)' : ''),
-    );
-  }
-
-  bootTrace.markDbOpenAttempted('configured-db-path');
-  const db = await openDatabase(dbPath, {
-    restoreJournalReconciled: options.restoreJournalReconciled === true,
-  });
-  try {
-    completeSnapshotReceiptEpochAfterKeyedOpen(dbPath, db);
-  } catch (error) {
-    db.close();
-    throw error;
-  }
-  db.pragma('journal_mode = WAL');
-  // D-212 slice 0 — the page-cache ceiling. Ships independently of the rest of
-  // the at-rest-encryption arc because it is a free win TODAY and it is what
-  // makes every later step of that arc cost ~nothing on reads.
-  //
-  // SQLite's default is ~2 MB, which is the worst case for a workload like this
-  // one: `records`-shaped tables plus FTS5, where a scan re-reads the same pages.
-  // Measured (`scripts/bench-at-rest-encryption.mjs`, 20k rows), encrypted vs
-  // plain at the DEFAULT cache: timeline scan +131%, warm point read +212%,
-  // FTS5 +8.3%. At 20 MB every one of those is statistical NOISE, and by 64 MB
-  // writes fall from +30% to +5.4%. Unencrypted it is simply free headroom.
-  //
-  // ⚠ NEGATIVE value = KIBIBYTES (SQLite convention), not pages. And it is a
-  // CEILING, not a reservation: the page cache grows lazily, so a small database
-  // on a constrained 1-click VPS never allocates 64 MB. Lower it only if a host
-  // genuinely cannot spare the ceiling.
-  db.pragma('cache_size = -64000');
-  db.pragma('foreign_keys = ON');
-  bootTrace.mark('db-opened');
-
-  // ⛔ BEFORE ANY STORE IS CONSTRUCTED. Store setup is what runs the schema DDL,
-  // and not all of it is additive — it DROPs columns. A realm meeting a binary
-  // generation it has never run gets its own pre-migration copy first, so the
-  // ordinary "stop the server, back up, update, restore" workflow and a second
-  // `--db` path are covered by the same rule. `realm-generation-snapshot.ts`
-  // says why the realm that ran the update is deliberately excluded.
-  await snapshotRealmOnNewRelease({
-    dbPath,
-    releaseIdentity: SERVER_VERSION,
-    transition,
-    hasInFlightApply: () => inFlightApply,
-    takeSnapshot: (destination) => copyDatabaseForSnapshot(db, destination),
+  const db = await openApplicationDatabase({
+    dbPath, bootTrace, restoreJournalReconciled: options.restoreJournalReconciled === true,
   });
 
   bootTrace.mark('shared-setup-start');
@@ -939,9 +794,10 @@ export const composeStorageContext = async (
 
   ensureAuditIndexes(db);
   ensureMemorySchema(db);
-  const commitStore: CommitStore | undefined = createCommitStore(
+  const localMutations = createOrdinaryLocalMutations(db);
+  const commitStore: CommitStore | undefined = localMutations.wrapStore(createCommitStore(
     createSQLiteCollection<Commit>(db, 'commits'),
-  );
+  ));
   ensureCommitSchema(db);
   const checkpointStore: CheckpointStore | undefined = createCheckpointStore(
     createSQLiteCollection<Checkpoint>(db, 'checkpoints'),
@@ -955,6 +811,7 @@ export const composeStorageContext = async (
   const gatedActionStore = createGatedActionStore(
     createSQLiteCollection<GatedActionRecord>(db, GATED_ACTION_TABLE),
     {
+      localMutationReceipt: localMutations.forAction,
       compareAndSet: createSqliteGatedActionCompareAndSet(db),
       nextChangeSeq: gatedActionChangeClock.nextChangeSeq,
       changeClock: gatedActionChangeClock.snapshot,
@@ -1166,6 +1023,7 @@ export const composeStorageContext = async (
     recuedPlanStore,
     executeRecuedRequestPersist,
     commitStore,
+    localMutations,
     checkpointStore,
     mcpActionStore,
     gatedActionStore,

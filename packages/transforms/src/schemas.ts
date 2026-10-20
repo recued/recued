@@ -526,6 +526,22 @@ export const TRANSFORM_SCHEMAS: Record<string, TransformSchema> = {
   },
 
   // ── D-117 calendar reactive helpers ──────────────────────
+  held: {
+    rows: REQ('array'), time_field: REQ('string'), state_field: REQ('string'),
+    hold_ms: REQ('number'), now: REQ('number'),
+  },
+  transitions: {
+    rows: REQ('array'), time_field: REQ('string'), state_field: REQ('string'),
+    window_ms: REQ('number'), min_count: REQ('number'), now: REQ('number'),
+  },
+  window_change: {
+    rows: REQ('array'), time_field: REQ('string'), value_field: REQ('string'),
+    window_ms: REQ('number'), now: REQ('number'),
+  },
+  within_distance: {
+    place: REQ('object'), rows: REQ('array'), latitude_field: REQ('string'),
+    longitude_field: REQ('string'), radius_km: REQ('number'),
+  },
   // `events` is an array of calendar rows (`core.calendar.list`);
   // `since_ms` is the high-watermark the recipe supplies (a mark kept in
   // `shared.*`, or `{{context.now}} - window`).

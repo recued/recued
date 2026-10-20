@@ -290,46 +290,10 @@ export const validateRecipeInline = (
   return { ok, issues };
 };
 
-/** Validate + persist an inline-authored recipe. Throws `RpcError`
- *  (`bad_request` / 400) on a validation failure or an inline op-step. */
-/** D-220 Slice A2b — the first armed-trigger/form contradiction, as an
- *  owner-facing sentence, or null when there is none.
- *
- *  `this_form` AND `this_form_filtered` are both checked.
- *
- *  ⚠ The filtered case was originally exempted on the reasoning that an extra
- *  filter "may never fire on that form". That was WRONG, and adversarial review
- *  (Codex, 2026-07-29) showed why: a runtime accepted-response event carries BOTH
- *  `endpoint_id` and `form_definition_id` (`form-response-events.ts:46`), and the
- *  trigger compiler turns a `where` into exact equality filters — so a trigger
- *  naming this form plus its live endpoint fires with CERTAINTY, not
- *  contingently. An extra filter narrows which responses match; it does not
- *  exempt the contract from holding for the ones that do.
- *
- *  `all_forms` remains unchecked here: resolving it would mean comparing the
- *  contract against every live form, which needs a list-all reader this dep does
- *  not have. It is reported by the `preview_draft` advisory instead. */
-export const saveRecipeInline = (
-  deps: RecipeSaveHandlerDeps,
-  recipe: RecipeDefinition,
-  publisher_id?: string,
-  webhookBindings?: readonly WebhookIngressBindingSelection[],
-): {
-  saved: true;
-  recipe_id: string;
-  version: number;
-  name: string;
-  /** D-182 — non-blocking op-step advisories (an uncovered Tier-P `depends_on`).
-   *  Present only when there is something to surface; the recipe still saved. */
-  op_warnings?: string[];
-  pii?: {
-    headline?: string;
-    auto_protected?: string[];
-    warnings?: string[];
-    infos?: string[];
-  };
-  webhook?: LocalRecipeWebhookStatus;
-} => {
+/** Shared authoring admission for ordinary saves and reviewed releases. Runs
+ * schema, op-step and live form-contract checks without persisting a recipe;
+ * returns non-blocking op warnings for the caller to disclose. */
+export const assertRecipeAuthoringGates = (deps: Pick<RecipeSaveHandlerDeps,'formDefinitionReader'>, recipe: RecipeDefinition, caller = 'recipe.save'): string[] => {
   // Validate against the recipe schema before accepting — reject on any
   // error-severity issue (warn / info are non-blocking).
   const parsed = parseRecipe(recipe);
@@ -369,13 +333,40 @@ export const saveRecipeInline = (
   // form when it arrives. Only a LIVE form can contradict the declaration.
   // D-220 — ONE implementation, shared with the MCP save path. See
   // `form-contract-gate.ts` for why it is not a private helper here.
-  const formContract = checkFormContract(deps.formDefinitionReader, recipe, 'recipe.save');
+  const formContract = checkFormContract(deps.formDefinitionReader, recipe, caller);
   if (formContract.kind === 'unverified') {
     throw new RpcError('form_contract_unverified', formContract.message, 503);
   }
   if (formContract.kind === 'unsatisfied') {
     throw new RpcError('form_contract_unsatisfied', formContract.message, 409);
   }
+
+  return opCheck.warnings;
+};
+
+/** Validate and persist an inline-authored recipe through the ordinary store. */
+export const saveRecipeInline = (
+  deps: RecipeSaveHandlerDeps,
+  recipe: RecipeDefinition,
+  publisher_id?: string,
+  webhookBindings?: readonly WebhookIngressBindingSelection[],
+): {
+  saved: true;
+  recipe_id: string;
+  version: number;
+  name: string;
+  /** D-182 — non-blocking op-step advisories (an uncovered Tier-P `depends_on`).
+   *  Present only when there is something to surface; the recipe still saved. */
+  op_warnings?: string[];
+  pii?: {
+    headline?: string;
+    auto_protected?: string[];
+    warnings?: string[];
+    infos?: string[];
+  };
+  webhook?: LocalRecipeWebhookStatus;
+} => {
+  const opWarnings = assertRecipeAuthoringGates(deps,recipe);
 
   const publisher = publisher_id ?? 'kitchen';
   const hasWebhook = hasNonEmptyWebhookDeclarations(recipe);
@@ -513,7 +504,7 @@ export const saveRecipeInline = (
     recipe_id: recipe.recipe_id,
     version: recipe.version ?? 1,
     name: recipe.metadata?.name ?? recipe.recipe_id,
-    ...(opCheck.warnings.length > 0 ? { op_warnings: opCheck.warnings } : {}),
+    ...(opWarnings.length > 0 ? { op_warnings: opWarnings } : {}),
     ...(pii !== null
       ? {
           pii: {

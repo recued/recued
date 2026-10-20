@@ -381,6 +381,8 @@ export interface ServerConfig {
    *  `contact.{upsert,list,get,delete}`. Absent → those rpc methods
    *  return `not_configured`. */
   contactDeps?: import('./contact-handler.js').ContactRpcDeps;
+  /** D-325 — forward the contact import built by composeListeners. */
+  contactImportDeps?: import('./contact-import-handler.js').ContactImportRpcDeps;
   /** D-145 PA11 — Settings → Work Entities Source-management rpc deps.
    *  Wires `work_entity.source.{list,set_enabled,
    *  set_default,clear_default}`. Absent → those methods return
@@ -404,6 +406,12 @@ export interface ServerConfig {
   recordsRpcDeps?: import('./records-rpc-handler.js').RecordsRpcDeps;
   savedDataViewStore?: import('./saved-data-view-store.js').SavedDataViewStore;
   preapprovalDeps?: import('./preapproval-handler.js').PreapprovalHandlerDeps;
+  recipeRegressionDeps?: import('./recipe-regression-handler.js').RecipeRegressionDeps;
+  recipeRunCaptureDeps?: import('./recipe-run-capture-handler.js').RecipeRunCaptureDeps;
+  recipeReleaseDeps?: import('./recipe-release-handler.js').RecipeReleaseDeps;
+  automationRehearsalDeps?: import('./automation-rehearsal-handler.js').AutomationRehearsalDeps;
+  permissionRegressionDeps?: import('./permission-regression-handler.js').PermissionRegressionDeps;
+  packUpdateDeps?: import('./pack-update-handler.js').PackUpdateDeps;
   /** D-174 #22 — `data.timeline` read pair-RPC deps (Data route
    *  drill-down). Wraps the shared `handleTimelineRequest`. Absent →
    *  the method returns `not_configured`. */
@@ -460,6 +468,7 @@ export interface ServerConfig {
   /** D-324 — `reminder.*`, the Data → Reminders list. Same forward-or-dead-rpc
    *  trap: BOTH this declaration AND the forward below are required. */
   reminderDeps?: { dispatchers: import('./reminders/reminder-service.js').ReminderDispatchers };
+  yoursDeps?: import('./situations/yours-service.js').YoursService;
   /** Supervision feature — owner-only `supervision.*` rpc deps (cli-daemon
    *  keep-alive). `composeListeners` builds these from
    *  `collection.supervisionStack`. Same forward-or-dead-rpc trap as
@@ -1551,6 +1560,7 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
       : {}),
     annotationDeps: config.annotationDeps,
     contactDeps: config.contactDeps,
+    contactImportDeps: config.contactImportDeps,
     // D-145 PA11 — forward Source-management deps (D-174 #22 fix: this
     // was missing, leaving `work_entity.source.*` dead in production).
     workEntitySourceDeps: config.workEntitySourceDeps,
@@ -1563,6 +1573,12 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
     recordsRpcDeps: config.recordsRpcDeps,
     savedDataViewStore: config.savedDataViewStore,
     preapprovalDeps: config.preapprovalDeps,
+    recipeRegressionDeps: config.recipeRegressionDeps,
+    recipeRunCaptureDeps: config.recipeRunCaptureDeps,
+    recipeReleaseDeps: config.recipeReleaseDeps,
+    automationRehearsalDeps: config.automationRehearsalDeps,
+    permissionRegressionDeps: config.permissionRegressionDeps,
+    packUpdateDeps: config.packUpdateDeps,
     timelineRpcDeps: config.timelineRpcDeps,
     memoryRpcDeps: config.memoryRpcDeps,
     fileReadRpcDeps: config.fileReadRpcDeps,
@@ -1583,6 +1599,7 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
     notificationKindPolicyDeps: config.notificationKindPolicyDeps,
     quietHoursDeps: config.quietHoursDeps,
     reminderDeps: config.reminderDeps,
+    yoursDeps: config.yoursDeps,
     // Supervision feature — forward the `supervision.*` deps composeListeners
     // builds from `collection.supervisionStack`. Forward-or-dead-rpc trap.
     supervisionDeps: config.supervisionDeps,

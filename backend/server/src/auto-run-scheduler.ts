@@ -68,6 +68,7 @@ import {
 // ────────────────────────────────────────────────────────────────
 
 export interface CircuitBreakerStore {
+  readonly realmDatabase?: Database;
   list(): CircuitBreakerState[];
   /** The breaker of a dish's timer (D-319). */
   get(dish_id: string): CircuitBreakerState | null;
@@ -104,6 +105,7 @@ export interface AutoRunTimer {
  *  `auto-run-timer-rearm.ts`, which gives each recipe's timer back to the
  *  dish it ran as.) */
 export interface AutoRunSettingsStore {
+  readonly realmDatabase?: Database;
   /** A dish's timer, when it has one. */
   get(dish_id: string): AutoRunTimer | null;
   list(): AutoRunTimer[];
@@ -173,6 +175,7 @@ export const createAutoRunSettingsStore = (db: Database): AutoRunSettingsStore =
   };
 
   const store: AutoRunSettingsStore = {
+    realmDatabase: db,
     get(dish_id) {
       const row = read(dish_id);
       return row ? toTimer(row) : null;
@@ -255,6 +258,7 @@ export const createCircuitBreakerStore = (db: Database): CircuitBreakerStore => 
   });
 
   return {
+    realmDatabase: db,
     list() {
       return (db.prepare('SELECT * FROM auto_run_timer_circuit').all() as Row[]).map(rowToState);
     },

@@ -24,6 +24,8 @@
  */
 
 import { assertPreapprovalOrdinaryRun, currentPreapprovalIo } from '../../preapproval-io-context.js';
+import { captureProviderHandoffFence } from '../../execution/provider-handoff.js';
+import { PREAPPROVAL_MAIL_PREFIX } from '../../preapproval-mail-attempt.js';
 import { readConfinedTempBytes } from '../../execution/run-scratch.js';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
@@ -272,6 +274,7 @@ export interface CreateMailCollectionOptions {
    *  fact follows its email, ruling 29). Errors are swallowed via
    *  `bumpError`, like `onMessageUpserted`. */
   onRecordsRemoved?: (slug: string, record_ids: readonly string[]) => void;
+  onBeforeRetention?: (slug: string, cutoff: number) => void | Promise<void>;
   /** D-315 — a row re-keyed by a provider-verified move (IMAP and Graph
    *  mint a new id on move): the message is the same, only its id changed. */
   onRecordRekeyed?: (slug: string, from_record_id: string, to_record_id: string) => void;
@@ -588,6 +591,20 @@ export interface MailSendInput {
   /** Trusted host assertion after asynchronous account/attachment reads.
    * Wire and recipe inputs never populate this callback. */
   before_dispatch?: () => void;
+  /** D-158 amendment 2026-10-18 — a notification addressed to the sending
+   *  mailbox itself: the owner's one-address setup, where the mailbox Recued
+   *  sends from is the one they read. It lifts the self-loop refusal for a send
+   *  to that address alone, and only one carrying a reconciliation id, so the
+   *  copy that lands back in the mailbox is Recued's own by its send claims and
+   *  no mail fact, trigger or reply check reads it as the owner's.
+   *
+   *  ⛔ Set only by `handleOwnerNotificationMailSend`, from its trusted
+   *  `internal` parameter: the recipient there is the owner's enrolled
+   *  destination, never a caller's `to`. And (D-318 one mailbox, §8.18) by the
+   *  email chat door's answer to an email the owner wrote to the chat mailbox
+   *  from itself (`answers.ts`): its recipient is the proven request's From.
+   *  Wire and recipe inputs cannot set it. */
+  self_addressed?: boolean;
 }
 
 /** D-127 P1.6 — wire-shape return for `MailCollection.send`. Mirrors
@@ -803,6 +820,7 @@ export const createMailCollection = (
     now: () => nowOf(),
     config: () => ({ retentionDays: opts.config().retention_days }),
     onPruned: (record_ids) => notifyRemoved(record_ids),
+    ...(opts.onBeforeRetention ? { beforePrune: cutoff => opts.onBeforeRetention!(slug, cutoff) } : {}),
   });
 
   let state: CollectionState = 'idle';
@@ -1644,11 +1662,16 @@ export const createMailCollection = (
   };
 
   const send = async (args: MailSendInput): Promise<MailSendResult> => {
+    const assertHandoff = captureProviderHandoffFence();
     const reviewed = currentPreapprovalIo();
+    if (typeof args.reconciliation_id === 'string' && args.reconciliation_id.startsWith(PREAPPROVAL_MAIL_PREFIX)) {
+      throw new IngredientError('BAD_INPUT', 'This mail marker belongs to a private reviewed attempt.', { slug });
+    }
+    const reconciliationId = args.reconciliation_id ?? reviewed?.mailReconciliationId?.(slug, args);
     reviewed?.validateMail(slug, args);
     // The prefix identifies mail tied to a live customer request. Every path
     // through the collection must carry the host guard, including direct calls.
-    if (isGuardedCustomerMailReference(args.reconciliation_id)
+    if (isGuardedCustomerMailReference(reconciliationId)
       && typeof args.before_dispatch !== 'function') {
       throw new IngredientError('BAD_INPUT', 'Customer email requires the live receipt or request guard. Review it in Reception.', { slug });
     }
@@ -1738,8 +1761,8 @@ export const createMailCollection = (
       return detail;
     };
 
-    if (args.reconciliation_id !== undefined
-      && !isMailReconciliationId(args.reconciliation_id)) {
+    if (reconciliationId !== undefined
+      && !isMailReconciliationId(reconciliationId)) {
       const err = new IngredientError(
         'BAD_INPUT',
         'mail-send: reconciliation_id must be a bounded ASCII header token',
@@ -1772,7 +1795,12 @@ export const createMailCollection = (
       throw err;
     }
     const senderAddress = provider.accountEmail.trim().toLowerCase();
-    if (senderAddress.length > 0) {
+    // A notification to the mailbox itself, alone and stamped, is the owner's
+    // one-address setup, not a recipe mailing itself by mistake — as is the
+    // email chat door's answer to an email the owner wrote to themselves.
+    const ownNotification = args.self_addressed === true && args.to.length === 1
+      && !args.cc?.length && !args.bcc?.length && reconciliationId !== undefined;
+    if (senderAddress.length > 0 && !ownNotification) {
       for (const recipient of args.to) {
         const bare = extractAddress(recipient);
         if (bare === senderAddress) {
@@ -1991,7 +2019,7 @@ export const createMailCollection = (
     // retry double-send, which is the exact bug this substrate exists to prevent.
     let claimRevision: number | null = null;
     args.before_dispatch?.();
-    if (args.reconciliation_id !== undefined) {
+    if (reconciliationId !== undefined) {
       const recipients = [...args.to, ...(args.cc ?? []), ...(args.bcc ?? [])];
       // ⛔ Refuse rather than under-prove. The reconciliation query matches ONE
       // recipient envelope, so a fan-out send cannot be proven by it. Claiming on
@@ -2009,7 +2037,7 @@ export const createMailCollection = (
         ? resolvedAttachments[0]
         : undefined;
       const { result, claim } = claims.claim({
-        reconciliation_id: args.reconciliation_id,
+        reconciliation_id: reconciliationId,
         // Whose Sent folder is source truth for this message. The reconciler cannot
         // ask the right provider without it, and it must not be told which to ask.
         sender_slug: slug,
@@ -2078,7 +2106,7 @@ export const createMailCollection = (
                 + `${claim.recipient} went out, so it will not send it again on its own. It `
                 + 'has asked you whether it went out — answer under the bell; if it did '
                 + 'not, the next run sends it.',
-          { slug, reconciliation_id: args.reconciliation_id, claim_status: claim.status },
+          { slug, reconciliation_id: reconciliationId, claim_status: claim.status },
         );
       }
 
@@ -2086,14 +2114,18 @@ export const createMailCollection = (
     }
 
     let meta;
-    await reviewed?.beforeMailProvider(slug, args);
-    assertPreapprovalOrdinaryRun();
     // A customer can reply while the reviewed-send check awaits. Refuse at
     // the last synchronous boundary; this attempt provably never reached mail.
-    try { args.before_dispatch?.(); }
+    try {
+      await reviewed?.beforeMailProvider(slug, args);
+      assertPreapprovalOrdinaryRun();
+      assertHandoff();
+      args.before_dispatch?.();
+      assertHandoff();
+    }
     catch (error) {
-      if (args.reconciliation_id !== undefined && claimRevision !== null) {
-        claims.markNotSent({ reconciliation_id: args.reconciliation_id, expected_revision: claimRevision, now: nowOf() });
+      if (reconciliationId !== undefined && claimRevision !== null) {
+        claims.markNotSent({ reconciliation_id: reconciliationId, expected_revision: claimRevision, now: nowOf() });
       }
       throw error;
     }
@@ -2108,7 +2140,7 @@ export const createMailCollection = (
         in_reply_to: args.in_reply_to,
         references: args.references,
         reply_to: args.reply_to,
-        reconciliation_id: args.reconciliation_id,
+        reconciliation_id: reconciliationId,
         ...(args.thread_id !== undefined ? { thread_id: args.thread_id } : {}),
         ...(args.automatic === true ? { automatic: true } : {}),
         // `blob_hash` is stripped: it belongs to the CLAIM, not to the wire. The
@@ -2135,10 +2167,10 @@ export const createMailCollection = (
       // sends. Anything else ends it `unknown`: the send dispatcher asks the owner
       // whether it went out, and nothing re-sends until they answer or source truth
       // settles it.
-      if (args.reconciliation_id !== undefined && claimRevision !== null) {
+      if (reconciliationId !== undefined && claimRevision !== null) {
         const notSent = err instanceof IngredientError && err.details?.not_sent === true;
         try {
-          const ended = { reconciliation_id: args.reconciliation_id, expected_revision: claimRevision, now: nowOf() };
+          const ended = { reconciliation_id: reconciliationId, expected_revision: claimRevision, now: nowOf() };
           if (notSent) claims.markNotSent(ended);
           else claims.markUnknown(ended);
         } catch (claimErr) {
@@ -2156,9 +2188,9 @@ export const createMailCollection = (
     // The provider acknowledged. Still not PROOF — an ack can be lost in transit —
     // so the claim moves to `sent`, not to a settled state. Only provider source
     // truth (the reconcile op) may settle it.
-    if (args.reconciliation_id !== undefined && claimRevision !== null) {
+    if (reconciliationId !== undefined && claimRevision !== null) {
       claims.markSent({
-        reconciliation_id: args.reconciliation_id,
+        reconciliation_id: reconciliationId,
         expected_revision: claimRevision,
         provider_message_id: meta.message_id,
         sent_at: meta.sent_at,

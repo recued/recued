@@ -264,6 +264,7 @@ export interface ContractOverlayResolver {
    *  ({@link createContractOverlayResolver}) always implements it, so a live dispatch
    *  never takes the absent-method admit-all path. */
   resolveContractScopeRestrictions?(source: ExecutionSource): ReadonlyArray<string>;
+  resolveContractReadSpheres?(source: ExecutionSource): ReadonlyArray<import('@recued/contracts').Sphere> | undefined;
   /** D-187 AMENDMENT — resolve the bound contract's per-dispatch read-grant checker
    *  (topic + raw-collection reads as unified `contract_grant` entries) for THIS
    *  dispatch. Read-scope folded into the one `(contract × grant)` matrix: a topic /
@@ -346,6 +347,15 @@ export const createContractOverlayResolver = (
     );
   };
   return {
+    resolveContractReadSpheres(source) {
+      const id = executionSourceContractId(source);
+      if (!id) return undefined;
+      const def = deps.definitionStore.get(id);
+      // The scope a contract reads under does not change when its uses run out:
+      // liveness is the resume authority's question, and a reserved last use
+      // still resumes. A missing contract reads no sphere.
+      return def ? def.read_spheres : [];
+    },
     shouldMeterUse(source, ingredientSlug): boolean {
       // Contract-free sources (system / unrestricted user_self / anonymous) carry no
       // contract_id and never meter a contract. A self-restricted user_self DOES carry

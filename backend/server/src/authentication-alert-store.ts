@@ -43,6 +43,7 @@ export interface AuthenticationAlertStore {
   pending(): AuthenticationAlertNotice[];
   claim(id: string): boolean;
   history(query: AuthenticationIncidentHistoryQuery, now?: number): AuthenticationIncidentHistoryPage;
+  export(query: import('@recued/contracts').AuthenticationHistoryExportQuery, now?: number): import('@recued/contracts').AuthenticationHistoryExport;
 }
 const levelRank: Record<AuthenticationAlertLevel, number> = { review: 1, rejected: 2, expiry_30: 1, expiry_7: 2, expiry_passed: 3 };
 const checkKey = (check: { id: string; context?: string }): string => JSON.stringify([check.id, check.context ?? null]);
@@ -199,6 +200,7 @@ export const createAuthenticationAlertStore = (db: Database.Database): Authentic
       incidents.prune(now);
     }).immediate,
     history: incidents.history,
+    export: incidents.export,
     pending: () => (db.prepare('SELECT data FROM authentication_alert_notices ORDER BY rowid LIMIT 4096').all() as Array<{ data: string }>).map(r => JSON.parse(r.data) as AuthenticationAlertNotice),
     claim: db.transaction((id: string): boolean => {
       const row = db.prepare('SELECT data FROM authentication_alert_notices WHERE id = ?').get(id) as { data: string } | undefined;

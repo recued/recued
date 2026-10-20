@@ -18,6 +18,8 @@
 // Top-tier kinds
 // ────────────────────────────────────────────────────────────────
 
+import type { Asset } from './assets.js';
+
 export const WORK_ENTITY_KINDS = [
   'task',
   'note',
@@ -27,6 +29,7 @@ export const WORK_ENTITY_KINDS = [
   // `booking` section below for why it is not a `commitment` and not a
   // discriminator on the calendar table.
   'booking',
+  'asset',
 ] as const;
 export type WorkEntityKind = (typeof WORK_ENTITY_KINDS)[number];
 
@@ -149,7 +152,7 @@ export const taskIdFromIdempotencyKey = (key: string): string | null =>
  *  booking joined them for D-315 slice 7: a reservation read from mail makes
  *  one, and its runs hold for the owner, so a second email about it before the
  *  first is approved would otherwise mint a second booking. */
-export type IdempotentCreateKind = 'task' | 'note' | 'commitment' | 'project' | 'booking';
+export type IdempotentCreateKind = 'task' | 'note' | 'commitment' | 'project' | 'booking' | 'asset';
 
 const IDEMPOTENT_ID_PREFIX: Readonly<Record<IdempotentCreateKind, string>> = {
   task: TASK_IDEMPOTENCY_ID_PREFIX,
@@ -157,6 +160,7 @@ const IDEMPOTENT_ID_PREFIX: Readonly<Record<IdempotentCreateKind, string>> = {
   commitment: 'commitment-idempotent-',
   project: 'project-idempotent-',
   booking: 'booking-idempotent-',
+  asset: 'asset-idempotent-',
 };
 
 /** Stable local id for an idempotent create of `kind` — a task's is exactly
@@ -317,6 +321,7 @@ export const COMMITMENT_DERIVATIONS = [
   // Derived-only — the webclient compose authoring options deliberately
   // exclude it (user-authored commitments are 'user_declared').
   'evidence_captured',
+  'rule_emitted',
 ] as const;
 export type CommitmentDerivation = (typeof COMMITMENT_DERIVATIONS)[number];
 export const COMMITMENT_DERIVATION_SET: ReadonlySet<CommitmentDerivation> = new Set(
@@ -745,7 +750,8 @@ export type WorkEntity =
   | ({ _kind: 'note' } & Note)
   | ({ _kind: 'commitment' } & Commitment)
   | ({ _kind: 'project' } & Project)
-  | ({ _kind: 'booking' } & Booking);
+  | ({ _kind: 'booking' } & Booking)
+  | ({ _kind: 'asset' } & Asset);
 
 // ────────────────────────────────────────────────────────────────
 // PA3 — Kernel CRUD ingredient input / output contracts (§ Phase PA3)

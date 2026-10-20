@@ -65,6 +65,8 @@
  *  Spec: D-145 § Phase PA3 + § A.1.3 + § A.2.2. */
 
 import {
+  AssetValidationError,
+  type Asset, type AssetCreateInput, type AssetUpdateInput, type AssetWriteSource,
   COMMITMENT_CANCEL_FROM_STATES,
   COMMITMENT_FULFILL_ALLOWED_EXPIRY_POLICIES,
   COMMITMENT_FULFILL_FROM_STATES,
@@ -109,6 +111,7 @@ import {
 } from './storage/work-entity-store.js';
 import { classifyCommitmentDueStatus } from './work-entity-due-status-sweep.js';
 import { readThroughSourceIds } from './work-entity-read-resolution.js';
+import { changedAssetFields } from './situations/event-visibility.js';
 import type { WorkEntityResolver } from './work-entity-resolver.js';
 import type {
   WorkEntitySourceWriteExecutor,
@@ -562,6 +565,14 @@ export interface WorkEntityIngredientDeps {
    *  against the work-entity scope. */
   cascade?: CascadeEngine;
   now?: () => number;
+  /** Durable retirement reconciliation also runs at boot; this seam makes an
+   * owner edit visible immediately after its transaction. */
+  onAssetChanged?: (asset: Asset, prior?: Asset) => Promise<void>;
+  onAssetDeleted?: (asset: Asset) => Promise<void>;
+  /** Host-only owner close: commit its receipt in the same transaction as the
+   * canonical transition, before publishing either warehouse event. */
+  ownerCompletionWrite?: (prior: Commitment, at: number, write: () => Commitment) => Commitment;
+  annotationCascadeOnDelete?: (collection: string, id: string) => void;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -587,6 +598,9 @@ const emitWorkEntityEvent = (
 ): void => {
   if (!deps.bus) return;
   const at = deps.now?.() ?? Date.now();
+  const changed_fields = record._kind === 'asset'
+    ? event_kind === 'deleted' ? ['deleted_at'] : changedAssetFields(record, prior?._kind === 'asset' ? prior : undefined)
+    : undefined;
   try {
     deps.bus.emit({
       platform: WORK_ENTITY_BUS_PLATFORM,
@@ -595,6 +609,7 @@ const emitWorkEntityEvent = (
       event_kind,
       record_id: record.id,
       at,
+      ...(record._kind === 'asset' ? { record: { ...record }, changed_fields } : {}),
       prev: {
         // The canonical record always rides for downstream consumers
         // that don't want to re-resolve `data.<kind>.<id>` (the recipe
@@ -604,6 +619,7 @@ const emitWorkEntityEvent = (
         // Prior record snapshot for diff-aware recipes (only present
         // for updated / deleted / completed / state_changed / etc.).
         ...(prior ? { prior } : {}),
+        ...(changed_fields ? { changed_fields } : {}),
       },
     });
   } catch {
@@ -1252,6 +1268,7 @@ const IDEMPOTENCY_MARK = {
   commitment: 'recued_commitment_idempotency_key',
   project: 'recued_project_idempotency_key',
   booking: 'recued_booking_idempotency_key',
+  asset: 'recued_asset_idempotency_key',
 } as const;
 
 /** The check INSIDE the write, for a note / commitment / project create — the
@@ -2457,6 +2474,7 @@ const commitmentUpdate = (deps: WorkEntityIngredientDeps) =>
 const commitmentLifecycleMove = (
   deps: WorkEntityIngredientDeps,
   to: 'fulfilled' | 'cancelled',
+  ownerAction = false,
 ) => async (input: { id: string; fulfilled_at?: number; cancelled_at?: number }): Promise<{
   commitment: Commitment;
 }> => {
@@ -2530,7 +2548,9 @@ const commitmentLifecycleMove = (
   if (existing.source_version_token !== undefined) writeInput.source_version_token = existing.source_version_token;
   if (existing.source_updated_at !== undefined) writeInput.source_updated_at = existing.source_updated_at;
   if (existing.source_extension_blob !== undefined) writeInput.source_extension_blob = existing.source_extension_blob;
-  const commitment = deps.store.writeCommitment(writeInput, now);
+  const persist = () => deps.store.writeCommitment(writeInput, now);
+  const commitment = ownerAction && deps.ownerCompletionWrite
+    ? deps.ownerCompletionWrite(existing, stamp, persist) : persist();
   // PA4 — emission discipline:
   //  - `updated` always fires (callers diff via prev.prior).
   //  - `state_changed` fires only when lifecycle actually transitioned
@@ -2779,6 +2799,83 @@ const bookingDelete = (deps: WorkEntityIngredientDeps) =>
     cascadeOnWrite(deps, 'booking', existing.id, 'delete');
     return { ok: true as const, id: input.id, tombstoned: tombstone };
   };
+
+// ────────────────────────────────────────────────────────────────
+// asset-* dispatchers
+// ────────────────────────────────────────────────────────────────
+
+const assetPatchFields = ['name', 'class_id', 'status', 'holder_contact', 'belongs_to', 'audience', 'sphere', 'sphere_override',
+  'document_number', 'serial_number', 'exact_address', 'dates', 'readings', 'observations', 'values', 'anchors',
+  'attributes', 'settings', 'rules', 'retirement'] as const;
+const assetPatchOf = (input: AssetCreateInput | AssetUpdateInput): import('@recued/contracts').AssetPatch =>
+  Object.fromEntries(assetPatchFields.filter(key => Object.hasOwn(input, key)).map(key => [key, input[key]]));
+const checkedAssetFactSource = (input: (AssetCreateInput | AssetUpdateInput) & WorkEntityCreateOrigin): AssetWriteSource => {
+  if (!input.source || !['owner', 'confirmed_document', 'extracted'].includes(input.source.kind)
+    || typeof input.source.ref !== 'string' || !input.source.ref.trim()) throw new AssetValidationError('An explicit fact source is required', 'source');
+  if (input.source.kind !== 'extracted') {
+    const actor = input.origin_execution_source;
+    if (actor?.channel !== 'user' || actor.actor !== 'user_self') {
+      throw new AssetValidationError('Owner and confirmed-document ranks require a direct owner action; extracted facts keep their own rank', 'source');
+    }
+    if (input.source.kind === 'owner') return { kind: 'owner', ref: `owner:${'user_id' in actor ? actor.user_id : 'local'}` };
+  }
+  return input.source;
+};
+const assetCreate = (deps: WorkEntityIngredientDeps) => async (input: AssetCreateInput & WorkEntityCreateOrigin): Promise<{ asset: Asset }> => {
+  const factSource = checkedAssetFactSource(input);
+  const source = resolveCreateSource(deps, 'asset', input.source_id, input);
+  if (source.source_kind !== 'builtin' || !source.write_capable) throw new WorkEntityWriteCapabilityError(source.id, 'asset', 'create');
+  const keyed = idempotentCreateKey('asset', input.idempotency_key, source.id);
+  const patch = assetPatchOf(input);
+  const write = { ...patch, source_id: source.id, source: factSource };
+  let asset: Asset;
+  if (keyed) {
+    const result = deps.store.ensureAsset({ ...write, id: keyed.id,
+      source_extension_blob: { [IDEMPOTENCY_MARK.asset]: keyed.key } }, deps.now?.());
+    asset = result.asset;
+    if (!result.created) { verifyIdempotentReuse('asset', asset, keyed.key); return { asset }; }
+  } else asset = deps.store.writeAsset(write, deps.now?.());
+  emitWorkEntityEvent(deps, 'asset', 'created', tagWorkEntity('asset', asset));
+  await deps.onAssetChanged?.(asset);
+  return { asset };
+};
+const assetUpdate = (deps: WorkEntityIngredientDeps) => async (input: AssetUpdateInput & WorkEntityCreateOrigin): Promise<{ asset: Asset }> => {
+  const factSource = checkedAssetFactSource(input);
+  const id = resolveWorkEntityInputId(deps, 'asset', input.id);
+  const prior = deps.store.readAsset(id);
+  if (!prior || prior.deleted_at != null || prior.sync_state !== 'live') throw new WorkEntityNotFoundError('asset', input.id);
+  const source = deps.store.getSource(prior.source_id);
+  if (!source || source.source_kind !== 'builtin' || !source.write_capable) throw new WorkEntityWriteCapabilityError(prior.source_id, 'asset', 'update');
+  const asset = deps.store.writeAsset({ ...assetPatchOf(input), id, source_id: source.id, source: factSource }, deps.now?.());
+  if (JSON.stringify(asset) !== JSON.stringify(prior)) {
+    emitWorkEntityEvent(deps, 'asset', 'updated', tagWorkEntity('asset', asset), tagWorkEntity('asset', prior));
+    cascadeOnWrite(deps, 'asset', id, 'update');
+  }
+  await deps.onAssetChanged?.(asset, prior);
+  return { asset };
+};
+const assetDelete = (deps: WorkEntityIngredientDeps) => async (input: { id: string; tombstone?: boolean }) => {
+  const id = resolveWorkEntityInputId(deps, 'asset', input.id);
+  const prior = deps.store.readAsset(id);
+  if (!prior) throw new WorkEntityNotFoundError('asset', input.id);
+  const source = deps.store.getSource(prior.source_id);
+  if (!source || source.source_kind !== 'builtin' || !source.write_capable) throw new WorkEntityWriteCapabilityError(prior.source_id, 'asset', 'delete');
+  const tombstoned = input.tombstone !== false;
+  const children = deps.store.listAssetChildren(id);
+  if (!deps.store.deleteAsset(id, { tombstone: tombstoned, ...(deps.now ? { now: deps.now() } : {}) })) throw new WorkEntityNotFoundError('asset', input.id);
+  emitWorkEntityEvent(deps, 'asset', 'deleted', tagWorkEntity('asset', prior), tagWorkEntity('asset', prior));
+  cascadeOnWrite(deps, 'asset', id, 'delete');
+  deps.annotationCascadeOnDelete?.('asset', id);
+  for (const child of children) {
+    const next = deps.store.readAsset(child.id);
+    if (next) {
+      emitWorkEntityEvent(deps, 'asset', 'updated', tagWorkEntity('asset', next), tagWorkEntity('asset', child));
+      cascadeOnWrite(deps, 'asset', child.id, 'update');
+    }
+  }
+  await deps.onAssetDeleted?.(prior);
+  return { ok: true as const, id, tombstoned };
+};
 
 // ────────────────────────────────────────────────────────────────
 // project-* dispatchers
@@ -3170,6 +3267,25 @@ const projectDelete = (deps: WorkEntityIngredientDeps) =>
  *  the task/note deletes use (one place owns warehouse-event emission).
  */
 export const createWorkEntityDispatchers = (deps: WorkEntityIngredientDeps) => ({
+  /** A paired owner's accepted recall is a declared task, not a clock rule. */
+  ownerCommitmentWritten: (after: Commitment, owner: import('@recued/contracts').ExecutionSource): void => {
+    if (owner.channel !== 'user' || owner.actor !== 'user_self' || after.derivation !== 'user_declared' || after.source_id !== RECUED_BUILTIN_SOURCE_ID('commitment'))
+      throw new WorkEntityValidationError('Not an owner-declared local commitment');
+    emitWorkEntityEvent(deps, 'commitment', 'created', tagWorkEntity('commitment', after));
+  },
+  ruleAssetWritten: (after: Asset, before: Asset): void => {
+    emitWorkEntityEvent(deps, 'asset', 'updated', tagWorkEntity('asset', after), tagWorkEntity('asset', before));
+    cascadeOnWrite(deps, 'asset', after.id, 'update');
+  },
+  /** Built-in services publish only after their canonical-row transaction. */
+  ruleCommitmentWritten: (after: Commitment, before?: Commitment): void => {
+    if (after.derivation !== 'rule_emitted' || after.source_id !== RECUED_BUILTIN_SOURCE_ID('commitment')) throw new WorkEntityValidationError('Not a built-in rule occurrence');
+    emitWorkEntityEvent(deps, 'commitment', before ? 'updated' : 'created', tagWorkEntity('commitment', after), before ? tagWorkEntity('commitment', before) : undefined);
+    if (before && (before.lifecycle_state !== after.lifecycle_state || before.due_status !== after.due_status)) {
+      emitWorkEntityEvent(deps, 'commitment', 'state_changed', tagWorkEntity('commitment', after), tagWorkEntity('commitment', before));
+    }
+    if (before) cascadeOnWrite(deps, 'commitment', after.id, 'update');
+  },
   workEntityList: async (input: {
     kind: WorkEntityKind;
     source_id?: string;
@@ -3248,6 +3364,9 @@ export const createWorkEntityDispatchers = (deps: WorkEntityIngredientDeps) => (
   commitmentCreate: commitmentCreate(deps),
   commitmentUpdate: commitmentUpdate(deps),
   commitmentFulfill: commitmentLifecycleMove(deps, 'fulfilled'),
+  // Deliberately absent from kernel/recipe dispatch. Only an authenticated
+  // owner surface may select this operation; JSON input cannot select it.
+  ownerCommitmentFulfill: commitmentLifecycleMove(deps, 'fulfilled', true),
   commitmentCancel: commitmentLifecycleMove(deps, 'cancelled'),
   projectCreate: projectCreate(deps),
   projectUpdate: projectUpdate(deps),
@@ -3258,6 +3377,35 @@ export const createWorkEntityDispatchers = (deps: WorkEntityIngredientDeps) => (
   bookingCreate: bookingCreate(deps),
   bookingUpdate: bookingUpdate(deps),
   bookingDelete: bookingDelete(deps),
+  assetCreate: assetCreate(deps),
+  assetUpdate: assetUpdate(deps),
+  // Owner UI only: this is deliberately outside the recipe ingredient surface.
+  assetAllowAutomaticUpdates: async (input: Parameters<WorkEntityStore['allowAssetAutomaticUpdates']>[0], actor: ExecutionSource) => {
+    if (actor?.channel !== 'user' || actor.actor !== 'user_self') throw new AssetValidationError('Automatic update changes require the owner');
+    const id = resolveWorkEntityInputId(deps, 'asset', input.id);
+    const prior = deps.store.readAsset(id); const source = prior && deps.store.getSource(prior.source_id);
+    if (!prior || prior.deleted_at != null) throw new WorkEntityNotFoundError('asset', input.id);
+    if (!source || source.source_kind !== 'builtin' || !source.write_capable) throw new WorkEntityWriteCapabilityError(prior.source_id, 'asset', 'update');
+    const asset = deps.store.allowAssetAutomaticUpdates({ ...input, id }, deps.now?.());
+    if (JSON.stringify(asset) !== JSON.stringify(prior)) {
+      emitWorkEntityEvent(deps, 'asset', 'updated', tagWorkEntity('asset', asset), tagWorkEntity('asset', prior));
+      cascadeOnWrite(deps, 'asset', id, 'update');
+      await deps.onAssetChanged?.(asset, prior);
+    }
+    return { asset };
+  },
+  assetDelete: assetDelete(deps),
+  assetObserve: async (input: Omit<Parameters<WorkEntityStore['writeAssetObservations']>[0], 'actor_ref' | 'recipe_hash'>, actorRef: string, recipeHash?: string) => {
+    // Storage derives the asset and source from the binding. A caller cannot
+    // select another asset or supply its own provenance/status fields.
+    const result = deps.store.writeAssetObservations({ ...input, actor_ref: actorRef, ...(recipeHash ? { recipe_hash: recipeHash } : {}) }, deps.now?.());
+    if (result.changed_fields.length) {
+      emitWorkEntityEvent(deps, 'asset', 'updated', tagWorkEntity('asset', result.asset), result.prior ? tagWorkEntity('asset', result.prior) : undefined);
+      cascadeOnWrite(deps, 'asset', result.asset.id, 'update');
+      await deps.onAssetChanged?.(result.asset);
+    }
+    return { asset_id: result.asset.id, changed_fields: result.changed_fields };
+  },
   // D-174 #22 — RPC-only delete dispatchers (no kernel slug).
   commitmentDelete: commitmentDelete(deps),
   projectDelete: projectDelete(deps),

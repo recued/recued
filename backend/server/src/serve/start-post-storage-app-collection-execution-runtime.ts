@@ -5,6 +5,7 @@ import {
   type ComposeAppContextOptions,
 } from './compose-app-context.js';
 import { dirname } from 'node:path';
+import { createArchiveImportReceipts } from '../archive/archive-import-receipts.js';
 import { backgroundServices as defaultBackgroundServices } from '../composition/bin/background-services-instance.js';
 import { housekeepingSchedulerRegistry as defaultSchedulerRegistry } from '../composition/bin/housekeeping-scheduler-instance.js';
 import type { BaseContext } from './compose-base-context.js';
@@ -193,7 +194,7 @@ export const startPostBaseStorageVaultRuntime = async (
   // an open journal and the operator is the one who can clear the blocker.
   if (!bundleSwapRecovery.retired) {
     console.warn(
-      '[archive] a parked pre-restore blob could not be reclaimed; the restore journal is kept '
+      '[archive] restore cleanup or its outcome receipt could not be settled; the restore journal is kept '
         + 'for the next boot. Archive restores are refused until it retires.',
     );
   }
@@ -220,6 +221,16 @@ export const startPostBaseStorageVaultRuntime = async (
     console.warn(
       `[archive] reclaimed interrupted-restore blobs (restored=${reclaimedParks.restored}, reaped=${reclaimedParks.reaped})`,
     );
+  }
+  try {
+    createArchiveImportReceipts(base.dbPath).reconcileBoot({
+      journalOpen: !bundleSwapRecovery.retired,
+      parksResolved: reclaimedParks.complete,
+    });
+  } catch {
+    // A receipt I/O failure must not strand an otherwise recoverable server.
+    // New imports fail closed when their durable reservation cannot be saved.
+    console.warn('[archive] import outcome receipts are unavailable; no completion is inferred');
   }
   const serverBundleStore = createServerBundleStore(base.dbPath);
   const initialServerBundle = serverBundleStore.load();

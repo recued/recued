@@ -78,6 +78,7 @@ export interface ComposeMcpHttpTransportDeps {
    *  (same pattern as the timeline's file raw-record loader). */
   readonly sourceFreshnessByScope?: McpDeps['sourceFreshnessByScope'];
   readonly internalRegistry: InternalToolRegistry | undefined;
+  readonly situationAccess?: McpDeps['situationAccess'];
   readonly clientTokens: Pick<ClientTokenStore, 'verify' | 'touch'> | undefined;
   /** D-171 external-door token store. Absent ⇒ door bearers are
    *  rejected (canonical CLI bearers only — pre-D-171 behavior). */
@@ -191,6 +192,7 @@ export const composeMcpHttpTransport = (
     ...(deps.internalRegistry
       ? { internalRegistry: deps.internalRegistry }
       : {}),
+    ...(deps.situationAccess ? { situationAccess: deps.situationAccess } : {}),
     ...(deps.sourceFreshnessByScope
       ? { sourceFreshnessByScope: deps.sourceFreshnessByScope }
       : {}),

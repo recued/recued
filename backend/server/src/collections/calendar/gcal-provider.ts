@@ -150,6 +150,7 @@ export interface GcalEventConferenceEntryPoint {
 }
 
 export interface GcalEvent {
+  etag?: string;
   id: string;
   iCalUID?: string;
   status?: 'confirmed' | 'cancelled' | 'tentative';
@@ -324,12 +325,14 @@ const buildPayload = (
   event: GcalEvent,
   calendarId: string,
   calendarName?: string,
+  seriesRule?: string,
 ): ProviderEventPayload => {
-  const canonical = canonicalizeGcalEvent(event, calendarId, calendarName);
+  const own = canonicalizeGcalEvent(event, calendarId, calendarName);
+  const canonical = seriesRule && !own.recurrence_rule ? { ...own, recurrence_rule: seriesRule } : own;
   const descriptionBytes = canonical.description
     ? Buffer.byteLength(canonical.description, 'utf8')
     : 0;
-  return { event: canonical, description_bytes: descriptionBytes };
+  return { event: canonical, description_bytes: descriptionBytes, ...(event.etag ? { etag: event.etag } : {}) };
 };
 
 // ────────────────────────────────────────────────────────────────
@@ -373,6 +376,8 @@ const toAdapterError = (
       body,
     );
   }
+  if (status === 412) return new CalendarAdapterError('version_conflict',
+    'The event changed after review. No change was applied. Refresh the calendar and request a new review.');
   if (status === 404) {
     return new CalendarAdapterError(
       'event_not_found',
@@ -489,10 +494,12 @@ export const createGcalProvider = (
     method: 'POST' | 'PATCH' | 'PUT' | 'DELETE',
     body: unknown,
     operation: string,
+    expected_etag?: string,
   ): Promise<T | null> => {
     let token = await ensureToken(false);
     const headers: Record<string, string> = {
       ...oauthAuthorizationHeaders(token),
+      ...(expected_etag ? { 'If-Match': expected_etag } : {}),
     };
     let payload: string | undefined;
     if (body !== undefined) {
@@ -504,6 +511,7 @@ export const createGcalProvider = (
       token = await ensureToken(true);
       const retryHeaders: Record<string, string> = {
         ...oauthAuthorizationHeaders(token),
+        ...(expected_etag ? { 'If-Match': expected_etag } : {}),
       };
       if (payload) retryHeaders['Content-Type'] = 'application/json';
       res = await fetcher(url, { method, headers: retryHeaders, body: payload });
@@ -516,6 +524,9 @@ export const createGcalProvider = (
     return (await res.json()) as T;
   };
 
+  // The account's address: Google names the primary calendar by it, and the
+  // list is read at every sync (`CalendarProvider.accountEmail`).
+  let accountEmail = '';
   const listCalendars = async (): Promise<GcalCalendarListEntry[]> => {
     const out: GcalCalendarListEntry[] = [];
     let pageToken: string | undefined;
@@ -537,6 +548,8 @@ export const createGcalProvider = (
         'Google calendar list',
       );
     } while (pageToken);
+    const primary = out.find((entry) => entry.primary === true)?.id;
+    if (typeof primary === 'string' && primary.includes('@')) accountEmail = primary;
     return out;
   };
 
@@ -561,10 +574,33 @@ export const createGcalProvider = (
     return gcalGet<GcalEventsResponse>(url.toString(), 'events.list');
   };
 
+  // `singleEvents=true` instances carry no recurrence; only the series master
+  // does. One read per series per sync pass puts its RRULE on the instances, so
+  // a yearly event can become an occasion (D-325 P16). A failed read leaves the
+  // instance as listed.
+  let seriesRules = new Map<string, Promise<string | undefined>>();
+  const seriesRule = (calendarId: string, event: GcalEvent): Promise<string | undefined> => {
+    const master = event.recurringEventId;
+    if (!master || event.recurrence?.length) return Promise.resolve(undefined);
+    const key = JSON.stringify([calendarId, master]);
+    let rule = seriesRules.get(key);
+    if (!rule) {
+      const url = new URL(`${GCAL_API_BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(master)}`);
+      url.searchParams.set('fields', 'recurrence');
+      rule = gcalGet<Pick<GcalEvent, 'recurrence'>>(url.toString(), 'events.get')
+        .then(found => found.recurrence?.find(line => /^RRULE:/iu.test(line)), () => undefined);
+      seriesRules.set(key, rule);
+    }
+    return rule;
+  };
+  const payloadOf = async (event: GcalEvent, calendarId: string, calendarName?: string): Promise<ProviderEventPayload> =>
+    buildPayload(event, calendarId, calendarName, await seriesRule(calendarId, event));
+
   // ── initial scan ────────────────────────────────────────────
   const runInitialScan = async (
     scanOpts: InitialScanOptions,
   ): Promise<void> => {
+    seriesRules = new Map();
     const calendars = await selectedCalendars();
     const now = nowOf();
     const timeMin = new Date(now - scanOpts.backfill_days * 86_400_000)
@@ -593,7 +629,7 @@ export const createGcalProvider = (
         for (const event of page.items ?? []) {
           if (event.status === 'cancelled') continue;
           try {
-            const payload = buildPayload(event, cal.id, cal.summary);
+            const payload = await payloadOf(event, cal.id, cal.summary);
             const cont = await scanOpts.onEvent(payload);
             lastSuccessfulSyncAt = nowOf();
             if (!cont) {
@@ -634,6 +670,7 @@ export const createGcalProvider = (
     // Clean until a failure is swallowed: only a tick that read every calendar
     // and delivered every change says the calendar is synced.
     let clean = true;
+    seriesRules = new Map();
     const calendars = await selectedCalendars();
     const now = nowOf();
     const timeMin = new Date(
@@ -700,7 +737,7 @@ export const createGcalProvider = (
                 };
                 await cb(sync);
               } else {
-                const payload = buildPayload(event, cal.id, cal.summary);
+                const payload = await payloadOf(event, cal.id, cal.summary);
                 const sync: CalendarSyncEvent = {
                   kind: 'updated',
                   source_id: event.id,
@@ -890,6 +927,7 @@ export const createGcalProvider = (
   return {
     kind: 'gcal',
     slug: opts.slug,
+    get accountEmail() { return accountEmail; },
 
     async connect() {
       try {
@@ -963,7 +1001,7 @@ export const createGcalProvider = (
           'gcal events.insert: empty response',
         );
       }
-      return buildPayload(data, calendarId);
+      return payloadOf(data, calendarId);
     },
 
     async updateEvent(input) {
@@ -985,6 +1023,7 @@ export const createGcalProvider = (
         'PATCH',
         fromUpdatePatch(input.patch),
         'events.patch',
+        input.expected_etag,
       );
       if (!data) {
         throw new CalendarAdapterError(
@@ -992,7 +1031,7 @@ export const createGcalProvider = (
           'gcal events.patch: empty response',
         );
       }
-      return buildPayload(data, input.calendar_id);
+      return payloadOf(data, input.calendar_id);
     },
 
     async deleteEvent(input) {
@@ -1009,6 +1048,7 @@ export const createGcalProvider = (
         'DELETE',
         undefined,
         'events.delete',
+        input.expected_etag,
       );
     },
 
@@ -1057,7 +1097,7 @@ export const createGcalProvider = (
           'gcal events.rsvp: empty response',
         );
       }
-      return buildPayload(data, input.calendar_id);
+      return payloadOf(data, input.calendar_id);
     },
   };
 };

@@ -135,6 +135,107 @@ describe('D-205 #5c — the parser reads what real exports actually emit', () =>
     expect(out.errors[0]).toMatch(/no email, name or phone column/i);
     expect(out.errors[0]).toContain('notes'); // actionable, not a shrug
   });
+
+  it('D-325 vCard: Apple’s labelled anniversary is the anniversary, and its other labelled dates are named', () => {
+    // Apple's vCard 3.0 has no ANNIVERSARY: each extra date is a grouped X-ABDATE
+    // and its name a grouped X-ABLabel, in either order.
+    const vcf = [
+      'BEGIN:VCARD',
+      'VERSION:3.0',
+      'FN:Ana Silva',
+      'EMAIL:ana@x.test',
+      'item1.X-ABDATE;type=pref:2004-06-15',
+      'item1.X-ABLabel:_$!<Anniversary>!$_',
+      'item2.X-ABLabel:Graduation',
+      'item2.X-ABDATE:2015-06-01',
+      'item3.X-ABDATE;X-APPLE-OMIT-YEAR=1604:1604-09-09',
+      'item3.X-ABLabel:_$!<Other>!$_',
+      'END:VCARD',
+      'BEGIN:VCARD',
+      'VERSION:3.0',
+      'FN:Ben Okafor',
+      'EMAIL:ben@x.test',
+      'ANNIVERSARY:2010-05-01', // ← a card's own ANNIVERSARY line wins
+      'item1.X-ABDATE;X-APPLE-OMIT-YEAR=1604:1604-07-04',
+      'item1.X-ABLabel:_$!<Anniversary>!$_',
+      'END:VCARD',
+      'BEGIN:VCARD',
+      'VERSION:3.0',
+      'FN:Cy Park',
+      'EMAIL:cy@x.test',
+      'item1.X-ABDATE;X-APPLE-OMIT-YEAR=1604:1604-07-04',
+      'item1.X-ABLabel:_$!<Anniversary>!$_',
+      'END:VCARD',
+    ].join('\r\n');
+    const out = parseContactFile(vcf);
+    expect(out.entries.map((entry) => entry.anniversary)).toEqual(['2004-06-15', '2010-05-01', '--07-04']);
+    expect(out.date_notes).toEqual([
+      'line 1 (Ana Silva): "Graduation" (2015-06-01) has no field on a contact and was not imported. '
+        + 'Add it in Yours → Occasions to be reminded.',
+      'line 1 (Ana Silva): "Other" (--09-09) has no field on a contact and was not imported. '
+        + 'Add it in Yours → Occasions to be reminded.',
+    ]);
+  });
+
+  it('D-325 CSV: a Google Contacts export’s Event columns bring the anniversary and name the rest', () => {
+    // Newer exports name each date `Event N - Label`, older ones `Event N - Type`.
+    const labelled = parseContactFile([
+      'First Name,Last Name,E-mail 1 - Value,Birthday,Event 1 - Label,Event 1 - Value,Event 2 - Label,Event 2 - Value',
+      'Ana,Silva,ana@x.test,--03-04,Anniversary,2004-06-15,Graduation,2015-06-01',
+    ].join('\n'));
+    expect(labelled.entries[0]).toMatchObject({ name: 'Ana Silva', birthday: '--03-04', anniversary: '2004-06-15' });
+    expect(labelled.date_notes).toEqual([
+      'row 2 (Ana Silva): "Graduation" (2015-06-01) has no field on a contact and was not imported. '
+        + 'Add it in Yours → Occasions to be reminded.',
+    ]);
+
+    const typed = parseContactFile([
+      'Name,E-mail 1 - Value,Anniversary,Event 1 - Type,Event 1 - Value,Event 2 - Type,Event 2 - Value',
+      'Bo,bo@x.test,,* Anniversary,--07-04,,', // ← Google's `* ` marks the primary entry
+      'Cy,cy@x.test,2001-01-01,Anniversary,2002-02-02,Anniversary,4/2/2004', // ← the Anniversary column wins
+      'Di,di@x.test,,Anniversary,4/2/2004,,',
+      'Ed,ed@x.test,,Anniversary,0/0/00,,', // ← an empty date, not a date to name
+    ].join('\n'));
+    expect(typed.entries.map((entry) => entry.anniversary)).toEqual(['--07-04', '2001-01-01', undefined, undefined]);
+    expect(typed.date_notes).toEqual([
+      'row 4 (Di): anniversary "4/2/2004" is not a date and was not imported. '
+        + 'Write it as YYYY-MM-DD, or --MM-DD without a year.',
+    ]);
+  });
+
+  it('D-325 a date that is not one is named, never guessed: a birthday kept as text, an anniversary left out', () => {
+    const vcf = ['BEGIN:VCARD', 'FN:Dee', 'EMAIL:dee@x.test', 'BDAY:circa 1800', 'ANNIVERSARY:15.06.2004', 'END:VCARD'].join('\n');
+    const card = parseContactFile(vcf);
+    expect(card.entries[0]).toMatchObject({ birthday: 'circa 1800' });
+    expect(card.entries[0]!.anniversary).toBeUndefined();
+    expect(card.date_notes).toEqual([
+      'line 1 (Dee): birthday "circa 1800" is not a date, so it is kept as text and will not remind you. '
+        + 'Write it as YYYY-MM-DD, or --MM-DD without a year.',
+      'line 1 (Dee): anniversary "15.06.2004" is not a date and was not imported. '
+        + 'Write it as YYYY-MM-DD, or --MM-DD without a year.',
+    ]);
+
+    // `4/2/1980` is 2 April or 4 February depending on who wrote it. An all-zero
+    // date is an empty one, and an ISO date needs no word.
+    const csv = [
+      'Name,Email,Birthday,Anniversary',
+      'Bob,bob@x.test,4/2/1980,6/15/2004',
+      'Cy,cy@x.test,0/0/00,0/0/00',
+      'Di,di@x.test,1990-01-02,--06-15',
+    ].join('\n');
+    const rows = parseContactFile(csv);
+    expect(rows.entries.map(({ birthday, anniversary }) => ({ birthday, anniversary }))).toEqual([
+      { birthday: '4/2/1980', anniversary: undefined },
+      { birthday: undefined, anniversary: undefined },
+      { birthday: '1990-01-02', anniversary: '--06-15' },
+    ]);
+    expect(rows.date_notes).toEqual([
+      'row 2 (Bob): birthday "4/2/1980" is not a date, so it is kept as text and will not remind you. '
+        + 'Write it as YYYY-MM-DD, or --MM-DD without a year.',
+      'row 2 (Bob): anniversary "6/15/2004" is not a date and was not imported. '
+        + 'Write it as YYYY-MM-DD, or --MM-DD without a year.',
+    ]);
+  });
 });
 
 // ────────────────────────────────────────────────────────────────
@@ -151,6 +252,15 @@ describe('D-205 #5c — the plan reviews the CONFLICTS, and only those', () => {
     expect(plan.adds).toBe(1);
     expect(plan.changes).toEqual([]);
     expect(plan.unchanged).toBe(0);
+    // Nothing to say about dates: the field is absent, as from an older server.
+    expect(plan).not.toHaveProperty('date_notes');
+  });
+
+  it('D-325 the preview names the dates it could not use; the person still imports', () => {
+    const plan = planContactFileImport(deps(), vcard(['FN:Dee', 'EMAIL:dee@x.test', 'ANNIVERSARY:15.06.2004']));
+    expect(plan.adds).toBe(1);
+    expect(plan.date_notes).toEqual(['line 1 (Dee): anniversary "15.06.2004" is not a date and was not imported. '
+      + 'Write it as YYYY-MM-DD, or --MM-DD without a year.']);
   });
 
   it('AGREEMENT is a no-op — counted, so the user can see it was mostly agreement', () => {

@@ -218,6 +218,26 @@ const render = (
   onAnswer: (id: string) => void | Promise<void>,
 ): FakeEl => renderWithDocument(m, onAnswer).card;
 
+it('keeps the structured Records review visible on a projected generated ask', () => {
+  const card = render(model({
+    text: 'Recipe r wants to run fixture.batch (step write).\nThis changes saved data, so Recued held it for you.\n\nApprove?',
+    resource_review: { schema_version: 1, operation: 'fixture.batch', input_hash: 'a'.repeat(64), captured_at: 1000,
+      resources: [{ kind: 'records', key: 'new', label: 'New record', binding: 'binding', version: 'absence',
+        precondition: { kind: 'records_absent' }, before: {}, after: { title: '<script>inert()</script>' },
+        changes: [{ operation_index: 0, action: 'create', before: null, after: { title: 'Intermediate' } },
+          { operation_index: 1, action: 'upsert', before: { title: 'Intermediate' }, after: { title: '<script>inert()</script>' } }] }] },
+  }), vi.fn());
+  const evidence = collectByAttr(card, 'data-resource-review')[0]!;
+  expect(card.children).toContain(evidence);
+  expect(evidence.getAttribute('role')).toBe('region');
+  expect(evidence.getAttribute('tabindex')).toBe('0');
+  expect(evidence.textContent).toContain('Before: Does not exist');
+  expect(evidence.textContent).toContain('Intermediate');
+  expect(evidence.textContent).toContain('2. upsert');
+  expect(evidence.textContent).toContain('<script>inert()</script>');
+  expect(evidence.children).toEqual([]);
+});
+
 const approvalModel = (
   over: Partial<ApprovalCardModel> = {},
 ): ApprovalCardModel => ({
@@ -849,6 +869,27 @@ describe('D-174 — renderApprovalCard', () => {
 });
 
 describe('R20 — renderChatPlanCard', () => {
+  it('shows the host review and withholds it when the encrypted payload is unavailable', () => {
+    const review = {
+      schema_version: 1 as const, operation: 'calendar-update', input_hash: 'a'.repeat(64), captured_at: 1,
+      resources: [{ kind: 'calendar' as const, key: 'meeting', label: 'Meeting', binding: 'local', version: 'v1',
+        precondition: { kind: 'local_version' as const, value: 'v1' },
+        before: { summary: '<script>no()</script>', start_at: 1_792_245_600_000 },
+        after: { summary: 'Moved', start_at: 1_792_252_800_000 } }],
+    };
+    const { card } = renderChatPlanWithDocument(chatPlanModel({ resource_review: review }), vi.fn());
+    const evidence = collectByAttr(card, 'data-resource-review')[0]!;
+    expect(evidence.textContent).toContain('Before:');
+    expect(evidence.textContent).toContain('<script>no()</script>');
+    expect(evidence.textContent).toContain('After:');
+    expect(evidence.textContent).toContain('Moved');
+    expect(evidence.children).toEqual([]);
+    const unavailable = renderChatPlanWithDocument(chatPlanModel({
+      resource_review: review, payload_available: false,
+    }), vi.fn()).card;
+    expect(collectByAttr(unavailable, 'data-resource-review')).toEqual([]);
+  });
+
   it('keeps the chosen decision focused and guards sibling actions while pending', () => {
     const onResolve = vi.fn(() => new Promise<void>(() => {}));
     const { card, doc } = renderChatPlanWithDocument(

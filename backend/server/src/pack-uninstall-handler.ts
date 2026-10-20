@@ -100,6 +100,7 @@ import {
   type RecordsUninstallDisposition,
 } from './records/install-coordinator.js';
 import type { RecordsStore } from './records/store.js';
+import { assertNoPackDependants } from './pack-dependencies.js';
 
 /** D-145 PA10 follow-on Slice B — narrow broadcast emitter for the
  *  uninstall handler. Same shape rationale as
@@ -189,6 +190,7 @@ export interface PackUninstallRpcDeps {
    *  `saved_view` contents install nothing and the pack still succeeds: a view
    *  is a convenience surface, never a capability. */
   getSavedDataViewStore?: () => SavedDataViewStore | undefined;
+  getAssetClasses?: () => import('./situations/asset-classes.js').AssetClassStore | undefined;
   /** D-304 — the stores a recipe's own state lives in, so `packs.uninstall_preview`
    *  can say what goes with the pack's recipes. The REMOVAL is not here: it runs from
    *  the recipe store's deletion hook (`recipe-owned-state.ts`), which every
@@ -262,7 +264,9 @@ const emptyRemoved = (): BulkPackUninstallResultLike['removed'] => ({
 export const handlePacksUninstall = async (
   deps: PackUninstallRpcDeps,
   args: PacksUninstallArgs,
+  review: { check?(): void; beforeMutation?(): void; identity?: { publisher?: string; version?: number } } = {},
 ): Promise<{ result: BulkPackUninstallResultLike }> => {
+  review.check?.();
   if (args == null || typeof args !== 'object') {
     throw new RpcError('bad_request', 'packs.uninstall: args required');
   }
@@ -346,6 +350,7 @@ export const handlePacksUninstall = async (
       400,
     );
   }
+  if (deps.contractStore) assertNoPackDependants(deps.contractStore,pack_slug,recordsNamespace?.owner.publisher ?? args.publisher);
   if (recordsNamespace !== undefined) {
     if (!deps.contractStore || !deps.localManifestStore || !deps.registry || !deps.recordsStore) {
       return {
@@ -366,6 +371,10 @@ export const handlePacksUninstall = async (
         localManifestStore: deps.localManifestStore,
         contractStore: deps.contractStore,
         registry: deps.registry,
+        beforeMutation() {
+          assertNoPackDependants(deps.contractStore!,recordsNamespace.owner.pack_slug,recordsNamespace.owner.publisher);
+          review.beforeMutation?.();
+        },
         applyAudience: (operationIds, sourcePack, selection) => {
           applyInstallAudienceGrantIds(
             {
@@ -504,9 +513,9 @@ export const handlePacksUninstall = async (
   // (a marketplace pack persists slug + version + publisher but NO display name,
   // so the broadcast name degrades to the slug; an orphaned recipes-only install
   // has neither → publisher undefined, version 0).
-  const packPublisher = manifest?.publisher ?? inventoryRow?.publisher;
+  const packPublisher = review.identity ? review.identity.publisher : manifest?.publisher ?? inventoryRow?.publisher;
   const packName = manifest?.name ?? pack_slug;
-  const packVersion = manifest?.version ?? inventoryRow?.version ?? 0;
+  const packVersion = review.identity ? review.identity.version ?? 0 : manifest?.version ?? inventoryRow?.version ?? 0;
 
   // R2 build step 4c.3 + §1.6 follow-on — "this disables N recipes" disclosure
   // (doc §1.6). Compute BEFORE any mutation, while the pack's bindings + grant
@@ -532,6 +541,11 @@ export const handlePacksUninstall = async (
       /* best-effort — a runnability read failure never aborts the uninstall result */
     }
   }
+
+  // Every entry point keeps known installed dependencies intact, including
+  // older clients and internal cleanup callers that do not use reviewed plans.
+  if (deps.contractStore) assertNoPackDependants(deps.contractStore,pack_slug,args.publisher);
+  review.beforeMutation?.();
 
   // Track per-category outcomes as we go so a mid-transaction throw
   // still reports what landed before the failure (best-effort, matches
@@ -664,6 +678,7 @@ export const handlePacksUninstall = async (
   }
   for (const recipe_id of ownedRecipeIds) {
     try {
+      review.check?.();
       const removed = deps.recipeStore.delete(recipe_id);
       if (removed) removedRecipes.push(recipe_id);
     } catch (e) {
@@ -756,6 +771,7 @@ export const handlePacksUninstall = async (
           // behind is a dead row in the owner's list pointing at a pack that
           // no longer exists.
           deps.getSavedDataViewStore?.()?.removePackViews(pack_slug);
+          deps.getAssetClasses?.()?.removePack(pack_slug);
           for (const id of localDroppable) localStore.delete(id);
           grantStore.removePackGroups(pack_slug);
           applyInstallAudienceGrantIds(
@@ -786,6 +802,7 @@ export const handlePacksUninstall = async (
           // behind is a dead row in the owner's list pointing at a pack that
           // no longer exists.
           deps.getSavedDataViewStore?.()?.removePackViews(pack_slug);
+          deps.getAssetClasses?.()?.removePack(pack_slug);
           grantStore.removePackGroups(pack_slug);
           applyInstallAudienceGrantIds(
             {
@@ -937,16 +954,17 @@ type PacksUninstallMethods = 'packs.uninstall' | 'packs.uninstall_preview';
 
 export const makePackUninstallHandlers = (
   deps: PackUninstallRpcDeps | undefined,
+  afterUninstall?: (slug: string) => void,
 ): HandlerSlice<ServerRpcRegistry, PacksUninstallMethods, WsClient> | undefined => {
   if (!deps) return undefined;
   return {
     methods: ['packs.uninstall', 'packs.uninstall_preview'],
     handlers: {
-      'packs.uninstall': async (args) =>
-        handlePacksUninstall(
-          deps,
-          args as Parameters<typeof handlePacksUninstall>[1],
-        ),
+      'packs.uninstall': async args => {
+        const result = await handlePacksUninstall(deps,args as Parameters<typeof handlePacksUninstall>[1]);
+        if (result.result.ok) afterUninstall?.(args.pack_slug);
+        return result;
+      },
       'packs.uninstall_preview': async (args) => previewPackUninstall(deps, args),
     },
   };

@@ -55,7 +55,8 @@ import {
 } from '@recued/provenance';
 import { prefetchSharedRefs } from './shared-prefetch.js';
 import { isPrototypeSensitiveKey, setNamespaceValue } from './store-safety.js';
-import { recipesEqual } from '@recued/recipes';
+import { recipesEqual, canonicalJsonString } from '@recued/recipes';
+import { sha256Hex } from '@recued/crypto/hash';
 
 /** Execute a single recipe step. Returns a StepLog.
  *
@@ -565,7 +566,7 @@ const runForeach = async (
       // already fixed before this loop, and PII ledgers were hydrated at entry.
       if (
         resumingThisStep && ctx.resumeFrom?.gated_step_id === id
-        && ctx.resumeFrom.egress_bound !== undefined
+        && (ctx.resumeFrom.egress_bound !== undefined || ctx.resumeFrom.resource_review !== undefined)
       ) {
         ctx.resumeFrom = undefined;
       }
@@ -969,6 +970,10 @@ const runIngredient = async (step: RecipeStep, ctx: ExecutionContext): Promise<u
     ctx.work_entity_write_preadmitted_step_id,
     ctx.execution_source,
   );
+  if (resumeFrom && s.id === resumeFrom.gated_step_id && resumeFrom.resource_review !== undefined) {
+    stepMeta.resource_review = resumeFrom.resource_review;
+  }
+  stepMeta.recipe_definition_sha256 = ctx.recipeDefinitionSha256 ?? sha256Hex(canonicalJsonString(requireRecipe(ctx)));
   if (ctx.governing_recipe_grant !== undefined) stepMeta.governing_recipe_grant = ctx.governing_recipe_grant;
   if (ctx.entry_tool_name !== undefined) stepMeta.entry_tool_name = ctx.entry_tool_name;
   if (ctx.preapprovalAddressing) stepMeta.invocation_path = preapprovalStepPath(

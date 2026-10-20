@@ -28,7 +28,7 @@ import type {
   WarehouseEvent,
   WarehouseEventBus,
 } from '@recued/warehouse-events';
-import { createWarehouseEventBus, matchesPattern, eventPath, RUN_OUTCOME_PLATFORM } from '@recued/warehouse-events';
+import { createWarehouseEventBus, matchesPattern, eventPath } from '@recued/warehouse-events';
 import type { AuditLogStore } from '@recued/storage';
 import type { EventTrigger } from '@recued/contracts';
 import { MAIL_FACT_EVENT_PLATFORM, matchesTriggerDispatchFilter } from '@recued/contracts';
@@ -43,8 +43,13 @@ import {
   decideAutomationFailure,
   type AutomationUnitRef,
 } from '../automation-failure-reporter.js';
+import { selectTriggerEvent, isTriggerRunOutcomeLoop } from '../automation-start-decisions.js';
 import { triggerEventContext } from './event-context.js';
 import type { PreapprovalDriver } from '../preapproval-driver.js';
+import type { ReadGrantChecker } from '../read-grant-checker.js';
+import { projectProactiveEvent } from '../situations/event-visibility.js';
+import type { SituationReadContext } from '../situations/query.js';
+import { situationRevisionEvent, type SituationStore } from '../storage/situation-store.js';
 
 /** Callback the dispatcher invokes when a trigger matches. Wired to
  *  `serverExecutor.executeRecipe` by the composition root; tests
@@ -63,6 +68,9 @@ export interface TriggerDispatchRuntime {
     trigger_id: string;
     /** Private queue metadata, never part of recipe context or public RPC. */
     candidate?: object;
+    /** Host receipt at the execution boundary, never recipe context. */
+    beforeRunStart?: (run_id: string) => void;
+    subscriber_contract_id?: string | null;
     /** D-315 §6.3 — the event came from a backfill of past mail: the run is
      *  started with `trigger_source: 'backfill'`. */
     origin?: 'backfill';
@@ -123,6 +131,9 @@ export interface EventTriggerDispatcher {
   /** D-124 — an event that reached the bus before this dispatcher subscribed
    *  (a boot scan's), handed to its triggers exactly as the bus would have. */
   deliver(event: WarehouseEvent): void;
+  /** Durable situation feed: false leaves this subscriber's checkpoint. */
+  deliverSituation?(trigger_id: string, event: WarehouseEvent): Promise<boolean>;
+  catchUpSituations?(): Promise<void>;
   /** D-315 §6.4 — a fire started outside the queue: the pre-approval
    *  recovery clock runs a reviewed trigger's sealed event itself. It is run
    *  here and kept on the same books as a queued fire — `last_fired_at`, the
@@ -139,6 +150,11 @@ export interface EventTriggerDispatcherDeps {
   bus: WarehouseEventBus;
   store: EventTriggersStore;
   runtime: TriggerDispatchRuntime;
+  readGrantsForSubscriber?: (trigger: EventTrigger) => ReadGrantChecker | undefined;
+  readContextForSubscriber?: (trigger: EventTrigger) => SituationReadContext | undefined;
+  /** The bus only wakes this feed consumer; it never dispatches a revision twice. */
+  onSituationDoorbell?: (trigger_id: string) => void;
+  situations?: SituationStore;
   auditLog?: AuditLogStore;
   /** D-268 — deliver one owner notice about a failed fire: the first failure of
    *  an episode, and the disarm. Absent ⇒ failures are recorded on the trigger
@@ -186,10 +202,12 @@ export interface EventTriggerDispatcherDeps {
   isVaultUnlocked?: () => boolean;
   /** Late-bound because the realm review service composes after this bus. */
   getPreapprovalDriver?: () => PreapprovalDriver | undefined;
-  /** D-318 step 1 — is this mailbox the email chat door's chat mailbox? Its
-   *  mail is the conversation with Recued, not the owner's mail, so a mail
-   *  event from it starts no recipe. Read per event. Absent ⇒ none is. */
-  isChatMailbox?: (slug: string) => boolean;
+  /** D-318 step 1 — is this mailbox the email chat door's chat mailbox, used
+   *  for chat alone? Its mail is the conversation with Recued, not the owner's
+   *  mail, so a mail event from it starts no recipe. One that is the owner's
+   *  own too (one mailbox, §8.18) is not: its conversation's emails are known
+   *  one by one (`isChatConversationRecord`). Read per event. Absent ⇒ none is. */
+  isChatOnlyMailbox?: (slug: string) => boolean;
   /** D-318 step 5 — is this stored message, in one of the owner's other
    *  mailboxes, the conversation with the chat mailbox (an answer, or the Sent
    *  copy of a request)? It starts no recipe either. Absent ⇒ none is. */
@@ -200,6 +218,9 @@ interface Subscription {
   trigger_id: string;
   unsubscribe: () => void;
 }
+
+/** A trigger's name on the durable situation feed, where its checkpoint is kept. */
+export const situationSubscriberId = (trigger_id: string): string => `trigger:${trigger_id}`;
 
 interface ErrorWindowEntry {
   ts: number;
@@ -218,6 +239,20 @@ export const createEventTriggerDispatcher = (
   // heard it when it came.
   const late = createWarehouseEventBus();
   const errorsByTrigger = new Map<string, ErrorWindowEntry[]>();
+  const feedPumps = new Map<string, Promise<void>>();
+  let disposed = false;
+  const pumpSituation = (trigger_id: string): Promise<void> => {
+    const pending = feedPumps.get(trigger_id); if (pending) return pending;
+    const trigger = deps.store.get(trigger_id);
+    if (!deps.situations || !trigger || disposed) return Promise.resolve();
+    const promise = deps.situations.catchUp(situationSubscriberId(trigger_id), revision => dispatcher.deliverSituation!(trigger_id, situationRevisionEvent(revision)), {
+      isOpen: () => !disposed && deps.isVaultUnlocked?.() !== false,
+      cause_source: `recipe:${trigger.recipe_id}`,
+    }).then(() => {});
+    feedPumps.set(trigger_id, promise);
+    void promise.finally(() => { if (feedPumps.get(trigger_id) === promise) feedPumps.delete(trigger_id); }).catch(() => {});
+    return promise;
+  };
 
   const recordError = (trigger_id: string): number => {
     const nowMs = now();
@@ -369,17 +404,14 @@ export const createEventTriggerDispatcher = (
     // A run one of a recipe's triggers started never starts that recipe again
     // through its own outcome. Staged chains are unaffected — a DIFFERENT
     // recipe consuming the outcome fires normally.
-    if (event.platform === RUN_OUTCOME_PLATFORM) {
-      const origin = (event.record as { origin_trigger_id?: unknown } | undefined)?.origin_trigger_id;
-      if (origin === trigger.trigger_id) return;
-      if (typeof origin === 'string' && deps.store.get(origin)?.recipe_id === trigger.recipe_id) return;
-    }
+    if (isTriggerRunOutcomeLoop(trigger, event, id => deps.store.get(id))) return;
     await settle(trigger, event, () => deps.runtime.runRecipe({
       recipe_id: trigger.recipe_id,
       publisher_id: trigger.publisher_id,
       context: triggerEventContext(trigger.trigger_id, event),
       dish_id: trigger.dish_id ?? null,
       trigger_id: trigger.trigger_id,
+      subscriber_contract_id: trigger.read_contract_id ?? null,
       ...(candidate ? { candidate } : {}),
       ...(event.origin === 'backfill' ? { origin: 'backfill' as const } : {}),
     }));
@@ -391,10 +423,10 @@ export const createEventTriggerDispatcher = (
     trigger: EventTrigger,
     event: WarehouseEvent,
     run: () => Promise<void | TriggerRunOutcome>,
-  ): Promise<void> => {
+  ): Promise<boolean> => {
     try {
       const outcome = await run();
-      if (outcome !== undefined && 'skipped' in outcome) return;
+      if (outcome !== undefined && 'skipped' in outcome) return true;
       const runId = outcome !== undefined && 'run_id' in outcome ? outcome.run_id : undefined;
       // D-268 — a run that reported success and refused every item it attempted.
       // It is a failure for the counter's sake and NOT for the row's: the run
@@ -406,7 +438,7 @@ export const createEventTriggerDispatcher = (
         const verdict = handleFailure(trigger, undefined, true,
           'This run attempted items and every one was refused.');
         if (verdict === 'stop') await disableTrigger(trigger, 'total_refusal');
-        return;
+        return false;
       }
       deps.store.update(trigger.trigger_id, {
         last_fired_at: now(),
@@ -423,6 +455,7 @@ export const createEventTriggerDispatcher = (
             ? 'declined'
             : 'completed',
       );
+      return true;
     } catch (err) {
       const failure = presentAutomationFailure(err);
       if (failure.redacted) {
@@ -447,7 +480,7 @@ export const createEventTriggerDispatcher = (
       // the feature working.
       if (verdict === 'not_a_failure') {
         deps.store.update(trigger.trigger_id, { last_fired_at: now() });
-        return;
+        return true;
       }
       deps.store.update(trigger.trigger_id, {
         last_fired_at: now(),
@@ -456,6 +489,7 @@ export const createEventTriggerDispatcher = (
       if (verdict === 'stop') {
         await disableTrigger(trigger, code !== undefined ? `code=${code}` : 'errors_24h');
       }
+      return false;
     }
   };
 
@@ -491,6 +525,7 @@ export const createEventTriggerDispatcher = (
   };
 
   const rebuild = (): void => {
+    disposed = false;
     for (const sub of subscriptions) {
       try { sub.unsubscribe(); } catch { /* idempotent */ }
     }
@@ -500,10 +535,17 @@ export const createEventTriggerDispatcher = (
     // their next execution can arm them without an asynchronous rebuild gap.
     // Every callback still checks the live row and captures only eligible work.
     for (const subscribed of deps.getPreapprovalDriver ? deps.store.list() : deps.store.listEnabled()) {
-      const receive = (event: WarehouseEvent): void => {
+      const receive = (incoming: WarehouseEvent): void => {
         const driver = deps.getPreapprovalDriver?.();
         const trigger = deps.getPreapprovalDriver ? deps.store.get(subscribed.trigger_id) : subscribed;
         if (!trigger) return;
+        if (incoming.platform === 'situation' && (deps.situations || deps.onSituationDoorbell)) {
+          if (deps.situations) void pumpSituation(trigger.trigger_id).catch(() => {});
+          else deps.onSituationDoorbell?.(trigger.trigger_id);
+          return;
+        }
+        const context = deps.readContextForSubscriber?.(trigger);
+      const event = projectProactiveEvent(incoming, context?.grants ?? deps.readGrantsForSubscriber?.(trigger), context);
         if (deps.getPreapprovalDriver && !driver && !trigger.enabled) return;
         // Match is already guaranteed by the bus; this extra check
         // is a defense-in-depth for the disable race (a subscription
@@ -512,10 +554,10 @@ export const createEventTriggerDispatcher = (
           eventPath(event.platform, event.slug, event.entity_type, event.event_kind))) {
           return;
         }
-        // D-318 step 1 — the chat mailbox's mail is the conversation with Recued;
-        // it starts no mail recipe. Before both the run and the pre-approval
-        // capture below, so neither sees it.
-        if (event.platform === 'mail' && deps.isChatMailbox?.(event.slug) === true) return;
+        // D-318 step 1 — a chat-only mailbox's mail is the conversation with
+        // Recued; it starts no mail recipe. Before both the run and the
+        // pre-approval capture below, so neither sees it.
+        if (event.platform === 'mail' && deps.isChatOnlyMailbox?.(event.slug) === true) return;
         // D-318 step 5 — nor its answers and requests in the owner's other mailboxes.
         if (event.platform === 'mail' && deps.isChatConversationRecord?.(event.slug, event.record_id) === true) return;
         // Authoring sugar — per-row dispatch filter (design § 3/§ 5):
@@ -544,21 +586,7 @@ export const createEventTriggerDispatcher = (
         // D-315 ruling 44 — a mail fact's event goes through the filter even
         // for a row with none: a change of the time alone wakes only a row
         // that names it in `fields`.
-        if ((trigger.filter !== undefined || trigger.fields !== undefined || event.platform === MAIL_FACT_EVENT_PLATFORM)
-          && !matchesTriggerDispatchFilter(trigger, {
-            record_id: event.record_id,
-            at: event.at,
-            platform: event.platform,
-            slug: event.slug,
-            entity_type: event.entity_type,
-            ...(event.prev !== undefined ? { prev: event.prev } : {}),
-            ...(event.record !== undefined ? { record: event.record } : {}),
-            ...(event.changed_fields !== undefined
-              ? { changed_fields: event.changed_fields }
-              : {}),
-          })) {
-          return;
-        }
+        if (!selectTriggerEvent(trigger, event)) return;
         // D-124 Phase 2.3 — replaces fire-and-forget `void onEvent(...)`.
         // Same `(trigger_id, record_id)` serializes; rapid edits to the
         // same record coalesce at depth 2 (in-flight + tail) preserving
@@ -567,7 +595,7 @@ export const createEventTriggerDispatcher = (
         // execution. An initial backfill is not a qualifying future event.
         if (driver) {
           if (event.in_drain === true || (deps.backfillState && !deps.backfillState.isComplete(event.platform, event.slug))
-            || (event.platform === RUN_OUTCOME_PLATFORM && event.record?.origin_trigger_id === trigger.trigger_id)) return;
+            || isTriggerRunOutcomeLoop(trigger, event, id => deps.store.get(id))) return;
           // A sealed vault drops a fire as it arrives — but a mail fact's
           // event is its fact's one announcement (D-315: read again, the fact
           // never fires again), so it is held, in the order it came, and
@@ -590,6 +618,7 @@ export const createEventTriggerDispatcher = (
   };
 
   const dispose = (): void => {
+    disposed = true;
     for (const sub of subscriptions) {
       try { sub.unsubscribe(); } catch { /* idempotent */ }
     }
@@ -598,7 +627,7 @@ export const createEventTriggerDispatcher = (
     errorsByTrigger.clear();
   };
 
-  return {
+  const dispatcher: EventTriggerDispatcher = {
     rebuild,
     dispose,
     activeSubscriptions: () => subscriptions.length,
@@ -607,6 +636,7 @@ export const createEventTriggerDispatcher = (
       // What the vault holds is not yet queued: drained, it has run too.
       while (releasing !== null) await releasing;
       await queue.drained();
+      await Promise.allSettled([...feedPumps.values()]);
     },
     room: async () => {
       // A sealed vault drops a fire as it arrives, and holds a mail fact's
@@ -620,6 +650,61 @@ export const createEventTriggerDispatcher = (
       } while (deps.isVaultUnlocked !== undefined && !deps.isVaultUnlocked());
     },
     deliver: (event) => late.emit(event),
+    catchUpSituations: async () => {
+      if (disposed || deps.isVaultUnlocked?.() === false) return;
+      for (const trigger of deps.store.list()) await pumpSituation(trigger.trigger_id);
+    },
+    deliverSituation: async (trigger_id, incoming) => {
+      if (incoming.platform !== 'situation') throw new Error('Only durable situation revisions use this delivery path');
+      if (deps.isVaultUnlocked?.() === false) return false;
+      const trigger = deps.store.get(trigger_id);
+      if (!trigger) return true;
+      const revision = incoming.prev?.revision;
+      const subscriber = situationSubscriberId(trigger.trigger_id);
+      const durable = deps.situations && typeof revision === 'number' && Number.isSafeInteger(revision) && revision > 0 ? deps.situations : undefined;
+      if (durable) {
+        const receipt = durable.subscriberRun(subscriber, revision as number);
+        if (receipt?.state === 'completed') return true;
+        if (receipt) {
+          durable.finishSubscriberRun(subscriber, revision as number, 'in_doubt', now());
+          // A provider effect could have landed before the process died. Keep
+          // this revision visible and blocked for reconciliation; never replay it.
+          return false;
+        }
+      }
+      if (!trigger.enabled) return true;
+      if (incoming.at < trigger.created_at) return true;
+      if (!matchesPattern(trigger.pattern, eventPath(incoming.platform, incoming.slug, incoming.entity_type, incoming.event_kind))) return true;
+      const context = deps.readContextForSubscriber?.(trigger);
+      const event = projectProactiveEvent(incoming, context?.grants ?? deps.readGrantsForSubscriber?.(trigger), context);
+      const cause = event.prev?.cause as { source?: string } | undefined;
+      if (cause?.source === `recipe:${trigger.recipe_id}`) return true;
+      if (!matchesTriggerDispatchFilter(trigger, { record_id: event.record_id, at: event.at, platform: event.platform,
+        slug: event.slug, entity_type: event.entity_type, prev: event.prev, record: event.record, changed_fields: event.changed_fields })) return true;
+      const driver = deps.getPreapprovalDriver?.();
+      const candidate = driver?.captureTrigger(trigger, event);
+      if (driver && !candidate) return true;
+      let entered = false;
+      const handled = await settle(trigger, event, async () => {
+        const outcome = await deps.runtime.runRecipe({ recipe_id: trigger.recipe_id, publisher_id: trigger.publisher_id,
+          context: triggerEventContext(trigger.trigger_id, event), dish_id: trigger.dish_id ?? null, trigger_id: trigger.trigger_id,
+          subscriber_contract_id: trigger.read_contract_id ?? null,
+          ...(candidate ? { candidate } : {}),
+          ...(durable ? { beforeRunStart: (run_id: string) => {
+            const current = deps.store.get(trigger.trigger_id);
+            if (!current || current.read_contract_id !== trigger.read_contract_id) throw new Error('Subscriber contract changed before execution');
+            const latestContext = deps.readContextForSubscriber?.(current);
+            const latest = projectProactiveEvent(incoming, latestContext?.grants ?? deps.readGrantsForSubscriber?.(current), latestContext);
+            if (JSON.stringify(latest) !== JSON.stringify(event)) throw new Error('Subscriber read permissions changed before execution');
+            if (!durable.beginSubscriberRun(subscriber, revision as number, run_id, now())) throw new Error('Situation revision already entered a run; reconcile its existing run');
+            entered = true;
+          } } : {}) });
+        if (entered) durable!.finishSubscriberRun(subscriber, revision as number, 'completed', now());
+        return outcome;
+      });
+      if (!handled && entered) durable!.finishSubscriberRun(subscriber, revision as number, 'in_doubt', now());
+      return handled;
+    },
     settleFire: async (trigger_id, event, run) => {
       const trigger = deps.store.get(trigger_id);
       if (trigger === null) {
@@ -629,4 +714,5 @@ export const createEventTriggerDispatcher = (
       await settle(trigger, event, () => run(trigger));
     },
   };
+  return dispatcher;
 };

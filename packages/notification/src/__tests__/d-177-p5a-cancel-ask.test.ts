@@ -250,7 +250,7 @@ describe('D-177 P5a NotificationBlock.cancelAsk', () => {
       ask_id: 'ask-cancel-first',
       option: 'approve',
       via: 'ui',
-    })).resolves.toBeUndefined();
+    })).resolves.toBe('closed');
 
     expect(handler).not.toHaveBeenCalled();
     expect(ui.closes).toEqual(['ask-cancel-first']);

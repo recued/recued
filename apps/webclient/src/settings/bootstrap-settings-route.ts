@@ -131,6 +131,9 @@ import {
   type PairListCaller,
   type PairRevokeCaller,
 } from './devices-page-mount.js';
+import { mountSituationDeliveryPanel, type SituationDeliveryPanelOptions } from './situation-delivery-panel.js';
+import { mountLastTimePanel, type LastTimePanelOptions } from './last-time-panel.js';
+import { mountHouseholdDeliveryPanel, type HouseholdDeliveryPanelOptions } from './household-delivery-panel.js';
 import {
   NOTIFICATIONS_PANEL_STYLES,
   mountNotificationsPanel,
@@ -340,6 +343,8 @@ import {
   type ArchiveDownloadFn,
   type ArchiveUploadFn,
 } from './archive-backup-panel.js';
+import { mountRemoteBackups, type RemoteBackupsPorts } from './remote-backups-panel.js';
+import type { ArchiveImportReceiptController } from './archive-import-receipt.js';
 import { serializeShellRoute } from '../shell/route.js';
 import type { ClearThisBrowserResult } from '../auth/clear-this-browser.js';
 import type { CertPinStateWatcher } from '../realtime/cert-pin-state-watcher.js';
@@ -513,6 +518,8 @@ export interface BootstrapSettingsRouteOptions {
   /** R26.4 M1 — `server.archive.import` rpc caller (dry-run preview + the Q2
    *  realm-gated destructive restore). See `archiveExportCaller` for the gate. */
   archiveImportCaller?: ArchiveImportCaller;
+  archiveImportReceipt?: ArchiveImportReceiptController;
+  archiveRemoteBackups?: RemoteBackupsPorts;
   /** R26.4 M1 — `passport.export` rpc caller forwarded to the unified surface's
    *  lightweight "Export identity passport only" action (support / audit JSON).
    *  Production wires `(args) => conn('passport.export', args)`; tests inject a
@@ -643,6 +650,10 @@ export interface BootstrapSettingsRouteOptions {
   /** D-269 step 2 — Settings → Approval & notifications → Reminders. */
   kindPolicyGetCaller?: KindPolicyGetCaller;
   kindPolicySetCaller?: KindPolicySetCaller;
+  situationDelivery?: Omit<SituationDeliveryPanelOptions, 'host' | 'document'>;
+  /** D-325 §15.7 — "last time" in Privacy → Learning. */
+  lastTime?: Omit<LastTimePanelOptions, 'host' | 'document'>;
+  householdDelivery?: Omit<HouseholdDeliveryPanelOptions, 'host' | 'document'>;
   quietHoursGetCaller?: QuietHoursGetCaller;
   quietHoursSetCaller?: QuietHoursSetCaller;
   /** D-318 step 7 — Settings → Email chat: the email chat door's settings, its
@@ -1752,6 +1763,7 @@ export const bootstrapSettingsRoute = (
   // in-archive embed supersedes it). The generate/enroll half of the recovery
   // key still lives at FIRST PAIR (auth/pair-code-input-host.ts), not here.
   let archiveBackup: ArchiveBackupPanelMount | null = null;
+  let archiveRemote: ReturnType<typeof mountRemoteBackups> | null = null;
   const archiveCallersReady =
     opts.archiveExportCaller !== undefined
     && opts.archiveStatusCaller !== undefined
@@ -1764,20 +1776,29 @@ export const bootstrapSettingsRoute = (
     backupHeading.textContent = 'Backup & Recovery';
     backupSection.appendChild(backupHeading);
 
+    if (opts.archiveRemoteBackups) {
+      const remoteHost = doc.createElement('div'); backupSection.appendChild(remoteHost);
+      archiveRemote = mountRemoteBackups({ host: remoteHost, document: doc, ports: opts.archiveRemoteBackups,
+        onRestore: stagedName => archiveBackup?.openStagedRestore(stagedName) ?? false });
+    }
+
     const archiveHost = doc.createElement('div');
     backupSection.appendChild(archiveHost);
     archiveBackup = mountArchiveBackupPanel({
       host: archiveHost,
       document: doc,
-      runExport: opts.archiveExportCaller as ArchiveExportCaller,
+      runExport: async input => {
+        try { return await opts.archiveExportCaller!(input); }
+        finally { void archiveRemote?.refresh(); }
+      },
       runStatus: opts.archiveStatusCaller as ArchiveStatusCaller,
       runImport: opts.archiveImportCaller as ArchiveImportCaller,
+      ...(archiveRemote === null ? {} : { remoteTarget: () => archiveRemote!.target() }),
+      ...(opts.archiveImportReceipt === undefined ? {} : { importReceipt: opts.archiveImportReceipt }),
       ...(opts.archiveResumeExportStart !== undefined
         ? { resumeExportStart: opts.archiveResumeExportStart }
         : {}),
-      ...(opts.archiveExportSettled !== undefined
-        ? { onExportSettled: opts.archiveExportSettled }
-        : {}),
+      onExportSettled: jobId => { opts.archiveExportSettled?.(jobId); void archiveRemote?.refresh(); },
       ...(opts.passportExportCaller !== undefined
         ? { runPassportExport: opts.passportExportCaller }
         : {}),
@@ -2117,6 +2138,7 @@ export const bootstrapSettingsRoute = (
   // see the handle.
   let transparencyPanel: TransparencyPanelMount | null = null;
   let learningPanel: LearningPanelMount | null = null;
+  let lastTime: ReturnType<typeof mountLastTimePanel> | null = null;
 
   // ── Housekeeping section (D-132/D-133 trust core) ────────────────
   // Per-topic AI-trust radios + pool policy + schedule + Run-now. The
@@ -2286,6 +2308,7 @@ export const bootstrapSettingsRoute = (
       runPrefsGet: opts.transparencyPrefsGetCaller,
       runPrefsSet: opts.transparencyPrefsSetCaller,
     });
+    const receipts = doc.createElement('a'); receipts.href = '#yours/proposals'; receipts.textContent = 'Receipt extraction and source controls'; transparencyBlock.appendChild(receipts);
   }
 
   // ── Learning — whether Recued asks how a multi-step turn turned out ─
@@ -2295,18 +2318,24 @@ export const bootstrapSettingsRoute = (
   // and does not run through the ask; the panel's copy says so)
   // that becomes precedent, so it is a real control rather than a
   // display preference.
-  if (
-    opts.learningPrefsGetCaller !== undefined
-    && opts.learningPrefsSetCaller !== undefined
-  ) {
-    const learningBlock = doc.createElement('div');
+  // D-325 §15.7 — "Last time" (P21) is learning too, so it joins this block.
+  const hasLearningPrefs = opts.learningPrefsGetCaller !== undefined && opts.learningPrefsSetCaller !== undefined;
+  let learningBlock: HTMLDivElement | null = null;
+  if (hasLearningPrefs || opts.lastTime) {
+    learningBlock = doc.createElement('div');
     learningBlock.setAttribute(SETTINGS_ROUTE_PRIVACY_LEARNING_ATTR, '');
     const learningHeading = doc.createElement('h3');
     learningHeading.textContent = 'Learning';
     learningBlock.appendChild(learningHeading);
+    privacySection.appendChild(learningBlock);
+  }
+  if (
+    learningBlock !== null
+    && opts.learningPrefsGetCaller !== undefined
+    && opts.learningPrefsSetCaller !== undefined
+  ) {
     const learningHost = doc.createElement('div');
     learningBlock.appendChild(learningHost);
-    privacySection.appendChild(learningBlock);
     learningPanel = mountLearningPanel({
       host: learningHost,
       document: doc,
@@ -2330,6 +2359,10 @@ export const bootstrapSettingsRoute = (
           }
         : {}),
     });
+  }
+  if (learningBlock !== null && opts.lastTime) {
+    const lastTimeHost = doc.createElement('div'); learningBlock.appendChild(lastTimeHost);
+    lastTime = mountLastTimePanel({ host: lastTimeHost, document: doc, ...opts.lastTime });
   }
 
   // ── This browser — clear local device data + crypto keys ──────────
@@ -2462,6 +2495,8 @@ export const bootstrapSettingsRoute = (
         };
   let serverTimeZone: ServerTimeZonePanelMount | null = null;
   let quietHours: QuietHoursPanelMount | null = null;
+  let situationDelivery: ReturnType<typeof mountSituationDeliveryPanel> | null = null;
+  let householdDelivery: ReturnType<typeof mountHouseholdDeliveryPanel> | null = null;
   let kindPolicy: KindPolicyPanelMount | null = null;
   const canMountNotifications =
     opts.notificationsDescribeCaller !== undefined
@@ -2546,6 +2581,14 @@ export const bootstrapSettingsRoute = (
       });
     }
 
+    if (opts.situationDelivery) {
+      const host = doc.createElement('div'); notifSection.appendChild(host);
+      situationDelivery = mountSituationDeliveryPanel({ host, document: doc, ...opts.situationDelivery });
+    }
+    if (opts.householdDelivery) {
+      const host = doc.createElement('div'); notifSection.appendChild(host);
+      householdDelivery = mountHouseholdDeliveryPanel({ host, document: doc, ...opts.householdDelivery });
+    }
     registerSubview('notifications', 'Approval & notifications', notifSection);
   }
 
@@ -3337,6 +3380,7 @@ export const bootstrapSettingsRoute = (
       if (disposed) return false;
       if (panel.getState() === 'busy') return true;
       if (notifications?.hasInFlightWork() === true) return true;
+      if (householdDelivery?.hasInFlightWork() === true) return true;
       if (aiModels?.hasInFlightWork() === true) return true;
       if (accountBinding?.hasInFlightWork() === true) return true;
       if (devicesPage?.hasInFlightWork() === true) return true;
@@ -3354,6 +3398,7 @@ export const bootstrapSettingsRoute = (
     hasUnsavedChanges: () => {
       if (disposed) return false;
       return notifications?.hasUnsavedChanges() === true
+        || householdDelivery?.hasUnsavedChanges() === true
         || learningPanel?.hasUnsavedChanges() === true;
     },
     unsavedChangesPrompt: () => {
@@ -3361,6 +3406,7 @@ export const bootstrapSettingsRoute = (
       if (notifications?.hasUnsavedChanges() === true) {
         return 'Discard the unsaved notification verification phrase?';
       }
+      if (householdDelivery?.hasUnsavedChanges() === true) return 'Discard the unsaved household Telegram settings?';
       return learningPanel?.hasUnsavedChanges() === true
         ? 'Discard the finished recipe draft?'
         : null;
@@ -3370,6 +3416,7 @@ export const bootstrapSettingsRoute = (
       if (notifications?.hasInFlightWork() === true) {
         return 'A notification setting is still updating. Leave Settings anyway?';
       }
+      if (householdDelivery?.hasInFlightWork() === true) return 'Household Telegram is still updating. Leave Settings anyway?';
       if (aiModels?.hasInFlightWork() === true) {
         return 'An AI model setting is still updating. Leave Settings anyway?';
       }
@@ -3428,6 +3475,9 @@ export const bootstrapSettingsRoute = (
       if (notifications !== null) notifications.dispose();
       if (serverTimeZone !== null) serverTimeZone.dispose();
       if (quietHours !== null) quietHours.dispose();
+      situationDelivery?.dispose();
+      householdDelivery?.dispose();
+      lastTime?.dispose();
       if (mailChatDoor !== null) mailChatDoor.dispose();
       if (kindPolicy !== null) kindPolicy.dispose();
       // D-187 §6 follow-on — Packs / Local tools / cli grant dialog dispose
@@ -3450,6 +3500,7 @@ export const bootstrapSettingsRoute = (
       // RELOADING THE TAB after the user had gone somewhere else.
       if (serverAddressPanel !== null) serverAddressPanel.dispose();
       if (archiveBackup !== null) archiveBackup.dispose();
+      archiveRemote?.dispose();
       routeRoot.remove();
     },
     clearThisBrowserPanel: () => panel,

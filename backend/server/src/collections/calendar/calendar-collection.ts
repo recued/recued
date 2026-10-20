@@ -29,6 +29,8 @@
  */
 
 import type Database from 'better-sqlite3';
+import { withLocalMutationScope } from '../../local-mutation-context.js';
+import { afterLocalCommit, type PreparedLocalWrite } from '../../local-transaction.js';
 import { Buffer } from 'node:buffer';
 import type { StorageGate } from '@recued/storage-gate';
 import type { AuditLogStore } from '@recued/storage';
@@ -64,6 +66,7 @@ import {
   CALENDAR_INLINE_CUTOFF_BYTES,
   CALENDAR_MAX_LIST_LIMIT,
   calendarEventChanges,
+  calendarRuleLearned,
   createCalendarTable,
   type CalendarCollectionTable,
   type CalendarListQuery,
@@ -124,6 +127,8 @@ export interface CreateCalendarCollectionOptions {
  *  the calendar table + provider so the dispatcher can hit them
  *  directly without re-walking the registry. */
 export interface CalendarCollection extends Collection {
+  /** Host-only: prepare asynchronous body storage before a shared commit. */
+  prepareVerifiedUpsert?(payload: ProviderEventPayload, expected_version: string): Promise<PreparedLocalWrite>;
   /** Calendar warehouse table backing the dispatcher's read path. */
   readonly table: CalendarCollectionTable;
   /** Live provider used for write-back. The dispatcher calls
@@ -134,10 +139,10 @@ export interface CalendarCollection extends Collection {
    *  split (inline vs CAS) as the sync tick. The dispatcher uses this
    *  on `create`/`update`/`rsvp` to keep "remote-wins, verified-then-
    *  reflected" intact. */
-  applyVerifiedUpsert(payload: ProviderEventPayload): Promise<void>;
+  applyVerifiedUpsert(payload: ProviderEventPayload, expected_version?: string): Promise<void>;
   /** Apply a verified delete — drops the row + emits warehouse
    *  events. Used by the dispatcher on `delete`. */
-  applyVerifiedDelete(source_id: string): void;
+  applyVerifiedDelete(source_id: string, expected_version?: string): void;
 }
 
 const stateName = (s: CollectionState): CollectionState => s;
@@ -313,10 +318,11 @@ export const createCalendarCollection = (
     else if (outcome.failure === 'auth') markCredentialRejected();
   });
 
-  const upsertPayload = async (
+  const prepareUpsert = async (
     payload: ProviderEventPayload,
     shouldContinue: () => boolean = () => true,
-  ): Promise<void> => {
+    expected_version?: string,
+  ): Promise<() => void> => {
     const assertActive = (): void => {
       if (!shouldContinue()) {
         throw new Error('calendar sync generation is no longer active');
@@ -328,41 +334,50 @@ export const createCalendarCollection = (
     // before the SQLite write so stop/lock cannot turn a stale callback into an
     // acknowledgement that advances the provider checkpoint.
     assertActive();
-    const prev = table.upsert({
-      event: payload.event,
-      size_bytes: split.size_bytes,
-      ...(split.body_inline !== undefined ? { body_inline: split.body_inline } : {}),
-      ...(split.blob_hash !== undefined ? { blob_hash: split.blob_hash } : {}),
-      ...(payload.etag !== undefined ? { etag: payload.etag } : {}),
-      now: nowOf(),
-    });
-    const recordId = `cal:${slug}:${payload.event.source_id}`;
-    if (prev) {
-      // Only a change is an update, named by what changed: a restart's scan
-      // lists every stored event again, and each would otherwise wake every
-      // `updated` trigger. A correction is no change to the event either:
-      // the provider's copy is the same, read differently now.
-      const changed = calendarEventChanges(prev.event, payload.event);
-      if (changed.length > 0 && payload.correction !== true) {
-        emitter.updated(recordId, prev.hot as unknown as Record<string, unknown>, changed);
+    return () => {
+      assertActive();
+      const prev = table.upsert({
+        ...(expected_version !== undefined ? { expected_version } : {}),
+        event: payload.event,
+        size_bytes: split.size_bytes,
+        ...(split.body_inline !== undefined ? { body_inline: split.body_inline } : {}),
+        ...(split.blob_hash !== undefined ? { blob_hash: split.blob_hash } : {}),
+        ...(payload.etag !== undefined ? { etag: payload.etag } : {}),
+        now: nowOf(),
+      });
+      const recordId = `cal:${slug}:${payload.event.source_id}`;
+      afterLocalCommit(db, () => withLocalMutationScope(undefined, () => {
+        if (prev) {
+          // Only a change is an update, named by what changed: a restart's scan
+          // lists every stored event again, and each would otherwise wake every
+          // `updated` trigger. A correction is no change to the event either:
+          // the provider's copy is the same, read differently now.
+          const changed = calendarEventChanges(prev.event, payload.event);
+          if (changed.length > 0 && payload.correction !== true && !calendarRuleLearned(prev.event, payload.event, changed)) {
+            emitter.updated(recordId, prev.hot as unknown as Record<string, unknown>, changed);
+          }
+        } else emitter.created(recordId);
+      }));
+      afterLocalCommit(db, () => { lastIndexedAt = nowOf(); });
+      // If stop raced the synchronous commit, reject anyway: replaying this
+      // idempotent upsert is safe, while allowing the retired provider generation
+      // to persist a newer cursor is not.
+      assertActive();
+      if (opts.onEventUpserted) {
+        try { afterLocalCommit(db, () => withLocalMutationScope(undefined, () => opts.onEventUpserted!(payload))); }
+        catch (err) { bumpError(`calendar onEventUpserted hook failed for ${payload.event.source_id}`, err); }
       }
-    } else emitter.created(recordId);
-    lastIndexedAt = nowOf();
-    // If stop raced the synchronous commit, reject anyway: replaying this
-    // idempotent upsert is safe, while allowing the retired provider generation
-    // to persist a newer cursor is not.
-    assertActive();
-    if (opts.onEventUpserted) {
-      try { opts.onEventUpserted(payload); }
-      catch (err) { bumpError(`calendar onEventUpserted hook failed for ${payload.event.source_id}`, err); }
-    }
+    };
   };
 
-  const deleteSource = (source_id: string): void => {
-    const result = table.delete(source_id);
+  const upsertPayload = async (payload: ProviderEventPayload, shouldContinue?: () => boolean,
+    expected_version?: string): Promise<void> => { (await prepareUpsert(payload, shouldContinue, expected_version))(); };
+
+  const deleteSource = (source_id: string, expected_version?: string): void => {
+    const result = table.delete(source_id, expected_version);
     if (!result.deleted || !result.prior) return;
     const recordId = `cal:${slug}:${source_id}`;
-    emitter.deleted(recordId, result.prior.hot as unknown as Record<string, unknown>);
+    withLocalMutationScope(undefined, () => emitter.deleted(recordId, result.prior!.hot as unknown as Record<string, unknown>));
   };
 
   /** CalDAV: remove the rows inside the window that the provider no longer
@@ -629,11 +644,11 @@ export const createCalendarCollection = (
 
   const runRetention = async (): Promise<CollectionPruneResult> => retention.run();
 
-  const applyVerifiedUpsert = async (payload: ProviderEventPayload): Promise<void> => {
-    await upsertPayload(payload);
+  const applyVerifiedUpsert = async (payload: ProviderEventPayload, expected_version?: string): Promise<void> => {
+    await upsertPayload(payload, undefined, expected_version);
   };
-  const applyVerifiedDelete = (source_id: string): void => {
-    deleteSource(source_id);
+  const applyVerifiedDelete = (source_id: string, expected_version?: string): void => {
+    deleteSource(source_id, expected_version);
   };
 
   // The Collection surface — calendar exposes its own kernel
@@ -666,6 +681,14 @@ export const createCalendarCollection = (
     table,
     provider,
     applyVerifiedUpsert,
+    prepareVerifiedUpsert: async (payload, expectedVersion) => {
+      if (provider.kind !== 'local') throw new Error('Only local Calendar can join a local transaction.');
+      const apply = await prepareUpsert(payload, () => !closed, expectedVersion);
+      return { db, apply: () => {
+        if (!db.inTransaction) throw new Error('Prepared Calendar writes require the shared transaction.');
+        apply();
+      } };
+    },
     applyVerifiedDelete,
   };
 };

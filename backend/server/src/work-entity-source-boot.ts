@@ -467,6 +467,7 @@ const RECUED_BUILTIN_LABEL: Record<WorkEntityKind, string> = {
   commitment: 'Recued built-in',
   project: 'Recued built-in',
   booking: 'Recued built-in',
+  asset: 'Recued built-in',
 };
 
 /** Auto-register one Recued built-in Source per `WorkEntityKind` on

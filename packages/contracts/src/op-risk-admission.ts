@@ -451,6 +451,101 @@ const liftCommitmentProposal = (
 };
 
 // ════════════════════════════════════════════════════════════════
+// Why a hold asked — the Reason line for a hold no review explains
+// ════════════════════════════════════════════════════════════════
+
+/** What the Reason line needs to know about a hold that none of the review branches
+ *  below explains (a send, a commitment, a customer payment, ...). */
+interface TrustHoldContext {
+  /** The pack's own tier for the action, before the owner's setting replaced it. */
+  readonly declared_risk: RiskTier;
+  readonly ceiling: TrustCeiling;
+  readonly owner_override?: OwnerOverridePolicy;
+  /** Who the dispatch is. Absent for the source-less probe
+   *  ({@link admitByOpRiskWithoutQualityLifts}), whose one caller gates an action
+   *  ONLY because the owner set a rule for it, so a hold there is that rule's. */
+  readonly source?: ExecutionSource;
+}
+
+/** The subject of a ceiling hold's sentence: who may only do so much without asking.
+ *  The same people the ask's "Started by:" line names (`startedByPhrase`), in the same
+ *  words where they overlap. */
+const heldRunSubject = (source: ExecutionSource): string => {
+  switch (source.actor) {
+    case 'system':
+      return source.channel === 'housekeeping'
+        ? 'This run'
+        : 'Runs that start on their own, from a schedule or a trigger,';
+    case 'contracted_user':
+      return 'Anything that comes in through a door you opened';
+    case 'anonymous':
+      return 'Requests from outside this server';
+    default:
+      return 'This run';
+  }
+};
+
+/** What a ceiling lets a dispatch do without asking. A `switch`, not a lookup: the
+ *  ceiling is persisted trust data and may be malformed (`riskExceedsTrustCeiling`
+ *  holds on one), and an unknown value must yield no claim rather than a wrong one.
+ *  `admin` yields none either: only an always-ask action is held above it. */
+const ceilingAllows = (ceiling: TrustCeiling): string | undefined => {
+  switch (ceiling) {
+    case 'none':
+    case 'read':
+      return 'can only read without asking you';
+    case 'write':
+      return 'can change data, but not account settings or access, without asking you';
+    default:
+      return undefined;
+  }
+};
+
+/** The Reason line for a hold no review branch explains, in the owner's words.
+ *
+ *  ⛔ IN PLAIN WORDS (owner, 2026-10-20). It read "op '<id>' requires preflight approval
+ *  under the active trust ceiling": an id, the gate's name and the field it reads, on
+ *  the line meant to say WHY. Every sentence here is true for every hold that reaches
+ *  it, so each one says only what the decision itself proves:
+ *    - an always-ask action: the pack calls it irreversible, or the owner's own setting
+ *      asks every time (a `risk` the owner raised to `destructive` counts as theirs);
+ *    - a read that asks: only an approval set to ask holds a read, so the setting is
+ *      the reason. "Can only read without asking you" would contradict the hold;
+ *    - an ask the ceiling did not relax: who started it, and what they may do without
+ *      asking. That is true whatever made the action count as more, the owner's own
+ *      `risk` included, so it claims nothing about the action's tier;
+ *    - anything else: a plain sentence that claims nothing.
+ *
+ *  ⚠ THIS IS OWNER PROSE, AND NO MODEL READS IT. "You" is the owner. A model would meet
+ *  an ask's `detail` on two serve-only paths that cannot hold (a vendor read escalation,
+ *  a raw op with no hold substrate); each words its refusal itself and never quotes
+ *  this. */
+const trustHoldReason = (
+  res: CatalogOperationResolution,
+  hold: TrustHoldContext,
+): string => {
+  const owner = hold.owner_override;
+  const ownerSetting = owner?.approval !== undefined || owner?.risk !== undefined;
+  if (res.approval === 'always') {
+    if (res.effective_risk_tier === 'destructive' && hold.declared_risk === 'destructive') {
+      return 'Recued asks before anything that can\'t be undone, even when you start it yourself.';
+    }
+    return owner?.approval === 'always' || owner?.risk === 'destructive'
+      ? 'You set this action to ask you every time.'
+      : 'This action is set to ask you every time.';
+  }
+  if (res.effective_risk_tier === 'read' || hold.source === undefined) {
+    return ownerSetting
+      ? 'Your settings for this action make it ask you first.'
+      : 'This needs your approval before it runs.';
+  }
+  const allows = ceilingAllows(hold.ceiling);
+  return allows !== undefined
+    ? `${heldRunSubject(hold.source)} ${allows}.`
+    : 'This needs your approval before it runs.';
+};
+
+// ════════════════════════════════════════════════════════════════
 // CatalogOperationResolution → AdmissionDecision bridge + entry
 // ════════════════════════════════════════════════════════════════
 
@@ -459,7 +554,8 @@ const liftCommitmentProposal = (
  *    - `admit` → the bare admit;
  *    - `ask`   → `risk_tier` = the resolution's `effective_risk_tier` (audit-honest;
  *      a send carries `write`, not a reclassified tier); the `detail` distinguishes an
- *      outbound send (the user reviews the real recipient) from a trust-ceiling ask;
+ *      outbound send (the user reviews the real recipient) and the other reviews from a
+ *      trust hold, which {@link trustHoldReason} explains from `hold`;
  *    - `deny`  → a deny decision. UNREACHABLE for `admitByOpRisk` (it passes no
  *      `default_policy`, so `resolveSimpleFormOperationPolicy` only ever resolves
  *      `admit` / `ask`; the synthetic op is always declared + granted), so this branch
@@ -469,9 +565,10 @@ const liftCommitmentProposal = (
 const mapResolutionToAdmission = (
   res: CatalogOperationResolution,
   slug: string,
-  ownerOverride?: OwnerOverridePolicy,
+  hold: TrustHoldContext,
   ownerOverrideOffer?: PreflightOverrideOffer,
 ): AdmissionDecision => {
+  const ownerOverride = hold.owner_override;
   switch (res.verdict) {
     case 'admit':
       return Object.freeze({
@@ -501,12 +598,17 @@ const mapResolutionToAdmission = (
         // ("delivers a message outside your trust boundary") describes a machine
         // boundary, and what the owner is actually being asked about is an
         // interruption of another PERSON. Prose only — the policy is identical.
+        //
+        // ⛔ IN PLAIN WORDS (owner, 2026-10-19): this read "outbound send 'mail-send'
+        // delivers a message outside your trust boundary — preflight approval
+        // required". The slug outlived that rewrite to say WHICH send, and was the
+        // last id in the email's prose; the ask already says which send in the
+        // owner's words (its opening, the card's Action row) and keeps the id on
+        // its `Technical:` line, so the Reason says only why.
         detail: stripCorePrefix(slug) === 'peer-ask'
-          ? `this puts your question on another server owner's screen `
-            + `— preflight approval required`
+          ? 'This puts your question on another server owner\'s screen, so Recued always asks you first.'
           : isOutboundSendSlug(slug)
-            ? `outbound send '${slug}' delivers a message outside your trust boundary `
-              + `— preflight approval required`
+            ? 'This sends a message to someone outside this server, so Recued always asks you first.'
             : stripCorePrefix(slug) === 'customer-refund-correct'
               ? 'Review the refund reversal, replacement and exact refund balance change before applying it.'
             : stripCorePrefix(slug) === 'customer-invoice-credit-correct'
@@ -526,9 +628,8 @@ const mapResolutionToAdmission = (
             : stripCorePrefix(slug) === 'quote-signoff-release'
               ? 'The customer accepted this quote. Review the task and invoice before releasing work.'
             : isCommitmentProposalSlug(slug)
-              ? `'${slug}' is a review-then-approve proposal surface — the commitment `
-                + `mints only on your approval`
-              : `op '${slug}' requires preflight approval under the active trust ceiling`,
+              ? 'This proposes a commitment, and Recued adds it only once you approve.'
+              : trustHoldReason(res, hold),
       });
     case 'deny':
       return Object.freeze({
@@ -603,7 +704,12 @@ export const admitByOpRisk = (args: {
   return mapResolutionToAdmission(
     lifted,
     args.slug,
-    args.owner_override,
+    {
+      declared_risk: args.risk_tier,
+      ceiling: args.ceiling,
+      source: args.source,
+      ...(args.owner_override !== undefined ? { owner_override: args.owner_override } : {}),
+    },
     ownerOverrideOffer,
   );
 };
@@ -697,7 +803,12 @@ export const admitByOpRiskWithoutQualityLifts = (args: {
   return mapResolutionToAdmission(
     relaxed,
     args.slug,
-    args.owner_override,
+    // No `source`: a hold here is the owner's rule for this action (`TrustHoldContext`).
+    {
+      declared_risk: args.risk_tier,
+      ceiling: args.ceiling,
+      ...(args.owner_override !== undefined ? { owner_override: args.owner_override } : {}),
+    },
     ownerOverrideOffer,
   );
 };

@@ -135,3 +135,32 @@ test('D-318 step 8 — an address added shows its code, settles when its email a
     { enroll: 'second@personal.example' },
   ]);
 });
+
+test('§8.18 — one mailbox: the chat mailbox ticked as yours, on to write to yourself, the prefix kept on, in bounds on a phone', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator(at('chat-pick')).selectOption('recued-chat');
+  const itself = page.locator(at('owner-pick', 'recued-chat'));
+  await expect(itself).toBeVisible();
+  await itself.check();
+  await expect(page.getByText(/^You write to yourself at recued@chat\.example\./)).toBeVisible();
+  await page.locator(at('confirm')).check();
+  const overflow = async (): Promise<string[]> => page.evaluate(() => {
+    const panel = document.querySelector<HTMLElement>('[data-recued-mail-chat-door-panel]')!;
+    const box = panel.getBoundingClientRect();
+    return [...panel.querySelectorAll<HTMLElement>('button, input, select, label, p, li')]
+      .filter((el) => el.getBoundingClientRect().right > box.right + 1)
+      .map((el) => el.outerHTML.slice(0, 80));
+  });
+  expect(await overflow()).toEqual([]);
+  await page.locator(at('turn-on')).click();
+  await expect(page.getByText('Email chat is on. Write to yourself at recued@chat.example.')).toBeVisible();
+  // The prefix cannot be switched off here.
+  await expect(page.locator(at('prefix-on'))).toBeChecked();
+  await expect(page.locator(at('prefix-on'))).toBeDisabled();
+  await expect(page.getByText('Send an email to yourself, recued@chat.example, with the subject')).toBeVisible();
+  expect(await overflow()).toEqual([]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  const sets = await page.evaluate(() => window.__mcd.calls
+    .filter((call) => call.method === 'collection.mail.chat_door.set').map((call) => call.args));
+  expect(sets).toEqual([{ chat_mailbox: 'recued-chat', owner_mailboxes: ['recued-chat'] }]);
+});

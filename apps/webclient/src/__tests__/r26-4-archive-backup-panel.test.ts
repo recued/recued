@@ -63,6 +63,7 @@ import {
   type ArchiveRebindStashFn,
   type ArchiveStatusCaller,
 } from '../settings/archive-backup-panel.js';
+import type { ArchiveImportReceiptController, ArchiveImportReceiptState } from '../settings/archive-import-receipt.js';
 
 // ──────────────────────────────────────────────────────────────────
 // Fake DOM (recovery-panel test shape + `checked`)
@@ -211,6 +212,8 @@ const noopScheduler: ArchivePollScheduler = {
 };
 
 interface SetupOptions {
+  remoteTarget?: () => import('@recued/contracts').ArchiveRemoteTarget | undefined;
+  importReceipt?: ArchiveImportReceiptController;
   runExport?: ArchiveExportCaller;
   runStatus?: ArchiveStatusCaller;
   runImport?: ArchiveImportCaller;
@@ -281,6 +284,8 @@ const setupMount = (overrides: SetupOptions = {}) => {
     runExport: overrides.runExport ?? defaultExport,
     runStatus: overrides.runStatus ?? defaultStatus,
     runImport: overrides.runImport ?? defaultImport,
+    ...(overrides.remoteTarget ? { remoteTarget: overrides.remoteTarget } : {}),
+    ...(overrides.importReceipt === undefined ? {} : { importReceipt: overrides.importReceipt }),
     runPassportExport: overrides.runPassportExport ?? defaultPassportExport,
     passportDownload: overrides.passportDownload ?? defaultPassportDownload,
     ...(overrides.archiveDownload ? { archiveDownload: overrides.archiveDownload } : {}),
@@ -299,6 +304,35 @@ const setupMount = (overrides: SetupOptions = {}) => {
 
 const rpcError = (code: string, message = code): Error =>
   Object.assign(new Error(message), { code });
+
+it('receipt checks preserve the key field and keyboard focus, then detach on route disposal', () => {
+  let state: ArchiveImportReceiptState | null = 'unknown'; const listeners = new Set<() => void>();
+  const emit = (next: ArchiveImportReceiptState | null) => { state = next; for (const listener of listeners) listener(); };
+  const controller: ArchiveImportReceiptController = {
+    read: () => state, reviewOnBoot: false, wrapImport: call => call,
+    refresh: () => emit('checking'), dismiss: () => emit(null),
+    subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; }, dispose() {},
+  };
+  const { mount, host, doc } = setupMount({ importReceipt: controller });
+  const check = findByAttr(host, 'data-archive-import-check')!;
+  check.focus(); check.click();
+  expect(doc.activeElement).toBe(check); expect(check.hasAttribute('disabled')).toBe(false);
+  expect(check.getAttribute('aria-disabled')).toBe('true');
+  emit('unknown'); mount.clickRestore();
+  const field = findByAttr(host, ARCHIVE_RESTORE_MNEMONIC_ATTR)!;
+  field.value = KNOWN;
+  for (const listener of field.listeners.get('input') ?? []) listener({ target: field });
+  field.focus();
+  emit('completed');
+  expect(findByAttr(host, ARCHIVE_RESTORE_MNEMONIC_ATTR)).toBe(field);
+  expect(field.value).toBe(KNOWN); expect(doc.activeElement).toBe(field);
+  const clear = findByAttr(host, 'data-archive-import-dismiss')!; clear.focus(); emit('checking');
+  expect(clear.hasAttribute('hidden')).toBe(false); expect(clear.getAttribute('aria-disabled')).toBe('true');
+  clear.click(); expect(controller.read()).toBe('checking'); expect(doc.activeElement).toBe(clear);
+  emit('completed'); clear.click();
+  expect(doc.activeElement).toBe(field); expect(field.value).toBe(KNOWN);
+  mount.dispose(); expect(listeners.size).toBe(0);
+});
 
 /** Drain the microtask + macrotask queues so an in-flight `clickCommit()` runs
  *  up to a parked `await` (used to observe state mid-commit). */
@@ -391,6 +425,43 @@ describe('R26.4 Delta 2b — mountArchiveBackupPanel: construction', () => {
 // ══════════════════════════════════════════════════════════════════
 
 describe('R26.4 Delta 2b — export', () => {
+  it('describes historical remote delivery when its local download has expired', async () => {
+    const h = setupMount({ runStatus: async () => ({ state: 'done', bytes_written: 2048, progress_pct: 100,
+      remote_backup_id: '12345678-1234-4234-8234-123456789abc' }), archiveDownload: () => () => {} });
+    h.mount.clickBackup(); h.mount.setExportMnemonic(KNOWN); await h.mount.clickStartBackup();
+    expect(findByAttr(h.host, ARCHIVE_BACKUP_PATH_OUT_ATTR)?.textContent).toContain('Remote delivery was verified');
+    expect(findByAttr(h.host, ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR)).toBeNull(); h.mount.dispose();
+  });
+
+  it('sends the selected remote destination only on an explicit valid export', async () => {
+    const target = { operation_id: '12345678-1234-4234-8234-123456789abc', connection_name: 'safe', destination_id: 'a'.repeat(64), keep_last: 3 };
+    const runExport = vi.fn<ArchiveExportCaller>(async () => ({ job_id: 'remote-job' }));
+    const { mount } = setupMount({ remoteTarget: () => target, runExport });
+    mount.clickBackup(); mount.setExportMnemonic(KNOWN); await mount.clickStartBackup();
+    expect(runExport).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ recoveryKey: KNOWN, remote: target }));
+    mount.dispose();
+  });
+
+  it('preserves the key form when its remote destination becomes stale', async () => {
+    const h = setupMount({ remoteTarget: () => { throw new Error('Select the destination again.'); } });
+    h.mount.clickBackup(); h.mount.setExportMnemonic(KNOWN);
+    const field = findByAttr(h.host, ARCHIVE_BACKUP_MNEMONIC_ATTR)!; field.focus();
+    await h.mount.clickStartBackup();
+    expect(h.mount.getView()).toBe('export-entry'); expect(h.mount.getError()).toContain('Select the destination again');
+    expect(findByAttr(h.host, ARCHIVE_BACKUP_MNEMONIC_ATTR)).toBe(field); expect(h.exportLog).toHaveLength(0);
+    h.mount.dispose();
+  });
+
+  it('opens a staged remote copy for ordinary preview without importing it', async () => {
+    const h = setupMount(); const staged = `recued-upload-${'a'.repeat(32)}.recued.archive`;
+    expect(h.mount.openStagedRestore('../server.db')).toBe(false);
+    expect(h.mount.openStagedRestore(staged)).toBe(true); expect(h.importLog).toHaveLength(0);
+    expect(h.mount.getView()).toBe('restore-entry');
+    h.mount.setRestoreMnemonic(KNOWN); await h.mount.clickPreview();
+    expect(h.importLog).toEqual([expect.objectContaining({ path: staged, recoveryKey: KNOWN, dry_run: true })]);
+    h.mount.dispose(); expect(h.mount.openStagedRestore(staged)).toBe(false);
+  });
+
   it('Back up → entry reveals the mnemonic field + Start button', () => {
     const { host, mount } = setupMount();
     mount.clickBackup();
@@ -932,33 +1003,51 @@ describe('R26.4 Delta 2b — restore commit', () => {
     ]);
   });
 
-  it('shows "restarting; reconnecting" copy on commit (the WS drop is expected)', async () => {
+  it('shows accepted and reconnecting copy without claiming the later swap completed', async () => {
     const { host, mount } = await toPreview();
     mount.setArmed(true);
     await mount.clickCommit();
     expect(textOf(host).toLowerCase()).toContain('restarting');
     expect(textOf(host).toLowerCase()).toContain('reconnecting');
+    expect(textOf(host).toLowerCase()).toContain('accepted');
+    expect(textOf(host)).not.toContain('Done.');
   });
 
-  // ★ The committing import restarts the server; the response can race the
-  // drain, so the in-flight call rejects with a transport-family code. EVERY
-  // one of these means the restore committed — surface "restarting", never a
-  // failure. (Parameterized so dropping any code from `isTransportDropError`
-  // is caught.)
+  // A lost request and a lost reply are indistinguishable to this caller.
   it.each([
     'transport',
     'transport_disposed',
     'timeout',
     'webclient_reauth_required',
-  ])('a %s rejection on commit is treated as committed, NOT an error', async (code) => {
+    'connection_lost',
+  ])('a %s rejection on commit leaves the outcome unknown', async (code) => {
     const mount = await commitFailingWith(rpcError(code, `${code} drop`));
-    expect(mount.getView()).toBe('restore-committed');
-    expect(mount.getError()).toBeNull();
+    expect(mount.getView()).toBe('restore-error');
+    expect(mount.getError()).toBeNull(); // unknown, not a known failed import
+  });
+
+  it('an uncertain commit clears keys and requires a new preview before any further import', async () => {
+    const calls: boolean[] = [];
+    const ctx = await toPreview({ runImport: async input => {
+      calls.push(input.dry_run === true);
+      if (!input.dry_run) throw rpcError('connection_lost', 'unknown outcome');
+      return { manifest: previewOkManifest, restored_at: null, realm: 'same' };
+    } });
+    findByAttr(ctx.host, ARCHIVE_RESTORE_COMMIT_BTN_ATTR)?.focus();
+    ctx.mount.setArmed(true);
+    await ctx.mount.clickCommit();
+    expect(ctx.mount.getView()).toBe('restore-error');
+    expect(textOf(ctx.host)).toContain('could not confirm');
+    expect(textOf(ctx.host)).toContain('Check the server before trying again');
+    expect(textOf(ctx.host)).not.toContain(KNOWN);
+    expect(ctx.doc.activeElement).toBe(findByAttr(ctx.host, ARCHIVE_BACKUP_CANCEL_BTN_ATTR));
+    await ctx.mount.clickCommit();
+    expect(calls).toEqual([true, false]);
   });
 
   // A genuine pre-commit rejection leaves the old db fully intact → it must be
   // surfaced as a failure, NOT swallowed as "committed".
-  it.each(['internal', 'bad_request', 'aborted'])(
+  it.each(['internal', 'bad_request', 'aborted', 'server_offline', 'server_unresponsive'])(
     'a %s rejection on commit surfaces an error (db intact)',
     async (code) => {
       const mount = await commitFailingWith(rpcError(code, `${code}: boom`));
@@ -1109,7 +1198,7 @@ describe('R26.4 M5 S2b — restore: rebind bearer stash', () => {
     expect(mount.getError()).toBeNull();
   });
 
-  it('a transport-drop commit (response raced the drain) never calls the stash — no result to read', async () => {
+  it('a transport-drop commit never calls the stash and cannot claim success', async () => {
     const stashed: ArchiveImportRebind[] = [];
     const stashRebind: ArchiveRebindStashFn = async (r) => {
       stashed.push(r);
@@ -1128,8 +1217,8 @@ describe('R26.4 M5 S2b — restore: rebind bearer stash', () => {
     ctx.mount.setArmed(true);
     await ctx.mount.clickCommit();
     expect(stashed).toHaveLength(0);
-    expect(ctx.mount.getView()).toBe('restore-committed');
-    expect(ctx.mount.getError()).toBeNull();
+    expect(ctx.mount.getView()).toBe('restore-error');
+    expect(textOf(ctx.host)).toContain('could not confirm');
   });
 });
 

@@ -68,6 +68,7 @@ export interface ComposeMailStackBootDeps {
    *  The sender's relationships come from `contactStore` when both are wired.
    *  The composition owns the one writer: a backfill writes through it too. */
   mailFactWriter?: MailFactWriter;
+  onBeforeRetention?: (slug: string, cutoff: number) => void | Promise<void>;
   /** Per-collection storage gate factory. The composer wraps it into
    *  the `getGate` callback the underlying stack expects, registering
    *  one gate per `(platform='mail', slug)` with a 512 MB quota
@@ -102,11 +103,14 @@ export interface ComposeMailStackBootDeps {
    *  the provider's own record of the message is in hand. The listeners bind
    *  it late (`createLateEmailAnswerHook`); absent ⇒ no mail answers an ask. */
   emailAnswerHook?: (msg: CanonicalMessage, ctx: MailUpsertContext) => void;
-  /** D-318 step 1 — is this mailbox the email chat door's chat mailbox? Its
-   *  mail is the conversation, not the owner's mail: it makes no contacts and
-   *  no mail facts. Read per message, so naming or clearing it applies to the
-   *  next one. Absent ⇒ no mailbox is the chat mailbox. */
-  isChatMailbox?: (slug: string) => boolean;
+  /** D-318 step 1 — is this mailbox the email chat door's chat mailbox, used
+   *  for chat alone? Its mail is the conversation, not the owner's mail: it
+   *  makes no contacts and no mail facts. ⛔ Not the chat mailbox as such: one
+   *  that is the owner's own too (one mailbox, §8.18) is their mail, and its
+   *  conversation's emails are known one by one (`isChatConversationMail`).
+   *  Read per message, so naming or clearing it applies to the next one.
+   *  Absent ⇒ no mailbox is. */
+  isChatOnlyMailbox?: (slug: string) => boolean;
   /** D-318 step 5 — is this message, in one of the owner's OTHER mailboxes,
    *  the conversation with the chat mailbox: an answer in the inbox, or the Sent
    *  copy of a request (`conversation-mail.ts`)? It makes no contacts and no mail
@@ -172,13 +176,13 @@ export const composeMailBoot = (
   } = deps;
 
   if (!db || !cacheBlobs) return undefined;
-  const isChatMailbox = deps.isChatMailbox ?? (() => false);
+  const isChatOnlyMailbox = deps.isChatOnlyMailbox ?? (() => false);
   const isChatConversationMail = deps.isChatConversationMail ?? (() => false);
-  /** The chat mailbox's mail, or the conversation's mail in another mailbox:
-   *  the one the hook's context names, read as the collection read it when it
-   *  marked the row. */
+  /** A chat-only mailbox's mail, or the conversation's mail in one of the
+   *  owner's (the chat mailbox too, with one mailbox): the one the hook's
+   *  context names, read as the collection read it when it marked the row. */
   const isConversation = (msg: CanonicalMessage, ctx: MailUpsertContext | MailStoredContext): boolean =>
-    isChatMailbox(ctx.slug) || isChatConversationMail(msg, ctx.provider_kind !== undefined
+    isChatOnlyMailbox(ctx.slug) || isChatConversationMail(msg, ctx.provider_kind !== undefined
       ? { provider_kind: ctx.provider_kind, account_email: ctx.account_email ?? '' }
       : undefined);
 
@@ -238,6 +242,7 @@ export const composeMailBoot = (
       ...(inboundAttachmentDeps ? { inboundAttachmentDeps } : {}),
       ...(upsertHooks.length > 0 ? { onMessageUpserted: runEach(upsertHooks) } : {}),
       ...(storedHooks.length > 0 ? { onMessageStored: runEach(storedHooks) } : {}),
+      ...(deps.onBeforeRetention ? { onBeforeRetention: deps.onBeforeRetention } : {}),
       ...(deps.onMailboxDeleted ? { onMailboxDeleted: deps.onMailboxDeleted } : {}),
       // The conversation's mail in the owner's mailboxes is marked as it is
       // stored, so every reader of their stored mail can leave it out.

@@ -90,6 +90,9 @@ export interface AuditEntry {
    *  copy it into every retained audit row). Same verbatim-capture
    *  sensitivity note as `config_snapshot`. */
   context_snapshot?: Record<string, unknown>;
+  /** Expected API account revisions for a paused run's page arguments. Kept
+   * outside recipe namespaces and replayed by host continuations. */
+  connection_revisions?: Record<string, string>;
   /** ⚠ OPTIONAL SINCE 2026-08-05 — the write path omits it when empty, which
    *  it was on 8/8 measured rows (12 B/row of key name for "no errors"). An
    *  absent `errors` and `errors: []` mean the same thing; rows written before
@@ -472,7 +475,7 @@ export type ActivityAction =
   // fires when a binding crosses the error-count threshold.
   | 'event_trigger_backpressure' | 'event_trigger_auto_disabled'
   | 'archive_export_start' | 'archive_export_complete'
-  | 'archive_import_start' | 'archive_import_complete'
+  | 'archive_import_start' | 'archive_import_complete' | 'archive_import_accepted'
   | 'audit_export'
   // `service_event` (D-118 Phase 8) went 2026-10-10 with the installer that
   // would have written it (D-321 § 5.5). It never wrote one: no service could
@@ -940,6 +943,7 @@ export type ActivityAction =
   // breadcrumbs the retention pruner reclaims like every other adapter
   // call (a fired notification is not a forensic-critical event).
   | 'notification_fired'
+  | 'reminder_answer'
   // D-178 slice 4b — release self-update lifecycle, replayed into the
   // audit log from the out-of-SQLite update ledger on boot (I-3). Target
   // carries the release identity (`<channel>:<version>`); `detail` is the
@@ -1263,6 +1267,7 @@ export const RESERVE_ACTIONS: ReadonlySet<string> = new Set<string>([
   'archive_export_complete',
   'archive_import_start',
   'archive_import_complete',
+  'archive_import_accepted',
   'audit_export',
   // D-148 § A.2.5 — high-assurance audit kinds always reserve. Key
   // rotations, exposure path-resolution changes / preset applies,
@@ -2284,6 +2289,7 @@ export interface AuditEntryInput {
   config_snapshot?: Record<string, unknown>;
   /** Caller-supplied context of a PAUSED run — see `AuditEntry.context_snapshot`. */
   context_snapshot?: Record<string, unknown>;
+  connection_revisions?: Record<string, string>;
   /** Page URL the recipe ran against, for context recipes. Null for
    *  scheduled or manual runs. */
   trigger_url?: string | null;
@@ -2386,6 +2392,8 @@ export const buildAuditEntry = (input: AuditEntryInput): AuditEntry => {
     duration_ms: input.duration_ms,
     commit_status: input.commit_status,
     config_snapshot: { ...(input.config_snapshot ?? {}) },
+    ...(input.connection_revisions !== undefined && Object.keys(input.connection_revisions).length > 0
+      ? { connection_revisions: { ...input.connection_revisions } } : {}),
     ...(input.context_snapshot !== undefined
       && Object.keys(input.context_snapshot).length > 0
       ? { context_snapshot: { ...input.context_snapshot } }

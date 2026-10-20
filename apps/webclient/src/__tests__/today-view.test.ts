@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { CollectionRecord, SourceRegistration, WorkEntity } from '@recued/contracts';
+import type { CollectionRecord, SourceRegistration, WorkEntity, ProactiveToday, SituationCluster } from '@recued/contracts';
 import { loadToday, renderToday, TODAY_CREATE_ACTION, todayWindow } from '../data/today-view.js';
 import type { TodaySnapshot } from '../data/today-view.js';
 import type { BootstrapDataRouteOptions } from '../data/bootstrap-data-route.js';
@@ -42,8 +42,114 @@ const readers = (entities: WorkEntity[] = [], records: CollectionRecord[] = []):
   },
 });
 
+/** A cluster's items as the page writes them; there is no DOM here. */
+const clusterRows = (html: string, id: string) => {
+  const list = html.slice(html.indexOf(`data-today-cluster="${id}"`)); const body = list.slice(0, list.indexOf('</ul>'));
+  return body.split('<li>').slice(1).map(row => ({ reasons: /data-today-reasons>([^<]*)</u.exec(row)?.[1],
+    values: [...row.matchAll(/<dd data-today-verdict="([^"]*)">([^<]*)<\/dd>/gu)].map(([, verdict, text]) => `${text} [${verdict}]`),
+    links: [...(/<div>Sources: (.*?)<\/div>/su.exec(row)?.[1] ?? '').matchAll(/<a href="([^"]*)">([^<]*)<\/a>/gu)].map(([, href, text]) => [text, href]) }));
+};
+const day = (at: number): string => new Date(at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 afterEach(() => vi.restoreAllMocks());
 describe('Today projection', () => {
+  it('moves reminded canonical occurrences into Coming up, omits questions, and names the asset without copying its lifecycle', async () => {
+    const due = commitment('renew', before + 30 * 86_400_000);
+    const waiting = commitment('waiting', before + 40 * 86_400_000);
+    const question = commitment('last-done-question', now);
+    const proactive: ProactiveToday = { situations: { clusters: [], omitted: 0, ambiguous: [] },
+      occurrences: [due, waiting, question].map((entity, i) => ({ id: `occ-${i}`, asset_id: 'passport', asset_name: 'Ana’s passport',
+        question: i === 2, reminders_started: i !== 1, commitment: entity as Extract<WorkEntity, { _kind: 'commitment' }> })),
+      proposal_count: 2, newest_proposal: { id: 'p1', title: 'LG television' }, unmatched_replies: [{ id: 'u1', text: 'done', reason: 'no_item_number', created_at: now }], phone_ready: false };
+    const snapshot = await loadToday({ ...readers([due, waiting, question]), proactiveTodayCaller: async () => proactive }, now);
+    expect(snapshot.items).toHaveLength(1);
+    expect(snapshot.items[0]).toMatchObject({ group: 'coming_up', commitmentId: 'renew', href: '#yours/asset/passport' });
+    const html = renderToday(snapshot, false, 'data-action', false, false, { canComplete: false, canReschedule: false, edit: null, notice: null, canCloseCommitment: true });
+    expect(html).toContain('Coming up'); expect(html).toContain('Done: renew · Ana’s passport'); expect(html).not.toContain('last-done-question');
+    expect(html).toContain('2 proposals and questions wait'); expect(html).toContain('LG television'); expect(html).toContain('Unmatched replies'); expect(html).toContain('#connections');
+  });
+  it('attaches a shared cluster to its actual calendar row and renders near misses and source links', async () => {
+    const evidence = [{ collection: 'asset', id: 'passport' }];
+    const dimension = <T>(value: T | null, verdict: 'match' | 'outside' | 'unknown') => ({ value, verdict, basis: 'declared' as const, evidence });
+    const cluster: SituationCluster = { id: 'trip', subjects: [], span: { from: tomorrow, to: tomorrow + hour }, omitted: 0, items: [{ ref: { collection: 'calendar', id: 'work:trip' }, kind: 'calendar',
+      what: dimension('Lisbon trip', 'match'), when: dimension({ from: tomorrow, to: tomorrow + hour }, 'match'), where: dimension({ key: 'lisbon', name: 'Lisbon' }, 'match'), who: dimension(['contact-ana'], 'match'),
+      reasons: ['due'], basis: 'declared', evidence: [], consequence: 'routine', updated_at: now }, { ref: { collection: 'asset', id: 'passport' }, kind: 'asset_rule',
+      what: dimension('Renew passport', 'outside'), when: dimension({ from: before + 30 * 86_400_000, to: before + 30 * 86_400_000 }, 'outside'), where: dimension(null, 'unknown'), who: dimension(null, 'unknown'),
+      reasons: ['related'], basis: 'declared', evidence, consequence: 'floor', updated_at: now }] };
+    const snapshot = await loadToday({ ...readers([], [event('trip', tomorrow, tomorrow + hour)]), proactiveTodayCaller: async () => ({ situations: { clusters: [cluster], omitted: 0, ambiguous: [] },
+      people: { 'contact-ana': 'Ana Lima' }, occurrences: [], proposal_count: 0, newest_proposal: null, unmatched_replies: [], phone_ready: true }) }, now);
+    expect(snapshot.items).toHaveLength(1); expect(snapshot.items[0]?.cluster?.id).toBe('trip');
+    const html = renderToday(snapshot, false, 'data-action'); expect(html).toContain('data-today-cluster="trip"');
+    expect(clusterRows(html, 'trip')).toEqual([
+      { reasons: 'Due · From your records', values: [`${day(tomorrow)} [match]`, 'Lisbon [match]', 'Ana Lima [match]'], links: [] },
+      { reasons: 'Connected to this · From your records', values: [`${day(before + 30 * 86_400_000)} · well after this [outside]`, 'Not recorded [unknown]', 'Not recorded [unknown]'],
+        links: [['Asset', '#yours/asset/passport']] },
+    ]);
+    expect(html).not.toContain('Reminders currently reach only the app');
+  });
+  // §6.2 — an item says why it is here, how Recued knows it and how it fits its group, in
+  // words; its people by name, and the records it rests on as Data names them.
+  it('says why an item is here, how it fits its group and whom it names, in the owner’s words', async () => {
+    const span = { from: tomorrow, to: tomorrow + hour };
+    const dimension = <T>(value: T | null, verdict: 'match' | 'near' | 'outside' | 'unknown') => ({ value, verdict, basis: 'derived' as const, evidence: [] });
+    const item = (id: string, patch: Partial<SituationCluster['items'][number]>): SituationCluster['items'][number] => ({ ref: { collection: 'booking', id }, kind: 'booking',
+      what: dimension(id, 'match'), when: dimension(span, 'match'), where: dimension(null, 'unknown'), who: dimension(null, 'unknown'),
+      reasons: ['due'], basis: 'derived', evidence: [], consequence: 'routine', updated_at: now, ...patch });
+    const earlier = { from: span.from - 2 * 86_400_000, to: span.from - 2 * 86_400_000 + hour };
+    const cluster: SituationCluster = { id: 'evening', subjects: [], span, omitted: 0, items: [
+      item('Bill: Acme Power', { ref: { collection: 'mail_fact', id: 'b1' }, kind: 'bill', reasons: ['due', 'related'], evidence: [{ collection: 'mail_fact', id: 'b1' }] }),
+      item('Dinner', { reasons: ['collides', 'missing'], basis: 'inferred', when: dimension(earlier, 'near'),
+        where: dimension({ key: 'london', name: 'London' }, 'outside'), who: dimension(['contact-ana', 'bob@example.test', 'contact-gone'], 'near'),
+        evidence: [{ collection: 'booking', id: 'd1', field: 'slot' }, { collection: 'booking', id: 'd1' }, { collection: 'history_trace', id: 't1' }] }),
+      item('Coffee', { who: dimension(['contact-gone'], 'outside') }),
+    ] };
+    const read = async (people?: Record<string, string>) => clusterRows(renderToday(await loadToday({ ...readers([], [event('evening', tomorrow, tomorrow + hour)]),
+      proactiveTodayCaller: async () => ({ situations: { clusters: [cluster], omitted: 0, ambiguous: [] }, ...(people ? { people } : {}),
+        occurrences: [], proposal_count: 0, newest_proposal: null, unmatched_replies: [], phone_ready: true }) }, now), false, 'data-action'), 'evening');
+    expect(await read({ 'contact-ana': 'Ana Lima' })).toEqual([
+      // Today reads a group again by its own items, so "connected" goes without saying beside another reason.
+      { reasons: 'Due · Worked out from your records', values: [`${day(tomorrow)} [match]`, 'Not recorded [unknown]', 'Not recorded [unknown]'], links: [['Mail fact', '#data/mail_fact/thing/b1']] },
+      { reasons: 'Overlaps something else, something is missing · Recued’s guess', values: [`${day(earlier.from)} · shortly before this [near]`, 'London · not where this is [outside]',
+        'Ana Lima, bob@example.test, 1 person no longer in your contacts · some of the people in this [near]'],
+      // One link per record, named as Data names it; a field inside it is not a word of the owner's.
+      links: [['Booking', '#data/booking/d1'], ['Retained evidence', '#data/history_trace/t1']] },
+      { reasons: 'Due · Worked out from your records', values: [`${day(tomorrow)} [match]`, 'Not recorded [unknown]', '1 person no longer in your contacts · none of the people in this [outside]'], links: [] },
+    ]);
+    // A server older than the names map: an address is still its own name, and an id is counted.
+    expect((await read()).map(row => row.values[2])).toEqual(['Not recorded [unknown]', 'bob@example.test, 2 contacts · some of the people in this [near]',
+      'A contact · none of the people in this [outside]']);
+  });
+  it('leaves Yours out on a server older than it, and still reports a real failure', async () => {
+    const older = Object.assign(new Error('Unknown method'), { code: 'unknown_method' });
+    // A task gives the sphere read something to place, so its fallback is reached too.
+    const quiet = await loadToday({ ...readers([task('t1', now + hour)], []), proactiveTodayCaller: async () => { throw older; },
+      spheres: { read: async () => { throw older; }, readMany: async () => { throw older; }, change: async () => { throw older; } } }, now);
+    expect(quiet.items).toHaveLength(1); expect(quiet.issues).toEqual([]);
+    const locked = new Error('database locked');
+    const broken = await loadToday({ ...readers([task('t1', now + hour)], []), proactiveTodayCaller: async () => { throw locked; },
+      spheres: { read: async () => { throw locked; }, readMany: async () => { throw locked; }, change: async () => { throw locked; } } }, now);
+    expect(broken.issues.join(' ')).toContain('Yours and situations');
+    expect(broken.issues).toContain('Sphere placements could not be read. Filters may be incomplete.');
+  });
+  it('says which situation sources were too large to check instead of looking complete', async () => {
+    const snapshot = await loadToday({ ...readers([], []), proactiveTodayCaller: async () => ({ situations: { clusters: [], omitted: 0, ambiguous: [], partial: ['commitment', 'task'] },
+      occurrences: [], proposal_count: 0, newest_proposal: null, unmatched_replies: [], phone_ready: true }) }, now);
+    expect(snapshot.issues).toEqual(['Too many commitments, tasks to check in one read. Some may be missing.']);
+    expect(renderToday(snapshot, false, 'data-action')).toContain('Results below may be incomplete.');
+  });
+  it('links an occasion and an episode to the Yours page that selects them', async () => {
+    // ⛔ `#yours/occasions/<id>` opened the whole list: Yours selects one at
+    // `#yours/occasions/occasion/<id>`.
+    const dimension = <T>(value: T | null) => ({ value, verdict: 'match' as const, basis: 'declared' as const, evidence: [] });
+    const item = (collection: 'occasion' | 'episode', id: string) => ({ ref: { collection, id }, kind: collection, what: dimension(id),
+      when: dimension({ from: tomorrow, to: tomorrow + hour }), where: dimension(null), who: dimension(null),
+      reasons: ['due' as const], basis: 'declared' as const, evidence: [], consequence: 'routine' as const, updated_at: now });
+    const cluster: SituationCluster = { id: 'yours', subjects: [], span: { from: tomorrow, to: tomorrow + hour }, omitted: 0,
+      items: [item('occasion', 'anniversary'), item('episode', 'dinner')] };
+    const snapshot = await loadToday({ ...readers([], []), proactiveTodayCaller: async () => ({ situations: { clusters: [cluster], omitted: 0, ambiguous: [] },
+      occurrences: [], proposal_count: 0, newest_proposal: null, unmatched_replies: [], phone_ready: true }) }, now);
+    const html = renderToday(snapshot, false, 'data-action');
+    expect(html).toContain('#yours/occasions/occasion/anniversary'); expect(html).toContain('#yours/episodes/episode/dinner');
+  });
   it('merges disjoint date groups and excludes completed, terminal, undated, ended, cancelled and out-of-window records', async () => {
     const snapshot = await loadToday(readers([
       task('overdue', now - hour), task('due-now', now), task('later', now + hour), task('tomorrow', tomorrow),

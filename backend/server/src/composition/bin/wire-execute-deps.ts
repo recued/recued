@@ -102,7 +102,7 @@ import {
 } from '../../collections/file/remote-file-byte-resolver.js';
 import { parseRemoteFileRecordId } from '../../file-view-resolver.js';
 import type { CollectionRegistry } from '../../collections/registry.js';
-import { sendCapableMailboxes } from '../../mail-senders.js';
+import { sendCapableMailboxes, type SendCapableMailbox } from '../../mail-senders.js';
 import { LOCAL_FILE_READ_MAX_BYTES } from '../../collections/file/file-read-handler.js';
 import {
   isWatchedFolderCollection,
@@ -159,6 +159,8 @@ const ownerTimeZoneOf = (db: Database.Database): (() => string) => {
 };
 
 export interface ComposeExecuteDepsDeps {
+  situationAccess?: import('../../situations/access.js').SituationAccess;
+  isVaultUnlocked?: () => boolean;
   /** D-137 — late-bound chat sink for a run that settled after its turn.
    *  A GETTER because chat composes in the app context and this in the
    *  execution context; the sink does not exist when this runs. */
@@ -200,6 +202,7 @@ export interface ComposeExecuteDepsDeps {
   db: Database.Database | undefined;
   enrichmentStore: EnrichmentStore | undefined;
   commitStore: CommitStore | undefined;
+  localMutations?: import('../../ordinary-local-mutations.js').OrdinaryLocalMutations;
   checkpointStore: CheckpointStore | undefined;
   mcpActionStore?: McpActionStore;
   gatedActionStore?: GatedActionStore;
@@ -435,9 +438,14 @@ export interface ExecuteDepsBundle {
   cliToolStatus: CliToolStatus;
 }
 
+/** The channels an approval ask went to, as its own record keeps them. */
+const approvalAskChannelsOf = (block: Pick<NotificationBlock, 'getAsk'>) =>
+  async (ask_id: string): Promise<readonly string[] | undefined> =>
+    (await block.getAsk(ask_id))?.fanout_channels;
+
 /** Compose the notification block (optional) + executeDeps. */
 /** The live list of mailboxes that can send, as the run reads it. */
-const sendCapableMailboxesOf = (registry: CollectionRegistry) => (): readonly string[] =>
+const sendCapableMailboxesOf = (registry: CollectionRegistry) => (): readonly SendCapableMailbox[] =>
   sendCapableMailboxes(registry);
 
 export const composeExecuteDeps = (
@@ -626,6 +634,7 @@ export const composeExecuteDeps = (
       // becomes a silent no-op (the channel still installs).
       ...(deps.connectionStore ? { connectionStore: deps.connectionStore } : {}),
       ...(deps.clientTokens ? { clientTokens: deps.clientTokens } : {}),
+      ...(deps.isVaultUnlocked ? { isVaultUnlocked: deps.isVaultUnlocked } : {}),
       ...(deps.bridgeSink ? { bridgeSink: deps.bridgeSink } : {}),
       // D-192 CORE #6 seam 7 (Group D) — the messenger channel registry passed
       // through to the block. Conditional-spread discipline preserved: omitted
@@ -637,6 +646,14 @@ export const composeExecuteDeps = (
       // Absent ⇒ email adapter-presence gate keeps Settings `not_ready`
       // even with a `connection.notification.email` credential enrolled.
       ...(deps.emailChannel ? { emailChannel: deps.emailChannel } : {}),
+      // D-158 amendment 2026-10-18 — where an email connection naming no
+      // recipient sends: the sending mailbox itself.
+      ...(deps.collectionRegistry !== undefined
+        ? { mailboxAddress: (slug: string) => {
+            const mailbox = deps.collectionRegistry!.get('mail', slug) as { accountEmail?: unknown } | undefined;
+            return typeof mailbox?.accountEmail === 'string' ? mailbox.accountEmail : undefined;
+          } }
+        : {}),
       // D-177 P5a — the batch-approval coordinator mints through the
       // resolver built above. Absent (no contract store — dbless) ⇒ batch
       // approves degrade to plain marker resumes.
@@ -933,6 +950,7 @@ export const composeExecuteDeps = (
     : undefined;
 
   const executeDeps: ExecuteHandlerDeps = {
+    ...(deps.situationAccess ? { situationAccess: deps.situationAccess } : {}),
     // D-210 Phase C — the device-fanout branch reads this at each preflight
     // raise. Absent ⇒ every hold raises the actionable ask.
     ...(deps.resolveInboxFanoutMode !== undefined
@@ -1015,6 +1033,7 @@ export const composeExecuteDeps = (
     // dep is plumbed now so 3b.3 is a wiring-only change. Absent (no db)
     // ⇒ no commit log, exactly as today.
     ...(deps.commitStore ? { commitStore: deps.commitStore } : {}),
+    ...(deps.localMutations ? { localMutations: deps.localMutations } : {}),
     // D-157 P1 slice 3 — the preflight checkpoint store. `execute-handler`
     // mints + writes a `Checkpoint` when the engine returns
     // `awaiting_approval`. Absent (no db) ⇒ a paused run is reported in
@@ -1037,6 +1056,12 @@ export const composeExecuteDeps = (
     // checkpoint but no user-facing ask fires; the boot sweep re-raise
     // on the next start surfaces them once the block becomes available.
     ...(notificationBlock ? { preflightNotifier: notificationBlock } : {}),
+    // The same block, read for where a hold's ask went: the response names its
+    // channels, so the agent says "reply to the approval email" as well as
+    // "the bell" (`execute-handler`). A missing ask names none.
+    ...(notificationBlock
+      ? { approvalAskChannels: approvalAskChannelsOf(notificationBlock) }
+      : {}),
     // R2 step 6 — the same block, threaded as the torn-saga notifier.
     // `execute-handler` raises ONE `gateway.saga` ask when a run
     // terminal-fails after ≥1 catalog write landed. Absent ⇒ no saga

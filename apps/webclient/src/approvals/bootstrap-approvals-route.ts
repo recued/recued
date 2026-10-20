@@ -56,6 +56,7 @@ import {
 } from '../shell/rpc-error-copy.js';
 import { serializeShellRoute } from '../shell/route.js';
 import { preapprovalHref, renderPreapprovalAsk } from './preapproval-route.js';
+import { localChangesHref } from './local-change-sets-route.js';
 
 // ════════════════════════════════════════════════════════════════
 // Style payload + stable attribute hooks
@@ -522,7 +523,9 @@ export const bootstrapApprovalsRoute = (
   const reviewedExecutionsLink = doc.createElement('a');
   reviewedExecutionsLink.href = preapprovalHref();
   reviewedExecutionsLink.textContent = 'Runs you have looked at';
-  header.appendChild(reviewedExecutionsLink);
+  const localChangesLink = doc.createElement('a'); localChangesLink.href = localChangesHref();
+  localChangesLink.textContent = 'Atomic local changes';
+  header.append(reviewedExecutionsLink,localChangesLink);
 
   const refreshButton = doc.createElement('button');
   refreshButton.type = 'button';
@@ -845,6 +848,9 @@ export const bootstrapApprovalsRoute = (
         busy: resolvingAsks.has(ask.ask_id),
         busyOptionId: resolvingAsks.get(ask.ask_id),
         errorMessage: askResolveErrors.get(ask.ask_id) ?? null,
+        // The full page has room to say what "Allow this session" lets happen;
+        // the top-bar popover does not show it (owner, 2026-10-19).
+        showSessionGrantTerms: true,
       },
     );
 
@@ -861,6 +867,7 @@ export const bootstrapApprovalsRoute = (
           : {}),
         tool: plan.tool,
         tier: plan.tier,
+        ...(plan.resource_review ? { resource_review: plan.resource_review } : {}),
         args: plan.args,
         payload_available: plan.payload_available,
       },

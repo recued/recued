@@ -70,6 +70,9 @@ export const isMcpToolName = (name: string): boolean => {
  *  Prefixes are matched against the full rpc method name (e.g.
  *  `'contact.merge.list'.startsWith('contact.merge.')` is true). */
 export const MCP_RESERVED_RPC_PREFIXES = [
+  // Backup delivery, history, verification and restore are paired-owner
+  // controls. They must never be reachable through an agent's generic RPC.
+  'server.archive.',
   // Retained conversation text belongs to the paired owner's History UI.
   'chat.messages.',
   'chat.turn.',
@@ -119,6 +122,8 @@ export const MCP_RESERVED_RPC_PREFIXES = [
   // contract.grant.write to widen its OWN grants (the core fail-closed invariant —
   // admission would become self-granting). Reserve the whole contract.grant. family.
   'contract.grant.',
+  'automation.rehearsal.', // Paired-owner fixture rehearsals and reviewed configuration writes.
+  'contract.regression.', // Paired-owner permission tests and reviewed grant activation.
   // D-138 P5 — upstream-merge outbox is local-UI only; MCP agents
   // must never invoke a destructive vendor merge.
   'upstream_merge.',
@@ -461,6 +466,8 @@ export const MCP_RESERVED_RPC_PREFIXES = [
   // is the Data screen's, and a door that could call it would move or withdraw
   // what the owner asked to be told, past every grant.
   'reminder.',
+  // D-325 owner control plane; external clients use the granted situation tool.
+  'yours.',
   // Recipe-editor authoring seam — the `recipe.*` rpc family is owner /
   // local-UI only. The read surfaces (`recipe.list` / `recipe.runnability` /
   // `recipe.pii`) already stay off MCP by `MCP_TOOL_CATALOG` omission, but the

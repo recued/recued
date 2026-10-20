@@ -372,6 +372,8 @@ export type ServerEvent =
        *  resolves on a matching `notification.ask_closed` event. */
       kind: 'notification.ask';
       ask_id: string;
+      /** Managed reminder: persistent toast, excluded from the approval bell. */
+      reminder?: true;
       title?: string;
       text: string;
       /** The user-facing option set the block accepted at `ask` time.
@@ -401,6 +403,7 @@ export type ServerEvent =
        *  field carried on one path and not another is the drop this arc has
        *  already paid for twice. */
       body?: string;
+      resource_review?: import('./resource-review.js').ResourceReview;
       cursor: number;
     }
   | {
@@ -665,6 +668,9 @@ export type ServerEvent =
        *  time; the wire validator rejects malformed payloads at the
        *  bus boundary. */
       kind: 'chat.tool_call_completed';
+      /** Persisted local confirmation for the consumed plan; independent of
+       * the caller-facing tool result if its await was interrupted. */
+      plan_execution?: Extract<import('./chat.js').ChatPlanExecutionReceipt, { status: 'completed' }>;
       session_id: string;
       turn_id: string;
       tool_name: string;
@@ -698,6 +704,7 @@ export type ServerEvent =
        *  `'unknown'` and the resolved underlying is write) always
        *  pause behind plan-approval per § A.11. */
       kind: 'chat.plan_proposed';
+      resource_review?: import('./resource-review.js').ResourceReview;
       session_id: string;
       turn_id: string;
       plan_id: string;

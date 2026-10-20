@@ -1066,6 +1066,8 @@ export interface MailFactRowsQuery {
   readonly has_run?: boolean;
   /** One email's facts ("Facts from this email"). */
   readonly email?: MailFactEmailRef;
+  /** One thing's facts (a bill, a delivery), as Today opens it. */
+  readonly thing_id?: string;
   readonly before?: MailFactRowsCursor;
   /** Emails per page. */
   readonly limit?: number;

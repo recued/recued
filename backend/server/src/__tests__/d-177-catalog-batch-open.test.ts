@@ -712,7 +712,7 @@ describe('handleExecute D-177 catalog hold offer site', () => {
         grant_mode: 'open',
       },
     });
-    expect(message.text).toContain("'Allow this session' auto-approves");
-    expect(message.text).toContain('pinned  recipient = "a@b.c"');
+    expect(message.text).toContain("'Allow this session' lets ");
+    expect(message.text).toContain('\n- Recipient: a@b.c');
   });
 });

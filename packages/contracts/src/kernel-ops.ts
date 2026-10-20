@@ -133,6 +133,7 @@ export const KERNEL_DOMAINS: readonly KernelDomain[] = [
   // the server. Not `notification` (that is a delivery, made now) and not
   // `work-entity` (a reminder was a task until D-324, and that is what it fixed).
   { domain: 'reminder', class: 'closed_kind' },
+  { domain: 'situation', class: 'closed_kind' },
   // Core Seller owns the durable offer schema, closed operation vocabulary,
   // Settings menu, and fixed UI. Recipes may compose against these operations;
   // they do not define Seller infrastructure or acquire authority from pack

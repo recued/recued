@@ -3,6 +3,7 @@ import { CONNECTION_NAME_REGEX } from './platform-record-id.js';
 import { isAuthenticationAccessVerification, type AuthenticationAccessVerification } from './authentication-access-verification.js';
 import { isOAuthAppRenewalVerification, type OAuthAppRenewalVerification } from './oauth-app-renewal.js';
 import { isAuthenticationRepairWorklist, type AuthenticationRepairGroup, type AuthenticationRepairTarget } from './authentication-repair-worklist.js';
+import { isAuthenticationAccessSummary, authenticationAccessSummaryMatchesTargets, type AuthenticationAccessSummary } from './authentication-access-summary.js';
 
 export type AuthenticationIncidentScope = { kind: 'all' } | { kind: 'group'; id: string } | AuthenticationRepairTarget;
 /** Stable field order and no unrelated RPC fields in cursors or responses. */
@@ -45,6 +46,7 @@ export interface AuthenticationIncident {
 }
 export interface AuthenticationIncidentHistoryQuery {
   scope: AuthenticationIncidentScope;
+  filters?: AuthenticationIncidentHistoryFilters;
   cursor?: string;
   limit?: number;
   /** Older clients cannot render renewal rows in the mixed order. */
@@ -58,6 +60,8 @@ export interface AuthenticationRenewalHistory extends OAuthAppRenewalVerificatio
 }
 export interface AuthenticationIncidentHistoryPage {
   scope: AuthenticationIncidentScope;
+  /** Echoes canonical applied filters. Older servers omit this field. */
+  filters?: AuthenticationIncidentHistoryFilters;
   observed_at: number;
   incidents: AuthenticationIncident[];
   /** Added by servers that retain owner repair receipts. Order covers both lists. */
@@ -83,6 +87,7 @@ export type AuthenticationRepairFailure = 'access_failed' | 'changed' | 'interru
 /** A local apply receipt. Applied never means that subsequent work recovered. */
 export interface AuthenticationRepairAction {
   access_verification?: AuthenticationAccessVerification;
+  access_summary?: AuthenticationAccessSummary;
   id: string;
   action: AuthenticationRepairActionKind;
   status: 'checking' | 'applied' | 'failed';
@@ -102,11 +107,73 @@ export interface AuthenticationRepairAction {
 }
 export type AuthenticationIncidentHistoryCaller = (query: AuthenticationIncidentHistoryQuery) => Promise<AuthenticationIncidentHistoryPage>;
 
+export const AUTHENTICATION_HISTORY_TYPES = ['incident', 'repair', 'verification', 'renewal'] as const;
+export const AUTHENTICATION_HISTORY_OUTCOMES = ['open', 'recovered', 'retired', 'running', 'applied', 'failed', 'passed', 'unconfirmed'] as const;
+export interface AuthenticationIncidentHistoryFilters {
+  search?: string;
+  type?: typeof AUTHENTICATION_HISTORY_TYPES[number];
+  outcome?: typeof AUTHENTICATION_HISTORY_OUTCOMES[number];
+  /** Inclusive UTC calendar dates, compared with the entry's original start. */
+  from?: string;
+  through?: string;
+}
+export type AuthenticationHistoryEntry = AuthenticationIncident | AuthenticationRepairAction | AuthenticationAccessVerification | AuthenticationRenewalHistory;
+export const authenticationIncidentHistoryFilters = (value: AuthenticationIncidentHistoryFilters = {}): AuthenticationIncidentHistoryFilters => ({
+  ...(value.search?.trim() ? { search: value.search.trim().normalize('NFC') } : {}),
+  ...(value.type ? { type: value.type } : {}), ...(value.outcome ? { outcome: value.outcome } : {}),
+  ...(value.from ? { from: value.from } : {}), ...(value.through ? { through: value.through } : {}),
+});
+const historyIncident = (v: AuthenticationHistoryEntry): v is AuthenticationIncident => !/^(repair|verify|renewal)-/.test(v.id);
+const historyRepair = (v: AuthenticationHistoryEntry): v is AuthenticationRepairAction => v.id.startsWith('repair-');
+const historyAccess = (v: AuthenticationHistoryEntry): v is AuthenticationAccessVerification => v.id.startsWith('verify-');
+export const authenticationHistoryEntryType = (v: AuthenticationHistoryEntry): typeof AUTHENTICATION_HISTORY_TYPES[number] =>
+  historyIncident(v) ? 'incident' : historyRepair(v) ? 'repair' : historyAccess(v) ? 'verification' : 'renewal';
+/** Recorded outcomes only. Dynamic current-authentication flags and recovery projections do not change a check's outcome. */
+export const authenticationHistoryEntryOutcome = (v: AuthenticationHistoryEntry): typeof AUTHENTICATION_HISTORY_OUTCOMES[number] => {
+  if (historyIncident(v)) return v.status;
+  if (v.status === 'checking') return 'running';
+  if (historyRepair(v)) return v.status === 'applied' ? 'applied' : 'failed';
+  const checks = historyAccess(v) ? v.results.flatMap(r => r.checks.filter(c => c.kind !== 'write_permissions')) : v.results;
+  return checks.some(c => c.status === 'failed') ? 'failed' : checks.length && checks.every(c => c.status === 'passed') ? 'passed' : 'unconfirmed';
+};
+const historyTargetText = (t: AuthenticationRepairTarget): string => t.kind === 'connection' ? t.name
+  : t.kind === 'collection' ? t.platform + ' ' + t.slug : t.kind === 'file_source' ? t.source_id : 'OAuth apps';
+/** Search only retained public labels and identifiers, never serialized credentials or dynamic navigation metadata. */
+export const authenticationHistoryEntryMatches = (v: AuthenticationHistoryEntry, filters: AuthenticationIncidentHistoryFilters): boolean => {
+  if (filters.type && authenticationHistoryEntryType(v) !== filters.type || filters.outcome && authenticationHistoryEntryOutcome(v) !== filters.outcome
+    || filters.from && v.started_at < Date.parse(filters.from + 'T00:00:00Z')
+    || filters.through && v.started_at >= Date.parse(filters.through + 'T00:00:00Z') + 86_400_000) return false;
+  if (!filters.search?.trim()) return true;
+  const fields: (string | undefined)[] = [v.id];
+  if (historyIncident(v)) fields.push(v.group.id, v.group.label, ...v.group.connection_names,
+    ...v.group.targets.map(historyTargetText), ...v.group.uses.flatMap(u => [u.id, u.label]));
+  else if (historyRepair(v)) {
+    fields.push(v.action, ...v.targets.map(historyTargetText), ...v.incidents.flatMap(i => [i.id, i.group_id, i.label]));
+    for (const m of [v.from, v.to]) if (m) fields.push(m.label, m.connection_name, m.app_id, m.broker_profile_id, m.broker_account_id);
+  } else if (historyAccess(v)) fields.push(v.selection.id, ...v.results.flatMap(r => [r.label, historyTargetText(r.target)]), ...v.uses.flatMap(u => [u.id, u.label]));
+  else fields.push(v.app_label, v.app_id, ...v.results.flatMap(r => [r.label, ...r.connections, ...r.native_accounts.map(a => a.platform + ' ' + a.slug)]));
+  const search = filters.search.trim().normalize('NFC').toLowerCase();
+  return fields.some(field => field?.normalize('NFC').toLowerCase().includes(search));
+};
+
 const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const text = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0 && v.length <= 2048 && !/[\x00-\x1f\x7f]/.test(v);
 const time = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 && v <= 8_640_000_000_000_000;
 const level = (v: unknown): boolean => typeof v === 'string' && ['review', 'rejected', 'expiry_30', 'expiry_7', 'expiry_passed'].includes(v);
 const cursor = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z0-9_-]{1,512}$/.test(v);
+const historySearch = (v: unknown): v is string => {
+  if (typeof v !== 'string' || v.length > 128 || v.trim().normalize('NFC').length > 128 || /[\x00-\x1f\x7f]/.test(v)) return false;
+  try { encodeURIComponent(v); return true; } catch { return false; }
+};
+const historyDate = (v: unknown): v is string => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)
+  && Number.isFinite(Date.parse(v + 'T00:00:00Z')) && new Date(v + 'T00:00:00Z').toISOString().slice(0, 10) === v;
+export const isAuthenticationIncidentHistoryFilters = (v: unknown): v is AuthenticationIncidentHistoryFilters => record(v)
+  && Object.keys(v).every(k => ['search', 'type', 'outcome', 'from', 'through'].includes(k))
+  && (v.search === undefined || historySearch(v.search))
+  && (v.type === undefined || typeof v.type === 'string' && (AUTHENTICATION_HISTORY_TYPES as readonly string[]).includes(v.type))
+  && (v.outcome === undefined || typeof v.outcome === 'string' && (AUTHENTICATION_HISTORY_OUTCOMES as readonly string[]).includes(v.outcome))
+  && (v.from === undefined || historyDate(v.from)) && (v.through === undefined || historyDate(v.through))
+  && (typeof v.from !== 'string' || typeof v.through !== 'string' || v.from <= v.through);
 const method = (v: unknown): boolean => record(v) && typeof v.type === 'string' && ['direct_oauth', 'broker', 'other', 'unknown'].includes(v.type)
   && (v.label === undefined || text(v.label)) && (v.connection_name === undefined || typeof v.connection_name === 'string' && CONNECTION_NAME_REGEX.test(v.connection_name))
   && (v.app_id === undefined || v.type === 'direct_oauth' && text(v.app_id))
@@ -126,6 +193,9 @@ export const isAuthenticationRepairAction = (v: unknown): v is AuthenticationRep
         : v.restart_required === undefined && typeof v.reason === 'string' && ['access_failed', 'changed', 'interrupted', 'locked', 'server_error', 'inconclusive', 'unreachable'].includes(v.reason)))
   && typeof v.targets_truncated === 'boolean' && Array.isArray(v.targets) && v.targets.length > 0 && v.targets.length <= 64
   && v.targets.every(t => isAuthenticationIncidentScope(t) && t.kind !== 'all' && t.kind !== 'group')
+  && (v.access_summary === undefined || isAuthenticationAccessSummary(v.access_summary)
+    && v.access_summary.selection.kind === 'repair' && v.access_summary.selection.id === v.id
+    && authenticationAccessSummaryMatchesTargets(v.access_summary, v.targets))
   && typeof v.incidents_truncated === 'boolean' && Array.isArray(v.incidents) && v.incidents.length <= 64
   && new Set(v.incidents.map(i => record(i) ? i.id : null)).size === v.incidents.length
   && v.incidents.every(i => record(i) && typeof i.id === 'string' && /^[a-f0-9-]{36}$/.test(i.id)
@@ -138,6 +208,7 @@ export const isAuthenticationIncidentScope = (v: unknown): v is AuthenticationIn
   || v.kind === 'collection' && (v.platform === 'mail' || v.platform === 'calendar') && text(v.slug));
 export const isAuthenticationIncidentHistoryQuery = (v: unknown): v is AuthenticationIncidentHistoryQuery => record(v)
   && isAuthenticationIncidentScope(v.scope) && (v.cursor === undefined || cursor(v.cursor))
+  && (v.filters === undefined || isAuthenticationIncidentHistoryFilters(v.filters))
   && (v.include_renewals === undefined || typeof v.include_renewals === 'boolean')
   && (v.limit === undefined || typeof v.limit === 'number' && Number.isInteger(v.limit) && v.limit >= 1 && v.limit <= 50);
 const validEvents = (events: unknown, status: string, reported: boolean, since: number, currentLevel: unknown, ended: unknown): boolean => {
@@ -177,6 +248,7 @@ const validRepairs = (incidents: unknown[], repairs: unknown, order: unknown, ve
 };
 export const isAuthenticationIncidentHistoryPage = (v: unknown): v is AuthenticationIncidentHistoryPage => record(v)
   && isAuthenticationIncidentScope(v.scope) && time(v.observed_at) && v.retention_days === 90
+  && (v.filters === undefined || isAuthenticationIncidentHistoryFilters(v.filters))
   && (v.next_cursor === undefined || cursor(v.next_cursor)) && Array.isArray(v.incidents) && v.incidents.length <= 50
   && new Set(v.incidents.map(i => record(i) ? i.id : null)).size === v.incidents.length
   && validRepairs(v.incidents, v.repairs, v.order, v.verifications, v.renewals)

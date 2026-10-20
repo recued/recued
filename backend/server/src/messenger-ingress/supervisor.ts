@@ -357,16 +357,22 @@ export const createMessengerIngressSupervisor = (
         // ⛔ A PROVIDER, re-resolved per poll — never the `auth` decoded above.
         // That value is captured once per reconcile; a Graph delegated token
         // dies in about an hour, so a runner holding it works until it doesn't
-        // and then 401s forever. Re-reading the row also means a re-enrolment
-        // or a rotation lands without restarting the runner.
+        // and then 401s forever. The same row's refreshed token lands without
+        // restarting the runner. A new enrollment or conversation waits for
+        // the supervisor to rebuild its binding.
         getAccessToken: async () => {
           const current = options.connectionStore.get('notification', row.name);
-          if (current === null) return null;
+          if (current === null || current.enrolled_at !== row.enrolled_at || current.config_json !== row.config_json) return null;
+          const source = options.connectionStore.getAuthSourceId?.('notification', row.name);
           try {
             const decoded = await options.decodeAuth(current);
             const usable = options.refreshAuth === undefined
               ? decoded
-              : await options.refreshAuth.refreshIfNeeded(vendor, decoded);
+              : await options.refreshAuth.refreshIfNeeded(current.name, decoded, { enrolled_at: current.enrolled_at,
+                auth_ciphertext: current.auth_ciphertext, config_json: current.config_json });
+            const latest = options.connectionStore.get('notification', row.name);
+            if (!latest || latest.enrolled_at !== current.enrolled_at || latest.config_json !== current.config_json
+              || options.connectionStore.getAuthSourceId?.('notification', row.name) !== source) return null;
             return resolveBearerAccessToken(usable) ?? null;
           } catch {
             // A locked keystore or a decrypt failure is transient from the

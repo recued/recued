@@ -1087,6 +1087,75 @@ export const mountNotificationsPanel = (
 
     item.appendChild(header);
 
+    if (row.connections && (row.connections.length > 0 || row.connection !== undefined)) {
+      const label = doc.createElement('label');
+      label.textContent = 'Connection ';
+      const select = doc.createElement('select');
+      select.setAttribute('data-notification-connection', row.channel);
+      select.setAttribute('aria-label', `${CHANNEL_DISPLAY_NAME[row.channel]} connection`);
+      const blank = doc.createElement('option');
+      blank.value = '';
+      blank.textContent = row.connections.length > 1 ? 'Choose a connection' : 'No connection selected';
+      select.appendChild(blank);
+      for (const connection of row.connections) {
+        const option = doc.createElement('option');
+        option.value = `${connection.name}:${connection.enrolled_at}`;
+        option.textContent = connection.display_name === connection.name ? connection.name
+          : `${connection.display_name} (${connection.name})`;
+        select.appendChild(option);
+      }
+      if (row.connection && !row.connections.some(connection => connection.name === row.connection!.name
+        && connection.enrolled_at === row.connection!.enrolled_at)) {
+        const missing = doc.createElement('option');
+        missing.value = `${row.connection.name}:${row.connection.enrolled_at}`;
+        missing.textContent = `${row.connection.name} (unavailable)`;
+        missing.disabled = true;
+        select.appendChild(missing);
+      }
+      const selected = row.connection === undefined && row.connections.length === 1 ? row.connections[0] : row.connection;
+      select.value = selected ? `${selected.name}:${selected.enrolled_at}` : '';
+      const error = doc.createElement('span');
+      error.setAttribute('role', 'status');
+      select.addEventListener('change', () => {
+        if (select.disabled || disposed) return;
+        const chosen = row.connections!.find(connection => `${connection.name}:${connection.enrolled_at}` === select.value);
+        const restoreFocus = doc.activeElement === select;
+        select.disabled = true;
+        void (async () => {
+          try {
+            const result = await opts.runSetChannel({ channel: row.channel, patch: {
+              connection: chosen ? { name: chosen.name, enrolled_at: chosen.enrolled_at } : null,
+            } });
+            if (disposed) return;
+            if (result.ok) {
+              await refreshRows();
+              if (restoreFocus && (!doc.activeElement || doc.activeElement === doc.body)) {
+                wrapper.querySelector<HTMLSelectElement>(`[data-notification-connection="${row.channel}"]`)?.focus();
+              }
+            }
+            else error.textContent = 'This connection is no longer available. Choose it again after refreshing.';
+          } catch (err) { if (!disposed) error.textContent = humanizeRpcError(err); }
+          finally { if (!disposed) select.disabled = false; }
+        })();
+      });
+      label.appendChild(select);
+      label.appendChild(error);
+      item.appendChild(label);
+      // D-158 amendments 2026-10-19/20 — a recipe's notification and an approval
+      // go through the connection chosen here; without a choice, the only one or
+      // the one named after the channel, or none.
+      const plain = row.plain_connection;
+      if (plain === null || (plain && (plain.name !== selected?.name))) {
+        const note = doc.createElement('p');
+        note.className = 'notif-row-plain';
+        note.setAttribute('data-notification-plain-connection', row.channel);
+        note.textContent = plain ? `Recipe notifications and approvals go through ${plain.display_name === plain.name ? plain.name : `${plain.display_name} (${plain.name})`}.`
+          : row.channel === 'email' ? 'Recipe notifications and approvals cannot go out by email until a connection is chosen.'
+            : `Recipe notifications and approvals cannot go out by ${CHANNEL_DISPLAY_NAME[row.channel]} until a connection is chosen.`;
+        item.appendChild(note);
+      }
+    }
+
     // Readiness state + (not-ready only) install / connect CTA
     const status = doc.createElement('p');
     status.className = 'notif-row-status';

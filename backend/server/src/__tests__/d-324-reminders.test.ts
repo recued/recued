@@ -198,7 +198,7 @@ describe('ringing', () => {
     expect(await delivery().tick()).toMatchObject({ due: 0, delivered: 0 });
     clock = NOW + 30 * MINUTE;
     expect(await delivery().tick()).toMatchObject({ due: 1, delivered: 1 });
-    expect(sent).toEqual([{ title: 'Reminder', text: 'call the dentist', link_url: '#data/reminder' }]);
+    expect(sent).toEqual([{ title: 'Reminder', text: 'call the dentist', ui_link_url: '#data/reminder' }]);
     expect(store.get(reminder.reminder_id)).toMatchObject({
       state: 'delivered', delivered_at: clock, delivered_to: ['in_app'], attempts: 1,
     });

@@ -22,6 +22,7 @@ type PhaseGActionLabels = {
   vault_clear: string;
   approval_allow: string;
   approval_deny: string;
+  reminder_answer: string;
   schedule_create: string;
   schedule_update: string;
   schedule_delete: string;
@@ -85,6 +86,7 @@ type PhaseGActionLabels = {
   archive_export_complete: string;
   archive_import_start: string;
   archive_import_complete: string;
+  archive_import_accepted: string;
   audit_export: string;
   // D-119 Phase 13 — annotation + link warehouse writes.
   annotation_write: string;
@@ -117,6 +119,7 @@ export const ACTIVITY_LABELS = {
   vault_clear: 'Vault key cleared',
   approval_allow: 'Approval allowed',
   approval_deny: 'Approval denied',
+  reminder_answer: 'Reminder answered',
   schedule_create: 'Schedule created',
   schedule_update: 'Schedule updated',
   schedule_delete: 'Schedule deleted',
@@ -171,6 +174,7 @@ export const ACTIVITY_LABELS = {
   archive_export_complete: 'Archive export completed',
   archive_import_start: 'Archive import started',
   archive_import_complete: 'Archive import completed',
+  archive_import_accepted: 'Archive import accepted; awaiting restart',
   audit_export: 'Audit exported',
   annotation_write: 'Annotation written',
   annotation_delete: 'Annotation deleted',

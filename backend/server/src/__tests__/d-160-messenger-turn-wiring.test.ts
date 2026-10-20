@@ -113,20 +113,20 @@ const telegramRow = (
   config: Record<string, unknown> = { chat_id: 99 },
 ): ConnectionRow => connectionRow('telegram', config, TELEGRAM_TOKEN);
 
-const sequenceConnectionStore = (
-  rows: readonly (ConnectionRow | null)[],
+const controllableConnectionStore = (
+  initial: ConnectionRow,
 ): {
   store: ConnectionStoreSqlite;
   get: ReturnType<typeof vi.fn<(kind: ConnectionKind, name: string) => ConnectionRow | null>>;
+  replace(row: ConnectionRow | null): void;
 } => {
-  let idx = 0;
+  let row: ConnectionRow | null = initial;
   const get = vi.fn((kind: ConnectionKind, name: string): ConnectionRow | null => {
-    const row = rows[Math.min(idx, rows.length - 1)] ?? null;
-    idx += 1;
     return row !== null && row.kind === kind && row.name === name ? row : null;
   });
   return {
     get,
+    replace(value) { row = value; },
     store: ({ get } as unknown) as ConnectionStoreSqlite,
   };
 };
@@ -174,6 +174,7 @@ interface OrchestratorHarness {
 
 const makeOrchestrator = (
   runMessengerTurnImpl?: RunMessengerTurn,
+  beforeQueuedExecution?: () => Promise<void>,
 ): OrchestratorHarness => {
   const sessionStore = createInMemorySessionStore();
   const runMessengerTurn = vi.fn<RunMessengerTurn>(
@@ -193,6 +194,10 @@ const makeOrchestrator = (
   const db = new Database(':memory:'); ensureChatSchema(db); const store = createChatStore(db);
   const base = { runTurn, runMessengerTurn, sessionStore, dispatch: { dispatchTool } } as unknown as Orchestrator;
   const orchestrator = withQueuedChatTurns(base, { db, store, pollMs: 10 });
+  if (beforeQueuedExecution) {
+    const register = orchestrator.turnQueue!.register.bind(orchestrator.turnQueue!);
+    orchestrator.turnQueue!.register = (family, execute) => register(family, async (...args) => { await beforeQueuedExecution(); return execute(...args); });
+  }
   queueCleanups.push(() => { orchestrator.turnQueue!.close(); db.close(); });
   return { sessionStore, runMessengerTurn, orchestrator };
 };
@@ -204,6 +209,7 @@ const composeIngest = (deps: {
   runMessengerTurnImpl?: RunMessengerTurn;
   log?: LogFn;
   fileCollection?: ComposeMessengerTurnIngestDeps['fileCollection'];
+  beforeQueuedExecution?: () => Promise<void>;
 } = {}): {
   ingest: MessengerTurnIngest;
   runMessengerTurn: RunMessengerTurnMock;
@@ -212,6 +218,7 @@ const composeIngest = (deps: {
 } => {
   const { orchestrator, runMessengerTurn, sessionStore } = makeOrchestrator(
     deps.runMessengerTurnImpl,
+    deps.beforeQueuedExecution,
   );
   const fetchImpl = deps.fetchImpl ?? slackFetch();
   const ingest = composeMessengerTurnIngest({
@@ -355,6 +362,7 @@ const remoteChannel = (opts: {
 const stubBlock = (): NotificationBlock =>
   ({
     submitAnswer: vi.fn(async () => undefined),
+    restoreAskDeliveries: async () => {},
   } as unknown) as NotificationBlock;
 
 const slackInboundEvent = (
@@ -989,11 +997,13 @@ describe('D-160 messenger turn composer - queueing and run-stage robustness', ()
   it('drops queued Slack turns when the canonical row is removed before run-stage re-resolution', async () => {
     const logs = captureLogs();
     const row = slackRow({ channel_id: 'C123' });
-    const { store, get } = sequenceConnectionStore([row, row, null, null]);
+    const { store, replace } = controllableConnectionStore(row);
+    let release!: () => void; const blocked = new Promise<void>(resolve => { release = resolve; });
     const { ingest, runMessengerTurn, fetchImpl } = composeIngest({
       store,
       fetchImpl: slackFetch(),
       log: logs.log,
+      beforeQueuedExecution: () => blocked,
     });
 
     const firstAccepted = ingest(
@@ -1011,32 +1021,32 @@ describe('D-160 messenger turn composer - queueing and run-stage robustness', ()
       true,
       true,
     ]);
+    replace(null); release();
     await vi.waitFor(() =>
       expect(
         logs.entries.filter((entry) => entry.msg.includes('dropped at run')),
       ).toHaveLength(2),
     );
 
-    expect(get).toHaveBeenCalledTimes(4);
     expect(runMessengerTurn).not.toHaveBeenCalled();
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('refuses a queued Slack turn when the row is rebound to a different channel before run-stage re-gating', async () => {
     const logs = captureLogs();
-    const { store } = sequenceConnectionStore([
-      slackRow({ channel_id: 'C123' }),
-      slackRow({ channel_id: 'C999' }),
-    ]);
+    const { store, replace } = controllableConnectionStore(slackRow({ channel_id: 'C123' }));
+    let release!: () => void; const blocked = new Promise<void>(resolve => { release = resolve; });
     const { ingest, runMessengerTurn, fetchImpl } = composeIngest({
       store,
       fetchImpl: slackFetch(),
       log: logs.log,
+      beforeQueuedExecution: () => blocked,
     });
 
     await expect(
       ingest('slack', 'slack', slackMessagePayload({ channel: 'C123' })),
     ).resolves.toBe(true);
+    replace(slackRow({ channel_id: 'C999' })); release();
     await vi.waitFor(() =>
       expect(
         logs.entries.some((entry) => entry.msg.includes('refused at run')),

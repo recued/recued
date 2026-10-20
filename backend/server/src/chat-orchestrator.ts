@@ -1,3 +1,5 @@
+import { withResourceReview } from './resource-review.js';
+import { captureResourceReview } from '@recued/contracts';
 /** D-137 / D-164 P6.3 — Server-side chat orchestrator: single AI main
  *  turn + tool dispatch loop.
  *
@@ -216,6 +218,7 @@ import {
 } from './chat-stream-middleware.js';
 import { TOOLS_SEARCH_TOOL_NAME } from './chat-tools-search-name.js';
 import { fitCatalogModeToBudget } from './chat-context-budget.js';
+import { SITUATION_PREFETCH_MIDDLEWARE_ID } from './situations/prefetch.js';
 import { PROMPT_CACHE_MIDDLEWARE_ID } from '@recued/middleware-prompt-cache';
 // D-167 P5 S4 — the always-on PII bookend hooks + the wire-seam enactment.
 // `pii-protect` (first `prompt`) / `pii-restore` (last `update`) bracket the
@@ -812,6 +815,9 @@ export interface ChatAiCallResult {
 export interface ChatAiCallOptions {
   /** Per-call timeout, forwarded to `executeLLM`'s `timeout_ms` dep. */
   readonly timeout_ms?: number;
+  /** Host-only authority recheck after privacy preparation, immediately before
+   * the private background call reaches its provider. Never serialized. */
+  readonly before_provider_call?: () => void;
 }
 
 export type ExecuteChatAiCall = (
@@ -1116,6 +1122,8 @@ export interface ChatOrchestratorDeps {
    *  dbless harness path); the orchestrator dispatches every tool
    *  through the registry as before. */
   planApprovalStore?: planApprovalModule.PlanApprovalStore;
+  getResourceReview?: () => import('@recued/contracts').ResourceReviewHooks | undefined;
+  validateLocalMutation?: (source: ExecutionSource, tool: string) => void;
   /** D-160 Stage 3 — the live first-party middleware registry (built in
    *  `wire-chat-orchestrator.ts`). The orchestrator builds the
    *  source-binding adapters (`chat-stream-middleware.ts`) from it +
@@ -1126,6 +1134,7 @@ export interface ChatOrchestratorDeps {
    *  through `runStream` with no producers (the orchestrator owns the AI
    *  call regardless), exactly as before. */
   middlewareRegistry?: MiddlewareRegistry;
+  getSituationAccess?: () => import('./situations/access.js').SituationAccess | undefined;
   /** D-160 Stage 3 — per-pair correction-event store: the source the
    *  `correction-learning` `before-turn` hook seeds from. Absent → that
    *  adapter no-ops. */
@@ -2365,6 +2374,7 @@ export const createChatOrchestrator = (
   // catalog hook.
   const streamRegistry = createMiddlewareRegistry();
   for (const middleware of createChatStreamMiddlewares({
+    ...(deps.getSituationAccess ? { getSituationAccess: deps.getSituationAccess } : {}),
     ...(deps.middlewareRegistry ? { registry: deps.middlewareRegistry } : {}),
     buildCatalog,
     ...(deps.getCorrectionEventsStore
@@ -2428,7 +2438,7 @@ export const createChatOrchestrator = (
   const persistPlanExecution = async (
     plan_id: string | undefined,
     execution: ChatPlanExecutionReceipt,
-  ): Promise<void> => {
+  ): Promise<ChatPlanExecutionReceipt | undefined> => {
     if (
       plan_id === undefined
       || deps.planApprovalStore?.recordExecution === undefined
@@ -2443,6 +2453,7 @@ export const createChatOrchestrator = (
           `[chat] approval execution receipt refused for ${plan_id}`,
         );
       }
+      return persisted;
     } catch (error) {
       console.error(
         `[chat] approval execution receipt persistence failed for ${plan_id}`,
@@ -2453,7 +2464,7 @@ export const createChatOrchestrator = (
       // to conservative uncertainty. This fallback carries no sensitive body.
       if (execution.status !== 'unknown') {
         try {
-          await deps.planApprovalStore.recordExecution(plan_id, {
+          return await deps.planApprovalStore.recordExecution(plan_id, {
             status: 'unknown',
             turn_id: execution.turn_id,
           });
@@ -2624,6 +2635,13 @@ export const createChatOrchestrator = (
     // link rides every post-gate lifecycle event so clients can update the
     // original plan card from execution truth rather than `chat.send` ack.
     let consumedPlanId: string | undefined;
+    let consumedResourceReview: import("@recued/contracts").ResourceReview | undefined;
+    let confirmedLocalExecution: Extract<ChatPlanExecutionReceipt, { status: 'completed' }> | undefined;
+    const savePlanExecution = async (execution: ChatPlanExecutionReceipt) => {
+      const saved = await persistPlanExecution(consumedPlanId, execution);
+      if (saved?.status === 'completed' && saved.local_receipt) confirmedLocalExecution = saved;
+      return saved;
+    };
 
     // D-137 P3 § A.11 — plan-approval gate. When a write tool is
     // dispatched, check the plan registry FIRST. Outcomes, in
@@ -2767,6 +2785,7 @@ export const createChatOrchestrator = (
           return result;
         }
         consumedPlanId = consumed.plan_id;
+        consumedResourceReview = consumed.resource_review;
         void safeLogActivity(
           deps.auditLog,
           'chat_plan_consumed',
@@ -2810,6 +2829,8 @@ export const createChatOrchestrator = (
             now,
           });
         if (!reEmit) {
+          const resourceReview = deps.getResourceReview?.()?.capture(tool_name, arg_values as Record<string, unknown>);
+          if (resourceReview) proposal.resource_review = resourceReview;
           await deps.planApprovalStore.put(proposal);
           void safeLogActivity(
             deps.auditLog,
@@ -2835,6 +2856,7 @@ export const createChatOrchestrator = (
             : {}),
           tool: tool_name,
           tier,
+          ...(proposal.resource_review ? { resource_review: proposal.resource_review } : {}),
           args: proposal.args,
           args_hash: proposal.args_hash,
           created_at: proposal.created_at,
@@ -2887,17 +2909,14 @@ export const createChatOrchestrator = (
         };
       }
       if (!admission.admitted) {
-        await persistPlanExecution(
-          consumedPlanId,
-          {
-            status: 'failed',
-            turn_id,
-            reason: admission.result.reason,
-            ...(admission.result.detail !== undefined
-              ? { detail: admission.result.detail }
-              : {}),
-          },
-        );
+        await savePlanExecution({
+          status: 'failed',
+          turn_id,
+          reason: admission.result.reason,
+          ...(admission.result.detail !== undefined
+            ? { detail: admission.result.detail }
+            : {}),
+        });
         safeBroadcast(deps.broadcast, {
           kind: 'chat.tool_call_completed',
           session_id,
@@ -2910,6 +2929,7 @@ export const createChatOrchestrator = (
             ? { detail: admission.result.detail }
             : {}),
           ...(consumedPlanId !== undefined ? { plan_id: consumedPlanId } : {}),
+          ...(confirmedLocalExecution ? { plan_execution: confirmedLocalExecution } : {}),
         });
         return admission.result;
       }
@@ -2971,7 +2991,7 @@ export const createChatOrchestrator = (
       }) : undefined;
     } catch (error) {
       await releaseLlmGatewayToolUsage();
-      await persistPlanExecution(consumedPlanId, { status: 'failed', turn_id,
+      await savePlanExecution({ status: 'failed', turn_id,
         reason: 'execution_error' });
       throw error;
     }
@@ -3041,11 +3061,18 @@ export const createChatOrchestrator = (
                 reason: 'execution_error' as const,
                 detail: 'raw op dispatch unavailable',
               })
-          : deps.registry.dispatch(
-              tool_name,
-              arg_values,
-              internalDispatchCtx!,
-            )),
+          : withResourceReview(consumedResourceReview, () => {
+              if (consumedPlanId) captureResourceReview(deps.getResourceReview?.(), tool_name,
+                arg_values as Record<string, unknown>, consumedResourceReview, true);
+              const dispatch = () => deps.registry.dispatch(tool_name, arg_values, internalDispatchCtx!);
+              return consumedPlanId && consumedResourceReview && deps.planApprovalStore?.runLocalMutation
+                ? deps.planApprovalStore.runLocalMutation(consumedPlanId, turn_id, source,
+                    () => {
+                      if (deps.validateLocalMutation) deps.validateLocalMutation(source, tool_name);
+                      else if (executionSourceContractId(source) !== undefined) throw new Error('The original Chat write authority is unavailable.');
+                    }, dispatch)
+                : dispatch();
+            })),
       );
     } catch (e) {
       const failure: ChatDispatchResult = { ok: false, reason: 'execution_error',
@@ -3054,10 +3081,11 @@ export const createChatOrchestrator = (
       catch (error) { failedOutcomeWrite(error); }
       await releaseLlmGatewayToolUsage();
       if (consumedPlanId !== undefined) {
-        await persistPlanExecution(consumedPlanId, {
+        await savePlanExecution({
           status: 'failed',
           turn_id,
           reason: 'execution_error',
+          ...(consumedResourceReview && failure.detail !== undefined ? { detail: failure.detail } : {}),
         });
       }
       safeBroadcast(deps.broadcast, {
@@ -3068,7 +3096,9 @@ export const createChatOrchestrator = (
         tier,
         status: 'error',
         reason: 'execution_error',
+        ...(consumedResourceReview && failure.detail !== undefined ? { detail: failure.detail } : {}),
         ...(consumedPlanId !== undefined ? { plan_id: consumedPlanId } : {}),
+        ...(confirmedLocalExecution ? { plan_execution: confirmedLocalExecution } : {}),
       });
       // Only the cooperative loop needs the internal result envelope. Direct
       // dispatch callers keep the original thrown error and its type.
@@ -3093,7 +3123,7 @@ export const createChatOrchestrator = (
       // errors[] via `return result` below to narrate). Without this, a failed cli
       // run showed a misleading "used X ✓".
       if (result.run_failed) {
-        await persistPlanExecution(consumedPlanId, {
+        await savePlanExecution({
           status: 'failed',
           turn_id,
           reason: 'execution_error',
@@ -3111,25 +3141,24 @@ export const createChatOrchestrator = (
           detail: result.run_failed.detail,
           ...runAddress,
           ...(consumedPlanId !== undefined ? { plan_id: consumedPlanId } : {}),
+          ...(confirmedLocalExecution ? { plan_execution: confirmedLocalExecution } : {}),
         });
       } else {
         const result_ref = `${session_id}:${turn_id}:${tool_name}`;
-        await persistPlanExecution(
-          consumedPlanId,
-          result.run_held
-            ? {
-                status: 'held',
-                turn_id,
-                result_ref,
-                hold_kind: result.run_held.kind,
-                ...runAddress,
-              }
-            : {
-                status: 'completed',
-                turn_id,
-                result_ref,
-                ...runAddress,
-              },
+        await savePlanExecution(result.run_held
+          ? {
+              status: 'held',
+              turn_id,
+              result_ref,
+              hold_kind: result.run_held.kind,
+              ...runAddress,
+            }
+          : {
+              status: 'completed',
+              turn_id,
+              result_ref,
+              ...runAddress,
+            },
         );
         safeBroadcast(deps.broadcast, {
           kind: 'chat.tool_call_completed',
@@ -3142,6 +3171,7 @@ export const createChatOrchestrator = (
           ...runAddress,
           ...(result.run_held ? { run_held: result.run_held.kind } : {}),
           ...(consumedPlanId !== undefined ? { plan_id: consumedPlanId } : {}),
+          ...(confirmedLocalExecution ? { plan_execution: confirmedLocalExecution } : {}),
         });
       }
       await safeLogActivity(
@@ -3159,7 +3189,7 @@ export const createChatOrchestrator = (
       else await recordLlmGatewayToolUsage();
       return result;
     }
-    await persistPlanExecution(consumedPlanId, {
+    await savePlanExecution({
       status: 'failed',
       turn_id,
       reason: result.reason,
@@ -3177,6 +3207,7 @@ export const createChatOrchestrator = (
       ...(result.detail ? { detail: result.detail } : {}),
       ...runAddress,
       ...(consumedPlanId !== undefined ? { plan_id: consumedPlanId } : {}),
+      ...(confirmedLocalExecution ? { plan_execution: confirmedLocalExecution } : {}),
     });
     await safeLogActivity(
       deps.auditLog,
@@ -3435,7 +3466,7 @@ export const createChatOrchestrator = (
         .filter(
           (part): part is EntityPromptPart =>
             part.role === 'entity'
-            && part.source === PROMPT_CACHE_MIDDLEWARE_ID,
+            && (part.source === PROMPT_CACHE_MIDDLEWARE_ID || part.source === SITUATION_PREFETCH_MIDDLEWARE_ID),
         );
       // ENACT (N.9): the `catalog` before-turn hook DECIDED `available_tools`
       // off the seeded picker target. Fall back to an empty list defensively

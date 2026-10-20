@@ -33,19 +33,22 @@ import type { CollectionRegistry } from '../../collections/registry.js';
 import type { EventBus } from '../../events/bus.js';
 import type { KeyManager } from '../../key-manager.js';
 import { decodeAuthFromStorage } from '../../connection-handler.js';
-import { handleCollectionMailSend } from '../../collections/collection-handler.js';
+import { handleCollectionMailSend, handleOwnerNotificationMailSend } from '../../collections/collection-handler.js';
 import { emitNotification } from '../../events/emit-sites.js';
 import { NOTIFICATION_CHANNEL_REGISTRY } from '../../data/notification-channel-registry.js';
 import type {
   NotificationChannel,
   NotificationChannelDispatcher,
 } from '../../notification-handler.js';
+import type { SubtypeDispatcherDeps } from '../../notification-dispatchers.js';
 
 export interface ComposeConnectionNotificationDeps {
   connectionStore: ConnectionStoreSqlite | undefined;
   keys: KeyManager | undefined;
   eventBus: EventBus;
   collectionRegistry: CollectionRegistry;
+  /** D-325 P31/P43 — the owner's named connection per channel. */
+  selectConnection?: SubtypeDispatcherDeps['selectConnection'];
 }
 
 export interface ConnectionNotificationBundle {
@@ -95,6 +98,10 @@ export const composeConnectionNotification = (
     mailRpc: {
       send: (args) =>
         handleCollectionMailSend({ registry: collectionRegistry }, args),
+      // D-158 amendment 2026-10-18 — the owner's enrolled destination, which
+      // may be the sending mailbox itself. Also the email channel's seam.
+      sendToOwner: (args) =>
+        handleOwnerNotificationMailSend({ registry: collectionRegistry }, args),
     },
   };
 
@@ -117,6 +124,7 @@ export const composeConnectionNotification = (
       channel: entry.channel,
       subtype: entry.subtype,
       emitInApp: (body) => emitNotification(eventBus, { body }),
+      ...(deps.selectConnection ? { selectConnection: deps.selectConnection } : {}),
     });
   }
   // ⛔ COMPLETENESS IS CHECKED HERE, LOUDLY — this is the failure the registry's

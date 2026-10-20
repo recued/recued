@@ -947,6 +947,8 @@ describe('D-174 P5 - Runs route', () => {
       href: '#data',
       actionLabel: 'Open Data',
     });
+    expect(projectRunAffectedItems([{ entity_id: 'asset:car 1', kind: 'execution.write', ts: NOW }],
+      { run_id: 'run-1', status: 'succeeded' })).toMatchObject([{ title: 'Asset', resolution: 'exact', href: '#yours/asset/car%201' }]);
 
     const success = projectRunAffectedItems(
       [{

@@ -42,6 +42,7 @@ import {
   DATA_ROUTE_CONTACT_LINKS_ATTR,
   DATA_ROUTE_CONTACT_LOAD_MORE_ATTR,
   DATA_ROUTE_CONTACT_IMPORT_RESULT_ATTR,
+  DATA_ROUTE_CONTACT_IMPORT_DATES_ATTR,
   DATA_ROUTE_CONTACT_ROLLUP_ATTR,
   DATA_ROUTE_CONTACT_PROVENANCE_ATTR,
   DATA_ROUTE_CONTACT_SCAN_ATTR,
@@ -630,6 +631,7 @@ const mountRoute = (overrides: {
   initialEntityId?: string;
   initialDetailId?: string;
   mailFactCallers?: BootstrapDataRouteOptions['mailFactCallers'];
+  onOwnerRecordOpened?: BootstrapDataRouteOptions['onOwnerRecordOpened'];
   reminderCallers?: BootstrapDataRouteOptions['reminderCallers'];
   chatReturn?: BootstrapDataRouteOptions['chatReturn'];
   logsReturn?: BootstrapDataRouteOptions['logsReturn'];
@@ -896,6 +898,9 @@ const mountRoute = (overrides: {
       : {}),
     ...(overrides.mailFactCallers !== undefined
       ? { mailFactCallers: overrides.mailFactCallers }
+      : {}),
+    ...(overrides.onOwnerRecordOpened !== undefined
+      ? { onOwnerRecordOpened: overrides.onOwnerRecordOpened }
       : {}),
     ...(overrides.reminderCallers !== undefined
       ? { reminderCallers: overrides.reminderCallers }
@@ -2810,6 +2815,18 @@ describe('D-174 P5 Data route', () => {
     rig.route.dispose();
   });
 
+  // D-325 Option A — Today links a bill to its own facts; the address showed the whole list,
+  // and no open of a mail fact was ever reported.
+  it('opens one mail fact by its address and reports the open, as a booking page does', async () => {
+    const opened = vi.fn(); const listFacts = vi.fn(async () => ({ rows: [] }));
+    const rig = mountRoute({ initialTab: 'mail_fact', initialEntityId: 'thing', initialDetailId: 'mthing_bill',
+      mailFactCallers: { listFacts }, onOwnerRecordOpened: opened });
+    await rig.route.whenLoaded();
+    expect(opened).toHaveBeenCalledWith({ collection: 'mail_fact', id: 'mthing_bill' });
+    await vi.waitFor(() => expect(listFacts).toHaveBeenCalledWith(expect.objectContaining({ thing_id: 'mthing_bill' })));
+    rig.route.dispose();
+  });
+
   it('wires contact create/edit through contact.* callers', async () => {
     const contactUpsertCaller = vi.fn<DataContactUpsertCaller>(async (args) => ({
       contact: contactRecord({
@@ -2843,6 +2860,30 @@ describe('D-174 P5 Data route', () => {
       phone: '+15555550123',
       company: 'Example Co',
     });
+
+    rig.route.dispose();
+  });
+
+  // D-325 §15.8 — the dialog left an emptied birthday out of the save, so the
+  // contact kept it (and its yearly reminder) whatever the owner did.
+  it('clears a birthday the owner empties, and sends none for a contact without one', async () => {
+    let onFile = contactRecord({ birthday: '--04-15', anniversary: '2010-10-20' });
+    const contactUpsertCaller = vi.fn<DataContactUpsertCaller>(async (args) => ({ contact: contactRecord({ email: args.email }) }));
+    const rig = mountRoute({ contactUpsertCaller, contactGetCaller: vi.fn<DataContactGetCaller>(async () => ({ contact: onFile })) });
+    await rig.route.whenLoaded();
+
+    await rig.route.openEditContactDialog('sam@example.com');
+    rig.route.setContactDialogValues({ birthday: '' });
+    await rig.route.confirmContactDialog();
+    expect(contactUpsertCaller).toHaveBeenLastCalledWith(expect.objectContaining({ email: 'sam@example.com', birthday: null, anniversary: '2010-10-20' }));
+
+    onFile = contactRecord();
+    await rig.route.openEditContactDialog('sam@example.com');
+    rig.route.setContactDialogValues({ name: 'Sam R.' });
+    await rig.route.confirmContactDialog();
+    const sent = contactUpsertCaller.mock.calls.at(-1)![0];
+    expect(sent).toMatchObject({ email: 'sam@example.com', name: 'Sam R.' });
+    expect(sent).not.toHaveProperty('birthday');
 
     rig.route.dispose();
   });
@@ -3667,6 +3708,24 @@ describe('D-174 P5 Data route', () => {
     await rig.route.openContactDetail('sam@example.com');
     expect(calls.filter((c) => c.startsWith('push ')))
       .toEqual(['push #data/contact/sam%40example.com']);
+    rig.route.dispose();
+  });
+
+  it('D-325: a contact referenced by id (Today, an occasion) opens on its email page', async () => {
+    // ⛔ Today linked birthdays as `#data/contact/<contact_id>`, and the detail looked
+    // the id up as an email: an empty page.
+    const calls: string[] = [];
+    const timelineCaller = vi.fn<DataTimelineCaller>(async () => timelineResponse());
+    const rig = mountRoute({
+      replaceState: (_d, _u, url) => { calls.push(`replace ${String(url)}`); },
+      pushState: (_d, _u, url) => { calls.push(`push ${String(url)}`); },
+      contactGetCaller: vi.fn<DataContactGetCaller>(async () => ({ contact: contactRecord({ contact_id: 'contact-123' }) })),
+      timelineCaller,
+    });
+    await rig.route.whenLoaded();
+    await rig.route.openContactDetail('contact-123');
+    await vi.waitFor(() => expect(calls.at(-1)).toMatch(/#data\/contact\/sam%40example\.com$/u));
+    await vi.waitFor(() => expect(timelineCaller).toHaveBeenCalledWith(expect.objectContaining({ entity_id: 'contact:sam@example.com' })));
     rig.route.dispose();
   });
 
@@ -5960,6 +6019,30 @@ describe('R18 — Data deep-linking (#data/<tab>/<entity_id>)', () => {
 });
 
 describe('R18 — Data live-update (warehouse / memory broadcasts)', () => {
+  it('keeps a selected explorer object through late broadcasts and resumes list refresh after closing it', async () => {
+    const { subscribe, listeners } = makeSubscribe();
+    const linkListCaller = vi.fn(async () => ({ links: [{ _id: 'l1', _collection: 'link',
+      from_collection: 'mail', from_id: 'm1', to_collection: 'calendar', to_id: 'e1',
+      role: 'scheduled-from', created_at: 1, authored_by_recipe_id: 'r1' }] }));
+    const rig = mountRoute({ initialTab: 'link', linkListCaller: linkListCaller as never,
+      subscribe, liveRefreshDebounceMs: 0 });
+    await rig.route.whenLoaded();
+    emitClick(rig.root.children[0]!, COLLECTION_OPEN_RECORD_ACTION, { [COLLECTION_RECORD_ID_ATTR]: 'l1' });
+    await rig.route.whenLoaded();
+    const before = linkListCaller.mock.calls.length;
+    const selected = rig.route.getRunPageContext?.();
+    expect(selected?.objects[0]?.id).toBe('l1');
+    listeners.get('warehouse')!({ kind: 'warehouse', subkind: 'link', id: 'l2', cursor: 2 });
+    await rig.route.whenLoaded();
+    expect(rig.route.getRunPageContext?.()).toEqual(selected);
+    expect(linkListCaller).toHaveBeenCalledTimes(before);
+    emitClick(rig.root.children[0]!, COLLECTION_DETAIL_CLOSE_ACTION);
+    await rig.route.whenLoaded();
+    expect(linkListCaller.mock.calls.length).toBeGreaterThan(before);
+    expect(rig.route.getRunPageContext?.()).toBeNull();
+    rig.route.dispose();
+  });
+
   it('subscribes to Data invalidations and silently re-fetches on a warehouse write', async () => {
     const { subscribe, listeners } = makeSubscribe();
     const rig = mountRoute({ subscribe, liveRefreshDebounceMs: 0 });
@@ -7539,6 +7622,28 @@ describe('D-205 #5c — the file import panel', () => {
     expect(rig.route.contactImport()?.file?.apply_changes).toBe(false);
     expect(html).toContain('Import 2 new');
     expect(html).not.toContain('and 1 change');
+    // No dates to name: the list is not there at all.
+    expect(html).not.toContain(DATA_ROUTE_CONTACT_IMPORT_DATES_ATTR);
+    rig.route.dispose();
+  });
+
+  it('D-325 names the dates the file could not use as written; the people still import', async () => {
+    const rig = rigWithFile({
+      contactImportFilePreviewCaller: vi.fn<DataContactImportFilePreviewCaller>(async () => ({
+        ...samplePlan(),
+        date_notes: ['row 2 (Bob): anniversary "6/15/2004" is not a date and was not imported. '
+          + 'Write it as YYYY-MM-DD, or --MM-DD without a year.'],
+      })),
+    });
+    await rig.route.whenLoaded();
+    await rig.route.openContactImport();
+    await rig.route.previewImportFile(fakeFile('contacts.csv', 'Name,Email,Anniversary\nBob,bob@x.test,6/15/2004'));
+
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain(DATA_ROUTE_CONTACT_IMPORT_DATES_ATTR);
+    expect(html).toContain('1 date could not be used as written');
+    expect(html).toContain('6/15/2004');
+    expect(html).toContain('Import 2 new');
     rig.route.dispose();
   });
 

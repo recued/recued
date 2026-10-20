@@ -123,6 +123,7 @@ export const buildWebhookContractSnapshot = (
     allowed_tools,
     approval_required: [],
     scope_restrictions: [],
+    ...(live && def?.read_spheres !== undefined ? { read_spheres: def.read_spheres } : {}),
     resolved_at: resolvedAt,
     // The per-door authored ceiling (D-209 §1.4, minted `'admin'`) — copied from the
     // LIVE definition only, and ONLY onto a deterministic-handler dispatch. A dead

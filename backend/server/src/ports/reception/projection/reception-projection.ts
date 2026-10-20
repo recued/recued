@@ -81,7 +81,7 @@ import type { ReceptionBookingMintEffect } from './reception-booking-mint.js';
  *  `Pick<>` store deps assignable here without widening them (which would
  *  ripple into the deferred boot wire). */
 export type ReceptionProjectionWorkEntityStore = Partial<
-  Pick<WorkEntityStore, 'writeTask' | 'writeNote' | 'writeCommitment' | 'writeProject' | 'writeBooking'>
+  Pick<WorkEntityStore, 'writeTask' | 'writeNote' | 'writeCommitment' | 'writeProject' | 'writeBooking' | 'writeAsset'>
 >;
 
 // ────────────────────────────────────────────────────────────────
@@ -383,6 +383,11 @@ const projectWorkEntity = (
   const store = deps.workEntityStore;
 
   switch (kind) {
+    case 'asset': {
+      const asset = requireWriter(store, 'writeAsset')({ id: input.id, name: title, source_id: sourceId,
+        source: { kind: 'extracted', ref: `reception:${input.id}` }, ...(body ? { attributes: { note: body } } : {}) }, now);
+      return { top_tier_kind: 'asset', target_id: asset.id };
+    }
     case 'note': {
       const note = requireWriter(store, 'writeNote')(
         {

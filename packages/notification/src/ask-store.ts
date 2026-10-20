@@ -30,7 +30,7 @@ import type {
  *  delivery and is persisted with the ask (see `PendingAsk`). */
 export type NewPendingAsk = Omit<
   PendingAsk,
-  'status' | 'answer' | 'answered_via'
+  'status' | 'answer' | 'answered_via' | 'owner_answer'
 >;
 
 /** The durable pending-ask store — persistence + the lifecycle
@@ -51,6 +51,7 @@ export interface AskStore {
     ask_id: string,
     answer: Answer,
     via: ChannelName,
+    participant?: { owner: boolean },
   ): Promise<void>;
 
   /** Transition `answered → handled` once the `on_answer` handler has
@@ -95,7 +96,7 @@ export interface AskStore {
    *  (`NotificationBlockDeps.recordAnswerAudit`). Before that row existed
    *  this prune would have destroyed the ONLY record of what the user was
    *  shown, what they picked, and which channel they answered on. */
-  pruneHandled(before: number): Promise<number>;
+  pruneHandled(before: number, preserve_ask_ids?: readonly string[]): Promise<number>;
 }
 
 /** How long a `handled` ask survives before the retention sweep drops it.
@@ -166,7 +167,7 @@ export const createAskStore = (
       await backing.set(ask.ask_id, row);
     },
 
-    async recordAnswer(ask_id, answer, via) {
+    async recordAnswer(ask_id, answer, via, participant) {
       const existing = await loadOrThrow(ask_id, 'recordAnswer');
       if (existing.status !== 'open') {
         throw new Error(
@@ -179,6 +180,7 @@ export const createAskStore = (
         status: 'answered',
         answer,
         answered_via: via,
+        ...(participant ? { owner_answer: participant.owner } : {}),
       });
     },
 
@@ -219,23 +221,26 @@ export const createAskStore = (
       return all.reduce((n, a) => (a.status === 'open' ? n + 1 : n), 0);
     },
 
-    async pruneHandled(before) {
+    async pruneHandled(before, preserve_ask_ids = []) {
       // ⛔ BOTH PREDICATES TRAVEL TOGETHER. The status check is the whole
       // safety property (see the interface doc): `answered` is the retry
       // queue, `open` is a live decision. Pushing the age bound down without
       // the status bound — or vice versa — would delete either live decisions
       // or the entire handled history. They are one query, never two.
-      if (queryable) {
+      if (queryable && preserve_ask_ids.length === 0) {
         return queryable.deleteByField({
           equals: { status: 'handled' },
           lessThan: { field: 'created_at', value: before },
         });
       }
-      const all = await backing.list();
+      const all = queryable ? await queryable.queryByField({ equals: { status: 'handled' },
+        lessThan: { field: 'created_at', value: before } }) : await backing.list();
+      const preserved = new Set(preserve_ask_ids);
       let removed = 0;
       for (const ask of all) {
         if (ask.status !== 'handled') continue;
         if (ask.created_at >= before) continue;
+        if (preserved.has(ask.ask_id)) continue;
         await backing.delete(ask.ask_id);
         removed += 1;
       }

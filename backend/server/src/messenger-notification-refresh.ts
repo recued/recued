@@ -54,11 +54,10 @@ export interface MessengerNotificationRefreshDeps {
   /** Encode + persist the rotated credential on the `connection.notification`
    *  row. Awaited BEFORE the token is handed out — see `refreshIfNeeded`.
    *
-   *  ⚠ Takes the VENDOR as well as the credential, and must: the row is keyed
-   *  `('notification', vendor)` (D-163 I-4 — the row name IS the vendor), and a
-   *  `ConnectionAuth` carries no identity of its own. An earlier signature
-   *  omitted it and left the writer with nothing to address. */
-  readonly persist: (vendor: string, auth: ConnectionAuth) => Promise<void>;
+   *  The first argument is the connection row name (historically the vendor),
+   *  and identity is captured before the exchange. A credential carries no
+   *  connection identity of its own. */
+  readonly persist: (vendor: string, auth: ConnectionAuth, identity?: MessengerRefreshIdentity) => Promise<void>;
   readonly now: () => number;
   /** ⛔ Required in production wiring. A refresh failure that goes nowhere
    *  recreates the exact green-ready-and-mute channel this module exists to
@@ -102,20 +101,29 @@ export interface MessengerNotificationRefresher {
   readonly refreshIfNeeded: (
     vendor: string,
     auth: ConnectionAuth,
+    identity?: MessengerRefreshIdentity,
   ) => Promise<ConnectionAuth>;
+}
+
+/** Captured before provider I/O, by value. Renewal must not overwrite a new
+ * enrollment or a credential/configuration replacement under the same name. */
+export interface MessengerRefreshIdentity {
+  enrolled_at: number;
+  auth_ciphertext: string;
+  config_json: string;
 }
 
 /** Build the refresher.
  *
- *  ⛔ **Single-flight per vendor is a CORRECTNESS requirement, not a
+ *  ⛔ **Single-flight per connection identity is a CORRECTNESS requirement, not a
  *  performance one.** A notification fan-out can issue several sends at once
  *  (an ask goes to every enabled channel; the turn and live-control paths read
  *  the same row). With refresh-token ROTATION, two concurrent exchanges each
  *  invalidate the other's token and the last write wins — leaving a row whose
  *  stored refresh token was already consumed, which cannot be recovered without
  *  re-consent. The in-flight map collapses concurrent callers onto one exchange.
- *  Keyed by vendor because that IS the `connection.notification` row name
- *  (D-163 I-4). */
+ *  D-325 keys by the named row and captured identity, so a replacement does not
+ *  inherit the preceding enrollment's in-flight result. */
 export const createMessengerNotificationRefresher = (
   deps: MessengerNotificationRefreshDeps,
 ): MessengerNotificationRefresher => {
@@ -124,6 +132,7 @@ export const createMessengerNotificationRefresher = (
   const exchange = async (
     vendor: string,
     auth: OAuth2RefreshAuth,
+    identity?: MessengerRefreshIdentity,
   ): Promise<ConnectionAuth> => {
     let fresh: ConnectionAuth;
     try {
@@ -144,7 +153,8 @@ export const createMessengerNotificationRefresher = (
     // the provider has already invalidated the old one — a permanent
     // re-consent, from a window we control. Awaiting closes that window.
     try {
-      await deps.persist(vendor, fresh);
+      if (identity) await deps.persist(vendor, fresh, identity);
+      else await deps.persist(vendor, fresh);
     } catch (err) {
       deps.onFailure?.({
         vendor,
@@ -162,16 +172,19 @@ export const createMessengerNotificationRefresher = (
   const refreshIfNeeded = async (
     vendor: string,
     auth: ConnectionAuth,
+    identity?: MessengerRefreshIdentity,
   ): Promise<ConnectionAuth> => {
     if (!messengerAuthNeedsRefresh(auth, deps.now())) return auth;
+    identity = identity ? { ...identity } : undefined;
 
-    const pending = inflight.get(vendor);
+    const key = identity ? JSON.stringify([vendor, identity.enrolled_at, identity.auth_ciphertext, identity.config_json]) : vendor;
+    const pending = inflight.get(key);
     if (pending !== undefined) return pending;
 
-    const run = exchange(vendor, auth as OAuth2RefreshAuth).finally(() => {
-      inflight.delete(vendor);
+    const run = exchange(vendor, auth as OAuth2RefreshAuth, identity).finally(() => {
+      inflight.delete(key);
     });
-    inflight.set(vendor, run);
+    inflight.set(key, run);
     return run;
   };
 

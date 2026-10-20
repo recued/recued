@@ -549,6 +549,17 @@ describe('newSeriesRRule', () => {
 // connect
 // ────────────────────────────────────────────────────────────────
 
+describe('CalDavProvider — the account\'s address', () => {
+  it('a username that is an address names the account; a short name names none', () => {
+    const provider = (username: string) => createCalDavProvider({
+      slug: 'personal', config: mkConfig({ username }), fetcher: makeRouter([]).fetcher,
+      etagStore: makeEtagStore(), scheduler: () => () => undefined,
+    });
+    expect(provider(' me@icloud.test ').accountEmail).toBe('me@icloud.test');
+    expect(provider('alice').accountEmail).toBe('');
+  });
+});
+
 describe('CalDavProvider — connect', () => {
   it('PROPFINDs on the calendar-home to validate credentials', async () => {
     const { fetcher, calls } = makeRouter([
@@ -1759,3 +1770,45 @@ function mkText(
     },
   };
 }
+
+describe('CalDAV reviewed writes', () => {
+  const home = '<multistatus xmlns="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><response>'
+    + '<href>/calendars/alice/work/</href><propstat><prop><displayname>Work</displayname>'
+    + '<resourcetype><collection/><c:calendar/></resourcetype></prop></propstat></response></multistatus>';
+  const ics = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'BEGIN:VEVENT', 'UID:meeting',
+    'DTSTART:20261017T140000Z', 'DTEND:20261017T150000Z', 'SUMMARY:Meeting',
+    'END:VEVENT', 'END:VCALENDAR'].join('\r\n');
+
+  it.each(['update', 'delete'] as const)('keeps the old validator on %s when the provider changes between GET and write', async verb => {
+    const writes: Array<{ method: string; etag?: string }> = [];
+    const provider = createCalDavProvider({ slug: 'personal', config: mkConfig(), etagStore: makeEtagStore(),
+      scheduler: () => () => undefined, now: () => Date.parse('2026-10-17T12:00:00Z'),
+      fetcher: async (_url, init) => {
+        const method = init?.method ?? 'GET';
+        const status = method === 'PROPFIND' ? 207 : method === 'GET' ? 200 : 412;
+        if (method === 'PUT' || method === 'DELETE') writes.push({ method, etag: init?.headers?.['If-Match'] });
+        return { status, ok: status < 300, headers: new Headers({ etag: '"reviewed-v1"' }),
+          async json() { return {}; }, async text() { return method === 'PROPFIND' ? home : ics; } };
+      } });
+    cleanup.push(() => provider.close());
+    const call = { calendar_id: '/calendars/alice/work/', source_id: 'x:meeting', expected_etag: '"reviewed-v1"' };
+    await expect(verb === 'update' ? provider.updateEvent({ ...call, patch: { summary: 'New' } })
+      : provider.deleteEvent(call)).rejects.toMatchObject({ code: 'version_conflict' });
+    expect(writes).toEqual([{ method: verb === 'update' ? 'PUT' : 'DELETE', etag: '"reviewed-v1"' }]);
+  });
+
+  it('refuses a merge against a newer provider version before sending a write', async () => {
+    const writes: string[] = [];
+    const provider = createCalDavProvider({ slug: 'personal', config: mkConfig(), etagStore: makeEtagStore(),
+      scheduler: () => () => undefined,
+      fetcher: async (_url, init) => {
+        if (init?.method === 'PUT') writes.push('PUT');
+        return { status: 207, ok: true, headers: new Headers({ etag: '"new-v2"' }),
+          async json() { return {}; }, async text() { return init?.method === 'PROPFIND' ? home : ics; } };
+      } });
+    cleanup.push(() => provider.close());
+    await expect(provider.updateEvent({ calendar_id: '/calendars/alice/work/', source_id: 'x:meeting',
+      expected_etag: '"reviewed-v1"', patch: { summary: 'New' } })).rejects.toMatchObject({ code: 'version_conflict' });
+    expect(writes).toEqual([]);
+  });
+});

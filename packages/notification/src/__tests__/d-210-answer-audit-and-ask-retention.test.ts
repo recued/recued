@@ -112,7 +112,7 @@ describe('D-210 — answer audit', () => {
     await h.block.submitAnswer({ ask_id, option: 'approve', via: 'ui' });
     await expect(
       h.block.submitAnswer({ ask_id, option: 'deny', via: 'email' }),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe('closed');
     expect(h.records).toHaveLength(1);
     expect(h.records[0]!.option).toBe('approve');
     expect(h.records[0]!.answered_via).toBe('ui');
@@ -140,7 +140,7 @@ describe('D-210 — answer audit', () => {
     const ask_id = await raise(h);
     await expect(
       h.block.submitAnswer({ ask_id, option: 'approve', via: 'ui' }),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe('answered');
     const ask = await h.block.getAsk(ask_id);
     expect(ask?.status).not.toBe('open');
     expect(ask?.answer?.option).toBe('approve');

@@ -3,10 +3,10 @@
  *
  * A template's patterns run on the server over every email its conditions
  * match. A pattern that backtracks catastrophically (`^(a+)+$`) would stall
- * ingest, so every match runs inside a `vm` context with a timeout, which V8
- * honours even mid-backtrack (measured 2026-09-26: a catastrophic pattern was
- * cut off at ~52 ms; a normal match costs ~67 µs this way). The input is
- * capped too.
+ * ingest, so patterns with regex syntax run inside a `vm` context with a
+ * timeout, which V8 honours even mid-backtrack (measured 2026-09-26: a
+ * catastrophic pattern was cut off at ~52 ms). Literal text cannot backtrack
+ * and runs directly on the same capped input.
  *
  * Validation (`validateMailTemplateDefinition`) already refused patterns that do
  * not compile, carry flags other than i/m/s/u, or run long; this is the runtime
@@ -35,22 +35,28 @@ export class TemplatePatternTimeout extends Error {
 
 const context = createContext({ __re: undefined as RegExp | undefined, __text: '' });
 const execScript = new Script('__re.exec(__text)');
-const compiled = new Map<string, RegExp | null>();
+type CompiledPattern = { readonly re: RegExp; readonly literal: boolean };
+const compiled = new Map<string, CompiledPattern | null>();
 
-const compile = (pattern: string, flags: string): RegExp | null => {
+const compile = (pattern: string, flags: string): CompiledPattern | null => {
   const key = `${flags}/${pattern}`;
   const cached = compiled.get(key);
   if (cached !== undefined) return cached;
-  let re: RegExp | null;
+  let result: CompiledPattern | null;
   try {
     // Only i / m / s / u: a `g` or `y` flag would make `exec` stateful.
-    re = new RegExp(canonicalMailFactPattern(pattern), flags.replace(/[^imsu]/g, ''));
+    const source = canonicalMailFactPattern(pattern);
+    result = {
+      re: new RegExp(source, flags.replace(/[^imsu]/g, '')),
+      // Classify what runs: canonicalization may introduce escapes or groups.
+      literal: !/[.*+?^${}()|[\]\\]/u.test(source),
+    };
   } catch {
-    re = null;
+    result = null;
   }
   if (compiled.size >= COMPILED_CACHE_LIMIT) compiled.delete(compiled.keys().next().value!);
-  compiled.set(key, re);
-  return re;
+  compiled.set(key, result);
+  return result;
 };
 
 /** The first match of `pattern` in `text`, or `null`. A pattern that does not
@@ -60,9 +66,14 @@ export const runTemplatePattern = (
   flags: string,
   text: string,
 ): RegExpExecArray | null => {
-  const re = compile(pattern, flags);
-  if (re === null) return null;
+  const expression = compile(pattern, flags);
+  if (expression === null) return null;
+  const { re, literal } = expression;
   const input = text.length > TEMPLATE_PATTERN_MAX_INPUT ? text.slice(0, TEMPLATE_PATTERN_MAX_INPUT) : text;
+  // The VM deadline includes time the process is descheduled: even `--` could
+  // time out and discard a repeated email's facts under load. Plain text has
+  // no regex operators or escapes and needs no backtracking watchdog.
+  if (literal) return re.exec(input);
   context.__re = re;
   context.__text = input;
   try {

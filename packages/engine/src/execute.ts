@@ -138,13 +138,15 @@ export const executeRecipe = async (inputCtx: ExecutionContext): Promise<Executi
   const budgetMs = recipe.metadata?.budget_ms;
   if (!budgetMs || budgetMs <= 0) {
     try {
-      const result = restoreRunErrors(ctx, await executeRecipeInner(ctx));
-      // An owner-abandoned run still drains its active transport, but its late
-      // terminal must not fire an exchange after the caller has already
-      // received `killed`.
-      return ctx.runAbortSignal?.aborted
-        ? result
-        : await fireExchangeOutput(ctx, result);
+      return await executeRecipeInHostScope(ctx, async () => {
+        const result = restoreRunErrors(ctx, await executeRecipeInner(ctx));
+        // An owner-abandoned run still drains its active transport, but its late
+        // terminal must not fire an exchange after the caller has already
+        // received `killed`.
+        return ctx.runAbortSignal?.aborted
+          ? result
+          : await fireExchangeOutput(ctx, result);
+      });
     } finally {
       if (ownsStore) piiStore?.dispose();
     }
@@ -215,13 +217,15 @@ export const executeRecipe = async (inputCtx: ExecutionContext): Promise<Executi
   };
   // Never publish the inner run's exchange output after its budget expired.
   // Its only remaining job is to settle cancellation and dispose run-local PII.
-  const run = executeRecipeInner(innerCtx)
+  // Exchange delivery can re-enter the host's recipe runner. Keep it within
+  // the same effective signal scope as the steps that produced its payload.
+  const run = executeRecipeInHostScope(innerCtx, () => executeRecipeInner(innerCtx)
     .then((inner) => {
       const r = restoreRunErrors(innerCtx, inner);
       return budgetExpired || innerCtx.runAbortSignal?.aborted
         ? r
         : fireExchangeOutput(innerCtx, r);
-    })
+    }))
     .finally(() => { if (ownsStore) piiStore?.dispose(); });
   try {
     const raced = await Promise.race([run, budgetSignal]);
@@ -236,6 +240,13 @@ export const executeRecipe = async (inputCtx: ExecutionContext): Promise<Executi
     inputCtx.runAbortSignal?.removeEventListener('abort', abortFromCaller);
   }
 };
+
+const executeRecipeInHostScope = async (
+  ctx: ExecutionContext, run: () => Promise<ExecutionResult>,
+): Promise<ExecutionResult> =>
+  ctx.withRunAbortSignal
+    ? ctx.withRunAbortSignal(ctx.runAbortSignal, run)
+    : run();
 
 /** A step's error message can quote the data it failed on — a provider rejecting a
  *  draft addressed to `m1@d1.invalid` says so — and that data may be a `pii-protect`
@@ -345,6 +356,9 @@ const executeRecipeInner = async (ctx: ExecutionContext): Promise<ExecutionResul
   // cron timing here; that decision lives in the host's snapshot
   // commit policy.
   injectContextRecipe(ctx.stores, ctx.contextRecipeSnapshot ?? null);
+  try { ctx.onTestCaptureInput?.({ recipe,sample: { config: ctx.stores.config,context: ctx.stores.context,data: ctx.stores.data } }); }
+  catch { /* Recording is observational; it cannot fail a live recipe run. */ }
+
 
   // Resume the exact phase and occurrence. Legacy checkpoints start at a
   // sequential step; watcher holds must still qualify, and prefetch holds
@@ -715,6 +729,7 @@ const pauseExecution = (
         ...(e.canonical_payload_hash !== undefined
           ? { canonical_payload_hash: e.canonical_payload_hash }
           : {}),
+        ...(e.resource_review !== undefined ? { resource_review: structuredClone(e.resource_review) } : {}),
         ...(e.args_preview !== undefined
           ? { args_preview: e.args_preview }
           : {}),
@@ -983,6 +998,17 @@ const resolveOutputRender = (
           section.fields,
         )
       : undefined;
+    const record_source = (() => {
+      if (!record_fields || record_fields.unresolved) return undefined;
+      const stepId = outputSourceStepId(section.source);
+      if (stepId === null) return undefined;
+      try {
+        return ctx.recordOutputSource?.(record_fields.entity, stepId);
+      } catch {
+        // Source inference is optional; losing it must not lose the result.
+        return undefined;
+      }
+    })();
     // A `table` resolves COLUMNS only when it names an entity. Without one it
     // is the hand-written table it always was and this stays absent, so every
     // shipped table renders through the path it already used.
@@ -1087,6 +1113,7 @@ const resolveOutputRender = (
         : {}),
       ...(filter !== undefined ? { filter } : {}),
       ...(record_fields !== undefined ? { record_fields } : {}),
+      ...(record_source !== undefined ? { record_source } : {}),
       ...(record_columns !== undefined ? { record_columns } : {}),
       ...(table_edit !== undefined ? { table_edit } : {}),
       ...(table_select !== undefined ? { table_select } : {}),

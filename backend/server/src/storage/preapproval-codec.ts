@@ -16,11 +16,12 @@ export interface PreapprovalCodec {
 
 export const createPreapprovalCodec = (
   getKeyBytes: () => Uint8Array | null,
+  lockedMessage = 'Unlock Recued before using pre-approval.',
 ): PreapprovalCodec => {
   const bytes = (): Uint8Array => {
     const key = getKeyBytes();
     if (key === null || key.byteLength !== 32) {
-      throw new RpcError('server_locked', 'Unlock Recued before using pre-approval.', 423);
+      throw new RpcError('server_locked', lockedMessage, 423);
     }
     return key;
   };

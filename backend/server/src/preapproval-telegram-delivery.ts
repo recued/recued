@@ -15,6 +15,9 @@ export const formatPreapprovalTelegramReview = (review: PreapprovalReview): { ti
   }).format(new Date(value));
   const selected = new Set(review.selected_member_ids);
   const calls = review.members.filter(member => selected.has(member.member_id));
+  // Resource snapshots are paired owner material. A remote review that omits
+  // them cannot offer decision buttons; use the existing link-only delivery.
+  if (calls.some(call => call.resource_review)) return null;
   const author = review.requested_through;
   const timing = review.scheduled_for === null
     ? review.activation.kind === 'next_auto_run' ? 'First qualifying automatic run after approval.'

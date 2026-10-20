@@ -316,7 +316,7 @@ describe('mail-send — WHERE the gate lands, through the real composition root'
     const prov = cp.preflight_context?.authorization_provenance;
     expect(prov?.pre_lift_approval, 'the algebra alone would have admitted').toBe('never');
     expect(prov?.lift_reason).toBe('review_send');
-    expect(String(cp.preflight_context?.reason)).toContain('outside your trust boundary');
+    expect(String(cp.preflight_context?.reason)).toContain('outside this server');
   });
 
   it('⛔ CONTROL — the same owner, a non-send write, is NOT asked at all', async () => {

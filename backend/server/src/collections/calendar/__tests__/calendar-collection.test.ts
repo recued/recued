@@ -426,6 +426,25 @@ describe('CalendarCollection — a CalDAV resource\'s rows (2026-10-07)', () => 
     });
     expect(h.events.map((e) => e.event_kind)).toEqual(['updated']);
   });
+
+  it('a series rule read for the first time wakes no update on the next start; a change of a known rule does', async () => {
+    h = newHarness();
+    h.control.initialEvents = [row('cal-1:i-1', { recurring_event_id: 'm-1' }),
+      row('cal-1:i-2', { recurring_event_id: 'm-2', recurrence_rule: 'GRAPH:absoluteYearly' })];
+    await h.collection.sync.start();
+    await h.collection.sync.stop();
+    h.events.length = 0;
+    // The first start after the providers learned to read the series master.
+    h.control.initialEvents = [row('cal-1:i-1', { recurring_event_id: 'm-1', recurrence_rule: 'RRULE:FREQ=YEARLY' }),
+      row('cal-1:i-2', { recurring_event_id: 'm-2', recurrence_rule: 'RRULE:FREQ=YEARLY;BYMONTH=4;BYMONTHDAY=24' })];
+    await h.collection.sync.start();
+    expect(h.collection.table.get('cal-1:i-1')?.event.recurrence_rule).toBe('RRULE:FREQ=YEARLY');
+    expect(h.collection.table.get('cal-1:i-2')?.event.recurrence_rule).toBe('RRULE:FREQ=YEARLY;BYMONTH=4;BYMONTHDAY=24');
+    expect(h.events).toEqual([]);
+    await h.control.pushSyncEvent({ kind: 'updated', source_id: 'cal-1:i-1',
+      payload: row('cal-1:i-1', { recurring_event_id: 'm-1', recurrence_rule: 'RRULE:FREQ=YEARLY;COUNT=3' }) });
+    expect(h.events.map((e) => e.event_kind)).toEqual(['updated']);
+  });
 });
 
 describe('CalendarCollection — all-day rows are stored as days (2026-10-07)', () => {

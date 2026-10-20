@@ -107,6 +107,9 @@ const connectionRow = () => ({
   display_name: CONNECTION_NAME,
   config: { transport: 'sse', endpoint },
   config_json: JSON.stringify({ transport: 'sse', endpoint }),
+  // A stored row always has one (`auth_json` is NOT NULL); the session pool
+  // keys on it. `decodeAuth` below supplies the token, so its content is moot.
+  auth_ciphertext: 'sealed',
   enrolled_at: NOW,
   updated_at: NOW,
 });

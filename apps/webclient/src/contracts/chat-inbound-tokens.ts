@@ -295,6 +295,7 @@ const TIER1_TO_INGREDIENT_KIND: Readonly<Record<Tier1ToolName, IngredientKind>> 
   // gateway-gated follow-on inside the handler, not the tool's home).
   'work.search': 'storage',
   'work.read': 'storage',
+  'situation.query': 'storage',
   // Slice 1 — `work.create` writes the LOCAL work graph, no connection.
   'work.create': 'storage',
   // Slice 2 — calendar writes go through the calendar STACK, which is a local

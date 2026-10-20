@@ -214,6 +214,10 @@ export const DEFAULT_BRIDGE_MODE_SETTINGS: BridgeModeSettings = {
  *  reads as `false` rather than propagating `undefined` into the record
  *  (and thence into a persisted patch). Valid records are unchanged. */
 const cloneMode = (m: ChannelModeSettings): ChannelModeSettings => ({
+  ...(m.connection === undefined ? {} : { connection: m.connection
+    && typeof m.connection.name === 'string' && m.connection.name.length > 0
+    && Number.isFinite(m.connection.enrolled_at)
+    ? { name: m.connection.name, enrolled_at: m.connection.enrolled_at } : null }),
   notification: m.notification === true,
   approval: m.approval === true,
   // D-192's third axis. The `=== true` coercion matters most HERE: every stored row
@@ -261,10 +265,21 @@ export type ChannelReadinessProbe = (
   channel: RemoteChannelName,
 ) => boolean | Promise<boolean>;
 
+export type ConnectionRosterProbe = (channel: ChannelName) => Promise<readonly {
+  name: string; display_name: string; enrolled_at: number;
+}[]>;
+
+/** D-158 amendment 2026-10-19 — the connection the block's plain `notify` / `ask`
+ *  (a recipe's notification, an approval) goes through on a channel, or null when
+ *  none can. Injected: only the server knows how each channel resolves it. */
+export type PlainConnectionProbe = (channel: RemoteChannelName) => Promise<{ name: string; display_name: string } | null>;
+
 /** One channel's row in the Settings → Notifications render model
  *  (D-158 A.6 + D-163 N.6 / A.5). The webclient page draws one toggle
  *  per `ChannelToggleView`. */
 export interface ChannelToggleView {
+  connections?: Awaited<ReturnType<ConnectionRosterProbe>>;
+  connection?: ChannelModeSettings['connection'];
   channel: ChannelName;
   /** D-163 N.6 — the capability class (`'inline'` / `'landing-page'` /
    *  `'notify-only'`); the Settings UI renders a delivery badge per row
@@ -295,6 +310,10 @@ export interface ChannelToggleView {
    *  channels route through Settings → Connections, which the webclient
    *  surfaces from a fixed route — those rows leave this field `undefined`. */
   install_url?: string;
+  /** D-158 amendment 2026-10-19 — the connection plain notifications and
+   *  approvals go through, which `connection` (the reminders' choice) need not
+   *  be, or null when none can. Absent when not probed. */
+  plain_connection?: { name: string; display_name: string } | null;
 }
 
 /** D-169 P1 — one paired bridge's render row for Settings →
@@ -667,6 +686,8 @@ export interface NotificationSettingsDeps {
    *  the channel-level bridge toggle only). Production wires the probe
    *  in `backend/server`; dbless harnesses leave it absent. */
   bridgeRosterProbe?: BridgeRosterProbe;
+  connectionRosterProbe?: ConnectionRosterProbe;
+  plainConnectionProbe?: PlainConnectionProbe;
 }
 
 /** Build the Settings → Notifications surface over a settings store +
@@ -703,6 +724,11 @@ export const createNotificationSettings = (
           // is available only when the capability can carry an ask
           // (inline / landing-page); notify-only (`bridge`) disables it.
           const install_url = installUrlFor(channel);
+          const connections = channel === 'bridge' ? undefined : await deps.connectionRosterProbe?.(channel);
+          const connection = channel === 'bridge' ? undefined : current[channel].connection;
+          const selectionReady = !connections || (connection === undefined ? connections.length === 1
+            : connection !== null && connections.some(item => item.name === connection.name && item.enrolled_at === connection.enrolled_at));
+          const plain_connection = channel === 'bridge' ? undefined : await deps.plainConnectionProbe?.(channel);
           return {
             channel,
             capability,
@@ -710,8 +736,11 @@ export const createNotificationSettings = (
             approval: channelApprovalEnabled(current, channel),
             notification_togglable: true,
             approval_togglable: !notifyOnly,
-            ready: await probe(channel),
+            ready: await probe(channel) && selectionReady,
+            ...(connections ? { connections } : {}),
+            ...(connection !== undefined ? { connection } : {}),
             ...(install_url !== undefined ? { install_url } : {}),
+            ...(plain_connection !== undefined ? { plain_connection } : {}),
           };
         }),
       );
@@ -719,6 +748,12 @@ export const createNotificationSettings = (
 
     async setChannelMode(channel, patch) {
       if (channel === 'ui') return { ok: false, reason: 'ui_fixed' };
+      const connections = channel === 'bridge' ? undefined : await deps.connectionRosterProbe?.(channel);
+      if (patch.connection !== undefined && (channel === 'bridge' || (patch.connection !== null
+        && (!connections || !connections.some(item => item.name === patch.connection!.name
+          && item.enrolled_at === patch.connection!.enrolled_at))))) {
+        return { ok: false, reason: 'not_ready', channel };
+      }
       // `channel` has narrowed to `RemoteChannelName`. Bridge is
       // notify-only — it has no approval axis to set (defense-in-depth;
       // the surface disables the approval cell for it).
@@ -730,7 +765,12 @@ export const createNotificationSettings = (
       // (D-158 A.6, widened by D-163 N.5 + R31's two axes).
       const enablingAny =
         patch.notification === true || patch.approval === true;
-      if (enablingAny && !(await probe(channel))) {
+      const current = connections && patch.connection === undefined ? await store.get() : undefined;
+      const connection = patch.connection === undefined
+        ? channel === 'bridge' ? undefined : current?.[channel].connection : patch.connection;
+      const selectionReady = !connections || (connection === undefined ? connections.length === 1
+        : connection !== null && connections.some(item => item.name === connection.name && item.enrolled_at === connection.enrolled_at));
+      if (enablingAny && (!selectionReady || !(await probe(channel)))) {
         return { ok: false, reason: 'not_ready', channel };
       }
       const settings = await store.setChannelMode(channel, patch);

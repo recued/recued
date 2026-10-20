@@ -252,6 +252,9 @@ const PRIVATE_TOPIC = 'transcript';
 const OWNER_ONLY_COLLECTIONS = [
   collectionGrantEntry('webhook'),
   collectionGrantEntry('form_response'),
+  // D-325 P17 — the owner's episodes and occasions, read through the situation query.
+  'data.episode',
+  'data.occasion',
 ] as const;
 
 const KERNEL_OP_COUNT = KERNEL_OP_REGISTRY.length;

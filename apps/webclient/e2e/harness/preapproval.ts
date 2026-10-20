@@ -2,6 +2,8 @@
  * same-DB claims, HTTP execution and lifecycle behavior. */
 import { PREAPPROVAL_LIMITS, PREAPPROVAL_PROTOCOL_VERSION } from '@recued/contracts';
 import type { MailDraft, PreapprovalCapabilities, PreapprovalDecisionReceipt, PreapprovalInspection, PreapprovalMemberReview, PreapprovalReview } from '@recued/contracts';
+import { RECORDS_REVIEW_FIXTURE } from './fixtures/records-review.js';
+import { preapprovalContinuationDemoReply } from './preapproval-continuation.js';
 
 const KEY = 'recued-test-preapproval';
 export const preapprovalDemoReply = (method: string, args: unknown): {
@@ -26,6 +28,8 @@ export const preapprovalDemoReply = (method: string, args: unknown): {
     } satisfies PreapprovalCapabilities };
   }
   if (!query.has('preapproval')) return null;
+  const continuation = preapprovalContinuationDemoReply(method, args);
+  if (continuation) return continuation;
   if (query.has('mail_drafts') && method === 'collection.mail.list') return { result: { instances: [{ slug: 'work', adapter_type: 'imap',
     send_capable: true, account_email: 'owner@example.test' }] } };
   const drafts = JSON.parse(sessionStorage.getItem(`${KEY}-drafts`) ?? '[]') as MailDraft[];
@@ -74,14 +78,27 @@ export const preapprovalDemoReply = (method: string, args: unknown): {
   const read = makeMember('pam_read', 'report.pdf', 'core.storage.data-file-read', 'read', { file_ref: 'file:report-version-1', version: 1 });
   send.required_child_ids = [read.member_id]; read.parent_member_id = send.member_id;
   const http = makeMember('pam_http', 'Record delivery', 'test/crm.record', 'write', { status: 'scheduled', method: 'POST' }); http.family = 'http';
+  const resourceMembers: PreapprovalMemberReview[] = [];
+  if (query.get('preapproval') === 'resources') {
+    const records = makeMember('pam_records', 'Change reviewed Records', 'fixture.note.batch', 'destructive', { ops: [] });
+    records.resource_review = structuredClone(RECORDS_REVIEW_FIXTURE);
+    const calendar = makeMember('pam_calendar', 'Move reviewed meeting', 'core.calendar.update', 'write', { slug: 'local', source_id: 'meeting' });
+    calendar.resource_review = { schema_version: 1, operation: 'calendar-update', input_hash: 'b'.repeat(64), captured_at: now,
+      resources: [{ kind: 'calendar', key: 'meeting', label: 'Reviewed meeting', binding: 'account', version: 'event-v1',
+        precondition: { kind: 'local_version', value: 'event-v1' },
+        before: { summary: 'Original meeting', start_at: 1_800_000_000_000 },
+        after: { summary: 'Moved meeting', start_at: 1_800_003_600_000 } }] };
+    resourceMembers.push(records, calendar);
+  }
   const initial: PreapprovalReview = { proposal_id: 'pap_browser', future_execution_ref: 'paf_browser', revision: 1,
-    status: 'awaiting_owner', coverage: 'complete', eligible_members: 3, uncovered_calls: 0,
+    status: 'awaiting_owner', coverage: 'complete', eligible_members: 3 + resourceMembers.length, uncovered_calls: 0,
     review_digest: 'sha256:browser', challenge: 'owner-browser-challenge', challenge_expires_at: now + 300_000,
     requested_through: { contract_id: 'ct_assistant', display_name: 'Scheduling assistant', credential_label: 'Office MCP client' },
     recipe: { recipe_id: 'reviewed-mail', publisher_id: 'core', display_name: 'Send the quarterly report' },
     activation: { kind: 'one_shot', run_at: now + 600_000, time_zone: 'UTC' }, scheduled_for: now + 600_000, time_zone: 'UTC',
-    decision_deadline: now + 300_000, dispatch_deadline: now + 900_000, members: [send, read, http],
-    selected_member_ids: [send.member_id, read.member_id, http.member_id], uncovered: [], interaction_notes: [] };
+    decision_deadline: now + 300_000, dispatch_deadline: now + 900_000, members: [send, read, http, ...resourceMembers],
+    selected_member_ids: [send.member_id, read.member_id, http.member_id, ...resourceMembers.map(member => member.member_id)], uncovered: [],
+    interaction_notes: resourceMembers.length ? ['Operations finish separately; a later conflict does not undo earlier completed changes.'] : [] };
   const state = JSON.parse(sessionStorage.getItem(KEY) ?? 'null') as {
     review: PreapprovalReview; decision: PreapprovalDecisionReceipt | null; revoked: boolean;
   } | null ?? { review: initial, decision: null, revoked: false };

@@ -12,6 +12,7 @@
  */
 
 import type { RpcMethodSpec } from './types.js';
+import type { ArchiveRemoteBackup, ArchiveRemoteDestination, ArchiveRemoteTarget } from '../archive-remote.js';
 import type {
   MailWorkCreateRequest, MailWorkDeleteRequest, MailWorkDeleteResult, MailWorkDetail, MailWorkListRequest, MailWorkListResult,
   MailWorkSearchResult, MailWorkUpdateRequest,
@@ -45,7 +46,7 @@ import type {
   MailTemplateUpdateRequest,
 } from '../mail-facts.js';
 import type {
-  PreparePreapproval, PreapprovalCapabilities, PreapprovalDecisionRequest,
+  PreparePreapproval, PreapprovalContinuationRequest, PreapprovalCapabilities, PreapprovalDecisionRequest,
   PreapprovalDecisionReceipt, PreapprovalInspection, PreapprovalListRequest,
   PreapprovalResult, PreapprovalReview, PreapprovalRevokeRequest, PreapprovalSelection,
 } from '../preapproval.js';
@@ -324,6 +325,7 @@ import type { AutoRunStatusEntry } from '../reactive.js';
 import type { WatchSourceStatusEntry, WatchStatusEntry } from '../watch.js';
 import type {
   ArchiveImportRebind,
+  ArchiveImportOperationStatus,
   ArchiveJobStatus,
   ArchiveManifest,
   ArchiveRealmRelation,
@@ -999,6 +1001,7 @@ export interface ServerPendingAskDetail {
 }
 
 export interface ServerPendingAsk {
+  resource_review?: import('../resource-review.js').ResourceReview;
   ask_id: string;
   /** Protected future review. Generic notification answers cannot decide it. */
   owner_review?: { kind: 'preapproval'; proposal_id: string };
@@ -1051,6 +1054,12 @@ export interface ServerPendingAsk {
    *  DISPATCHED and the checkpoint's own note says args are retained
    *  un-redacted; only the reviewed allowlist is ever projected here. */
   details?: readonly ServerPendingAskDetail[];
+  /** The held action's name as the owner knows it — `mail-send` is "Send mail",
+   *  `recued-core/hubspot.deal.update` is "Update deal · HubSpot" — resolved by
+   *  the server from the id the ask's text prints. The card's "Action" row shows
+   *  it, and the id moves to the card's technical bits. Absent when the server
+   *  has no name for the action (or predates this field). */
+  action_name?: string;
   /** D-234 § 234.4f — the document the answerer reads before deciding.
    *
    *  ⛔ THIS RPC IS PAIR-AUTHENTICATED, WHICH IS WHY THE BODY MAY BE HERE AT
@@ -1295,6 +1304,10 @@ export interface ServerRecipeListEntry {
    *  the handler logged `ok=true`. Neither frame is over the cap alone.
    *  See internal design notes. */
   recipe: RecipeListRecipeView;
+  /** Non-engine context inputs derived from the full definition. The Run
+   * palette can rank page matches without fetching every recipe's body.
+   * Omitted when empty, or by older servers. */
+  run_context_targets?: readonly string[];
   /** The connections this recipe needs, derived from its `{{connection.*}}`
    *  refs. Projected because the walk reads step bodies this row no longer
    *  carries — a client re-deriving it from the trimmed view would silently
@@ -1491,6 +1504,14 @@ export interface ServerPressureReclaimResult {
 }
 
 export type ServerRpcRegistry = {
+  'local_undo.get': RpcMethodSpec<{ receipt_id: string }, import('../local-update-undo.js').LocalUpdateUndoResult | null>;
+  'local_changes.prepare': RpcMethodSpec<import('../local-change-sets.js').LocalChangeSetPrepare, import('../local-change-sets.js').LocalChangeSetInspection>;
+  'local_changes.get': RpcMethodSpec<{ change_set_id: string }, import('../local-change-sets.js').LocalChangeSetInspection>;
+  'local_changes.list': RpcMethodSpec<{ cursor: string }, { items: import('../local-change-sets.js').LocalChangeSetInspection[]; next_cursor: string | null }>;
+  'local_changes.decide': RpcMethodSpec<import('../local-change-sets.js').LocalChangeSetDecision, import('../local-change-sets.js').LocalChangeSetInspection>;
+  'local_changes.prepare_undo': RpcMethodSpec<import('../local-change-sets.js').LocalChangeSetUndoPrepare, import('../local-change-sets.js').LocalChangeSetInspection>;
+  'local_undo.review': RpcMethodSpec<{ receipt_id: string }, import('../local-update-undo.js').LocalUpdateUndoReview>;
+  'local_undo.decide': RpcMethodSpec<import('../local-update-undo.js').LocalUpdateUndoDecision, import('../local-update-undo.js').LocalUpdateUndoResult>;
   // D-261 owner control plane. Never exported through the MCP trampoline.
   'preapproval.capabilities': RpcMethodSpec<void, PreapprovalCapabilities>;
   'mail.drafts.create': RpcMethodSpec<MailDraftCreateRequest, MailDraft>;
@@ -1506,6 +1527,8 @@ export type ServerRpcRegistry = {
   'mail.drafts.update': RpcMethodSpec<MailDraftUpdateRequest, MailDraft>;
   'mail.drafts.delete': RpcMethodSpec<MailDraftDeleteRequest, { deleted: true }>;
   'preapproval.prepare': RpcMethodSpec<PreparePreapproval, PreapprovalResult>;
+  'preapproval.continue': RpcMethodSpec<PreapprovalContinuationRequest, PreapprovalResult>;
+  'preapproval.reconcile': RpcMethodSpec<import('../preapproval.js').PreapprovalReconcileRequest, import('../preapproval.js').PreapprovalReconcileResult>;
   'preapproval.select': RpcMethodSpec<PreapprovalSelection, PreapprovalResult>;
   'preapproval.review': RpcMethodSpec<{ proposal_id: string }, PreapprovalReview>;
   'preapproval.decide': RpcMethodSpec<PreapprovalDecisionRequest, PreapprovalDecisionReceipt>;
@@ -2588,6 +2611,23 @@ export type ServerRpcRegistry = {
   'recipe.simulate': RpcMethodSpec<RecipeSimulationRequest, RecipeSimulationResult>;
   /** Cancels only a test started on this same paired connection. */
   'recipe.simulate.cancel': RpcMethodSpec<{ simulation_id: string }, { cancelled: boolean }>;
+  'recipe.capture.prepare': RpcMethodSpec<import('../recipe-run-capture.js').RecipeRunCaptureRequest, import('../recipe-run-capture.js').RecipeRunCaptureSummary>;
+  'recipe.capture.run': RpcMethodSpec<{ capture_id: string }, import('../recipe-run-capture.js').RecipeRunCaptureResult>;
+  'recipe.capture.list': RpcMethodSpec<{ recipe_id: string }, { captures: import('../recipe-run-capture.js').RecipeRunCaptureSummary[] }>;
+  'recipe.capture.get': RpcMethodSpec<{ capture_id: string }, import('../recipe-run-capture.js').RecipeRunCaptureRead>;
+  'recipe.capture.delete': RpcMethodSpec<{ capture_id: string }, { deleted: true }>;
+  'recipe.capture.import': RpcMethodSpec<import('../recipe-run-capture.js').RecipeRunCaptureImport, import('../recipe-regression.js').RecipeRegressionRead>;
+  'recipe.regression.get': RpcMethodSpec<{ recipe_id: string; revision?: number }, import('../recipe-regression.js').RecipeRegressionRead>;
+  'recipe.regression.save': RpcMethodSpec<import('../recipe-regression.js').RecipeRegressionSave, import('../recipe-regression.js').RecipeRegressionRead>;
+  'recipe.regression.delete': RpcMethodSpec<import('../recipe-regression.js').RecipeRegressionDelete, import('../recipe-regression.js').RecipeRegressionRead>;
+  'recipe.regression.run': RpcMethodSpec<import('../recipe-regression.js').RecipeRegressionRun, import('../recipe-regression.js').RecipeRegressionResult>;
+  'recipe.regression.cancel': RpcMethodSpec<{ run_id: string }, { cancelled: boolean }>;
+  'recipe.release.get': RpcMethodSpec<{ recipe_id: string }, import('../recipe-release.js').RecipeReleaseView>;
+  'recipe.release.save': RpcMethodSpec<import('../recipe-release.js').RecipeReleaseSave, import('../recipe-release.js').RecipeReleaseMutation>;
+  'recipe.release.restore': RpcMethodSpec<import('../recipe-release.js').RecipeReleaseRestore, import('../recipe-release.js').RecipeReleaseMutation>;
+  'recipe.release.test': RpcMethodSpec<import('../recipe-release.js').RecipeReleaseTest, import('../recipe-release.js').RecipeReleaseTestResult>;
+  'recipe.release.prepare': RpcMethodSpec<import('../recipe-release.js').RecipeReleasePrepare, import('../recipe-release.js').RecipeReleaseReview>;
+  'recipe.release.activate': RpcMethodSpec<import('../recipe-release.js').RecipeReleaseActivate, import('../recipe-release.js').RecipeReleaseMutation>;
 
   /** Secret-free state for a standalone Kitchen recipe's selected webhook
    * ingresses. These methods remain off MCP through the reserved `recipe.`
@@ -2953,6 +2993,9 @@ export type ServerRpcRegistry = {
        *  a slot the run does not use, or a connection not on the pack's list for
        *  it, refuses the run (`connection_choice_invalid`). */
       connections?: Record<string, string>;
+      /** Expected API account revisions by connection name. A changed or removed
+       * account refuses a page-prefilled run before provider dispatch. */
+      connection_revisions?: Record<string, string>;
       [k: string]: unknown;
     },
     ServerExecuteResponse
@@ -3119,8 +3162,11 @@ export type ServerRpcRegistry = {
       company?: string;
       /** Current job title from manual entry/import. */
       title?: string;
-      /** Birthday calendar date, including ISO yearless `--MM-DD`. */
-      birthday?: string;
+      /** Birthday calendar date, including ISO yearless `--MM-DD`. `null` clears it. */
+      birthday?: string | null;
+      anniversary?: string | null;
+      relationship?: import('../contact.js').ContactRelationship | null;
+      privacy_marks?: import('../contact.js').ContactPrivacyMark[];
       /** Closed-list multi-value annotation. Empty array clears. */
       network_domain?: NetworkDomain[];
     },
@@ -4026,6 +4072,7 @@ export type ServerRpcRegistry = {
    *  `contract.contract_definition_changed` (op `update`) so every paired client's
    *  door surface re-lists. Returns the updated row + its `lifecycle_state`.
    *  Settings-only (`collection.contract.*` is reserved out of the MCP catalog). */
+  'collection.contract.setReadSpheres': RpcMethodSpec<{ contract_id: string; read_spheres: import('../assets.js').Sphere[] | null }, ContractDefinitionView>;
   'collection.contract.setDoorTypes': RpcMethodSpec<
     SetContractDoorTypesRequest,
     ContractDefinitionView
@@ -5113,6 +5160,24 @@ export type ServerRpcRegistry = {
   // can never call `write` to widen its own grants — only the owner's paired
   // client configures grants.
 
+  /** Paired-owner fixture rehearsal and reviewed automation configuration. */
+  'automation.rehearsal.get': RpcMethodSpec<{ target: import('../automation-rehearsal.js').RehearsalTarget; draft_revision?: number }, import('../automation-rehearsal.js').RehearsalView>;
+  'automation.rehearsal.save': RpcMethodSpec<import('../automation-rehearsal.js').RehearsalSave, import('../automation-rehearsal.js').RehearsalMutation>;
+  'automation.rehearsal.test': RpcMethodSpec<import('../automation-rehearsal.js').RehearsalTest, import('../automation-rehearsal.js').RehearsalView & { comparison: import('../automation-rehearsal.js').RehearsalComparison }>;
+  'automation.rehearsal.prepare': RpcMethodSpec<import('../automation-rehearsal.js').RehearsalPrepare, import('../automation-rehearsal.js').RehearsalReview>;
+  'automation.rehearsal.activate': RpcMethodSpec<import('../automation-rehearsal.js').RehearsalActivate, import('../automation-rehearsal.js').RehearsalMutation>;
+  'automation.rehearsal.delete': RpcMethodSpec<{ target: import('../automation-rehearsal.js').RehearsalTarget; expected_revision: number; request_id: string }, { revision: number }>;
+
+  /** Paired-owner admission examples and reviewed grant revisions. Never an execution permit. */
+  'contract.regression.get': RpcMethodSpec<{ contract_id: string; draft_revision?: number }, import('../permission-regression.js').PermissionWorkbenchView>;
+  'contract.regression.save': RpcMethodSpec<import('../permission-regression.js').PermissionSave, import('../permission-regression.js').PermissionMutation>;
+  'contract.regression.restore': RpcMethodSpec<import('../permission-regression.js').PermissionRestore, import('../permission-regression.js').PermissionMutation>;
+  'contract.regression.test': RpcMethodSpec<import('../permission-regression.js').PermissionTest,
+    import('../permission-regression.js').PermissionWorkbenchView & { comparison: import('../permission-regression.js').PermissionComparison }>;
+  'contract.regression.prepare': RpcMethodSpec<import('../permission-regression.js').PermissionPrepare, import('../permission-regression.js').PermissionReview>;
+  'contract.regression.activate': RpcMethodSpec<import('../permission-regression.js').PermissionActivate, import('../permission-regression.js').PermissionMutation>;
+  'contract.regression.delete': RpcMethodSpec<{ contract_id: string; expected_revision: number; request_id: string }, { revision: number }>;
+
   /** Read a contract's UNIFIED grant set (op + collection + topic entries) — the
    *  contract-detail "row". Returns the EXPLICIT stored rows only (entries absent →
    *  the author default applies at the gate); the UI joins with the registry for the
@@ -5351,10 +5416,17 @@ export type ServerRpcRegistry = {
    *  unmarked: a preview installs nothing). Without it, both come from the server's
    *  bundled packs only, which on a deployed server hold only the foundation packs.
    *  A server that predates D-311 ignores it and answers as before. */
+  'packs.update.get': RpcMethodSpec<{ pack_slug: string }, import('../pack-update.js').PackUpdateView>;
+  'packs.update.stage': RpcMethodSpec<import('../pack-update.js').PackUpdateStage, import('../pack-update.js').PackUpdateView>;
+  'packs.update.test': RpcMethodSpec<import('../pack-update.js').PackUpdateTest, import('../pack-update.js').PackUpdateTestResult>;
+  'packs.update.apply': RpcMethodSpec<import('../pack-update.js').PackUpdateApply, import('../pack-update.js').PackUpdateApplyResult>;
+  'packs.update.release': RpcMethodSpec<import('../pack-update.js').PackUpdateRelease, import('../pack-update.js').PackUpdateView>;
+  'packs.update.restore': RpcMethodSpec<import('../pack-update.js').PackRestoreStage, import('../pack-update.js').PackUpdateView>;
   'packs.install_preview': RpcMethodSpec<
     { manifest: unknown; marketplace?: boolean },
     {
       resolved: boolean;
+      update_tests?: { managed: boolean; manifest_hash: string };
       vendor_permissions?: import('../pack-vendor-permissions.js').PackVendorPermissionReview;
       will_enable: Array<{
         publisher_id: string;
@@ -5475,6 +5547,7 @@ export type ServerRpcRegistry = {
 
   'packs.install': RpcMethodSpec<
     {
+      regression_review_id?: string;
       manifest: unknown;
       granted_permissions: ReadonlyArray<string>;
       /** D-182 §7.1 — the install grant dialog's selection (Access × Scope)
@@ -5550,6 +5623,7 @@ export type ServerRpcRegistry = {
    *  `bad_request`. Same `packs.` reserved-prefix gate as `packs.install`. */
   'packs.installBySlug': RpcMethodSpec<
     {
+      regression_review_id?: string;
       slug: string;
       granted_permissions: ReadonlyArray<string>;
       /** Install seam 5c — forwarded verbatim to `packs.install`'s grant
@@ -5696,6 +5770,17 @@ export type ServerRpcRegistry = {
     { pack_slug: string },
     { schedules: number; automations: number; recipes_with_settings: number }
   >;
+  /** Paired-owner, local-only dependency impact and one-shot removal. */
+  'packs.removal.review': RpcMethodSpec<import('../pack-removal.js').PackRemovalReview,import('../pack-removal.js').PackRemovalPlan>;
+  'packs.removal.apply': RpcMethodSpec<import('../pack-removal.js').PackRemovalApply,import('../pack-removal.js').PackRemovalApplyResult>;
+  /** Owner-only, sealed local account-reference review and separately reviewed rollback. */
+  'packs.connections.replace.inspect': RpcMethodSpec<import('../connection-replacement.js').ConnectionReplacementInspect, import('../connection-replacement.js').ConnectionReplacementInspection>;
+  'packs.connections.replace.review': RpcMethodSpec<import('../connection-replacement.js').ConnectionReplacementReview, import('../connection-replacement.js').ConnectionReplacementPlan>;
+  'packs.connections.replace.rollback': RpcMethodSpec<import('../connection-replacement.js').ConnectionReplacementRollback, import('../connection-replacement.js').ConnectionReplacementPlan>;
+  'packs.connections.replace.apply': RpcMethodSpec<import('../connection-replacement.js').ConnectionReplacementApply, import('../connection-replacement.js').ConnectionReplacementResult>;
+  'packs.repair.inspect': RpcMethodSpec<Record<string, never>,import('../pack-repair.js').PackRepairInspection>;
+  'packs.repair.review': RpcMethodSpec<import('../pack-repair.js').PackRepairReview,import('../pack-repair.js').PackRepairPlan>;
+  'packs.repair.apply': RpcMethodSpec<import('../pack-repair.js').PackRepairApply,import('../pack-repair.js').PackRepairApplyResult>;
 
   /** D-320 slice 2b — a pack's connections per slot, for the Access page's
    *  Connections block: its list (the connections its catalog is bound to), which
@@ -5930,6 +6015,13 @@ export type ServerRpcRegistry = {
   'work_entity.task.mark_done': RpcMethodSpec<
     WorkEntityTaskMarkDoneRpcRequest,
     WorkEntityTaskMarkDoneRpcResponse
+  >;
+  /** D-325 — semantic closes from the owner's Today and entity surfaces. */
+  'work_entity.commitment.fulfill': RpcMethodSpec<
+    { id: string }, { entity: Extract<import('../work-entities.js').WorkEntity, { _kind: 'commitment' }> }
+  >;
+  'work_entity.commitment.cancel': RpcMethodSpec<
+    { id: string }, { entity: Extract<import('../work-entities.js').WorkEntity, { _kind: 'commitment' }> }
   >;
   /** D-174 #22 — delete one entity by `(kind, id)`; default tombstone.
    *  Emits a `deleted` warehouse event through the dispatcher path. */
@@ -6327,13 +6419,14 @@ export type ServerRpcRegistry = {
       redirect_uri: string;
       oauth_app_id?: string;
       oauth_client_id?: string;
+      backfill_days?: number;
     },
     { ok: true; account_key_prefix: string }
   >;
   /** D-322: borrow a saved managed API connection; no OAuth code or vendor token. */
   'collection.mail.enrollManagedOAuth': RpcMethodSpec<
     { provider: 'gmail' | 'graph'; account_slug: string; connection_name: string;
-      send_enabled?: boolean; mutation_enabled?: boolean },
+      send_enabled?: boolean; mutation_enabled?: boolean; backfill_days?: number },
     { slug: string; account_email: string; permission_state: 'unknown' | 'reported' }
   >;
 
@@ -6408,7 +6501,8 @@ export type ServerRpcRegistry = {
           sync_status?: import('../collections.js').MailSyncStatus;
           /** D-318 step 1 — the email chat door's chat mailbox. Present and
            *  `true` on that one row; its mail is the conversation, not the
-           *  owner's mail. */
+           *  owner's mail — unless it is also one of the owner's own (one
+           *  mailbox, §8.18), when only the conversation's emails are. */
           chat_mailbox?: true;
         }
       >;
@@ -6423,8 +6517,10 @@ export type ServerRpcRegistry = {
   /** D-318 step 1 — the email chat door's settings: which connected mailbox is
    *  the chat mailbox (one per server, or none). It must be able to send, since
    *  the door answers from it. Its mail makes no mail facts or contacts and
-   *  starts no mail recipe. Owner-only: `collection.mail.chat_door.` is an MCP
-   *  reserved prefix. */
+   *  starts no mail recipe — unless `owner_mailboxes` names it too (one
+   *  mailbox, §8.18): then only the conversation's emails are left out, and
+   *  `ask_prefix` cannot be `null`. Owner-only: `collection.mail.chat_door.` is
+   *  an MCP reserved prefix. */
   'collection.mail.chat_door.get': RpcMethodSpec<void, import('../mail-chat-door.js').MailChatDoorSettings>;
   'collection.mail.chat_door.set': RpcMethodSpec<
     {
@@ -6432,7 +6528,8 @@ export type ServerRpcRegistry = {
       chat_mailbox?: string | null;
       /** D-318 step 4 — the `ask:` filter's prefix, or `null` to switch it off. */
       ask_prefix?: string | null;
-      /** D-318 audit — the owner's own mailboxes (slugs), whose Sent record proves a request. */
+      /** D-318 audit — the owner's own mailboxes (slugs), whose Sent record proves a request.
+       *  Naming the chat mailbox too is one mailbox (§8.18). */
       owner_mailboxes?: readonly string[];
       /** D-318 step 6 — a request not reached within this many minutes (5 to
        *  1440) is answered with one line and not run. */
@@ -6784,9 +6881,16 @@ export type ServerRpcRegistry = {
    *  identity passport (`passport.json`) attesting the producing identity.
    *  Either defaults on — only an explicit `false` opts out. */
   'server.archive.export': RpcMethodSpec<
-    { include_blobs?: boolean; include_passport?: boolean; recoveryKey: string },
+    { include_blobs?: boolean; include_passport?: boolean; recoveryKey: string; remote?: ArchiveRemoteTarget },
     { job_id: string }
   >;
+  /** Owner-only storage choices and durable remote delivery history. */
+  'server.archive.destinations': RpcMethodSpec<Record<string, never>, { destinations: ArchiveRemoteDestination[] }>;
+  'server.archive.backups': RpcMethodSpec<Record<string, never>, { backups: ArchiveRemoteBackup[] }>;
+  /** Reconcile an interrupted delivery; never export or upload another archive. */
+  'server.archive.backup.check': RpcMethodSpec<{ operation_id: string }, ArchiveRemoteBackup>;
+  /** Read and verify ciphertext into the existing restore staging area. No import. */
+  'server.archive.backup.retrieve': RpcMethodSpec<{ operation_id: string }, { staged_name: string }>;
   /** Poll an in-flight or completed archive export. */
   'server.archive.status': RpcMethodSpec<
     { job_id: string },
@@ -6811,6 +6915,10 @@ export type ServerRpcRegistry = {
    *  (403). `realm` is returned on dry_run so the ext can branch the UI. */
   'server.archive.import': RpcMethodSpec<
     {
+      /** Fresh caller-reserved UUID, saved before sending. A lost reply is
+       * resolved with import_status; retrying the destructive request is not
+       * an outcome check. The response's identifier is authoritative. */
+      operation_id?: string;
       path: string;
       recoveryKey: string;
       currentRealmKey?: string;
@@ -6819,6 +6927,10 @@ export type ServerRpcRegistry = {
     },
     {
       manifest: ArchiveManifest;
+      /** Absent on previews and on older servers without durable receipts. */
+      operation_id?: string;
+      /** Acceptance time, retained for older clients. Actual completion is
+       * reported only by import_status after the journal decides the swap. */
       restored_at: number | null;
       realm: ArchiveRealmRelation;
       /** M5 S2 — a committing restore mints a fresh bearer for the
@@ -6832,6 +6944,13 @@ export type ServerRpcRegistry = {
        *  `archive_too_new` restore unless `force`. */
       schema_compat?: ArchiveSchemaCompat;
     }
+  >;
+
+  /** Paired-owner read of an exact import receipt, including before realm
+   * enrollment. Never exposes paths, credentials or archive contents. */
+  'server.archive.import_status': RpcMethodSpec<
+    { operation_id: string },
+    ArchiveImportOperationStatus
   >;
 
   // ── server.archive.upload.* — M4b.1 no-SSH migrate (upload → stage) ──
@@ -8101,6 +8220,14 @@ export type ServerRpcRegistry = {
    *  to ring, a waiting one's new words or time, a waiting one withdrawn. The same
    *  answers as the `core.reminder.*` ops. Owner-only: `reminder.` is an MCP
    *  reserved prefix. */
+  'yours.delivery': RpcMethodSpec<void, import('../situation.js').SituationDeliveryStatus>;
+  /** D-325 §15.7 — "last time" for Settings → Privacy → Learning, without a snapshot's refreshes. */
+  'yours.learning': RpcMethodSpec<void, import('../yours.js').YoursLearningStatus>;
+  'yours.today': RpcMethodSpec<{ now: number; before: number }, import('../situation.js').ProactiveToday>;
+  'yours.read': RpcMethodSpec<import('../yours.js').YoursReadRequest, import('../yours.js').YoursSnapshot>;
+  'yours.sphere': RpcMethodSpec<{ ref: import('../situation.js').SituationRef }, import('../yours.js').YoursSpherePlacement>;
+  'yours.spheres': RpcMethodSpec<{ refs: import('../situation.js').SituationRef[] }, { placements: Array<import('../yours.js').YoursSpherePlacement & { ref: import('../situation.js').SituationRef }> }>;
+  'yours.change': RpcMethodSpec<import('../yours.js').YoursCommand, import('../yours.js').YoursCommandResult>;
   'reminder.list': RpcMethodSpec<
     { include_delivered?: boolean; limit?: number },
     import('../reminder.js').ReminderListResult
@@ -8132,6 +8259,14 @@ export interface TlsDomainUploadErrorDetails {
  *  covers every key in `ServerRpcRegistry`; add a key there and the
  *  compiler requires it here too. */
 export const SERVER_RPC_METHODS = [
+  'local_undo.get',
+  'local_changes.prepare',
+  'local_changes.get',
+  'local_changes.list',
+  'local_changes.decide',
+  'local_changes.prepare_undo',
+  'local_undo.review',
+  'local_undo.decide',
   'preapproval.capabilities',
   'mail.drafts.create',
   'mail.work.list',
@@ -8146,6 +8281,8 @@ export const SERVER_RPC_METHODS = [
   'mail.drafts.update',
   'mail.drafts.delete',
   'preapproval.prepare',
+  'preapproval.continue',
+  'preapproval.reconcile',
   'preapproval.select',
   'preapproval.review',
   'preapproval.decide',
@@ -8282,6 +8419,23 @@ export const SERVER_RPC_METHODS = [
   'recipe.validate',
   'recipe.simulate',
   'recipe.simulate.cancel',
+  'recipe.capture.prepare',
+  'recipe.capture.run',
+  'recipe.capture.list',
+  'recipe.capture.get',
+  'recipe.capture.delete',
+  'recipe.capture.import',
+  'recipe.regression.get',
+  'recipe.regression.save',
+  'recipe.regression.delete',
+  'recipe.regression.run',
+  'recipe.regression.cancel',
+  'recipe.release.get',
+  'recipe.release.save',
+  'recipe.release.restore',
+  'recipe.release.test',
+  'recipe.release.prepare',
+  'recipe.release.activate',
   'recipe.webhook.status',
   'recipe.webhook.arm',
   'recipe.webhook.disarm',
@@ -8475,6 +8629,7 @@ export const SERVER_RPC_METHODS = [
   'collection.contract.mintContract',
   'collection.contract.revokeContract',
   'collection.contract.setDoorTypes',
+  'collection.contract.setReadSpheres',
   'collection.contract.listContracts',
   // D-186 Slice C — live-control "Active passes" list + early-revoke (same
   // reserved prefix — owner-only, never MCP; a grant is never agent-visible).
@@ -8565,6 +8720,10 @@ export const SERVER_RPC_METHODS = [
   'mcp.visibility.write',
   // Grant-foundation slice 3 (D-187 amendment) — the unified (contract × grant)
   // matrix CRUD. `contract.grant.` is MCP-reserved (channel isolation).
+  'automation.rehearsal.get', 'automation.rehearsal.save', 'automation.rehearsal.test',
+  'automation.rehearsal.prepare', 'automation.rehearsal.activate', 'automation.rehearsal.delete',
+  'contract.regression.get', 'contract.regression.save', 'contract.regression.restore', 'contract.regression.test',
+  'contract.regression.prepare', 'contract.regression.activate', 'contract.regression.delete',
   'contract.grant.read',
   'contract.grant.read_by_entry',
   'contract.grant.write',
@@ -8627,6 +8786,12 @@ export const SERVER_RPC_METHODS = [
   // (`packs.` in MCP_RESERVED_RPC_PREFIXES) so MCP-channel agents
   // cannot ship attacker-controlled SI rules / body grants / recipes.
   'packs.install',
+  'packs.update.get',
+  'packs.update.stage',
+  'packs.update.test',
+  'packs.update.apply',
+  'packs.update.release',
+  'packs.update.restore',
   'packs.install_preview',
   'packs.reconnect_later',
   // Install seam 5c — pack install BY SLUG from the marketplace (the apex
@@ -8644,6 +8809,15 @@ export const SERVER_RPC_METHODS = [
   'packs.tool_status',
   'packs.uninstall',
   'packs.uninstall_preview',
+  'packs.removal.review',
+  'packs.removal.apply',
+  'packs.connections.replace.inspect',
+  'packs.connections.replace.review',
+  'packs.connections.replace.rollback',
+  'packs.connections.replace.apply',
+  'packs.repair.inspect',
+  'packs.repair.review',
+  'packs.repair.apply',
   'packs.connections.access',
   'packs.connections.list',
   'packs.connections.add',
@@ -8676,6 +8850,8 @@ export const SERVER_RPC_METHODS = [
   'work_entity.get',
   'work_entity.upsert',
   'work_entity.task.mark_done',
+  'work_entity.commitment.fulfill',
+  'work_entity.commitment.cancel',
   'work_entity.delete',
   // Accepted visitor intake responses — owner Data browser only.
   'form_response.list',
@@ -8806,8 +8982,13 @@ export const SERVER_RPC_METHODS = [
   'collection.calendar.resync',
   'collection.calendar.reauth',
   'server.archive.export',
+  'server.archive.destinations',
+  'server.archive.backups',
+  'server.archive.backup.check',
+  'server.archive.backup.retrieve',
   'server.archive.status',
   'server.archive.import',
+  'server.archive.import_status',
   // M4b.1 — archive upload control plane (chunk bytes ride the dedicated binary
   // `/ws/archive-upload` socket, not rpc). Owner-only; off MCP by omission.
   'server.archive.upload.create',
@@ -9074,6 +9255,13 @@ export const SERVER_RPC_METHODS = [
   'notification.quiet_hours.get',
   'notification.quiet_hours.set',
   // D-324 — the owner's reminders, for the Data → Reminders list.
+  'yours.delivery',
+  'yours.learning',
+  'yours.today',
+  'yours.read',
+  'yours.sphere',
+  'yours.spheres',
+  'yours.change',
   'reminder.list',
   'reminder.update',
   'reminder.cancel',

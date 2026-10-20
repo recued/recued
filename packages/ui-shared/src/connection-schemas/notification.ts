@@ -846,7 +846,7 @@ const email: ConnectionSchema = {
       type: 'text',
       optional: true,
       placeholder: 'me@example.com',
-      help: 'Optional. Recipes can override per-call; this is the fallback when the recipe omits the recipient.',
+      help: 'Optional. Leave it empty to get your notifications in the mailbox above. A recipe that names its own recipient sends there instead.',
     },
     // No `auth.type` field — creds live on the picked mail account, so a
     // single-option `none` select is dead UI. The payload builder defaults

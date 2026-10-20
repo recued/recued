@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import {
   existsSync,
   mkdtempSync,
@@ -12,6 +13,8 @@ import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 import { resolveServerBundlePath } from '../server-bundle-store.js';
+import { createArchiveImportReceipts } from '../archive/archive-import-receipts.js';
+import * as durableFs from '../durable-fs.js';
 import {
   commitPreparedServerBundleSwap,
   prepareServerBundleSwap,
@@ -80,9 +83,89 @@ const setupPair = (): {
 };
 
 afterEach(() => {
+  vi.restoreAllMocks();
   while (dirs.length) {
     rmSync(dirs.pop()!, { recursive: true, force: true });
   }
+});
+
+describe('import receipts share the swap journal verdict', () => {
+  it('rejects a null operation identity without consuming the swap evidence', () => {
+    const { dbPath, stagingPath } = setupPair();
+    const id = randomUUID(), receipts = createArchiveImportReceipts(dbPath);
+    receipts.reserve(id); receipts.staged(id, stagingPath);
+    const tx = prepareServerBundleSwap({ dbPath, stagingDbPath: stagingPath, stamp: STAMP,
+      nextBundle: Buffer.from('new-bundle'), import_operation_id: id });
+    const marker = JSON.parse(readFileSync(tx.markerPath, 'utf8'));
+    marker.import_operation_id = null; writeFileSync(tx.markerPath, JSON.stringify(marker));
+    expect(() => reconcileServerBundleSwap(dbPath, noParks)).toThrow('ARCHIVE_RESTORE_BUNDLE_SWAP_INVALID');
+    expect(existsSync(tx.markerPath)).toBe(true); expect(readFileSync(dbPath, 'utf8')).toBe('old-db');
+    expect(receipts.status(id)).toEqual({ status: 'waiting_for_restart' });
+  });
+
+  it.each([
+    ['swap_marker_published', 'not_applied'],
+    ['old_db_parked', 'not_applied'],
+    ['new_db_published', 'completed'],
+    ['import_receipt_settled', 'completed'],
+    ['swap_marker_retired', 'completed'],
+  ] as const)('recovers a process death at %s as %s', (boundary, status) => {
+    const { dbPath, stagingPath, bundlePath } = setupPair();
+    const id = randomUUID(), receipts = createArchiveImportReceipts(dbPath);
+    receipts.reserve(id); receipts.staged(id, stagingPath);
+    const child = runFaultChild(`
+      const { prepareServerBundleSwap, commitPreparedServerBundleSwap } = await import(${JSON.stringify(swapModuleUrl)});
+      const observer = { onTransition(phase) { if (phase === process.env.BOUNDARY) process.exit(${CRASH_EXIT}); } };
+      const tx = prepareServerBundleSwap({ dbPath: process.env.DB, stagingDbPath: process.env.STAGED,
+        stamp: ${JSON.stringify(STAMP)}, nextBundle: Buffer.from('new-bundle'), import_operation_id: process.env.OPERATION, observer });
+      commitPreparedServerBundleSwap(tx, () => true, observer);
+    `, { DB: dbPath, STAGED: stagingPath, OPERATION: id, BOUNDARY: boundary });
+    expect(child.status, String(child.stderr)).toBe(CRASH_EXIT);
+    if (boundary === 'new_db_published') expect(receipts.status(id)).toEqual({ status: 'waiting_for_restart' });
+    const result = reconcileServerBundleSwap(dbPath, noParks);
+    receipts.reconcileBoot({ journalOpen: !result.retired, parksResolved: true });
+    expect(createArchiveImportReceipts(dbPath).status(id)).toEqual({ status });
+    expect(readFileSync(dbPath, 'utf8')).toBe(status === 'completed' ? 'new-db' : 'old-db');
+    expect(readFileSync(bundlePath, 'utf8')).toBe(status === 'completed' ? 'new-bundle' : 'old-bundle');
+    expect(existsSync(resolveServerBundleSwapMarkerPath(dbPath))).toBe(false);
+  });
+
+  it('keeps the journal when outcome publication fails and settles it on a later boot', () => {
+    const { dbPath, stagingPath, bundlePath } = setupPair();
+    const id = randomUUID(), receipts = createArchiveImportReceipts(dbPath);
+    receipts.reserve(id); receipts.staged(id, stagingPath);
+    const tx = prepareServerBundleSwap({ dbPath, stagingDbPath: stagingPath, stamp: STAMP,
+      nextBundle: Buffer.from('new-bundle'), import_operation_id: id });
+    const write = durableFs.writeFileAtomicSync;
+    const fault = vi.spyOn(durableFs, 'writeFileAtomicSync').mockImplementation((path, bytes) => {
+      if (path.endsWith('.archive-import-receipts.json')) throw new Error('fixture: receipt volume unavailable');
+      write(path, bytes);
+    });
+    commitPreparedServerBundleSwap(tx, noParks);
+    expect(readFileSync(dbPath, 'utf8')).toBe('new-db');
+    expect(readFileSync(bundlePath, 'utf8')).toBe('new-bundle');
+    expect(receipts.status(id)).toEqual({ status: 'waiting_for_restart' });
+    expect(existsSync(tx.markerPath)).toBe(true);
+    expect(reconcileServerBundleSwap(dbPath, noParks)).toEqual({ recovery: 'completed', retired: false });
+    fault.mockRestore();
+    expect(reconcileServerBundleSwap(dbPath, noParks)).toEqual({ recovery: 'completed', retired: true });
+    expect(receipts.status(id)).toEqual({ status: 'completed' });
+    expect(existsSync(tx.markerPath)).toBe(false);
+  });
+
+  it('does not publish completion while the committed swap still owes blob recovery', () => {
+    const { dbPath, stagingPath } = setupPair();
+    const id = randomUUID(), receipts = createArchiveImportReceipts(dbPath);
+    receipts.reserve(id); receipts.staged(id, stagingPath);
+    const tx = prepareServerBundleSwap({ dbPath, stagingDbPath: stagingPath, stamp: STAMP,
+      nextBundle: Buffer.from('new-bundle'), import_operation_id: id });
+    commitPreparedServerBundleSwap(tx, () => false);
+    receipts.reconcileBoot({ journalOpen: true, parksResolved: false });
+    expect(receipts.status(id)).toEqual({ status: 'recovery_required' });
+    expect(existsSync(tx.markerPath)).toBe(true);
+    reconcileServerBundleSwap(dbPath, noParks);
+    expect(receipts.status(id)).toEqual({ status: 'completed' });
+  });
 });
 
 describe('server bundle restore swap journal', () => {

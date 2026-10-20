@@ -48,6 +48,8 @@ import { connectionAccessAuthority, recordConnectionAccessEvidence, type Connect
  *  sequence so a failed check never rolls back a successfully stored row. */
 
 import { createHash } from 'node:crypto';
+import { describeS3BackupConnection } from './archive/remote-backups.js';
+import { createS3Client, S3Error } from './collections/file/adapters/s3/client.js';
 
 import {
   RpcError,
@@ -95,6 +97,7 @@ import {
   invalidExchangeAdmissionEntries,
   profileCatalogSlugs,
   profileForCatalog,
+  isAuthenticationHistoryExportQuery,
 } from '@recued/contracts';
 import type {
   ConnectionAuth,
@@ -214,6 +217,7 @@ export interface ConnectionRpcDeps {
   authenticationRepairTargets?(name: string): readonly import('@recued/contracts').AuthenticationRepairTarget[];
   authenticationRepairs?: () => Promise<import('@recued/contracts').AuthenticationRepairWorklist>;
   authenticationHistory?: import('@recued/contracts').AuthenticationIncidentHistoryCaller;
+  authenticationHistoryExport?: import('@recued/contracts').AuthenticationHistoryExportCaller;
   collectionAuthentication?: import('./collection-authentication-service.js').CollectionAuthenticationService;
   collectionOAuthAppSwitch?: import('./collection-oauth-app-switch.js').CollectionOAuthAppSwitchService;
   oauthAppConfig?: OAuthAppConfigStore;
@@ -3409,6 +3413,21 @@ const probeConnection = async (
         });
         switch (kind) {
           case 'api': {
+            if (readConfig().vendor === 's3') {
+              if (auth.type !== 'basic') { health = healthOf('auth_failed', 's3_access_key_pair_required'); break; }
+              try {
+                // HeadBucket checks the bucket, independently of the folder
+                // syntax that remote backup object names currently support.
+                const description = describeS3BackupConnection({ ...existing, config_json: configJson, subresource_path: '/' });
+                const s3 = createS3Client({ config: { ...description.config, access_key: auth.username, secret_key: auth.password },
+                  fetcher: (url, init) => (deps.resolveFetch ?? fetch)(url, { method: init.method, headers: init.headers, signal: init.signal, redirect: 'manual' }) });
+                await s3.headBucket(); health = healthOf('ok');
+              } catch (error) {
+                health = error instanceof S3Error && (error.status === 401 || error.status === 403)
+                  ? healthOf('auth_failed', 's3_probe_rejected') : healthOf('unreachable', 's3_bucket_unavailable');
+              }
+              break;
+            }
             if (auth.type === 'atproto_session') {
               try {
                 let liveAuth = await ensureFreshAuth(existing, auth);
@@ -5972,6 +5991,11 @@ export const makeConnectionHandlers = (
         if (args && typeof args.action === 'string' && args.action.startsWith('authentication_access_')) {
           if (!deps.authenticationAccess) throw new RpcError('not_configured', 'Verify access is unavailable. Update the server and refresh.');
           return deps.authenticationAccess.handle(args as import('@recued/contracts').AuthenticationAccessRequest);
+        }
+        if (args?.action === 'authentication_history_export') {
+          if (!isAuthenticationHistoryExportQuery(args)) throw new RpcError('bad_request', 'Choose a valid history scope and filters to export.');
+          if (!deps.authenticationHistoryExport) throw new RpcError('not_configured', 'History export is unavailable. Update the server and try again.');
+          return { action: args.action, report: await deps.authenticationHistoryExport(args) };
         }
         if (args?.action === 'authentication_history') {
           if (!isAuthenticationIncidentHistoryQuery(args)) throw new RpcError('bad_request', 'Choose a valid incident history filter and page.');

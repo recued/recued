@@ -290,6 +290,22 @@ describe('startServeHousekeepingScheduler', () => {
       .not.toHaveProperty('sellerAccessReconcileDeps');
   });
 
+  it('hands the file stack to the composer as the watched folders the housekeeping walk covers — and omits the key without one', async () => {
+    const fileStack = { tag: 'file-stack' };
+    schedulerMocks.composeHousekeepingScheduler.mockResolvedValue({ scheduler: undefined });
+    const base = makeServeHousekeepingOptions();
+
+    await startServeHousekeepingScheduler({ ...base, storage: { ...base.storage, fileStack } } as never);
+    expect(schedulerMocks.composeHousekeepingScheduler).toHaveBeenCalledWith(
+      expect.objectContaining({ watchedFolders: fileStack }),
+    );
+
+    schedulerMocks.composeHousekeepingScheduler.mockClear();
+    await startServeHousekeepingScheduler(base);
+    expect(schedulerMocks.composeHousekeepingScheduler.mock.calls[0]![0])
+      .not.toHaveProperty('watchedFolders');
+  });
+
   it('keeps auto-run in-flight reads late-bound through the scheduler bundle getter', async () => {
     const firstHandle = { inFlight: vi.fn(() => false) };
     const secondHandle = { inFlight: vi.fn(() => true) };

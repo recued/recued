@@ -181,6 +181,8 @@ export {
  *  the per-bridge sub-rows already carry — with the approval axis
  *  capability-constrained. */
 export interface NotificationChannelToggleView {
+  connections?: readonly { name: string; display_name: string; enrolled_at: number }[];
+  connection?: { name: string; enrolled_at: number } | null;
   channel: NotificationChannelName;
   /** D-163 N.6 — capability badge text. Reads as delivery language in
    *  the R31 UI: `inline` = "Answer here", `landing-page` = "Answer via
@@ -210,6 +212,11 @@ export interface NotificationChannelToggleView {
    *  on the Bridge row only (today); other channels surface their CTA
    *  via the Settings → Connections route. Omitted when undefined. */
   install_url?: string;
+  /** D-158 amendments 2026-10-19/20 — the connection plain notifications and
+   *  approvals go through: the owner's choice for the channel (`connection`),
+   *  else the only one, else the one named after the channel. Null when none can
+   *  carry them; absent from an older server. */
+  plain_connection?: { name: string; display_name: string } | null;
 }
 
 /** D-158 N.5 + R31 — the per-pair notification-settings record. R31
@@ -260,6 +267,7 @@ interface NotificationSettingsRowBase {
  *  ON is this row. The gates read both, so an unsupported role can never be enabled
  *  by a stale or hand-edited settings row. */
 export interface NotificationChannelModeRow {
+  connection?: { name: string; enrolled_at: number } | null;
   notification: boolean;
   approval: boolean;
   messenger: boolean;

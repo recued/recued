@@ -238,6 +238,7 @@ export type ManagedOAuthRequest =
   | import('./authentication-access-verification.js').AuthenticationAccessRequest
   | { action: 'authentication_worklist' }
   | ({ action: 'authentication_history' } & import('./authentication-incident-history.js').AuthenticationIncidentHistoryQuery)
+  | ({ action: 'authentication_history_export' } & import('./authentication-history-export.js').AuthenticationHistoryExportQuery)
   | import('./collection-oauth-app-switch.js').CollectionOAuthAppSwitchRequest
   | CollectionAuthenticationRequest
   | ManagedOAuthMigrationRequest
@@ -273,6 +274,7 @@ export type ManagedOAuthResponse =
   | import('./authentication-access-verification.js').AuthenticationAccessResponse
   | { action: 'authentication_worklist'; worklist: import('./authentication-repair-worklist.js').AuthenticationRepairWorklist }
   | { action: 'authentication_history'; history: import('./authentication-incident-history.js').AuthenticationIncidentHistoryPage }
+  | { action: 'authentication_history_export'; report: import('./authentication-history-export.js').AuthenticationHistoryExport }
   | { action: 'file_authentication_files'; choices: import('./file-download-verification.js').FileDownloadChoices }
   | { action: 'file_authentication_prepare'; name: string; updated_at: number; file_source: import('./file-source-authentication.js').FileSourceAuthenticationPreview | null }
   | import('./collection-oauth-app-switch.js').CollectionOAuthAppSwitchResponse

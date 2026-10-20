@@ -22,6 +22,9 @@ import {
 import type { StoredRecipe } from './types.js';
 import { getOrCreateRecipeInsight } from './memory-schema.js';
 import { initializePreapprovalLifecycle, mutatePreapprovalResource } from './storage/preapproval-lifecycle.js';
+import { initializeRecipeReleases, assertRecipeReleaseWrite, retireRecipeReleases } from './storage/recipe-release-authority.js';
+import { initializePackUpdates, assertPackUpdateWrite } from './storage/pack-update-authority.js';
+import { afterLocalCommit } from './local-transaction.js';
 
 /** A RecipeStore-local authoring disposition. The editable snapshot carries
  * the exact persisted JSON used by `compareAndSaveLocalRecipe`; it is an
@@ -54,6 +57,8 @@ export type LocalRecipeCompareAndSaveResult =
   | { readonly kind: 'not_configured' };
 
 export interface RecipeStore {
+  /** Host-only identity for synchronous multi-store commits. */
+  readonly realmDatabase?: import('better-sqlite3').Database;
   /** Look up a recipe by id. SQLite wins over bundled. */
   get(recipe_id: string): RecipeDefinition | null;
   /** D-145 PA10 — read the bundled-on-disk version of a recipe,
@@ -86,6 +91,7 @@ export interface RecipeStore {
     source: StoredRecipe['source'],
     now?: number,
     pack_slug?: string | null,
+    packUpdatePermit?: object,
   ): void;
   /** D-200 Slice 6g.11 — inspect the effective source before a narrow
    * recipe-local metadata edit. This never treats a pack/bundled row as
@@ -98,6 +104,8 @@ export interface RecipeStore {
     readonly recipe: RecipeDefinition;
     readonly expected_recipe_json: string;
     readonly now?: number;
+    /** Internal capability and synchronous release finalizer; never a wire field. */
+    readonly release?: { readonly permit: object; readonly commit: () => void };
   }): LocalRecipeCompareAndSaveResult;
   /** D-303 — the variables an earlier version of this recipe declared that the stored
    *  one does not: what updates dropped. A run drops a value still saved for one of
@@ -289,6 +297,8 @@ export const createRecipeStore = (
   // Ensure recipes table exists when db is provided
   if (db) {
     initializePreapprovalLifecycle(db);
+    initializeRecipeReleases(db);
+    initializePackUpdates(db);
     db.exec(`
       CREATE TABLE IF NOT EXISTS recipes (
         recipe_id         TEXT NOT NULL PRIMARY KEY,
@@ -473,6 +483,7 @@ export const createRecipeStore = (
   };
 
   return {
+    realmDatabase: db,
     get(recipe_id) {
       // Memory overrides (register) > SQLite > bundled
       const mem = memoryOverrides.get(recipe_id);
@@ -516,10 +527,11 @@ export const createRecipeStore = (
     },
 
     register(recipe) {
+      if (db) { assertRecipeReleaseWrite(db,recipe); assertPackUpdateWrite(db,recipe); }
       memoryOverrides.set(recipe.recipe_id, recipe);
     },
 
-    save(recipe, publisher_id, source, now, pack_slug) {
+    save(recipe, publisher_id, source, now, pack_slug, packUpdatePermit) {
       if (!db) throw new Error('No database configured — cannot save recipes');
       const hash = hashRecipe(recipe);
       const installedAt = now ?? Date.now();
@@ -534,6 +546,8 @@ export const createRecipeStore = (
         const priorRow = db
           .prepare('SELECT recipe_hash, pack_slug, recipe_json FROM recipes WHERE recipe_id = ?')
           .get(recipe.recipe_id) as { recipe_hash: string; pack_slug: string | null; recipe_json: string } | undefined;
+        assertRecipeReleaseWrite(db,recipe);
+        assertPackUpdateWrite(db,recipe,pack_slug,packUpdatePermit);
         const isUpgrade = priorRow != null && priorRow.recipe_hash !== hash;
         // ── D-247 D6 — A PACK-OWNED ROW IS THE PACK'S TO CHANGE ──────────────
         //
@@ -590,11 +604,11 @@ export const createRecipeStore = (
         recordRetired(recipe, priorRow?.recipe_json, installedAt);
         return isUpgrade;
       });
-      if (isUpgrade) fireOnUpgrade(recipe.recipe_id);
+      if (isUpgrade) afterLocalCommit(db,() => fireOnUpgrade(recipe.recipe_id));
       // G6 — roster mutation signal. Fired BEFORE the insight-snapshot
       // block below (which early-returns on over-cap shapes) so the
       // reconcile signal never depends on insight bookkeeping.
-      fireOnMutated(recipe.recipe_id);
+      afterLocalCommit(db,() => fireOnMutated(recipe.recipe_id));
       recordRecipeInsight(recipe, hash, installedAt);
     },
 
@@ -636,7 +650,9 @@ export const createRecipeStore = (
         if (row.recipe_json !== input.expected_recipe_json) {
           return { kind: 'conflict' };
         }
+        assertRecipeReleaseWrite(db,input.recipe,input.expected_recipe_json,input.release?.permit);
         if (row.recipe_json === recipeJson) {
+          input.release?.commit();
           return { kind: 'unchanged' };
         }
         const changed = db.prepare(`
@@ -659,6 +675,7 @@ export const createRecipeStore = (
               : { kind: 'conflict' };
         }
         recordRetired(input.recipe, row.recipe_json, input.now ?? Date.now());
+        input.release?.commit();
         return {
           kind: 'updated',
           prior_recipe_hash: row.recipe_hash,
@@ -677,8 +694,11 @@ export const createRecipeStore = (
 
     delete(recipe_id) {
       if (!db) return false;
-      const result = mutatePreapprovalResource(db, 'recipe', recipe_id, () => preapprovalMaterial(recipe_id),
-        () => db.prepare('DELETE FROM recipes WHERE recipe_id = ?').run(recipe_id));
+      const result = mutatePreapprovalResource(db, 'recipe', recipe_id, () => preapprovalMaterial(recipe_id), () => {
+        const removed = db.prepare('DELETE FROM recipes WHERE recipe_id = ?').run(recipe_id);
+        if (removed.changes > 0) retireRecipeReleases(db,recipe_id);
+        return removed;
+      });
       if (result.changes > 0) {
         fireOnDeleted(recipe_id);
         fireOnMutated(recipe_id);

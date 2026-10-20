@@ -52,7 +52,8 @@ const EXPECTED_DOMAIN_COUNTS: Record<string, number> = {
   // D-210 added the 3 `core.work-entity.booking.*` CRUD ops (16 → 19).
   // D-221 added the list/get backing ingredients for pack-owned Records
   // reachability (19 → 21).
-  'work-entity': 32,
+  'work-entity': 36,
+  situation: 2,
   // D-198 follow-on — `core.memory.audit.read` moved OUT of `memory` (13→12)
   // into its own `audit` domain: run history is not the knowledge pool.
   // 12 → 10 on 2026-09-23: `core.memory.annotate` / `core.memory.link` retired
@@ -339,6 +340,8 @@ describe('D-182 slice 3a — kernel op registry', () => {
       // D-244 — CSV filtering as a KERNEL op rather than a CLI pack: csvkit is a
       // Python install an owner may not have, and a spreadsheet used as a customer
       // list is too common to have its search silently absent on a fresh box.
+      'core.situation.prefetch|situation|(native)|read',
+      'core.situation.read|situation|situation-query|read',
       'core.storage.csv.columns|storage|csv-columns|read',
       // ⛔ csv.filter SAVES a new file record per run, so it is a write; csv.rows
       // returns the same matches as a value and saves nothing.
@@ -386,6 +389,10 @@ describe('D-182 slice 3a — kernel op registry', () => {
       'core.watch.time|watch|time-watcher|read',
       'core.webhook.event.get|webhook|webhook-event-get|read',
       'core.work-entity.approval-workflow.continue|work-entity|approval-workflow-continue|write',
+      'core.work-entity.asset.create|work-entity|asset-create|write',
+      'core.work-entity.asset.delete|work-entity|asset-delete|destructive',
+      'core.work-entity.asset.observe|work-entity|asset-observe|read',
+      'core.work-entity.asset.update|work-entity|asset-update|write',
       'core.work-entity.booking.create|work-entity|booking-create|write',
       'core.work-entity.booking.delete|work-entity|booking-delete|destructive',
       'core.work-entity.booking.update|work-entity|booking-update|write',

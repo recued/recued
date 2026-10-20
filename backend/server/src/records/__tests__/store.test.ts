@@ -198,6 +198,52 @@ describe('D-221 fixed Records store', () => {
     store.releaseNamespaceFence(fence);
   });
 
+  it('uses replacement operations immediately after an activation with unchanged stamps', () => {
+    store.execute({ binding: bindings().count, args: {}, principal: 'owner' });
+    const replacement = { ...bindings().create, operation_digest: `${OWNER.publisher}:replacement-create` };
+    store.installNamespace({
+      owner: OWNER,
+      version: 1,
+      storage_schema_hash: STORAGE_HASH,
+      declaration_hash: DECLARATION_HASH,
+      artifact_digest: `artifact:${OWNER.publisher}:replacement`,
+      schema,
+      bindings: { ...bindings(), create: replacement },
+    });
+    expect(() => store.execute({
+      binding: bindings().create, args: { values: values('old-operation') }, principal: 'owner',
+    })).toThrow(/operation digest\/binding is not installed/);
+    expect(store.execute({
+      binding: replacement, args: { values: values('new-operation') }, principal: 'owner',
+    })).toMatchObject({ record: { title: 'Launch' }, replayed: false });
+    expect(store.getNamespace(OWNER)?.quota.row_count).toBe(1);
+  });
+
+  it('rejects a changed binding after the same caller object was accepted', () => {
+    const create = bindings().create;
+    store.execute({ binding: create, args: { values: values('first') }, principal: 'owner' });
+    create.natural_key = ['status'];
+    expect(() => store.execute({
+      binding: create, args: { values: values('second') }, principal: 'owner',
+    })).toThrow(/operation digest\/binding is not installed/);
+    expect(store.getNamespace(OWNER)?.quota.row_count).toBe(1);
+  });
+
+  it('keeps returned namespace metadata separate from write validation', () => {
+    store.execute({ binding: bindings().count, args: {}, principal: 'owner' });
+    const exposed = store.getNamespace(OWNER)!;
+    exposed.schema.entities.job!.fields.find(field => field.key === 'title')!.required = false;
+    const missingTitle = values('missing-title');
+    delete missingTitle.title;
+    expect(() => store.execute({
+      binding: bindings().create, args: { values: missingTitle }, principal: 'owner',
+    })).toThrow(/required/);
+    expect(store.getNamespace(OWNER)?.quota.row_count).toBe(0);
+    expect(store.execute({
+      binding: bindings().create, args: { values: values('valid') }, principal: 'owner',
+    })).toMatchObject({ record: { title: 'Launch' } });
+  });
+
   it('derives natural keys, replays equal content, and rejects immutable edits', () => {
     const first = store.execute({ binding: bindings().create, args: { values: values('c-1') }, principal: 'owner' }) as {
       record: { id: string; amount: string; score: number; started_on: string; due_at: string; active: boolean; _record: { revision: number } };

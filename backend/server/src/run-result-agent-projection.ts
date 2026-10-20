@@ -19,6 +19,7 @@ import type {
   ContainerPickDetail,
   CreatePlanDetail,
   ExchangeAcknowledgement,
+  NotificationChannelName,
   RunControlTermination,
 } from '@recued/contracts';
 import { isRemoteFailureKind } from '@recued/contracts';
@@ -73,6 +74,47 @@ export const HELD_FOR_APPROVAL_MESSAGE =
   + 'approve or bypass approvals yourself; if the user wants fewer approval '
   + 'interruptions, the approval card itself may offer bounded options (such as '
   + 'allowing repeats for this session).';
+
+/** Where else a held run's approval ask goes, in the words a user knows. The
+ *  app is named by {@link HELD_FOR_APPROVAL_MESSAGE}; a channel not listed here
+ *  is named nowhere rather than wrongly. */
+const APPROVAL_CHANNEL_PLACES: Readonly<Partial<Record<NotificationChannelName, string>>> = {
+  email: 'by email',
+  slack: 'on Slack',
+  telegram: 'on Telegram',
+  whatsapp: 'on WhatsApp',
+  discord: 'on Discord',
+  teams: 'on Microsoft Teams',
+  bridge: 'in the Recued browser extension',
+};
+
+/** What an agent is told about the other channels a held run's approval ask
+ *  went to (`ExecuteResponse.approval_channels`), or nothing when it went to the
+ *  app alone.
+ *
+ *  ⛔ "THE BELL" TO AN OWNER WHO ASKED BY EMAIL. With only the held message to
+ *  go on, an email chat answered "You can review and approve it from the bell
+ *  icon at the top of the Recued app" while the approval email was already in
+ *  the owner's inbox, answerable by a reply (live, 2026-10-18). Said of where
+ *  the request GOES, never that it has arrived: quiet hours hold a delivery,
+ *  and the 2026-06-08 rule holds that nothing may imply a prompt is showing.
+ *  ⚠ Model-facing string — see `chat-prompt-optimization-log.md`. */
+export const approvalElsewhereMessage = (channels: readonly string[]): string | undefined => {
+  const places = channels.flatMap((channel) => {
+    const place = Object.hasOwn(APPROVAL_CHANNEL_PLACES, channel)
+      ? APPROVAL_CHANNEL_PLACES[channel as NotificationChannelName]
+      : undefined;
+    return place === undefined ? [] : [place];
+  });
+  if (places.length === 0) return undefined;
+  const where = places.length === 1
+    ? places[0]
+    : `${places.slice(0, -1).join(', ')} and ${places[places.length - 1]}`;
+  const lead = `This approval request also goes to the user ${where}; they can answer it there too.`;
+  return channels.includes('email')
+    ? `${lead} To answer by email, they reply to the approval email with one of the options it lists, such as Approve.`
+    : lead;
+};
 
 /** D-181 § 9 — agent-facing message for an OWNER-cancelled run (an
  *  `execution.kill` mid-flight or an `execution.cancel` of a queued call).
@@ -283,6 +325,9 @@ export interface AgentHeldRunResult {
   awaiting_approval: true;
   recipe_id: string;
   message: string;
+  /** Where else the user can answer the approval ({@link approvalElsewhereMessage}),
+   *  when its ask went beyond the app. */
+  approval_elsewhere?: string;
 }
 
 /** D-192 Slice 6b — the clean agent-facing shape for a create held behind a
@@ -682,10 +727,12 @@ export const projectRunResultForAgent = (result: unknown): unknown => {
     return stopped === null ? result : { ...result, ...stopped };
   }
   const held = result as ExecuteResponse;
+  const elsewhere = approvalElsewhereMessage(held.approval_channels ?? []);
   return {
     status: 'awaiting_approval',
     awaiting_approval: true,
     recipe_id: held.recipe_id,
     message: HELD_FOR_APPROVAL_MESSAGE,
-  };
+    ...(elsewhere !== undefined ? { approval_elsewhere: elsewhere } : {}),
+  } satisfies AgentHeldRunResult;
 };

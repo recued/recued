@@ -95,6 +95,7 @@ import type {
   ArchiveUploadFn,
 } from '../settings/archive-backup-panel.js';
 import { createArchiveRebindStash } from '../settings/archive-rebind-stash.js';
+import { createBrowserArchiveImportReceiptController } from '../settings/archive-import-receipt.js';
 import { createArchiveUpload } from '../settings/archive-upload.js';
 import type {
   WebclientLocalStore,
@@ -273,6 +274,8 @@ export const RESTORE_ONBOARDING_COPY = {
   schema_too_new:
     'This backup came from a newer Recued than this server runs. Update this server first, then put the backup back.',
   restore_failed: 'Putting your backup back failed:',
+  restore_uncertain:
+    'Recued could not confirm whether your backup was put back. It may already have completed. Check the server before trying again. Reload this page if you need to reconnect.',
   already_paired:
     'Another tab paired this browser to a server while this was open. Reload the page to carry on.',
   server_changed:
@@ -281,9 +284,8 @@ export const RESTORE_ONBOARDING_COPY = {
 
 /** The dry-run + commit import both decrypt the archive server-side, which can
  *  outlast the default 30s rpc budget for a multi-GB backup. A generous budget
- *  lets the call wait for the real response (success) or an actual socket drop
- *  (the server restarted ⇒ success) rather than a premature `timeout` that
- *  `isServerRestartDrop` (correctly) refuses to read as a commit. */
+ *  lets the call wait for the real response without a premature deadline.
+ *  Neither a socket drop nor an expired deadline proves the restore committed. */
 export const RESTORE_IMPORT_TIMEOUT_MS = 900_000;
 
 // ════════════════════════════════════════════════════════════════
@@ -304,23 +306,16 @@ const messageOf = (err: unknown): string =>
 const isWrongKeyError = (err: unknown): boolean =>
   /ARCHIVE_INVALID_SIGNATURE/.test(messageOf(err));
 
-/** Codes the rpc-conn rejects with when the socket actually DROPS / the conn is
- *  torn down — i.e. the server-restart drop after a committing import (the
- *  response raced the drain). Treated as "committed; restarting", never an error.
- *
- *  Deliberately EXCLUDES `timeout`. The commit carries a generous
- *  `RESTORE_IMPORT_TIMEOUT_MS` budget, so a timeout means the server is genuinely
- *  wedged — the client deadline expiring does NOT prove the destructive db swap
- *  happened. (The shipped backup panel folds `timeout` into "assume committed"
- *  because it uses the default 30s budget + leans on an existing reconnect loop;
- *  the pre-pair onboarding flow can't make that assumption — a premature timeout
- *  would hand the bootstrap an un-restored, still-unenrolled server.) */
-const isServerRestartDrop = (err: unknown): boolean => {
+/** A request or its reply can be lost. Neither transport failure nor timeout
+ *  proves which happened, so only an actual import response may hand off. */
+const isRestoreOutcomeUnknown = (err: unknown): boolean => {
   const code = errorCodeOf(err);
   return (
     code === 'transport' ||
     code === 'transport_disposed' ||
-    code === 'webclient_reauth_required'
+    code === 'webclient_reauth_required' ||
+    code === 'connection_lost' ||
+    code === 'timeout'
   );
 };
 
@@ -474,8 +469,8 @@ export const createRestoreOnboarding = (
       });
     });
 
-  /** The restore committed (resolved with a rebind, or the restart raced the
-   *  response). Stash the rebind, mark done, close the (dead) channel, hand off. */
+  /** The server accepted the import. Stash its rebind, close the channel and
+   *  let bootstrap reconnect after the drain and restore restart. */
   const finishRestore = async (
     rebind: ArchiveImportRebind | null,
   ): Promise<void> => {
@@ -672,14 +667,10 @@ export const createRestoreOnboarding = (
         });
       } catch (err) {
         if (disposed) return;
-        // ★ The committing import restarts the server, so the WS drops right
-        //   after the response. An actual socket-drop rejection = the response
-        //   raced the drain — the restore committed. Success (no rebind to
-        //   stash). A `timeout` is deliberately NOT in this set (see
-        //   `isServerRestartDrop`): with the long commit budget it means a
-        //   genuine wedge, which falls through to the recoverable error below.
-        if (isServerRestartDrop(err)) {
-          await finishRestore(null);
+        if (isRestoreOutcomeUnknown(err)) {
+          // The import may have committed, or never reached the server. Do not
+          // claim success, blame the key or automatically resend the import.
+          toCollect(null, RESTORE_ONBOARDING_COPY.restore_uncertain);
           return;
         }
         // The old (fresh, unenrolled) db is intact for every pre-commit
@@ -837,6 +828,9 @@ export const createBrowserRestoreOps = (
     const transport = transportFactory();
     const ws: WebclientWsClient = createWebclientWsClient({
       transport,
+      // A committing import must not reappear from an abandoned send queue.
+      // Idempotent upload finalize owns its own bounded retry instead.
+      queue_on_send_error: false,
       resolveServerUrl: async () =>
         (await env.localStore.get('server_url')) ?? serverUrl,
       resolveBearer,
@@ -849,15 +843,32 @@ export const createBrowserRestoreOps = (
       await ws.disconnect().catch(() => undefined);
       throw err;
     }
-    const rpcConn = createWebclientRpcConn({ ws });
+    const rpcConn = createWebclientRpcConn({ ws, connectionStatus: {
+      // This short-lived channel must settle requests on every socket loss:
+      // a replacement socket cannot deliver the old socket's replies. Without
+      // this it kept the restoring spinner for the full 15-minute RPC budget.
+      status: () => ws.state() === 'connected' ? 'connected' : 'offline',
+      onStatus: listener => ws.onState(state => listener(state === 'connected' ? 'connected' : 'offline')),
+    } });
 
-    const importArchive: ArchiveImportCaller = (importArgs) =>
+    const rawImportArchive: ArchiveImportCaller = (importArgs) =>
       // Generous budget — the server decrypts the archive before responding, so
       // the default 30s rpc timeout would spuriously fire on a large backup and
       // (for the commit) read as a destructive-success it can't prove.
       rpcConn.call('server.archive.import', importArgs, {
         timeout: RESTORE_IMPORT_TIMEOUT_MS,
       });
+
+    let receipt: Awaited<ReturnType<typeof createBrowserArchiveImportReceiptController>>;
+    try {
+      receipt = await createBrowserArchiveImportReceiptController({
+        localStore: env.localStore, autoCheck: false,
+        verify: operation_id => rpcConn.call('server.archive.import_status', { operation_id }),
+      });
+    } catch (error) {
+      rpcConn.dispose(); await ws.disconnect().catch(() => undefined); throw error;
+    }
+    const importArchive = receipt?.wrapImport(rawImportArchive) ?? rawImportArchive;
 
     const upload: ArchiveUploadFn = createArchiveUpload({
       // Dedicated binary `/ws/archive-upload` socket (mirrors the bootstrap's
@@ -903,6 +914,7 @@ export const createBrowserRestoreOps = (
     });
 
     const close = async (): Promise<void> => {
+      receipt?.dispose();
       rpcConn.dispose();
       await ws.disconnect();
     };
@@ -934,5 +946,9 @@ export const createBrowserRestoreOnboarding = (
 ): RestoreOnboarding =>
   createRestoreOnboarding({
     ops: createBrowserRestoreOps(opts),
-    onRestored: opts.onRestored,
+    onRestored: async () => {
+      const view = (globalThis as { window?: Window }).window;
+      if (view !== undefined) view.location.hash = '#settings/backup';
+      await opts.onRestored();
+    },
   });

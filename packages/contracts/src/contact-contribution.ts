@@ -166,6 +166,7 @@ export const CONTACT_ATTRIBUTE_KINDS = [
   'address',
   'photo',
   'birthday',
+  'anniversary',
 ] as const;
 export type ContactAttributeKind = (typeof CONTACT_ATTRIBUTE_KINDS)[number];
 

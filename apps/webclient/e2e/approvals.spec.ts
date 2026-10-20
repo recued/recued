@@ -6,6 +6,32 @@ const APPROVALS_REFRESH = 'data-recued-approvals-refresh';
 
 installFullAppHooks();
 
+for (const width of [280, 1280]) {
+  test('Approvals shows the complete Records batch review at width ' + width, async ({ page }) => {
+    await page.setViewportSize({ width, height: 800 });
+    await page.goto(`${HARNESS_URL}?attention=pending&resource_review=records-batch#approvals`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    const card = page.locator('[data-recued-approvals-focus="ask-attention-1"]');
+    const review = card.getByRole('region', { name: 'Reviewed changes' });
+    await expect(review).toBeVisible();
+    await expect(review).toContainText('Before: Does not exist');
+    await expect(review).toContainText('Intermediate edit');
+    await expect(review).toContainText('2. delete');
+    await expect(review).toContainText('3. create');
+    await expect(review).toContainText('Inserted note');
+    await expect(review.locator('script')).toHaveCount(0);
+    await review.focus();
+    await expect(review).toBeFocused();
+    await page.keyboard.press('End');
+    await expect.poll(() => review.evaluate(el => el.scrollTop)).toBeGreaterThan(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await page.locator(`[${APPROVALS_REFRESH}]`).click();
+    await expect(review).toBeVisible();
+    await expect(review).toContainText('Recreated final note');
+    await expect(card.getByRole('button', { name: 'Approve: Review Records batch', exact: true })).toBeEnabled();
+  });
+}
+
 test('Approvals focuses an exact decision card and preserves it through a queue repaint', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?attention=pending`);

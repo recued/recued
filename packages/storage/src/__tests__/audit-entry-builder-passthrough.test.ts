@@ -37,6 +37,7 @@ const maximalInput = (): AuditEntryInput => ({
   run_id: 'run-supplied-1',
   config_snapshot: { cfg: 'value' },
   context_snapshot: { ctx: 'value' },
+  connection_revisions: { sales: 'a'.repeat(64) },
   degraded: ['audit_unwritten'],
   trigger_url: 'https://example.test/hook',
   trigger_source: 'webhook',
@@ -73,6 +74,7 @@ describe('buildAuditEntry — no field vanishes in the copier', () => {
     }
     expect(entry.config_snapshot).toEqual({ cfg: 'value' });
     expect(entry.context_snapshot).toEqual({ ctx: 'value' });
+    expect(entry.connection_revisions).toEqual({ sales: 'a'.repeat(64) });
     expect(entry.degraded).toEqual(['audit_unwritten']);
     // Derived, not asserted twice: started_at is finished_at MINUS the duration.
     expect(entry.finished_at).toBe(1_700_000_000_000);
@@ -87,9 +89,11 @@ describe('buildAuditEntry — no field vanishes in the copier', () => {
     const entry = buildAuditEntry(input);
     (input.config_snapshot as Record<string, unknown>).cfg = 'mutated';
     (input.context_snapshot as Record<string, unknown>).ctx = 'mutated';
+    input.connection_revisions!.sales = 'b'.repeat(64);
     (input.degraded as string[]).push('provenance_incomplete');
     expect(entry.config_snapshot).toEqual({ cfg: 'value' });
     expect(entry.context_snapshot).toEqual({ ctx: 'value' });
+    expect(entry.connection_revisions).toEqual({ sales: 'a'.repeat(64) });
     expect(entry.degraded).toEqual(['audit_unwritten']);
   });
 
@@ -101,8 +105,10 @@ describe('buildAuditEntry — no field vanishes in the copier', () => {
       ...maximalInput(),
       degraded: [],
       context_snapshot: {},
+      connection_revisions: {},
     } as AuditEntryInput) as unknown as Record<string, unknown>;
     expect('degraded' in entry, 'an empty degraded list was emitted').toBe(false);
     expect('context_snapshot' in entry, 'an empty context_snapshot was emitted').toBe(false);
+    expect('connection_revisions' in entry).toBe(false);
   });
 });

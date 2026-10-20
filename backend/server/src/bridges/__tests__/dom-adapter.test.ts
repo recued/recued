@@ -7,6 +7,8 @@ import type {
   IngredientManifest,
 } from '@recued/contracts';
 import { IngredientError, type ResolvedCall } from '@recued/ingredients';
+import { withRunAbortContext } from '../../execution/run-abort-context.js';
+import { withPreapprovalIo, type PreapprovalIoContext } from '../../preapproval-io-context.js';
 
 import {
   classifyDomAction,
@@ -56,6 +58,7 @@ const resolved = (overrides: Partial<ResolvedCall> = {}): ResolvedCall => ({
     '#title': 'title',
   },
   stepMeta: {
+    run_id: 'run-1',
     recipe_id: 'recipe-1',
     step_id: 'step-1',
   },
@@ -193,6 +196,18 @@ describe('D-169 P0 - DOM action classification', () => {
 });
 
 describe('D-169 P0 - translateDispatchOutcome', () => {
+  it.each(['error', 'ok'] as const)('preserves delivery uncertainty even with an %s result status', async status => {
+    await expectIngredientCode(() => translateDispatchOutcome(completed(resultBase({ status,
+      outputs: { text: 'must not be used' }, error: { code: 'delivery_uncertain', message: 'Check the page before retrying.' } })),
+    SLUG, entry('click', '#save')), 'ACTION_DELIVERY_UNCERTAIN');
+  });
+
+  it.each(['error', 'ok'] as const)('treats a worker lifecycle interruption as uncertain despite an %s write status', async status => {
+    await expectIngredientCode(() => translateDispatchOutcome(completed(resultBase({ status,
+      error: { code: 'mv3_lifecycle_killed', message: 'The worker stopped before completion was confirmed.' } })),
+    SLUG, entry('dom.value', '#save')), 'ACTION_DELIVERY_UNCERTAIN');
+  });
+
   it('returns bridge outputs for a completed ok result', () => {
     expect(translateDispatchOutcome(
       completed(okResult({ text: 'Hello' })),
@@ -214,6 +229,7 @@ describe('D-169 P0 - translateDispatchOutcome', () => {
     ['tab_navigation_blocked', 'DOM_CROSS_ORIGIN'],
     ['capacity_gap_logged_in', 'ROLE_RESTRICTION'],
     ['authority_invalid', 'INGREDIENT_SCOPE_INSUFFICIENT'],
+    ['mv3_lifecycle_killed', 'INGREDIENT_ADAPTER_ALL_FAILED'],
   ] as const)('maps bridge error code %s to %s', async (bridgeCode, recipeCode) => {
     const err = await expectIngredientCode(
       () => translateDispatchOutcome(
@@ -230,16 +246,21 @@ describe('D-169 P0 - translateDispatchOutcome', () => {
     });
   });
 
-  it('maps bridge cancelled status to ROLE_RESTRICTION', async () => {
+  it('reports a cancelled click as an uncertain effect', async () => {
     const err = await expectIngredientCode(
       () => translateDispatchOutcome(
         completed(resultBase({ status: 'cancelled' })),
         SLUG,
         entry('click', '#save'),
       ),
-      'ROLE_RESTRICTION',
+      'ACTION_DELIVERY_UNCERTAIN',
     );
     expect(err.details).toMatchObject({ status: 'cancelled', selector: '#save' });
+  });
+
+  it('keeps a cancelled read as ROLE_RESTRICTION', async () => {
+    await expectIngredientCode(() => translateDispatchOutcome(completed(resultBase({ status: 'cancelled' })),
+      SLUG, entry('title', '#title')), 'ROLE_RESTRICTION');
   });
 
   it('maps bridge rejected status to INGREDIENT_SCOPE_INSUFFICIENT', async () => {
@@ -282,6 +303,16 @@ describe('D-169 P0 - translateDispatchOutcome', () => {
       attempts: 2,
       selector: '#slow',
     });
+  });
+
+  it.each(['dom.value', 'click'])('reports an uncertain %s effect when the bridge times out', async marker => {
+    await expectIngredientCode(() => translateDispatchOutcome(completed(resultBase({ status: 'timeout' })),
+      SLUG, entry(marker, '#save')), 'ACTION_DELIVERY_UNCERTAIN');
+  });
+
+  it.each(['dom.value', 'click'])('reports an uncertain %s effect when the worker never replies', async marker => {
+    await expectIngredientCode(() => translateDispatchOutcome({ kind: 'timeout', command_id: 'lost', attempts: 1 },
+      SLUG, entry(marker, '#save')), 'ACTION_DELIVERY_UNCERTAIN');
   });
 
   it('maps dispatcher capacity_gap outcome to ROLE_RESTRICTION', async () => {
@@ -404,7 +435,7 @@ describe('D-169 P0 - bridge DOM adapter dispatch', () => {
 
     expect(dispatch).toHaveBeenCalledTimes(1);
     expect(requestAt(dispatch, 0)).toMatchObject({
-      recipe_run_id: 'recipe-1:step-1',
+      recipe_run_id: 'run-1',
       step_id: 'step-1',
       action: 'read_dom',
       args: { selector: '#company' },
@@ -548,7 +579,61 @@ describe('D-169 P0 - DOM adapter idempotency keys', () => {
 
     const keys = requests(dispatch).map((request) => request.idempotency_key);
     expect(keys[0]).toBe(keys[1]);
-    expect(keys[0]).toMatch(/^recipe-1:step-1:1:[0-9a-f]{16}$/);
+    expect(keys[0]).toMatch(/^run-1:1:[0-9a-f]{16}$/);
+  });
+
+  it.each([false, true])('separates identical calls belonging to different runs (write: %s)', async write => {
+    const { adapter, dispatch } = setupAdapter({
+      dispatch: async () => completed(okResult({ text: 'fresh', filled: true })),
+    });
+    const call = resolved({ input: { value: 'same' },
+      output: { [TARGET_A]: 'trigger', '#field': write ? 'dom.value' : 'text' } });
+    await adapter(call);
+    await adapter({ ...call, stepMeta: { ...call.stepMeta!, run_id: 'run-2' } });
+    const [first, second] = requests(dispatch);
+    expect(first!.recipe_run_id).toBe('run-1'); expect(second!.recipe_run_id).toBe('run-2');
+    expect(second!.idempotency_key).not.toBe(first!.idempotency_key);
+  });
+
+  it.each([undefined, { recipe_id: 'legacy-recipe', step_id: 'legacy-step' }])(
+    'gives unanchored invocations separate identities (metadata: %s)', async stepMeta => {
+      const { adapter, dispatch } = setupAdapter({ dispatch: async () => completed(okResult({ text: 'fresh' })) });
+      const call = resolved({ stepMeta, input: { run_id: 'authored-run-id' },
+        output: { [TARGET_A]: 'trigger', '#one': 'one', '#two': 'two' } });
+      await adapter(call); await adapter(call);
+      const sent = requests(dispatch);
+      expect(sent[0]!.recipe_run_id).toBe(sent[1]!.recipe_run_id);
+      expect(sent[2]!.recipe_run_id).toBe(sent[3]!.recipe_run_id);
+      expect(sent[2]!.recipe_run_id).not.toBe(sent[0]!.recipe_run_id);
+      expect(sent[0]!.recipe_run_id).not.toContain('authored-run-id');
+      expect(sent[2]!.idempotency_key).not.toBe(sent[0]!.idempotency_key);
+    },
+  );
+
+  it('retains a host context run id when step metadata has none, and prefers explicit child metadata', async () => {
+    const { adapter, dispatch } = setupAdapter({ dispatch: async () => completed(okResult({ text: 'fresh' })) });
+    const call = resolved({ stepMeta: { recipe_id: 'recipe-1', step_id: 'step-1' } });
+    await withRunAbortContext({ run_id: 'parent-run' }, async () => {
+      await adapter(call); await adapter(structuredClone(call));
+      await adapter({ ...call, stepMeta: { ...call.stepMeta!, run_id: 'child-run' } });
+    });
+    const [first, retry, child] = requests(dispatch);
+    expect(first!.recipe_run_id).toBe('parent-run'); expect(retry!.idempotency_key).toBe(first!.idempotency_key);
+    expect(child!.recipe_run_id).toBe('child-run'); expect(child!.idempotency_key).not.toBe(first!.idempotency_key);
+  });
+
+  it.each([undefined, ''])('requires explicit run metadata for reviewed calls despite an ambient run (run id: %s)', async run_id => {
+    const unavailable = vi.fn((): never => { throw new Error('A provider hook must not run without reviewed metadata'); });
+    const scope: PreapprovalIoContext = { prepareDomCommand: unavailable, aiSlot: unavailable,
+      coversAiFileAsk: unavailable, readAiFile: unavailable, readHttpFile: unavailable, beforeAiProvider: unavailable,
+      beforeCliProvider: unavailable, validateProvider: unavailable, beforeProvider: unavailable,
+      coversMailAttachmentAsks: unavailable, validateMail: unavailable, readMailAttachment: unavailable,
+      fileAccess: unavailable, beforeMailProvider: unavailable };
+    const { adapter, dispatch } = setupAdapter();
+    await expect(withRunAbortContext({ run_id: 'ambient-run' }, () => withPreapprovalIo(scope, () => adapter(resolved({
+      stepMeta: { recipe_id: 'recipe-1', step_id: 'step-1', run_id },
+    }))))).rejects.toMatchObject({ code: 'DOM_WRITE_FAILED' });
+    expect(unavailable).not.toHaveBeenCalled(); expect(dispatch).not.toHaveBeenCalled();
   });
 
   it('produces distinct idempotency_key values when input changes', async () => {
@@ -585,9 +670,9 @@ describe('D-169 P0 - DOM adapter idempotency keys', () => {
     expect(new Set(firstRun).size).toBe(3);
     expect(secondRun).toEqual(firstRun);
     expect(firstRun).toEqual([
-      expect.stringMatching(/^recipe-1:step-1:1:[0-9a-f]{16}$/),
-      expect.stringMatching(/^recipe-1:step-1:2:[0-9a-f]{16}$/),
-      expect.stringMatching(/^recipe-1:step-1:3:[0-9a-f]{16}$/),
+      expect.stringMatching(/^run-1:1:[0-9a-f]{16}$/),
+      expect.stringMatching(/^run-1:2:[0-9a-f]{16}$/),
+      expect.stringMatching(/^run-1:3:[0-9a-f]{16}$/),
     ]);
   });
 });

@@ -35,6 +35,7 @@
 import {
   canonicalizeEmail,
   canonicalizeMailingAddress,
+  isContactAnnualDate,
   type MailingAddress,
 } from '@recued/contracts';
 
@@ -55,6 +56,7 @@ export interface ParsedContactEntry {
   photo?: string;
   /** ISO-8601 `YYYY-MM-DD`. Year is often absent upstream; stored verbatim. */
   birthday?: string;
+  anniversary?: string;
   address?: MailingAddress;
 }
 
@@ -64,8 +66,24 @@ export interface ParseResult {
    *  that vanishes is a person missing from the user's contacts, and they would have
    *  no way to know. */
   errors: string[];
+  /** Dates the file carries that could not be used as written: a birthday kept as
+   *  text, an anniversary left out, a labelled date with no field on a contact. The
+   *  person is still imported; the date is named so a reminder the owner expects is
+   *  not missing without a word. */
+  date_notes: string[];
   format: 'vcard' | 'csv';
 }
+
+const REWRITE_DATE = 'Write it as YYYY-MM-DD, or --MM-DD without a year.';
+const birthdayKeptAsText = (value: string): string =>
+  `birthday "${value}" is not a date, so it is kept as text and will not remind you. ${REWRITE_DATE}`;
+const anniversaryLeftOut = (value: string): string =>
+  `anniversary "${value}" is not a date and was not imported. ${REWRITE_DATE}`;
+/** Where in the file, and whose: the name is known only once the entry is read. */
+const dateNote = (where: string, entry: ParsedContactEntry, note: string): string => {
+  const who = entry.name ?? entry.email ?? entry.phone;
+  return `${where}${who !== undefined ? ` (${who})` : ''}: ${note}`;
+};
 
 // ────────────────────────────────────────────────────────────────
 // vCard
@@ -115,6 +133,9 @@ const splitStructured = (v: string): string[] => {
 
 interface VCardProp {
   name: string;
+  /** The group prefix (`item1` of `item1.X-ABDATE`), which ties Apple's labelled
+   *  date to its `X-ABLabel`. Null when the line has none. */
+  group: string | null;
   params: string;
   value: string;
 }
@@ -126,13 +147,54 @@ const parseProp = (line: string): VCardProp | null => {
   const value = line.slice(colon + 1);
   const semi = head.indexOf(';');
   const name = (semi === -1 ? head : head.slice(0, semi)).toUpperCase().trim();
-  // Drop a group prefix (`item1.EMAIL` — Apple emits these).
+  // Split off a group prefix (`item1.EMAIL` — Apple emits these).
   const dot = name.lastIndexOf('.');
   return {
     name: dot === -1 ? name : name.slice(dot + 1),
+    group: dot === -1 ? null : name.slice(0, dot),
     params: (semi === -1 ? '' : head.slice(semi + 1)).toUpperCase(),
     value,
   };
+};
+
+/** Apple wraps its own labels as `_$!<Anniversary>!$_`; a label the owner typed is
+ *  plain text. */
+const appleLabel = (value: string): string => value.replace(/^_\$!<(.*)>!\$_$/u, '$1').trim();
+
+/** A date of all zeros is no date: some exports write `0/0/00` for an empty one. */
+const isZeroDate = (raw: string): boolean => /\d/u.test(raw) && !/[1-9]/u.test(raw);
+
+/** A file's date as a contact's annual date: `YYYY-MM-DD`, or `--MM-DD` when the
+ *  year is unknown — RFC 6350's basic `--0415` included, and Apple's `1604` year
+ *  (`X-APPLE-OMIT-YEAR`). Undefined for anything else, including a day-first or
+ *  month-first `4/2/1980` that cannot be read without guessing. */
+const annualDate = (raw: string, params = ''): string | undefined => {
+  const value = raw.trim();
+  const full = /^(\d{4})-?(\d{2})-?(\d{2})(?:T[\d:.]+(?:Z|[+-]\d{2}(?::?\d{2})?)?)?$/u.exec(value);
+  const yearless = /^--(\d{2})-?(\d{2})$/u.exec(value);
+  const omitted = /X-APPLE-OMIT-YEAR=(\d{4})/u.exec(params)?.[1] ?? '1604';
+  const date = full ? (full[1] === omitted ? `--${full[2]}-${full[3]}` : `${full[1]}-${full[2]}-${full[3]}`)
+    : yearless ? `--${yearless[1]}-${yearless[2]}` : undefined;
+  return date !== undefined && isContactAnnualDate(date) ? date : undefined;
+};
+
+/** A dated entry with a label: Apple's `X-ABDATE` + `X-ABLabel`, or a Google
+ *  Contacts export's `Event N` columns. The one labelled "Anniversary" is the
+ *  contact's anniversary, unless the file already gave one; any other has no field
+ *  on a contact, so it is named rather than dropped. */
+const placeLabelledDate = (
+  entry: ParsedContactEntry, notes: string[], label: string | undefined, raw: string, params = '',
+): void => {
+  if (isZeroDate(raw)) return;
+  const date = annualDate(raw, params);
+  if (label?.toLowerCase() === 'anniversary') {
+    if (entry.anniversary !== undefined) return;
+    if (date !== undefined) entry.anniversary = date;
+    else notes.push(anniversaryLeftOut(raw));
+    return;
+  }
+  notes.push(`${label ? `"${label}"` : 'a date with no label'} (${date ?? raw}) has no field on a contact and `
+    + 'was not imported. Add it in Yours → Occasions to be reminded.');
 };
 
 /** Is this property flagged PREFERRED? Both dialects appear in the wild:
@@ -147,11 +209,14 @@ const pick = (values: { value: string; preferred: boolean }[]): string | undefin
   return (p ?? values[0])?.value;
 };
 
-const parseVCardBlock = (lines: string[], startLine: number): ParsedContactEntry | string => {
+const parseVCardBlock = (lines: string[], startLine: number): { entry: ParsedContactEntry; notes: string[] } | string => {
   const emails: { value: string; preferred: boolean }[] = [];
   const phones: { value: string; preferred: boolean }[] = [];
   const entry: ParsedContactEntry = { line: startLine };
   let structuredName: string | undefined;
+  const notes: string[] = [];
+  const labelledDates: { group: string | null; value: string; params: string }[] = [];
+  const labels = new Map<string, string>();
 
   for (const line of lines) {
     const prop = parseProp(line);
@@ -185,13 +250,33 @@ const parseVCardBlock = (lines: string[], startLine: number): ParsedContactEntry
       case 'TITLE':
         entry.title = v;
         break;
-      case 'BDAY':
-        // `19800402` or `1980-04-02`. Stored VERBATIM as `YYYY-MM-DD` — never
-        // coerced to a timestamp, because "March 4th, year unknown" is a real and
-        // common vCard value and a timestamp cannot hold it.
-        entry.birthday = /^\d{8}$/.test(v)
-          ? `${v.slice(0, 4)}-${v.slice(4, 6)}-${v.slice(6, 8)}`
-          : v;
+      case 'BDAY': {
+        // `19800402`, `1980-04-02` or yearless `--0402`, as `YYYY-MM-DD` / `--MM-DD` —
+        // never coerced to a timestamp, because "March 4th, year unknown" is a real
+        // and common vCard value and a timestamp cannot hold it. Anything else
+        // (`circa 1800`) is kept verbatim, and named: it will never remind anyone.
+        if (isZeroDate(v)) break;
+        const date = annualDate(v, prop.params);
+        entry.birthday = date ?? v;
+        if (date === undefined) notes.push(birthdayKeptAsText(v));
+        break;
+      }
+      case 'ANNIVERSARY': {
+        // The store takes only a date here, so a value that is not one is left out
+        // rather than failing the whole contact, and named.
+        if (isZeroDate(v)) break;
+        const date = annualDate(v, prop.params);
+        if (date !== undefined) entry.anniversary = date;
+        else notes.push(anniversaryLeftOut(v));
+        break;
+      }
+      // Apple's vCard 3.0 has no ANNIVERSARY: it writes each extra date as a grouped
+      // `itemN.X-ABDATE` and its name as `itemN.X-ABLabel`, in either order.
+      case 'X-ABDATE':
+        labelledDates.push({ group: prop.group, value: v, params: prop.params });
+        break;
+      case 'X-ABLABEL':
+        if (prop.group !== null) labels.set(prop.group, appleLabel(v));
         break;
       case 'PHOTO':
         // A URL only. ⛔ A `data:` / base64 PHOTO is DROPPED, deliberately: C-2's
@@ -239,13 +324,19 @@ const parseVCardBlock = (lines: string[], startLine: number): ParsedContactEntry
   if (entry.email === undefined && entry.name === undefined && entry.phone === undefined) {
     return `line ${startLine}: no email, name or phone — nothing could identify this person`;
   }
-  return entry;
+
+  // Labels are read once the whole card is, since Apple writes them in either order.
+  for (const dated of labelledDates) {
+    placeLabelledDate(entry, notes, dated.group === null ? undefined : labels.get(dated.group), dated.value, dated.params);
+  }
+  return { entry, notes: notes.map((note) => dateNote(`line ${startLine}`, entry, note)) };
 };
 
 const parseVCard = (text: string): ParseResult => {
   const lines = unfold(text);
   const entries: ParsedContactEntry[] = [];
   const errors: string[] = [];
+  const date_notes: string[] = [];
 
   let block: string[] | null = null;
   let blockStart = 0;
@@ -260,7 +351,10 @@ const parseVCard = (text: string): ParseResult => {
       if (block === null) return;
       const parsed = parseVCardBlock(block, blockStart);
       if (typeof parsed === 'string') errors.push(parsed);
-      else entries.push(parsed);
+      else {
+        entries.push(parsed.entry);
+        date_notes.push(...parsed.notes);
+      }
       block = null;
       return;
     }
@@ -272,7 +366,7 @@ const parseVCard = (text: string): ParseResult => {
   if (block !== null) {
     errors.push(`line ${blockStart}: vCard block is not terminated (END:VCARD missing) — truncated file?`);
   }
-  return { entries, errors, format: 'vcard' };
+  return { entries, errors, date_notes, format: 'vcard' };
 };
 
 // ────────────────────────────────────────────────────────────────
@@ -352,6 +446,7 @@ const CSV_COLUMNS: Readonly<Record<string, keyof ParsedContactEntry>> = {
   'job title': 'title',
   'organization 1 - title': 'title',
   'birthday': 'birthday',
+  'anniversary': 'anniversary',
 };
 
 /** ⛔ `First Name` / `Last Name` are deliberately NOT in the table above. Mapping
@@ -370,6 +465,7 @@ const parseCsv = (text: string): ParseResult => {
     return {
       entries: [],
       errors: ['the file has no data rows (a header and at least one contact are required)'],
+      date_notes: [],
       format: 'csv',
     };
   }
@@ -393,6 +489,7 @@ const parseCsv = (text: string): ParseResult => {
       errors: [
         `no email, name or phone column found — the header was: ${header.join(', ')}`,
       ],
+      date_notes: [],
       format: 'csv',
     };
   }
@@ -401,13 +498,26 @@ const parseCsv = (text: string): ParseResult => {
   const firstIdx = header.indexOf(CSV_NAME_PARTS[0]);
   const lastIdx = header.indexOf(CSV_NAME_PARTS[1]);
   const composeName = firstIdx !== -1 || lastIdx !== -1;
+  // A Google Contacts export keeps a person's other dates as numbered `Event N - Value`
+  // columns, each named by its `Event N - Type` (older exports) or `- Label` column.
+  const events = new Map<string, { label?: number; value?: number }>();
+  header.forEach((h, i) => {
+    const column = /^event (\d+) - (type|label|value)$/u.exec(h);
+    if (column === null) return;
+    const slot = events.get(column[1]!) ?? {};
+    if (column[2] === 'value') slot.value ??= i;
+    else slot.label ??= i;
+    events.set(column[1]!, slot);
+  });
 
   const entries: ParsedContactEntry[] = [];
   const errors: string[] = [];
+  const date_notes: string[] = [];
 
   for (let r = 1; r < rows.length; r += 1) {
     const cells = splitCsvLine(rows[r]!);
     const entry: ParsedContactEntry = { line: r + 1 };
+    const notes: string[] = [];
 
     for (const [i, field] of map) {
       const raw = cells[i];
@@ -418,7 +528,25 @@ const parseCsv = (text: string): ParseResult => {
         continue;
       }
       if (field === 'address') continue; // structured; not a single CSV cell
+      // ⛔ Never guessed: `4/2/1980` is 2 April or 4 February depending on who wrote
+      // it. A date not written `YYYY-MM-DD` (or `--MM-DD`) is named instead.
+      if (field === 'birthday' || field === 'anniversary') {
+        if (isZeroDate(raw)) continue;
+        const date = annualDate(raw);
+        if (field === 'birthday') entry.birthday = date ?? raw;
+        else if (date !== undefined) entry.anniversary = date;
+        if (date === undefined) notes.push(field === 'birthday' ? birthdayKeptAsText(raw) : anniversaryLeftOut(raw));
+        continue;
+      }
       (entry as unknown as Record<string, unknown>)[field] = raw;
+    }
+    // After the named columns, so a file's own Anniversary column wins. Google marks a
+    // primary entry's type with a leading `* `.
+    for (const slot of events.values()) {
+      const raw = slot.value === undefined ? undefined : cells[slot.value];
+      if (raw === undefined || raw.length === 0) continue;
+      const label = slot.label === undefined ? '' : (cells[slot.label] ?? '').replace(/^\*\s*/u, '').trim();
+      placeLabelledDate(entry, notes, label || undefined, raw);
     }
 
     if (composeName && entry.name === undefined) {
@@ -434,9 +562,10 @@ const parseCsv = (text: string): ParseResult => {
       continue;
     }
     entries.push(entry);
+    date_notes.push(...notes.map((note) => dateNote(`row ${r + 1}`, entry, note)));
   }
 
-  return { entries, errors, format: 'csv' };
+  return { entries, errors, date_notes, format: 'csv' };
 };
 
 // ────────────────────────────────────────────────────────────────

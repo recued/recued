@@ -22,6 +22,7 @@
  */
 
 export const ICONS = Object.freeze({
+  "asset": `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" role="img" aria-label="Assets"><path d="M12 3 3 7.5v9L12 21l9-4.5v-9L12 3Z"/><path d="m3 7.5 9 4.5 9-4.5M12 12v9M7.5 5.25l9 4.5"/></svg>`,
   "action": `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Recued">
   <title>Recued toolbar action</title>
   <desc>Recued toolbar mark — three descending lines inside a rounded teal tile.</desc>
@@ -125,6 +126,7 @@ export const ICONS = Object.freeze({
 
 export type IconName =
   | "action"
+  | "asset"
   | "booking"
   | "check"
   | "commitment"
@@ -141,6 +143,7 @@ export type IconName =
 
 export const ICON_NAMES: readonly IconName[] = Object.freeze([
   "action",
+  "asset",
   "booking",
   "check",
   "commitment",

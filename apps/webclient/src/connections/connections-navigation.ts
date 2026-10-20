@@ -6,7 +6,8 @@ import {
   type HierarchicalAddress,
 } from '../shell/hierarchical-navigation.js';
 import { CONNECTION_NAME_REGEX, OAUTH_APP_ID, isAuthenticationIncidentScope, isAuthenticationAccessSelection,
-  type AuthenticationIncidentScope, type AuthenticationAccessSelection, type OAuthAppIssuer } from '@recued/contracts';
+  authenticationIncidentHistoryFilters, isAuthenticationIncidentHistoryFilters,
+  type AuthenticationIncidentScope, type AuthenticationIncidentHistoryFilters, type AuthenticationAccessSelection, type OAuthAppIssuer } from '@recued/contracts';
 import type { ShellRoute } from '../shell/route.js';
 import { PACK_PERMISSION_REPAIR_ID } from '../settings/pack-permission-repair.js';
 
@@ -141,7 +142,55 @@ export const parseConnectionsRenewalRepairReturn = (segments: readonly string[])
   return { segments: base, app: { issuer, id, view: 'renewal' } };
 };
 
-export const parseConnectionsIncidentHistory = (segments: readonly string[]): AuthenticationIncidentScope | null => {
+/** Opaque historical context only; neither a consent request nor proof of repair. */
+export interface ConnectionAccessResultReference { verification_id: string; target_id: string }
+export const isConnectionAccessResultReference = (value: unknown): value is ConnectionAccessResultReference =>
+  typeof value === 'object' && value !== null && 'verification_id' in value && 'target_id' in value
+  && isAuthenticationAccessSelection({ kind: 'verification', id: value.verification_id })
+  && typeof value.target_id === 'string' && /^[a-f0-9]{64}$/.test(value.target_id);
+export const connectionsAccessResultAddress = (reference: ConnectionAccessResultReference): HierarchicalAddress => hierarchicalAddress(
+  'connections', hierarchicalLevel('connections-lane:others', 'others'), hierarchicalLevel('connections-flow:access-result', 'access-result'),
+  hierarchicalLevel('connections-access-result:' + reference.verification_id, reference.verification_id),
+  hierarchicalLevel('connections-access-target:' + reference.target_id, reference.target_id),
+);
+export const parseConnectionsAccessResult = (segments: readonly string[]): ConnectionAccessResultReference | null => {
+  const reference = { verification_id: segments[2], target_id: segments[3] };
+  return segments.length === 4 && segments[0] === 'others' && segments[1] === 'access-result'
+    && isConnectionAccessResultReference(reference) ? reference : null;
+};
+
+/** A saved-status destination for any receipt, including passed and running checks. */
+export interface ConnectionAccessCheckReference { verification_id: string; view: 'result' | 'comparison'; target_id?: string }
+export const isConnectionAccessCheckReference = (value: unknown): value is ConnectionAccessCheckReference =>
+  typeof value === 'object' && value !== null && 'verification_id' in value && 'view' in value
+  && isAuthenticationAccessSelection({ kind: 'verification', id: value.verification_id }) && (value.view === 'result' || value.view === 'comparison')
+  && (!('target_id' in value) || value.target_id === undefined || typeof value.target_id === 'string' && /^[a-f0-9]{64}$/.test(value.target_id));
+export const connectionsAccessCheckAddress = (reference: ConnectionAccessCheckReference): HierarchicalAddress => hierarchicalAddress(
+  'connections', hierarchicalLevel('connections-lane:others', 'others'), hierarchicalLevel('connections-flow:access-check', 'access-check'),
+  hierarchicalLevel('connections-access-check:' + reference.verification_id, reference.verification_id),
+  ...(reference.target_id ? [hierarchicalLevel('connections-access-focus', 'target'), hierarchicalLevel('connections-access-target:' + reference.target_id, reference.target_id)] : []),
+  ...(reference.view === 'comparison' ? [hierarchicalLevel('connections-access-view:comparison', 'compare')] : []),
+);
+export const parseConnectionsAccessCheck = (segments: readonly string[]): ConnectionAccessCheckReference | null => {
+  if (segments[0] !== 'others' || segments[1] !== 'access-check') return null;
+  const comparison = segments.at(-1) === 'compare'; const base = comparison ? segments.slice(0, -1) : segments;
+  if (base.length !== 3 && !(base.length === 5 && base[3] === 'target')) return null;
+  if (base.length === 5 && typeof base[4] !== 'string') return null;
+  const reference = { verification_id: base[2], view: comparison ? 'comparison' : 'result', ...(base.length === 5 ? { target_id: base[4] } : {}) };
+  return isConnectionAccessCheckReference(reference) ? reference : null;
+};
+export const connectionsAccessRepairReturn = (hash: string, reference: ConnectionAccessResultReference): string =>
+  hash + '/from-access/' + reference.verification_id + '/' + reference.target_id;
+export const parseConnectionsAccessRepairReturn = (segments: readonly string[]): { segments: readonly string[]; reference: ConnectionAccessResultReference } | null => {
+  if (segments.at(-3) !== 'from-access') return null;
+  const reference = { verification_id: segments.at(-2), target_id: segments.at(-1) }; const base = segments.slice(0, -3);
+  if (!isConnectionAccessResultReference(reference) || !(base.length === 1 && base[0] === 'others')
+    && !parseConnectionsReviewAccess(base) && !parseConnectionsAccountAuthentication(base) && !parseConnectionsFileAuthentication(base)
+    && !parseConnectionsOAuthApps(base) && !parseConnectionsOAuthApp(base)) return null;
+  return { segments: base, reference };
+};
+
+const parseIncidentHistoryScope = (segments: readonly string[]): AuthenticationIncidentScope | null => {
   if (segments[0] !== 'others' || segments[1] !== 'incident-history') return null;
   const kind = segments[2];
   const scope = segments.length === 2 ? { kind: 'all' }
@@ -152,6 +201,29 @@ export const parseConnectionsIncidentHistory = (segments: readonly string[]): Au
     : kind === 'collection' && segments.length === 5 ? { kind, platform: segments[3], slug: segments[4] } : null;
   return isAuthenticationIncidentScope(scope) ? scope : null;
 };
+export const connectionsIncidentHistoryAddress = (scope: AuthenticationIncidentScope, filters: AuthenticationIncidentHistoryFilters = {}): HierarchicalAddress => {
+  const tail = scope.kind === 'all' ? [] : scope.kind === 'oauth_apps' ? [scope.kind] : scope.kind === 'collection' ? [scope.kind, scope.platform, scope.slug]
+    : [scope.kind, scope.kind === 'group' ? scope.id : scope.kind === 'connection' ? scope.name : scope.source_id];
+  const entries = Object.entries(authenticationIncidentHistoryFilters(filters));
+  return hierarchicalAddress('connections', ...['others', 'incident-history', ...tail, ...(entries.length ? ['filter', ...entries.flatMap(([key, value]) => [key, value])] : [])]
+    .map((segment, index) => hierarchicalLevel('connections-history:' + index + ':' + segment, segment)));
+};
+export const parseConnectionsIncidentHistoryView = (segments: readonly string[]): { scope: AuthenticationIncidentScope; filters: AuthenticationIncidentHistoryFilters } | null => {
+  const kind = segments[2]; const length = kind === undefined || kind === 'filter' ? 2 : kind === 'oauth_apps' ? 3
+    : kind === 'collection' ? 5 : kind === 'group' || kind === 'connection' || kind === 'file_source' ? 4 : 0;
+  if (!length) return null;
+  const scope = parseIncidentHistoryScope(segments.slice(0, length)); if (!scope) return null;
+  const tail = segments.slice(length); if (!tail.length) return { scope, filters: {} };
+  if (tail[0] !== 'filter' || tail.length < 3 || tail.length > 11 || tail.length % 2 !== 1) return null;
+  const filters: Record<string, string> = {};
+  for (let index = 1; index < tail.length; index += 2) {
+    const key = tail[index]!; const value = tail[index + 1];
+    if (!['search', 'type', 'outcome', 'from', 'through'].includes(key) || key in filters || typeof value !== 'string' || !value.trim()) return null;
+    filters[key] = value;
+  }
+  return isAuthenticationIncidentHistoryFilters(filters) ? { scope, filters: authenticationIncidentHistoryFilters(filters) } : null;
+};
+export const parseConnectionsIncidentHistory = (segments: readonly string[]): AuthenticationIncidentScope | null => parseConnectionsIncidentHistoryView(segments)?.scope ?? null;
 
 /** An opaque selection opens a local resource review; no URL or consent comes from navigation. */
 export const connectionsVerifyAccessAddress = (selection: AuthenticationAccessSelection): HierarchicalAddress => hierarchicalAddress(

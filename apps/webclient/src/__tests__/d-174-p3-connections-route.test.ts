@@ -397,6 +397,87 @@ const enrollCallers = () => {
 };
 
 describe('unified authentication repairs in Connections', () => {
+  it('keeps history access-review drafts and starts visible to shell navigation guards', async () => {
+    const doc = makeFakeDocument(); const root = doc.createElement('div'); const repairId = 'repair-' + 'a'.repeat(64); const targetId = 'b'.repeat(64);
+    let release!: (reply: Awaited<ReturnType<import('../settings/managed-oauth-panel.js').ManagedOAuthCaller>>) => void;
+    const verify = vi.fn<import('../settings/managed-oauth-panel.js').ManagedOAuthCaller>(async request => {
+      if (request.action === 'authentication_access_retire') return { action: request.action };
+      if (request.action === 'authentication_access_preview') return { action: request.action, preview: { id: 'p'.repeat(43), fingerprint: 'f'.repeat(64), expires_at: Date.now() + 60000,
+        selection: { kind: 'repair', id: repairId }, label: 'Work', targets: [{ id: targetId, target: { kind: 'connection', name: 'work' }, label: 'Work API',
+          authentication_revision: 'c'.repeat(64), check: 'api_read', base_url: 'https://vendor.test' }], targets_truncated: false, uses: [], usage_available: true } };
+      if (request.action === 'authentication_access_run') return new Promise(resolve => { release = resolve; }); throw Error('Unexpected action');
+    });
+    const route = bootstrapConnectionsRoute({ root: root as unknown as HTMLElement, document: doc as unknown as Document, ...enrollCallers(), initialTab: 'others', initialIncidentHistory: { kind: 'all' },
+      connectionsManagedOAuthCaller: verify, authenticationIncidentHistoryCaller: async query => ({ scope: query.scope, observed_at: 1, retention_days: 90, incidents: [], repairs: [{
+        id: repairId, action: 'reauthorize', status: 'applied', started_at: 1, finished_at: 2, targets: [{ kind: 'connection', name: 'work' }], targets_truncated: false, incidents: [], incidents_truncated: false }], order: [repairId] }) });
+    await route.whenLoaded(); findByAttrValue(root, 'data-incident-verify-access', repairId)!.click(); await route.whenLoaded();
+    expect(route.hasUnsavedChanges()).toBe(true); expect(route.unsavedChangesPrompt()).toContain('Leave this access review');
+    findByAttrValue(root, 'data-authentication-access-action', 'run')!.click(); expect(route.hasInFlightWork()).toBe(true);
+    release({ action: 'authentication_access_run', verification: { id: 'verify-12345678-1234-4123-8123-123456789abc', selection: { kind: 'repair', id: repairId }, status: 'completed', started_at: 3, finished_at: 4,
+      results: [{ id: targetId, target: { kind: 'connection', name: 'work' }, label: 'Work API', authentication_revision: 'c'.repeat(64), current: 'yes', checks: [{ kind: 'api_read', status: 'unconfirmed', reason: 'resource_required' }] }],
+      targets_truncated: false, uses: [], usage_available: true } }); await route.whenLoaded();
+    expect(route.hasInFlightWork()).toBe(false); expect(route.hasUnsavedChanges()).toBe(false); route.dispose();
+  });
+  it('mounts filtered history without unrelated account reads and preserves filters when clearing the selected scope', async () => {
+    const doc = makeFakeDocument(); const root = doc.createElement('div'); const callers = enrollCallers(); const navigate = vi.fn();
+    const filters = { search: 'Work', type: 'verification' as const, outcome: 'failed' as const, from: '2026-10-01' };
+    const history = vi.fn<import('@recued/contracts').AuthenticationIncidentHistoryCaller>(async query => ({ scope: query.scope, filters: query.filters, observed_at: 1234, retention_days: 90, incidents: [], repairs: [], verifications: [], renewals: [], order: [] }));
+    const route = bootstrapConnectionsRoute({ root: root as unknown as HTMLElement, document: doc as unknown as Document, ...callers, initialTab: 'others', navigate,
+      initialIncidentHistory: { kind: 'connection', name: 'work' }, initialIncidentHistoryFilters: filters, authenticationIncidentHistoryCaller: history });
+    await route.whenLoaded(); expect(history).toHaveBeenCalledExactlyOnceWith({ scope: { kind: 'connection', name: 'work' }, filters, include_renewals: true });
+    expect(treeText(root)).toContain('No retained entries match'); expect(callers.connectionsEnrollListCaller).not.toHaveBeenCalled();
+    findByAttrValue(root, 'data-history-filter-action', 'clear')!.click(); expect(navigate).toHaveBeenCalledExactlyOnceWith('#connections/others/incident-history/connection/work'); route.dispose();
+  });
+  it('opens a passed saved check in a standalone read-only page and leaves unrelated connection callers idle', async () => {
+    const doc = makeFakeDocument(); const root = doc.createElement('div'); const callers = enrollCallers(); const repairs = vi.fn(); const apps = vi.fn(); const navigate = vi.fn();
+    const reference = { verification_id: 'verify-12345678-1234-4123-8123-123456789abc', view: 'result' as const };
+    const verify = vi.fn<import('../settings/managed-oauth-panel.js').ManagedOAuthCaller>(async () => ({ action: 'authentication_access_status', verification: {
+      id: reference.verification_id, selection: { kind: 'group', id: 'a'.repeat(64) }, status: 'completed', started_at: 1, finished_at: 2, targets_truncated: false, uses: [], usage_available: true,
+      results: [{ id: 'c'.repeat(64), target: { kind: 'connection', name: 'work' }, label: 'Work API', authentication_revision: 'd'.repeat(64), current: 'yes', checks: [{ kind: 'api_read', status: 'passed' }] }] } }));
+    const route = bootstrapConnectionsRoute({ root: root as unknown as HTMLElement, document: doc as unknown as Document, initialTab: 'others', ...callers, navigate,
+      oauthAppsCaller: apps, authenticationRepairsCaller: repairs, connectionsManagedOAuthCaller: verify, initialAccessCheck: reference }); await route.whenLoaded();
+    expect(verify).toHaveBeenCalledExactlyOnceWith({ action: 'authentication_access_status', id: reference.verification_id });
+    expect(treeText(root)).toContain('Protected API read: Passed'); expect(callers.connectionsEnrollListCaller).not.toHaveBeenCalled(); expect(repairs).not.toHaveBeenCalled(); expect(apps).not.toHaveBeenCalled();
+    expect(route.hasUnsavedChanges()).toBe(false); expect(route.hasInFlightWork()).toBe(false);
+    findByAttrValue(root, 'data-authentication-access-action', 'close')!.click(); expect(navigate).toHaveBeenCalledWith('#connections/others/incident-history'); route.dispose();
+  });
+  it.each([null, 'missing caller'] as const)('does not fall through from an unavailable saved-check page: %s', mode => {
+    const doc = makeFakeDocument(); const root = doc.createElement('div'); const callers = enrollCallers();
+    const route = bootstrapConnectionsRoute({ root: root as unknown as HTMLElement, document: doc as unknown as Document, initialTab: 'others', ...callers,
+      initialAccessCheck: mode === null ? null : { verification_id: 'verify-12345678-1234-4123-8123-123456789abc', view: 'comparison' } });
+    expect(treeText(root)).toContain(mode === null ? 'saved-check link is invalid' : 'Saved access results are unavailable');
+    expect(callers.connectionsEnrollListCaller).not.toHaveBeenCalled(); route.dispose();
+  });
+  it('opens a returned saved result through local status without loading unrelated editors or starting a fresh review', async () => {
+    const doc = makeFakeDocument(); const root = doc.createElement('div'); const callers = enrollCallers(); const repairs = vi.fn(); const apps = vi.fn();
+    const reference = { verification_id: 'verify-12345678-1234-4123-8123-123456789abc', target_id: 'c'.repeat(64) };
+    const verify = vi.fn<import('../settings/managed-oauth-panel.js').ManagedOAuthCaller>(async () => ({ action: 'authentication_access_status', verification: {
+      id: reference.verification_id, selection: { kind: 'group', id: 'a'.repeat(64) }, status: 'completed', started_at: 1, finished_at: 2,
+      targets_truncated: false, uses: [], usage_available: true, results: [{ id: reference.target_id, target: { kind: 'connection', name: 'work' }, label: 'Work API',
+        authentication_revision: 'd'.repeat(64), current: 'no', checks: [{ kind: 'api_read', status: 'failed', reason: 'access_rejected' }] }] } }));
+    const navigate = vi.fn(); const route = bootstrapConnectionsRoute({ root: root as unknown as HTMLElement, document: doc as unknown as Document,
+      initialTab: 'others', ...callers, navigate, oauthAppsCaller: apps, authenticationRepairsCaller: repairs, connectionsManagedOAuthCaller: verify, initialAccessResult: reference });
+    await route.whenLoaded(); expect(verify).toHaveBeenCalledExactlyOnceWith({ action: 'authentication_access_status', id: reference.verification_id });
+    expect(callers.connectionsEnrollListCaller).not.toHaveBeenCalled(); expect(repairs).not.toHaveBeenCalled(); expect(apps).not.toHaveBeenCalled();
+    expect(findByAttrValue(root, 'data-authentication-access-action', 'review-returned')).toBeDefined(); expect(route.hasUnsavedChanges()).toBe(false); expect(route.hasInFlightWork()).toBe(false);
+    findByAttrValue(root, 'data-authentication-access-action', 'close')!.click(); expect(navigate).toHaveBeenCalledWith('#connections/others/incident-history'); route.dispose();
+  });
+  it.each([null, 'missing caller'] as const)('shows an unavailable saved-return link without falling through to another editor: %s', mode => {
+    const doc = makeFakeDocument(); const root = doc.createElement('div'); const callers = enrollCallers();
+    const route = bootstrapConnectionsRoute({ root: root as unknown as HTMLElement, document: doc as unknown as Document, initialTab: 'others', ...callers,
+      initialAccessResult: mode === null ? null : { verification_id: 'verify-12345678-1234-4123-8123-123456789abc', target_id: 'a'.repeat(64) } });
+    expect(treeText(root)).toContain(mode === null ? 'saved-result link is invalid' : 'Saved access results are unavailable');
+    expect(callers.connectionsEnrollListCaller).not.toHaveBeenCalled(); route.dispose();
+  });
+  it.each(['mail', 'calendar', 'others'] as const)('keeps a saved-check return outside the replaceable %s lane host', tab => {
+    const doc = makeFakeDocument(); const root = doc.createElement('div');
+    const reference = { verification_id: 'verify-12345678-1234-4123-8123-123456789abc', target_id: 'a'.repeat(64) };
+    const route = bootstrapConnectionsRoute({ root: root as unknown as HTMLElement, document: doc as unknown as Document, initialTab: tab, initialAccessRepairReturn: reference });
+    const content = findByAttrValue(root, CONNECTIONS_ROUTE_CONTENT_ATTR, '')!;
+    expect(collectByAttr(content, 'data-access-repair-return')).toEqual([]);
+    expect(findByAttrValue(root, 'data-access-repair-return', '')?.getAttribute('href')).toBe('#connections/others/access-result/' + reference.verification_id + '/' + reference.target_id);
+    route.dispose();
+  });
   it.each(['local review', 'saved status'] as const)('allows leaving during a read-only access lookup: %s', async phase => {
     const doc = makeFakeDocument(); const root = doc.createElement('div');
     const selection = { kind: 'renewal' as const, id: 'renewal-12345678-1234-4123-8123-123456789abc' };

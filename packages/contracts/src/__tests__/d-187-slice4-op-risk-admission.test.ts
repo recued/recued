@@ -193,7 +193,8 @@ describe('D-187 slice 4 — outbound-send LIFT (user_self-scoped)', () => {
     expect(d.verdict).toBe('ask');
     if (d.verdict === 'ask') {
       expect(d.risk_tier).toBe('write');
-      expect(d.detail).toContain('mail-send');
+      // The send's own reason, in the owner's words (it names no slug).
+      expect(d.detail).toContain('sends a message to someone outside this server');
     }
   });
 

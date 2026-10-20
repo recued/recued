@@ -70,17 +70,16 @@ const cacheProbeStore = new AsyncLocalStorage<GatewayCallProbe>();
  *  'any'`) it marks the active per-call `GatewayCallProbe` so the
  *  Gateway records `cached: true` on the commit.
  *
- *  `'miss'` (the call crossed the boundary) and `'skipped'` (the cache
- *  was bypassed — `action` ingredient, non-read tier, or `freshness:
- *  'fresh'`) are no-ops. Fires outside any Gateway dispatch (no run
- *  identity → no Gateway wrap → no `cacheProbeStore.run` scope) resolve
+ *  A recovery attempt's `'miss'` or `'skipped'` clears the discarded attempt's
+ *  hit. Other miss/skipped observations leave the probe alone. Calls outside
+ *  any Gateway dispatch (no `cacheProbeStore.run` scope) resolve
  *  to no active probe and no-op safely. */
 export const observeCacheStatus: NonNullable<IngredientCacheOptions['onStatus']> = (
-  status,
+  status, context,
 ) => {
-  if (status !== 'hit' && status !== 'hit_stale') return;
   const probe = cacheProbeStore.getStore();
-  if (probe !== undefined) probe.cached = true;
+  if (probe !== undefined && (status === 'hit' || status === 'hit_stale')) probe.cached = true;
+  else if (probe !== undefined && context.retried) probe.cached = false;
 };
 
 /** Adapt a plain `IngredientExecutor` into the Gateway's `GatewayInner`

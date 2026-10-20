@@ -112,6 +112,7 @@ export type HttpFetcher = (
 ) => Promise<{
   status: number;
   ok: boolean;
+  headers?: { get(name: string): string | null };
   json(): Promise<unknown>;
   text(): Promise<string>;
 }>;

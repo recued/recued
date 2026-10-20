@@ -46,6 +46,21 @@ describe('listServerRecipes', () => {
     db = new Database(':memory:');
   });
 
+  it('projects step-only Run context targets while keeping bodies off the list', async () => {
+    const store = createRecipeStore('/nonexistent', db);
+    const definition = recipe('page-target');
+    definition.steps = [{ id: 'value', type: 'transform', transform: 'identity', input: '{{context.contact_id}} {{context.server}}' }];
+    store.save(definition, 'owner', 'pair-sync');
+    const row = (await listServerRecipes({ store, serverStartedAt: SERVER_STARTED_AT })).recipes[0]!;
+    expect(row.run_context_targets).toEqual(['contact_id']);
+    expect(row.recipe).not.toHaveProperty('steps');
+    expect((await getServerRecipe({ store, serverStartedAt: SERVER_STARTED_AT }, 'page-target')).recipe?.run_context_targets)
+      .toEqual(row.run_context_targets);
+    store.save(recipe('no-target'), 'owner', 'pair-sync');
+    expect((await getServerRecipe({ store, serverStartedAt: SERVER_STARTED_AT }, 'no-target')).recipe)
+      .not.toHaveProperty('run_context_targets');
+  });
+
   it('⛔⛔ A KERNEL RECIPE IS NOT LISTED — `#recipes` IS the manage UI', async () => {
     // Reported from a live webclient: kernel recipes showing on the Recipes page.
     // CLAUDE.md's publisher table says the `recued` namespace is "invisible in

@@ -49,7 +49,10 @@
  */
 
 import {
+  OPEN_PREVIEW_MAX_LINES,
   RISK_TIERS,
+  approvalFieldLabel,
+  approvalValueLabel,
   isApprovalWorkflowOperation,
   isOperationSpecHash,
   kernelWriteStaysInRecued,
@@ -298,6 +301,8 @@ export interface PreflightNotifier {
     message: NotificationMessage,
     options: readonly AskOption[],
     handler: AskHandlerRef,
+    channels?: undefined,
+    extras?: import('@recued/notification').AskExtras,
   ): Promise<{ ask_id: string }>;
   registerAskHandler(kind: AskHandlerKind, handler: AskHandlerFn): void;
   /** D-210 Phase C — the passive fan-out `raisePreflightNotify` uses when
@@ -352,6 +357,7 @@ export interface PreflightResumer {
 /** The three components of a preflight `notification.ask`, ready to
  *  pass straight to `PreflightNotifier.ask(...)`. */
 export interface PreflightAsk {
+  extras?: import('@recued/notification').AskExtras;
   message: NotificationMessage;
   options: readonly AskOption[];
   handler: AskHandlerRef;
@@ -426,6 +432,19 @@ const coveredCallArgs = (
   return isArgsRecord(input) ? [input] : [];
 };
 
+/** Why the hold stopped here, as a consequence: what its tier does, or, for a write
+ *  `kernelWriteStaysInRecued` proves local, that it stays in Recued. The ask and the
+ *  passive notice both say it, so they never tell the owner different things about
+ *  the same hold. */
+const heldConsequence = (
+  riskTier: string | undefined,
+  named: string | undefined,
+  args: ReadonlyArray<Record<string, unknown>>,
+): string | undefined =>
+  riskTier === 'write' && named !== undefined && kernelWriteStaysInRecued(named, args)
+    ? LOCAL_WRITE_CLAUSE
+    : tierClause(riskTier);
+
 /** The origin unit, in words. `turn` / `burst` / `fire` / `run` are the
  *  aggregation-key vocabulary (`deriveOriginUnit`) — precise internally,
  *  meaningless to a reader, and "3 pending actions in this burst" is not
@@ -449,50 +468,148 @@ const renderTtl = (ttl_ms: number): string => {
   return `${m} minute${m === 1 ? '' : 's'}`;
 };
 
-/** Empty inputs remain part of the enforced open projection, but do
- *  not help a person decide whether to approve it. Preview values arrive as
- *  rendered JSON when possible (`null`, `""`, `false`, `0`, ...), with a
- *  best-effort string fallback for truncated or non-JSON values. Hide only
- *  absence; meaningful falsy values and containers stay visible. */
-const hasDisplayablePinnedValue = (value: string): boolean => {
-  const trimmed = value.trim();
-  if (trimmed.length === 0) return false;
+/** One line of the open-grant block, whatever it holds: a fixed value is
+ *  whatever the model typed, so a line break in it could otherwise write lines,
+ *  or a paragraph, of the block's own. */
+const oneLine = (text: string): string => text.replace(/\s+/g, ' ').trim();
+
+/** One preview value, parsed back from the JSON the walk rendered it as.
+ *  `undefined` when it is not whole JSON: the walk clips a long value. */
+const parsePreviewValue = (value: string): unknown => {
   try {
-    const parsed: unknown = JSON.parse(trimmed);
-    return parsed !== null
-      && !(typeof parsed === 'string' && parsed.trim().length === 0);
+    return JSON.parse(value) as unknown;
   } catch {
-    return true;
+    return undefined;
   }
 };
 
-/** D-177 P5b (N.11 rule 7) — the open-grant confirm block: the one plain
- *  sentence the grant must be renderable as, plus the pinned/varies lines
- *  off the raise-time preview. "If a grant cannot be rendered as one plain
- *  sentence, it must not be mintable" — the raise site only upgrades an
- *  offer to `'open'` when the walk produced this preview. */
+/** Whether a fixed value carries nothing: unset, blank, or an empty list or
+ *  object. Such a value is still fixed, so it is still named, on one line. */
+const isEmptyPreviewValue = (value: string): boolean => {
+  const parsed = parsePreviewValue(value.trim());
+  if (parsed === null) return true;
+  if (typeof parsed === 'string') return parsed.trim() === '';
+  if (Array.isArray(parsed)) return parsed.length === 0;
+  return parsed !== undefined && typeof parsed === 'object' && Object.keys(parsed).length === 0;
+};
+
+/** A fixed value as a person reads it: text without its quotes and a list
+ *  comma-joined. A text that would read as another value (`"null"`, `"0"`)
+ *  keeps its quotes, and a clipped value stays as the walk rendered it. */
+const readablePreviewValue = (value: string): string => {
+  const parsed = parsePreviewValue(value);
+  const plain = (v: unknown): string | undefined =>
+    typeof v === 'string'
+      ? parsePreviewValue(v) === undefined ? v : JSON.stringify(v)
+      : typeof v === 'number' || typeof v === 'boolean' ? String(v) : undefined;
+  if (Array.isArray(parsed)) {
+    const items = parsed.map(plain);
+    return items.every((item): item is string => item !== undefined) ? items.join(', ') : value;
+  }
+  return plain(parsed) ?? value;
+};
+
+/** What a varying root follows, in words. Anything else names its class. */
+const VARYING_SOURCE: Readonly<Record<string, string>> = {
+  context_event: 'the event that started the run',
+  connection: 'the connected account',
+  stored_user: 'a record you saved',
+  door_submission: 'what the visitor submitted',
+};
+
+/** D-177 P5b (N.11 rule 7) — the open-grant confirm block: what "Allow this
+ *  session" lets happen without asking, said as what stays fixed and what may
+ *  change. Every clause maps onto an enforced bound: the use budget
+ *  (`max_uses`), the lifetime (`expiry_at`), the tool (the recipe and
+ *  operation binding), the fixed values (the projection's pinned roots and
+ *  derived pins) and the values that may change (its clean roots).
+ *
+ *  ⛔⛔ THE LIST IS COMPLETE OR IT SAYS IT IS NOT. It read "pinned attachments =
+ *  [] … pinned references = []" for a held mail send and stopped: the preview
+ *  was cut at 12 lines before the empty values were hidden, so `to` and the
+ *  sending mailbox, fixed all the same, never showed (live, 2026-10-19). The
+ *  owner asked whether "from/to is never in the picture". Now every fixed value
+ *  is named: those with a value first, one per line; the empty ones together on
+ *  one line; and a cut says how many it left out.
+ *
+ *  ⚠ "- " AT THE LEFT MARGIN, NEVER AN INDENTED `key: value`. The approval card
+ *  reads every indented `key: value` line as an argument of the call
+ *  (`projectGeneratedApprovalAsk`); these lines are about the grant.
+ *
+ *  ⛔ IN THE OWNER'S WORDS (owner, 2026-10-19). It read "lets mail-send run …",
+ *  `sender_mail_instance = …` and "these stay empty: in_reply_to, …": an action
+ *  id and field names the rows above it had already put into words. `actor` is
+ *  who goes ahead (`grantActor`), and each field is named as the rows name it
+ *  (`approvalFieldLabel`). */
 const renderOpenGrantBlock = (
   offer: { ttl_ms: number; max_uses: number },
   preview: PreflightAskContext['open_projection_preview'],
-  toolPhrase: string,
+  actor: string,
+  opts: {
+    readonly valueLabels?: unknown;
+    readonly heldArgs?: Record<string, unknown>;
+  } = {},
 ): string => {
-  const pinned = (preview?.pinned ?? []).filter((p) => hasDisplayablePinnedValue(p.value));
-  const varying = preview?.varying ?? [];
-  const hasDetailLines = pinned.length > 0 || varying.length > 0;
-  const lines: string[] = [
-    `'Allow this session' auto-approves ${toolPhrase} up to `
-      + `${offer.max_uses} time${offer.max_uses === 1 ? '' : 's'} for `
-      + `${renderTtl(offer.ttl_ms)}, only while its fixed inputs `
-      + `stay exactly as approved (anything else re-asks)${hasDetailLines ? ':' : '.'}`,
-  ];
-  for (const p of pinned) {
-    lines.push(`  pinned  ${p.label} = ${p.value}`);
+  const fixedSet: string[] = [];
+  const fixedEmpty: string[] = [];
+  for (const { label, value } of preview?.pinned ?? []) {
+    if (isEmptyPreviewValue(value)) {
+      fixedEmpty.push(oneLine(approvalFieldLabel(label)));
+      continue;
+    }
+    // A mailbox reads as its address, as it does in the argument lines.
+    const known = approvalValueLabel(opts.valueLabels, label, parsePreviewValue(value));
+    fixedSet.push(`- ${oneLine(approvalFieldLabel(label))}: ${oneLine(known ?? readablePreviewValue(value))}`);
   }
-  for (const v of varying) {
-    lines.push(`  varies  ${v.label} (${v.origin})`);
-  }
-  return lines.join('\n');
+  // Where a value comes from, in words. The template path it is read through is
+  // engine detail, and the card's technical bits keep the call's inputs.
+  const varying = (preview?.varying ?? []).map(({ label, origin }) => {
+    const [path] = label.split(' ← ');
+    const source = Object.hasOwn(VARYING_SOURCE, origin) ? VARYING_SOURCE[origin]! : origin;
+    return oneLine(`- ${approvalFieldLabel(path!)} follows ${source}`);
+  });
+  const capped = (lines: readonly string[], noun: string): string[] =>
+    lines.length <= OPEN_PREVIEW_MAX_LINES
+      ? [...lines]
+      : [...lines.slice(0, OPEN_PREVIEW_MAX_LINES), `- and ${lines.length - OPEN_PREVIEW_MAX_LINES} more ${noun}`];
+
+  const lines: string[] = [...capped(fixedSet, 'fixed inputs')];
+  if (fixedEmpty.length > 0) lines.push(`- these stay empty: ${fixedEmpty.join(', ')}`);
+  lines.push(...capped(varying, 'inputs that may change'));
+
+  // Every other input of the call may change from one run to the next: the
+  // grant fixes only the inputs that decide where it goes.
+  const guarded = new Set(
+    [...(preview?.pinned ?? []), ...(preview?.varying ?? [])]
+      .map(({ label }) => label.split(' ← ')[0]!.split('.')[0]!),
+  );
+  const free = opts.heldArgs !== undefined
+    ? Object.keys(opts.heldArgs).filter((key) => !guarded.has(key)).sort().map(approvalFieldLabel)
+    : [];
+
+  const uses = `up to ${offer.max_uses} more time${offer.max_uses === 1 ? '' : 's'}`;
+  const opening = oneLine(`'Allow this session' lets ${actor} ${uses} within ${renderTtl(offer.ttl_ms)} `
+    + 'without asking you, as long as '
+    + (lines.length > 0 ? 'these stay exactly as they are now:' : 'its inputs stay exactly as they are now.'));
+  const closing = lines.length === 0
+    ? ''
+    : free.length > 0
+      ? `\nThese may change from one run to the next: ${oneLine(free.join(', '))}. A change to anything above asks you again.`
+      : '\nA change to anything above asks you again.';
+  return [opening, ...lines].join('\n') + closing;
 };
+
+/** What "Allow this session" lets happen when the grant is EXACT, or a raw op's,
+ *  which is exact too: the same call again, inputs and all. Only the open grant
+ *  had a sentence (`renderOpenGrantBlock`), so for these the button said nothing
+ *  about what it allows (owner, 2026-10-19). Opens the way the open block does,
+ *  so the #approvals card shows it and the pop-up leaves it out
+ *  (`splitSessionGrantTerms`). In the owner's words, like the open block. */
+const renderExactGrantBlock = (offer: { ttl_ms: number; max_uses: number }, actor: string): string =>
+  oneLine(`'Allow this session' lets ${actor} up to ${offer.max_uses} more `
+    + `time${offer.max_uses === 1 ? '' : 's'} within ${renderTtl(offer.ttl_ms)} without asking you, `
+    + 'but only exactly as it is now, with every detail the same.')
+  + '\nAny change asks you again.';
 
 /** Render a byte count as a size a reader can act on.
  *
@@ -529,6 +646,26 @@ const connectionPhrase = (
  *  full id stays in the body sentence, which is where identity belongs. */
 const titleOperation = (named: string): string =>
   named.slice(named.indexOf('/') + 1);
+
+/** The held recipe's own title, when the run recorded one. Read defensively off
+ *  the persisted checkpoint: a missing or malformed value titles the ask by its
+ *  operation instead. A raw-op hold has no recipe and no title. */
+const recipeTitleOf = (checkpoint: Checkpoint): string | undefined => {
+  const title: unknown = checkpoint.preflight_context?.recipe_title;
+  // One line, always: it opens the body, and the card reads the lines by position.
+  return typeof title === 'string' && title.trim() !== '' ? oneLine(title) : undefined;
+};
+
+/** The tier, in the title, in words, and only where it changes the decision: a
+ *  write is what an approval usually is, and the body's second line says what
+ *  each tier does. Two branches, not a lookup: the tier is a widened string read
+ *  back off persisted JSON. */
+const tierTitleWords = (tier: string | undefined): string =>
+  tier === 'destructive'
+    ? ' — cannot be undone'
+    : tier === 'admin'
+      ? ' — changes account settings or access'
+      : '';
 
 /** Recipe ids a person wrote are short (`send-email`, `sync-deals`) and are
  *  left exactly as they are. Ones the pack machinery generates are not:
@@ -663,9 +800,25 @@ export const buildPreflightAsk = (args: {
   // D-182 §8 — a recipe-LESS raw-op door hold has neither recipe nor step
   // to name. A raw op is never batch-registered (v1), so it is always
   // the single-call sentence.
+  //
+  // ⛔ IN THE OWNER'S WORDS FIRST. It read "Recipe send-composed-mail wants to
+  // run mail-send (step send).": a recipe id, an operation and a step the owner
+  // sees nowhere else (owner, 2026-10-19). A hold whose run recorded its
+  // recipe's title opens with that title, and the ids move to the `Technical:`
+  // line right after the consequence, where the approval card reads them. A
+  // hold with no recorded title (an older checkpoint) keeps its old sentence.
+  const recipeTitle = context.raw_op === undefined ? recipeTitleOf(checkpoint) : undefined;
   const opening =
     context.raw_op !== undefined
       ? `An AI agent wants to run ${action}${onConnection}.`
+      : recipeTitle !== undefined
+        ? count > 1 && batch !== undefined
+          ? `"${recipeTitle}" is waiting for your approval to run ${count} actions${onConnection}, `
+            + `all from ${UNIT_PHRASE[batch.unit.kind]}.`
+          : cover !== undefined
+            ? `"${recipeTitle}" is waiting for your approval for ${upTo}${count} items${onConnection}. `
+              + 'One approval covers them all.'
+            : `"${recipeTitle}" is waiting for your approval${onConnection}.`
       : count > 1 && batch !== undefined
         ? `Recipe ${clipRecipeId(context.recipe_id)} wants to run ${count} `
           + `${action} actions${onConnection}, all from `
@@ -680,12 +833,11 @@ export const buildPreflightAsk = (args: {
   // Sentence 2 — why it stopped here. The tier IS the reason; naming the
   // consequence answers "should I care?" in a way `risk_tier='write'`
   // never did.
-  const clause =
-    context.risk_tier === 'write'
-    && named !== undefined
-    && kernelWriteStaysInRecued(named, coveredCallArgs(checkpoint, batch, cover))
-      ? LOCAL_WRITE_CLAUSE
-      : tierClause(context.risk_tier);
+  const clause = heldConsequence(
+    context.risk_tier,
+    named,
+    coveredCallArgs(checkpoint, batch, cover),
+  );
   // ⛔ THE SECOND LINE OF THE BODY, AND THE CARD READS IT THERE. The approval
   // card (`projectGeneratedApprovalAsk`) shows this clause as its consequence
   // line, and takes it ONLY from line 2 so nothing later in the body (a raw
@@ -704,6 +856,13 @@ export const buildPreflightAsk = (args: {
   // would be projected as an operation ARGUMENT, sitting in Technical details
   // among values the agent actually sent. Flush-left keeps it prose everywhere
   // and lets the card claim it with a rule of its own.
+  // Line 3 when the opening is in the owner's words: the ids, for reference and
+  // for the card, which reads them from exactly this line.
+  const technicalLine = recipeTitle !== undefined
+    ? `\nTechnical: recipe ${clipRecipeId(context.recipe_id)}, step ${context.gated_step_id}, `
+      + `action ${action}${onConnection}.`
+    : '';
+
   const startedBy = startedByPhrase(checkpoint.preflight_context?.origin_actor);
   const startedByLine =
     startedBy !== undefined ? `\n\nStarted by: ${startedBy}.` : '';
@@ -712,9 +871,14 @@ export const buildPreflightAsk = (args: {
   // labeled line rather than jammed into the sentence as a dash clause —
   // it is a distinct claim from a distinct authority, and a reader should
   // be able to tell which parts of this message Recued wrote.
+  //
+  // ⛔ NO BLANK LINE OF ITS OWN. It is the one multi-line string this body
+  // carries raw, and the card reads the paragraph before the question as the
+  // terms of "Allow this session" (`splitSessionGrantTerms`): a reason that
+  // could open a paragraph could write terms the grant does not have.
   const reasonLine =
     context.reason !== undefined && context.reason.length > 0
-      ? `\n\nReason: ${context.reason}`
+      ? `\n\nReason: ${context.reason.split(/\r?\n/).filter((line) => line.trim() !== '').join('\n')}`
       : '';
 
   // D-217 § 6.1 — the amplification bound, on its own line.
@@ -737,17 +901,22 @@ export const buildPreflightAsk = (args: {
         + `${formatEgressBytes(context.egress_bound.total_bytes)} off this machine.`
       : '';
 
+  const resourceBlock = checkpoint.resource_review
+    ? '\n\nReview the exact before/after values in Recued before approving.' : '';
   const clampWarning = context.approval_clamped_from !== undefined
     ? `\n\nWarning: stored approval '${context.approval_clamped_from}' is below `
       + `the ${context.risk_tier ?? 'operation'} risk floor and was clamped. `
       + "Review or reset it on the Contract's operation row."
     : '';
 
+  // A value the owner knows by another name reads that way: a mailbox's name
+  // as its address, as the server recorded it when it held the run.
+  const valueLabels = checkpoint.preflight_context?.value_labels;
   const itemsBlock =
     batch !== undefined
-      ? `\n\n${renderBatchItemsBlock(batch.items)}`
+      ? `\n\n${renderBatchItemsBlock(batch.items, valueLabels)}`
       : cover?.items !== undefined
-        ? `\n\n${renderBatchItemsBlock(cover.items)}`
+        ? `\n\n${renderBatchItemsBlock(cover.items, valueLabels)}`
         : '';
 
   // D-177 P5b (N.11 rule 7) — an OPEN offer renders its confirm sentence:
@@ -756,15 +925,25 @@ export const buildPreflightAsk = (args: {
   // populated pinned lines → the projection's pinned roots, the varies lines
   // → its clean roots). Null/blank pinned values remain enforced by the
   // projection and hash; only their redundant human-preview lines are omitted.
-  const openBlock =
-    sessionGrant !== undefined
-    && sessionGrant.grant_mode === 'open'
-      ? `\n\n${renderOpenGrantBlock(
-          sessionGrant,
-          context.open_projection_preview,
-          action,
-        )}`
-      : '';
+  const [heldArgs, ...moreArgs] = coveredCallArgs(checkpoint, batch, cover);
+  // Who "Allow this session" lets go ahead. A session grant is bound to the
+  // recipe and its step, so a hold that recorded the recipe's title names it;
+  // an older hold, or an agent's raw op, names the action as before.
+  const grantActor = recipeTitle !== undefined ? `"${recipeTitle}" do this` : `${action} run`;
+  const grantBlock =
+    sessionGrant === undefined
+      ? ''
+      : sessionGrant.grant_mode === 'open'
+        ? `\n\n${renderOpenGrantBlock(
+            sessionGrant,
+            context.open_projection_preview,
+            grantActor,
+            {
+              valueLabels,
+              ...(heldArgs !== undefined && moreArgs.length === 0 ? { heldArgs } : {}),
+            },
+          )}`
+        : `\n\n${renderExactGrantBlock(sessionGrant, grantActor)}`;
 
   // The question goes LAST, always — it is what the buttons answer, and a
   // reader who has to scroll back up past the evidence to find what they
@@ -784,18 +963,26 @@ export const buildPreflightAsk = (args: {
   // Only when the dispatch is actually identifiable, though — an unknown
   // tool has nothing to say beyond the old constant, and inventing a
   // specific-sounding title for it would be worse than admitting it.
-  const tierSuffix =
-    context.risk_tier !== undefined ? ` (${context.risk_tier})` : '';
+  //
+  // ⛔ AND IN THE OWNER'S WORDS, NOT THE ENGINE'S. "Approve mail-send (write)"
+  // reached the owner as an email subject (live, 2026-10-18): an operation's
+  // internal name and a risk tier they see nowhere else. A recipe's hold is
+  // titled by the recipe's own title, recorded on its checkpoint when it was
+  // held; any other by its operation. The tier is said in words only where it
+  // changes the decision. The approval card reads it from the body's second
+  // line, which states it in full (`askConsequence`, `@recued/ui-shared`).
+  const subject = recipeTitleOf(checkpoint) ?? (named !== undefined ? titleOperation(named) : undefined);
+  const scope = count > 1 ? `, ${upTo}${count} ${batch !== undefined ? 'actions' : 'items'}` : '';
   const title =
-    named !== undefined
-      ? `Approve ${count > 1 ? `${upTo}${count} × ` : ''}${titleOperation(named)}${tierSuffix}`
+    subject !== undefined
+      ? `Approve: ${subject}${scope}${tierTitleWords(context.risk_tier)}`
       : 'Approval required';
 
   const message: NotificationMessage = {
     title,
     text:
-      `${opening}\n${held}${startedByLine}${egressBoundLine}${reasonLine}`
-      + `${clampWarning}${itemsBlock}${openBlock}\n\n${question}`,
+      `${opening}\n${held}${technicalLine}${startedByLine}${egressBoundLine}${reasonLine}`
+      + `${resourceBlock}${clampWarning}${itemsBlock}${grantBlock}\n\n${question}`,
   };
   const handler: AskHandlerRef = {
     kind: PREFLIGHT_HANDLER_KIND,
@@ -846,6 +1033,7 @@ export const buildPreflightAsk = (args: {
     message,
     options,
     handler,
+    ...(checkpoint.resource_review ? { extras: { resource_review: structuredClone(checkpoint.resource_review) } } : {}),
   };
 };
 
@@ -1157,8 +1345,9 @@ export const raisePreflightAsk = async (
   notifier: PreflightNotifier,
   args: { checkpoint: Checkpoint; context: PreflightAskContext },
 ): Promise<{ ask_id: string }> => {
-  const { message, options, handler } = buildPreflightAsk(args);
-  return notifier.ask(message, options, handler);
+  const { message, options, handler, extras } = buildPreflightAsk(args);
+  return extras ? notifier.ask(message, options, handler, undefined, extras)
+    : notifier.ask(message, options, handler);
 };
 
 /** D-210 Phase C — the PASSIVE twin of `raisePreflightAsk`.
@@ -1189,42 +1378,70 @@ export const raisePreflightAsk = async (
  *  written for what it is: a statement that something is held, plus where
  *  to go. It carries the same identifying facts (what, on which account,
  *  which tier) — a passive notice that omitted them would be an
- *  interruption with no information in it. */
+ *  interruption with no information in it.
+ *
+ *  ⛔ IN THE OWNER'S WORDS, AS THE ASK IS (owner, 2026-10-20). It was left out
+ *  when the ask moved to them, and read "Waiting for you: core.task.create
+ *  (write)" over "Recipe recued-core/reception-intake-materialize asked to run
+ *  core.task.create on personal.", and it told the owner a task kept in Recued
+ *  changed data "outside Recued". It now takes the ask's title, opening,
+ *  consequence and "Started by:" line, from the same helpers. It leaves out the
+ *  ask's `Technical:` line: that line is there for the approval card, which
+ *  reads it, and this notice has no card. A hold with no recorded title (an
+ *  older checkpoint) keeps the old sentence, as the ask does. */
 export const raisePreflightNotify = async (
   notifier: PreflightNotifier,
   args: { checkpoint: Checkpoint; context: PreflightAskContext },
 ): Promise<void> => {
-  const { context } = args;
+  const { checkpoint, context } = args;
   // Same vocabulary the ask body uses, so the two surfaces name the same
   // call the same way.
   const named = context.raw_op?.op_id ?? context.tool_slug;
   const action = named ?? 'a boundary-crossing call';
-  const onConnection =
-    context.connection_name !== undefined ? ` on ${context.connection_name}` : '';
-  const tierSuffix =
-    context.risk_tier !== undefined ? ` (${context.risk_tier})` : '';
+  const onConnection = connectionPhrase(context.connection_name, named);
+  const recipeTitle = context.raw_op === undefined ? recipeTitleOf(checkpoint) : undefined;
 
   const opening =
     context.raw_op !== undefined
       ? `An AI agent asked to run ${action}${onConnection}.`
-      : `Recipe ${context.recipe_id} asked to run ${action}${onConnection}.`;
-  const clause = tierClause(context.risk_tier);
+      : recipeTitle !== undefined
+        ? `"${recipeTitle}" is waiting for your approval${onConnection}.`
+        : `Recipe ${clipRecipeId(context.recipe_id)} asked to run ${action}${onConnection}.`;
+  // The calls it covers, read as the ask reads them. A foreach hold's cover is
+  // on the checkpoint, so a hold covering several items is never proved local
+  // from one of them.
+  const cover = readForeachCover(
+    context.foreach_cover ?? checkpoint.preflight_context?.foreach_cover,
+  );
+  const clause = heldConsequence(
+    context.risk_tier,
+    named,
+    coveredCallArgs(checkpoint, undefined, cover),
+  );
   const held =
     clause !== undefined
       ? `${clause}, so Recued is holding it for you.`
       : 'Recued is holding it for you.';
+  const startedBy = startedByPhrase(checkpoint.preflight_context?.origin_actor);
+  const startedByLine = startedBy !== undefined ? `\n\nStarted by: ${startedBy}.` : '';
   const reasonLine =
     context.reason !== undefined && context.reason.length > 0
       ? `\n\nReason: ${context.reason}`
       : '';
 
+  // The ask's subject: the notice names the hold as its approval would have.
+  // The tier is said in words only where it changes the decision; the body's
+  // second line states it in full.
+  const subject = recipeTitle ?? (named !== undefined ? titleOperation(named) : undefined);
   await notifier.notify({
     title:
-      named !== undefined ? `Waiting for you: ${named}${tierSuffix}` : 'Waiting for you',
+      subject !== undefined
+        ? `Waiting for you: ${subject}${tierTitleWords(context.risk_tier)}`
+        : 'Waiting for you',
     // No question, and no implied deadline: the closing line says where the
     // decision lives, because this surface cannot take one.
     text:
-      `${opening}\n${held}${reasonLine}`
+      `${opening}\n${held}${startedByLine}${reasonLine}`
       + '\n\nNothing happens until you review it in your inbox.',
   });
 };

@@ -147,6 +147,7 @@ import type { LaterRunResult } from '../held-run-follow.js';
 import type { PackAppRecipe, PackAppSurface } from './pack-app-model.js';
 import { projectPackAppNavigation } from './pack-app-navigation.js';
 import { serializeShellRoute } from '../shell/route.js';
+import { runPageContextFromOutput, type RunPageContext } from '../shell/run-page-context.js';
 import {
   PACK_INSTALL_OFFER_STYLES,
   missingPacksFromError,
@@ -260,6 +261,7 @@ export interface MountPackAppViewOptions {
 }
 
 export interface PackAppViewMount {
+  getRunPageContext(): RunPageContext | null;
   /** The open view's recipe id, or null when the pack has no views. */
   activeViewId(): string | null;
   /** D-282 B5 — the lookup address this mount ACCEPTED, or null.
@@ -1825,6 +1827,10 @@ export const mountPackAppView = (
 
   return {
     activeViewId: () => activeViewId,
+    getRunPageContext: () => disposed || busy || error !== null || resultPanel === null || !resultPanel.result.success
+      ? null
+      : runPageContextFromOutput(resultOutputSections(resultPanel.result),
+          displayedRecipe()?.entry),
     hydratedLookup: () => (requestedLookup === null || opts.initialTarget === undefined
       ? null
       : { recipe_id: requestedLookup.entry.recipe_id, target: opts.initialTarget }),

@@ -340,6 +340,7 @@ export interface RunGatewayCallTraceEntry {
   completed_at?: number;
   duration_ms?: number;
   cached?: true;
+  local_receipt?: import('./resource-review.js').LocalMutationReceiptSummary;
 }
 
 export interface RunGatewaySummary {

@@ -126,6 +126,7 @@ export const fsAdapterFactory: FileAdapterFactory = {
           debounceMs: config.debounceMs,
           watchMode,
           onUnavailable: (error) => ctx.onDegraded?.(error),
+          onRescanNeeded: () => ctx.onRescanNeeded?.(),
           log,
           onEvent: (event) => ctx.onEvent(event),
         });
@@ -149,6 +150,9 @@ export const fsAdapterFactory: FileAdapterFactory = {
       walkErrors() {
         // No watcher, no walk: report it as unread rather than complete.
         return watcher ? watcher.walkErrors() : 1;
+      },
+      async rescan() {
+        return watcher ? watcher.rescan() : { complete: false };
       },
       async writeRecord(path, body) {
         const abs = ensureInsideRoot(root, path);

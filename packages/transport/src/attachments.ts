@@ -2,7 +2,7 @@
  * attachment; receipts belong to the caller's durable delivery journal. */
 import { openAsBlob } from 'node:fs';
 import { stat } from 'node:fs/promises';
-import { classifyHttpError, postFileBody, postJson, retryAfterMs, type HttpPostOutcome } from './http.js';
+import { classifyHttpError, notSentMark, postFileBody, postJson, retryAfterMs, type HttpPostOutcome } from './http.js';
 import type { OutboundAttachment, TransportSendResult } from './types.js';
 
 interface Options { fetchImpl: typeof fetch; timeoutMs: number }
@@ -19,7 +19,7 @@ const failure = (outcome: HttpPostOutcome): TransportSendResult | undefined => {
   return { ok: false, error: {
     kind: outcome.kind === 'http_error'
       ? ([400, 404, 413, 422].includes(outcome.status) ? 'invalid_request' : classifyHttpError(outcome.status)) : outcome.kind,
-    detail: 'Attachment request failed.',
+    detail: 'Attachment request failed.', ...notSentMark(outcome),
     ...(outcome.kind === 'http_error' && outcome.retry_after_ms !== undefined ? { retry_after_ms: outcome.retry_after_ms } : {}),
   } };
 };

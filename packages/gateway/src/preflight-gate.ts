@@ -191,6 +191,7 @@ export const raiseOnAsk = (
      *  batch member (per-hold ask, exactly pre-P5a). */
     arg_shape_hash?: string;
     canonical_payload_hash?: string;
+    resource_review?: import('@recued/contracts').ResourceReview;
     args_preview?: Record<string, unknown>;
     /** D-177 P5b (N.11) — the open-projection pinned/varies summary, when
      *  the Gateway's walk classified the held call. Rides the signal as
@@ -219,6 +220,7 @@ export const raiseOnAsk = (
     `tool '${context.slug}' requires preflight approval `
       + `(risk_tier='${decision.risk_tier}'): ${decision.detail}`,
     {
+      ...(context.resource_review ? { resource_review: context.resource_review } : {}),
       tool_slug: context.slug,
       risk_tier: decision.risk_tier,
       reason: decision.detail,

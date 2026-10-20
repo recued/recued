@@ -1,3 +1,5 @@
+import { mountAutomationRehearsalPanel } from './automation-rehearsal-panel.js';
+import type { Conn, ServerRpcRegistry, RehearsalTarget } from '@recued/contracts';
 /** Reactive-substrate slice 1 — top-level Automation route.
  *
  *  The cross-pack governance view: every rule that runs without the
@@ -332,6 +334,8 @@ export type AuthStateCaller = () => Promise<{
 
 export interface BootstrapAutomationRouteOptions {
   root: HTMLElement;
+  rehearsalCall?: Conn<ServerRpcRegistry>;
+  beginRehearsalWork?(): () => void;
   document?: Document;
   schedulesListCaller?: SchedulesListCaller;
   schedulesUpdateCaller?: SchedulesUpdateCaller;
@@ -1335,6 +1339,7 @@ export const bootstrapAutomationRoute = (
   // advances to the selected section tab; failure returns to Retry. Moving
   // elsewhere while the read is in flight cancels that ownership.
   let pendingRetryFocus: AutomationSectionToken | null = null;
+  const rehearsalPanels = new Map<string, { host: HTMLDetailsElement; panel: ReturnType<typeof mountAutomationRehearsalPanel> | null }>();
   let disposed = false;
   let loadSeq = 0;
   /** Rule ids with an in-flight mutation — their actions remain focusable but
@@ -3081,6 +3086,37 @@ export const bootstrapAutomationRoute = (
     }
   };
 
+  const mountRehearsal = (): void => {
+    if (!opts.rehearsalCall || detailId === null) return;
+    const kind = activeSection === 'triggers' ? 'trigger' : activeSection === 'schedules' ? 'schedule' : activeSection === 'auto-run' ? 'timer' : null;
+    if (!kind) return;
+    const timer = kind === 'timer' ? autoRun.find(item => autoRunId(item) === detailId) : undefined;
+    if (kind === 'timer' && !timer?.dish_id) return;
+    const target: RehearsalTarget = { kind, id: timer?.dish_id ?? detailId };
+    const key = JSON.stringify([target.kind, target.id]);
+    let entry = rehearsalPanels.get(key);
+    if (!entry) {
+      if (rehearsalPanels.size >= 10) {
+        const idle = [...rehearsalPanels].find(([, item]) => !item.panel?.hasUnsavedChanges() && !item.panel?.hasInFlightWork());
+        if (idle) { idle[1].panel?.dispose(); idle[1].host.remove(); rehearsalPanels.delete(idle[0]); }
+        else {
+          const notice = doc.createElement('p'); notice.textContent = 'Ten rehearsals have unfinished edits or work. Finish one before opening another.';
+          routeRoot.querySelector?.('[data-recued-automation-detail]')?.append(notice); return;
+        }
+      }
+      const host = doc.createElement('details'), summary = doc.createElement('summary');
+      summary.textContent = 'Rehearsal and reviewed activation'; host.append(summary);
+      entry = { host, panel: null }; rehearsalPanels.set(key, entry);
+      const item = entry;
+      host.addEventListener('toggle', () => {
+        if (!host.open || item.panel || disposed || !routeRoot.contains(host)) return;
+        item.panel = mountAutomationRehearsalPanel({ host, target, call: opts.rehearsalCall!,
+          ...(opts.beginRehearsalWork ? { beginWork: opts.beginRehearsalWork } : {}), onActivated: () => { void loadAll(); } });
+      });
+    }
+    routeRoot.querySelector?.('[data-recued-automation-detail]')?.append(entry.host);
+  };
+
   const render = (): void => {
     // This route replaces every sub-nav button and native filter when state or
     // async reads repaint it. Preserve ownership only when one of those controls
@@ -3240,6 +3276,8 @@ export const bootstrapAutomationRoute = (
           start: (activeElement as HTMLInputElement).selectionStart,
           end: (activeElement as HTMLInputElement).selectionEnd,
         };
+    const focusedRehearsal = [...rehearsalPanels.values()].some(item => item.host.contains(activeElement ?? null)) ? activeElement : null;
+    for (const item of rehearsalPanels.values()) item.host.remove();
     routeRoot.innerHTML = `
       <header class="automation-header">
         <h1 class="automation-title" ${AUTOMATION_ROUTE_HEADING_ATTR}>Automation</h1>
@@ -3255,6 +3293,8 @@ export const bootstrapAutomationRoute = (
         ${detailId !== null ? renderDetail() : `${filterBar()}${activeSectionHtml()}`}
       </div>
     `;
+    mountRehearsal();
+    if (focusedRehearsal?.isConnected && (doc.activeElement === doc.body || doc.activeElement == null)) focusedRehearsal.focus?.({ preventScroll: true });
     if (focusedSection !== null) {
       const replacement = routeRoot.querySelector(
         `[${AUTOMATION_ROUTE_SUBNAV_ATTR}="${focusedSection}"]`,
@@ -4440,6 +4480,7 @@ export const bootstrapAutomationRoute = (
   const initialLoad = loadAll();
   const hasAutomationInFlightWork = (): boolean =>
     busy.size > 0
+    || [...rehearsalPanels.values()].some(item => item.panel?.hasInFlightWork() || item.panel?.hasUnsavedChanges())
     || openModal?.hasInFlightWork() === true
     || preapprovalActivation?.hasInFlightWork() === true
     || autoRunConfigHandle?.hasInFlightWork() === true;
@@ -4464,6 +4505,8 @@ export const bootstrapAutomationRoute = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      for (const item of rehearsalPanels.values()) { item.panel?.dispose(); item.host.remove(); }
+      rehearsalPanels.clear();
       for (const unsubscribe of unsubscribers.splice(0)) unsubscribe();
       recipePicker?.destroy();
       recipePicker = null;

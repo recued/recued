@@ -124,7 +124,10 @@ export const mountGlobalRunPalette = (
     return true;
   };
 
-  trigger.addEventListener('click', () => {
+  trigger.addEventListener('click', (event) => {
+    // Some browsers leave clicked buttons unfocused. Capture this launcher
+    // as the return target before the palette moves focus into its dialog.
+    if (event.isTrusted) trigger.focus({ preventScroll: true });
     open();
   });
 

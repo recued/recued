@@ -82,6 +82,8 @@ export interface ExecuteRequest {
    *  run does not sign in through, or a connection not on the pack's list for it,
    *  refuses the run (`connection_choice_invalid`). See `run-connection-choice.ts`. */
   connections?: Record<string, string>;
+  /** Expected API account revisions by connection name for page arguments. */
+  connection_revisions?: Record<string, string>;
   /** Context namespace values (entity_id, page_url, etc.). */
   context?: Record<string, unknown>;
   /** How the execution was triggered (manual, scheduled, backfill, server_command). */
@@ -140,6 +142,11 @@ export interface ExecuteRequest {
  *  builder — a misbehaving dispatcher cannot accidentally overwrite an
  *  unrelated run's audit row by setting these fields. */
 export interface InternalExecuteOverrides {
+  /** Set only by paired-owner capture RPCs, never by an ExecuteRequest. */
+  regression_capture?: {
+    input: NonNullable<import('@recued/engine').ExecutionContext['onTestCaptureInput']>;
+    result(result: import('@recued/engine').ExecutionResult): void;
+  };
   /** D-261 opaque host-issued run handle. The private runtime WeakMap must
    * recognize it; a serialized future/grant id carries no execution authority. */
   preapproval_run?: object;
@@ -181,6 +188,9 @@ export interface InternalExecuteOverrides {
    *  EVERY outcome — a failed or held run included, not only a clean one.
    *  ⚠ Not a way to CHOOSE the id: passing `run_id` means "resume". */
   onRunMinted?: (run_id: string) => void;
+  /** Host-only durable subscriber receipt. Must commit before recipe execution;
+   * a failed claim aborts rather than entering a second run. Never wire input. */
+  beforeRunStart?: (run_id: string) => void;
   /** Stable receipt for the checkpointed gated STEP being resumed. It is not
    * the run id (a run can gate more than once) and not an ask id (one ask can
    * cover many steps and be re-rendered). Populated only by the host resumer. */
@@ -209,6 +219,7 @@ export interface InternalExecuteOverrides {
    *  `stores.step` with `step_state` BEFORE dispatch, then enters the
    *  engine's resume mode at `gated_step_id`. */
   resume_from?: {
+    resource_review?: import("@recued/contracts").ResourceReview;
     gated_step_id: string;
     step_state: Record<string, unknown>;
     execution_phase?: 'trigger' | 'prefetch' | 'sequential';
@@ -391,6 +402,11 @@ export interface ExecuteResponse {
    *  action is awaiting approval instead of mistaking the bare `success:
    *  false` for a silent failure and retrying. */
   awaiting_approval?: boolean;
+  /** The channels this run's approval ask went to (`ui`, `email`, `slack` …,
+   *  its `fanout_channels`), with `awaiting_approval`, once the ask was raised.
+   *  The agent projection names the ones besides the app
+   *  (`approval_elsewhere`). */
+  approval_channels?: readonly string[];
   /** D-display-mode P4 — whether this run was audit-exempt (no anchor written).
    *
    *  ⚠ PAIRED WITH `ServerExecuteResponse.audit_exempt` in contracts, which is

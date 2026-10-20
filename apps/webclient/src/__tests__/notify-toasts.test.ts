@@ -287,6 +287,12 @@ describe('D-169 P2 Slice 5 notify toasts', () => {
     // D-324 — a delivered reminder's link to the list, exactly.
     ['#data/reminder', true],
     ['#data/reminder/../settings', false],
+    // D-325 — an occasion reminder and the last-time opt-in open their Yours page.
+    ['#yours/occasions/occasion/occasion-anniversary', true],
+    ['#yours/episodes/episode/vegas%20trip', true],
+    ['#yours/episodes', true],
+    ['#yours/occurrences', true],
+    ['#yours/occasions/occasion/../../settings', false],
     // ⛔ Neither spelling may be loosened into a general hash allowance.
     ['#views/../settings', false],
     ['#views/not-a-view-id', false],
@@ -618,5 +624,50 @@ describe('D-169 P2 Slice 5 notify toasts', () => {
     toasts.dispose();
     expect(() => listener(notifyEvent('too late'))).not.toThrow();
     expect(toasts.getToasts()).toHaveLength(0);
+  });
+});
+
+describe('D-325 reminder toasts', () => {
+  const event = (ask_id: string): Extract<ServerEvent, { kind: 'notification.ask' }> => ({
+    kind: 'notification.ask', cursor: 1, reminder: true, ask_id, text: 'Service due',
+    options: [{ id: 'done', label: 'Done' }, { id: 'later', label: 'Later' }],
+  });
+  const emit = (fake: ReturnType<typeof makeFakeSubscribe>, frame: ServerEvent) => {
+    fake.calls.find(call => call.kind === frame.kind)!.listener(frame as unknown as NotifyEvent);
+  };
+  it('keeps reminder buttons until answer/dismiss, without auto expiry or eviction by ordinary notices', async () => {
+    const answerReminder = vi.fn(async () => {});
+    const { host, fake, timers, toasts } = mount({ answerReminder, maxVisible: 1 });
+    emit(fake, event('first'));
+    emit(fake, event('second'));
+    emit(fake, event('first')); // Repeated frames do not duplicate a question.
+    expect(timers.scheduledCount()).toBe(0);
+    notifyListener(fake)(notifyEvent('one-way notice'));
+    notifyListener(fake)(notifyEvent('newer notice'));
+    expect(toasts.getToasts().filter(toast => toast.ask_id)).toHaveLength(2);
+    for (const handle of timers.pending()) timers.fire(handle);
+    expect(toasts.getToasts()).toHaveLength(2);
+    findAllByAttr(host, 'data-reminder-answer')[0]!.click();
+    await Promise.resolve();
+    expect(answerReminder).toHaveBeenCalledTimes(1);
+    expect(toasts.getToasts()).toHaveLength(1);
+    findAllByAttr(host, NOTIFY_TOAST_DISMISS_ATTR)[0]!.click();
+    expect(answerReminder).toHaveBeenCalledTimes(1);
+    expect(toasts.getToasts()).toHaveLength(0);
+    toasts.dispose();
+  });
+
+  it('retains a failed answer for retry and clears an answer made on another surface', async () => {
+    const { host, fake, toasts } = mount({ answerReminder: async () => { throw new Error('offline'); } });
+    emit(fake, event('retry'));
+    const button = findAllByAttr(host, 'data-reminder-answer')[0]!;
+    button.click();
+    await Promise.resolve(); await Promise.resolve();
+    expect(button.disabled).toBe(false);
+    expect(toasts.getToasts()).toHaveLength(1);
+    emit(fake, { kind: 'notification.ask_closed', cursor: 2, ask_id: 'retry' });
+    expect(toasts.getToasts()).toHaveLength(0);
+    toasts.dispose();
+    expect(fake.calls.every(call => call.unsubscribe.mock.calls.length === 1)).toBe(true);
   });
 });

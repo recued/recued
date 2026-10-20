@@ -1,3 +1,10 @@
+import { createPackUpdatePanel } from './pack-update-panel.js';
+import type { PackUpdateCaller } from './pack-update-caller.js';
+import { createPackRemovalReview } from './pack-removal-review.js';
+import type { PackRemovalCaller } from './pack-removal-caller.js';
+import { createPackRepairPanel } from './pack-repair-panel.js';
+import type { PackRepairCaller } from './pack-repair-caller.js';
+import type { RecipeRegressionCaller } from '../kitchen/recipe-editor/recipe-regression-caller.js';
 import { PACK_VENDOR_PERMISSION_CONSENT_ATTR, PACK_VENDOR_PERMISSION_REFRESH_ATTR,
   vendorPermissionAcknowledgementKey, vendorPermissionReview, vendorPermissionReviewRequired } from './pack-vendor-permissions.js';
 import type { PackPermissionRepair, PackPermissionRepairRequest } from './pack-permission-repair.js';
@@ -509,6 +516,7 @@ import {
   type PackDisclosureBlock,
 } from '@recued/ui-shared';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
+import type { RunPageContext } from '../shell/run-page-context.js';
 
 // ════════════════════════════════════════════════════════════════
 // Attribute constants — stable hooks for DOM tests + host introspection
@@ -721,6 +729,7 @@ export type PacksListCaller = () => Promise<{
 }>;
 
 export type PacksInstallCaller = (args: {
+  regression_review_id?: string;
   vendor_permission_consent?: import('@recued/contracts').PackVendorPermissionConsent;
   manifest: unknown;
   granted_permissions: ReadonlyArray<string>;
@@ -815,6 +824,7 @@ export const deleteRemovesText = (
  *  the server — only `packs.installBySlug` injects the marketplace recipe
  *  resolver. Same grant handling / result shape as the by-value install. */
 export type PacksInstallBySlugCaller = (args: {
+  regression_review_id?: string;
   vendor_permission_consent?: import('@recued/contracts').PackVendorPermissionConsent;
   slug: string;
   granted_permissions: ReadonlyArray<string>;
@@ -848,6 +858,10 @@ export interface PacksPanelDisclosure {
 }
 
 export interface MountPacksPanelOptions {
+  packUpdateCaller?: PackUpdateCaller;
+  packRemovalCaller?: PackRemovalCaller;
+  packRepairCaller?: PackRepairCaller;
+  packUpdateRegressionCaller?: RecipeRegressionCaller;
   onPermissionRepair?(request: PackPermissionRepairRequest): void;
   initialPermissionRepairReturn?: PackPermissionRepair;
   /** Host element the panel renders into. The panel appends a single
@@ -1022,6 +1036,7 @@ export interface MountPacksPanelOptions {
 }
 
 export interface PacksPanelMount {
+  getRunPageContext(): RunPageContext | null;
   /** Current panel state — primary surface for tests + host introspection. */
   getState(): PacksPanelState;
   /** Re-run the Use tab's open view for an external refresh signal. Pack task
@@ -1307,6 +1322,9 @@ export const mountPacksPanel = (
   // ── State ────────────────────────────────────────────────────────
   let state: PacksPanelState = 'loading';
   let disposed = false;
+  const updateReviews = new Map<string,{ key: string; panel: ReturnType<typeof createPackUpdatePanel> }>();
+  const removalReviews = new Map<string,ReturnType<typeof createPackRemovalReview>>();
+  const hasRemovalRetry = (slug: string): boolean => removalReviews.get(slug)?.hasPendingRetry() === true;
   let packs: PackListEntry[] = [];
   let listError: string | null = null;
   /** An owner-triggered Retry keeps the error surface mounted while its list
@@ -1323,6 +1341,7 @@ export const mountPacksPanel = (
   let loadGeneration = 0;
   /** Slug of the pack whose install dialog is open. Single-row (DD#2). */
   let dialogOpenFor: string | null = null;
+  let historyDialog = false;
   /** True while the dialog's `packs.install` rpc is in flight. */
   let installing = false;
   let permissionRepairStarting = false;
@@ -1506,6 +1525,7 @@ export const mountPacksPanel = (
   let deleteError: string | null = null;
   /** D-304 — what the open Delete confirmation removes with the pack, once known. */
   let deleteRemoves: { slug: string; text: string } | null = null;
+  let completedRemoval: { slug: string; request_id: string; installed_now: boolean } | null = null;
   /** In-flight uninstall promise — lets `clickConfirmDelete` await the
    *  same rpc the Confirm button fires. */
   let pendingUninstallPromise: Promise<void> | null = null;
@@ -1701,7 +1721,9 @@ export const mountPacksPanel = (
   let pendingAddManifestHash: string | null = null;
 
   const canInstall = opts.runInstall !== undefined;
-  const canDelete = opts.runUninstall !== undefined;
+  const installationRepair = opts.packRepairCaller ? createPackRepairPanel({ document: doc, caller: opts.packRepairCaller,
+    blocked: () => installing || deleting, openPack: slug => selectPack(slug) }) : undefined;
+  const canDelete = opts.runUninstall !== undefined || opts.packRemovalCaller !== undefined;
   /** A marketplace pack (resolved into the detail) installs by slug — the gate
    *  for its Install affordance, distinct from a bundled pack's `runInstall`. */
   const canAdd =
@@ -2396,7 +2418,9 @@ export const mountPacksPanel = (
           const rosterRow = packs.find((p) => p.slug === confirmingDeleteFor);
           const stillInstalled =
             rosterRow?.installed === true || rosterInstalledSet.has(confirmingDeleteFor);
-          if (!stillInstalled) {
+          // A lost completion can outlive inventory removal. Keep its receipt
+          // reachable while this route retains the original attempt identity.
+          if (!stillInstalled && !hasRemovalRetry(confirmingDeleteFor)) {
             confirmingDeleteFor = null;
             deleteError = null;
           }
@@ -2424,7 +2448,7 @@ export const mountPacksPanel = (
     // subtle bug because the default-checked invariant is the
     // assumed-consent UX. The map entry is recreated fresh on the next
     // openDialog().
-    const slug = dialogOpenFor;
+    const slug = dialogOpenFor, wasHistory = historyDialog;
     dialogPermissions.delete(slug);
     // D-182 §7.1 (inc 5b.2) — drop the per-pack Access selection on close for
     // the same reason: a re-open should start fresh at the picker's `read`
@@ -2435,10 +2459,11 @@ export const mountPacksPanel = (
     // possibly failing) re-resolve on the very next render. It's cleared on
     // navigation (selectPack), not on dialog cancel.
     dialogOpenFor = null;
+    historyDialog = false;
     dialogError = null;
     pendingInstallPromise = null;
     pendingInstallDialogFocus = { kind: 'opener', slug };
-    if (!disposed) render();
+    if (!disposed) { render(); if (wasHistory) wrapper.querySelector<HTMLElement>('[data-pack-release-history]')?.focus(); }
   };
 
   // R22 list→detail — open a pack's DETAIL view (`slug`) or return to the LIST
@@ -2449,7 +2474,7 @@ export const mountPacksPanel = (
   // targeted row/dialog stays mounted — holds. Notifies the host so it can
   // align the `#packs/<slug>` address without a remount.
   const selectPack = (slug: string | null): void => {
-    if (installing || deleting) return;
+    if (installing || deleting || installationRepair?.hasInFlightWork()) return;
     if (slug === selectedSlug) return;
     if (appView?.hasInFlightWork() === true) {
       const confirm = doc.defaultView?.confirm;
@@ -2504,7 +2529,8 @@ export const mountPacksPanel = (
     if (!disposed) render();
   };
 
-  const openDialog = (slug: string): void => {
+  const openDialog = (slug: string, purpose: 'install' | 'history' = 'install'): void => {
+    if (installationRepair?.hasInFlightWork()) return;
     if (state !== 'ready') return;
     if (installing) return;
     // Slice B — block opening the install dialog while a Delete is
@@ -2516,10 +2542,10 @@ export const mountPacksPanel = (
     // from `packs[]`) opens its dialog too. Its install routes by slug, so gate
     // on `canAdd` for the added path and `canInstall` for a loaded pack.
     const target = findPackBySlug(slug);
-    if (!target) return;
-    if (target.installed) return;
+    if (purpose === 'history' ? !opts.packUpdateCaller || !(target?.installed || target?.installed_any_version || rosterInstalledSet.has(slug))
+      : !target || target.installed) return;
     const isAdded = pendingAddEntry?.slug === slug;
-    if (isAdded ? !canAdd : !canInstall) return;
+    if (purpose !== 'history' && (isAdded ? !canAdd : !canInstall)) return;
     // Single-row dialog (DD#2). Opening B on top of A would race the
     // permission map state; we mirror devices-page-mount's collapse-
     // first invariant. Clear the collapsed dialog's grant + Connect picks in
@@ -2544,21 +2570,24 @@ export const mountPacksPanel = (
       pendingUninstallPromise = null;
     }
     dialogOpenFor = slug;
+    historyDialog = purpose === 'history';
     dialogError = null;
     pendingInstallPromise = null;
     // Seed permission selections from manifest.requires[]: every entry
     // default-checked (DD#3). The always-required ALWAYS_REQUIRED_PERMISSION
     // stays in the set even if the user un-toggles other entries via
     // togglePermission's no-op guard.
-    const seed = new Set<string>(target.requires);
-    // D-305 — and what the packs it brings in need, default-checked the same way:
-    // the install refuses without them. Only when the preview is already in hand;
-    // otherwise they join when it lands (`ensureInstallPreview`).
-    for (const dependency of installPreviewFor(slug, target.manifest)?.dependency_requires ?? []) {
-      seed.add(dependency.permission);
-    }
-    seed.add(ALWAYS_REQUIRED_PERMISSION);
-    dialogPermissions.set(slug, seed);
+    if (!historyDialog && target) {
+      const seed = new Set<string>(target.requires);
+      // D-305 — and what the packs it brings in need, default-checked the same way:
+      // the install refuses without them. Only when the preview is already in hand;
+      // otherwise they join when it lands (`ensureInstallPreview`).
+      for (const dependency of installPreviewFor(slug, target.manifest)?.dependency_requires ?? []) {
+        seed.add(dependency.permission);
+      }
+      seed.add(ALWAYS_REQUIRED_PERMISSION);
+      dialogPermissions.set(slug, seed);
+    } else dialogPermissions.delete(slug);
     // D-182 §7.1/§7.2 — authoritative reset of BOTH grant-picker picks (Access +
     // Scope) on every open, so a prior selection cannot survive ANY close path
     // (cancel, a refresh that closed the dialog, or a successful reinstall of the
@@ -2893,6 +2922,7 @@ export const mountPacksPanel = (
   };
 
   const submitInstall = (): Promise<void> => {
+    if (installationRepair?.hasInFlightWork()) return Promise.resolve();
     if (disposed) return Promise.resolve();
     if (dialogOpenFor === null) return Promise.resolve();
     if (installing) {
@@ -2925,6 +2955,9 @@ export const mountPacksPanel = (
     } else if (!canInstall) {
       return Promise.resolve();
     }
+    const updateReview = updateReviews.get(submittingSlug)?.panel;
+    if (updateReview?.blocked()) return Promise.resolve();
+    const regressionReviewId = updateReview?.reviewId();
     const selection = dialogPermissions.get(submittingSlug);
     const granted = selection ? [...selection] : [];
     // D-182 §7.1 / D-196 — send Access plus the independent Audience checklist
@@ -3004,6 +3037,7 @@ export const mountPacksPanel = (
           ? await (opts.runInstallBySlug as PacksInstallBySlugCaller)({
               slug: target.slug,
               granted_permissions: granted,
+              ...(regressionReviewId ? { regression_review_id: regressionReviewId } : {}),
               ...(pendingAddManifestHash !== null
                 ? { expected_manifest_hash: pendingAddManifestHash }
                 : {}),
@@ -3020,6 +3054,7 @@ export const mountPacksPanel = (
           : await (opts.runInstall as PacksInstallCaller)({
               manifest: target.manifest,
               granted_permissions: granted,
+              ...(regressionReviewId ? { regression_review_id: regressionReviewId } : {}),
               ...(target.manifest_review_hash !== undefined
                 ? { expected_manifest_hash: target.manifest_review_hash }
                 : {}),
@@ -3035,6 +3070,7 @@ export const mountPacksPanel = (
             });
         if (disposed) return;
         if (!response.result.ok) {
+          updateReview?.invalidate();
           const failureCode = response.result.failure?.code;
           const failureDetail = response.result.failure?.message;
           if (failureCode === 'review_stale') { dialogInstallPreview.delete(submittingSlug); dialogVendorPermissionsReviewed.delete(submittingSlug); }
@@ -3099,6 +3135,7 @@ export const mountPacksPanel = (
         await refreshRows({ refreshRecipes: true });
       } catch (err) {
         if (disposed) return;
+        updateReview?.invalidate();
         dialogError = { text: humanizeRpcError(err), missingPacks: [] };
       } finally {
         installing = false;
@@ -3112,23 +3149,41 @@ export const mountPacksPanel = (
 
   // ── Slice B — Delete transitions ─────────────────────────────────
 
+  const renderReviewedRemovalControls = (parent: HTMLElement,slug: string): void => {
+    if (confirmingDeleteFor !== slug) {
+      const button = doc.createElement('button');button.type = 'button';button.className = 'rx-btn rx-btn-secondary rx-btn-sm';button.textContent = hasRemovalRetry(slug) ? 'Recover removal receipt' : COPY.delete_label;
+      button.setAttribute(PACKS_ROW_DELETE_BTN_ATTR,slug);button.disabled = deleting || installing || dialogOpenFor !== null;
+      button.onclick = () => openDeleteConfirm(slug);parent.append(button);return;
+    }
+    let review = removalReviews.get(slug);
+    if (!review && opts.packRemovalCaller) {
+      review = createPackRemovalReview({ document: doc,packSlug: slug,caller: opts.packRemovalCaller,
+        changed: render,confirm() { void submitUninstall(); } });removalReviews.set(slug,review);
+    }
+    if (review) parent.append(review.element);
+    const cancel = doc.createElement('button');cancel.type = 'button';cancel.className = 'rx-btn rx-btn-secondary rx-btn-sm';cancel.textContent = COPY.cancel_label;
+    cancel.setAttribute(PACKS_ROW_DELETE_CANCEL_BTN_ATTR,slug);if (deleting) cancel.setAttribute('aria-disabled','true');
+    cancel.onclick = () => cancelDeleteConfirm(slug);parent.append(cancel);
+    if (deleteError) { const error = doc.createElement('p');error.setAttribute(PACKS_ROW_DELETE_ERROR_ATTR,'');error.setAttribute('role','alert');error.textContent = deleteError;parent.append(error); }
+  };
+
   const openDeleteConfirm = (slug: string): void => {
     if (!canDelete) return;
     if (state !== 'ready') return;
     // Disallow opening a Delete strip while ANY install / uninstall
     // rpc is in flight (DD#10). The single-rpc-at-a-time invariant
     // keeps the post-rpc refresh deterministic.
-    if (installing || deleting) return;
+    if (installing || deleting || installationRepair?.hasInFlightWork()) return;
     // Pending-first lookup so a detail-only resolved marketplace pack (installed,
     // present only in `installed_versions` — never in `packs[]`) is uninstallable
     // from its detail. `findPackBySlug` re-derives `installed` from the roster set.
     const target = findPackBySlug(slug);
-    if (!target) return;
+    if (!target && !(opts.packRemovalCaller && (rosterInstalledSet.has(slug) || hasRemovalRetry(slug)))) return;
     // Only installed packs are uninstallable. Defensive: the renderer
     // hides the Delete button on non-installed rows, but a programmatic
     // test caller could drive clickDelete on an installed pack that
     // just got refreshed away.
-    if (!target.installed) return;
+    if (!(target?.installed || target?.installed_any_version || rosterInstalledSet.has(slug) || hasRemovalRetry(slug))) return;
     // Delta 6 (R22.1) — foundation packs expose Delete DIRECTLY; the
     // confirm strip carries the boot-time-undo warning ("auto-installs
     // at server boot") so the user reads the futility before Confirm.
@@ -3160,6 +3215,7 @@ export const mountPacksPanel = (
       pendingInstallPromise = null;
     }
     confirmingDeleteFor = slug;
+    completedRemoval = null;
     deleteError = null;
     deleteRemoves = null;
     pendingUninstallPromise = null;
@@ -3167,6 +3223,7 @@ export const mountPacksPanel = (
     pendingInstallDialogFocus = null;
     render();
     // D-304 — say what goes with the pack's recipes, once the server has counted.
+    if (opts.packRemovalCaller) return;
     const preview = opts.runUninstallPreview;
     if (preview !== undefined) {
       void preview({ pack_slug: slug }).then((removes) => {
@@ -3193,6 +3250,7 @@ export const mountPacksPanel = (
   };
 
   const submitUninstall = (): Promise<void> => {
+    if (installationRepair?.hasInFlightWork()) return Promise.resolve();
     if (disposed) return Promise.resolve();
     if (!canDelete) return Promise.resolve();
     if (confirmingDeleteFor === null) return Promise.resolve();
@@ -3215,7 +3273,9 @@ export const mountPacksPanel = (
     // `installed_versions`, never in `packs[]`) uninstalls too — the rpc only
     // needs `pack_slug`, so `target` is just for the name / disclosure.
     const target = findPackBySlug(slug);
-    if (!target) return Promise.resolve();
+    const reviewed = opts.packRemovalCaller ? removalReviews.get(slug) : undefined;
+    if (opts.packRemovalCaller && !reviewed?.canApply()) return Promise.resolve();
+    if (!target && !reviewed) return Promise.resolve();
     deleting = true;
     deleteError = null;
     pendingDeleteActionFocus = { kind: 'confirm', slug };
@@ -3226,7 +3286,12 @@ export const mountPacksPanel = (
     const rpc = opts.runUninstall as PacksUninstallCaller;
     const promise = (async () => {
       try {
-        const response = await rpc({ pack_slug: slug });
+        let response: Awaited<ReturnType<PacksUninstallCaller>>;
+        if (reviewed) {
+          const outcome = await reviewed.apply();if (!outcome) return;
+          response = { result: outcome.receipt.result };
+          if (response.result.ok) completedRemoval = { slug,request_id: outcome.receipt.request_id,installed_now: outcome.installed_now };
+        } else response = await rpc({ pack_slug: slug });
         if (disposed) return;
         if (!response.result.ok) {
           // Engine-side `ok: false` outcome — surface the failure code
@@ -3261,7 +3326,7 @@ export const mountPacksPanel = (
             ? {
                 action: 'uninstalled',
                 pack_slug: slug,
-                pack_name: target.name,
+                pack_name: target?.name ?? slug,
                 blocks: uninstallBlocks,
               }
             : null;
@@ -3346,6 +3411,41 @@ export const mountPacksPanel = (
   // state snapshot + transition callbacks; `packs-install-dialog.ts` owns
   // the DOM shape. State reads stay one-directional (props in, callbacks
   // out) so the panel remains the dialog state's single writer.
+  const updateReviewFor = (pack: Pick<PackListEntry,'slug'>, context: { manifestHash: string; source: 'bundled' | 'marketplace'; historyOnly: boolean }, managed: boolean) => {
+    let review = updateReviews.get(pack.slug);
+    if (!review && opts.packUpdateCaller) {
+      const panel = createPackUpdatePanel({ document: doc,packSlug: pack.slug,...context,managed,caller: opts.packUpdateCaller,
+        ...(opts.packUpdateRegressionCaller ? { regressionCaller: opts.packUpdateRegressionCaller } : {}),changed: render,
+        applying(value) { installing = value; render(); },refresh() { void refreshRows({ refreshRecipes: true }); } });
+      review = { key: `${context.source}:${context.manifestHash}`,panel }; updateReviews.set(pack.slug,review);
+    }
+    review?.panel.configure(context); review?.panel.setInstalling(installing); return review?.panel;
+  };
+  const renderHistoryDialog = (pack: Pick<PackListEntry,'slug' | 'name'>): HTMLElement => {
+    const region = doc.createElement('section'); region.setAttribute(PACKS_DIALOG_ATTR,''); region.setAttribute(PACKS_DIALOG_SLUG_ATTR,pack.slug);
+    region.setAttribute('role','region'); region.setAttribute('aria-label',`Release history for ${pack.name}`);
+    const heading = doc.createElement('h4'); heading.textContent = `Release history for ${pack.name}`; region.append(heading);
+    const review = updateReviewFor(pack,{ manifestHash: '',source: 'bundled',historyOnly: true },true); if (review) region.append(review.element);
+    const close = doc.createElement('button'); close.type = 'button'; close.textContent = 'Close release history'; close.className = 'rx-btn rx-btn-secondary rx-btn-sm';
+    close.setAttribute(PACKS_DIALOG_CANCEL_BTN_ATTR,''); close.disabled = installing; close.onclick = closeDialog; region.append(close);
+    region.onkeydown = event => { if (event.key === 'Escape' && !installing) { event.preventDefault(); closeDialog(); } };
+    return region;
+  };
+  const appendHistoryAction = (parent: HTMLElement, slug: string): void => {
+    const history = doc.createElement('button'); history.type = 'button'; history.textContent = 'Release history';
+    history.className = 'rx-btn rx-btn-secondary rx-btn-sm'; history.setAttribute('data-pack-release-history',slug);
+    history.disabled = installing || deleting; history.onclick = () => openDialog(slug,'history'); parent.append(history);
+  };
+  // A retained local release remains usable when a catalog entry was withdrawn
+  // or its current manifest cannot be fetched. Normal install still needs it.
+  const appendUnavailableHistory = (slug: string): void => {
+    if (!rosterInstalledSet.has(slug) && !hasRemovalRetry(slug)) return;
+    if (opts.packUpdateCaller && rosterInstalledSet.has(slug)) {
+      appendHistoryAction(wrapper,slug);
+      if (dialogOpenFor === slug && historyDialog) wrapper.append(renderHistoryDialog({ slug,name: findPackBySlug(slug)?.name ?? slug }));
+    }
+    if (opts.packRemovalCaller) renderReviewedRemovalControls(wrapper,slug);
+  };
   const renderDialog = (
     // ⛔ RESOLVED pack — it must carry a manifest. `packs.list` forwards one only
     // for installed packs, so the dialog for a Discover row renders from the
@@ -3374,7 +3474,13 @@ export const mountPacksPanel = (
     // open event.
     ensureInstallPreview(pack.slug, pack.manifest);
     const installPreview = installPreviewFor(pack.slug, pack.manifest);
+    if (opts.packUpdateCaller && installPreview?.update_tests && pack.installed_any_version === true && !pack.installed) {
+      const source = pendingAddEntry?.slug === pack.slug ? 'marketplace' : 'bundled';
+      updateReviewFor(pack,{ source,manifestHash: installPreview.update_tests.manifest_hash,historyOnly: false },installPreview.update_tests.managed);
+    }
+    const updateReview = updateReviews.get(pack.slug)?.panel; updateReview?.setInstalling(installing);
     return renderPacksInstallDialog({
+      ...(updateReview ? { updateTests: { element: updateReview.element,blocked: updateReview.blocked() } } : {}),
       document: doc,
       pack,
       ...(installPreview !== undefined ? { installPreview } : {}),
@@ -3503,7 +3609,7 @@ export const mountPacksPanel = (
     // `canInstall` (a host may wire only the by-slug seam).
     const isAddedPack = pendingAddEntry?.slug === pack.slug;
     const showInstall = (isAddedPack ? canAdd : canInstall) && !pack.installed;
-    const showDelete = canDelete && pack.installed;
+    const showDelete = canDelete && (pack.installed || pack.installed_any_version === true || rosterInstalledSet.has(pack.slug) || hasRemovalRetry(pack.slug));
     // Foundation Delete warning. Renders above the footer when the
     // confirm strip is armed on a foundation pack so the user reads
     // the boot-time-undo disclosure before the Confirm button — since
@@ -3688,7 +3794,8 @@ export const mountPacksPanel = (
         footer.appendChild(installBtn);
       }
 
-      if (showDelete) {
+      if (showDelete && opts.packRemovalCaller) renderReviewedRemovalControls(footer,pack.slug);
+      else if (showDelete) {
         // Slice B — three visual states keyed off `confirmingDeleteFor`
         // + `deleting` (mirrors SI Slice 1.5's per-row Delete strip):
         //   default:    [Delete]
@@ -4026,6 +4133,9 @@ export const mountPacksPanel = (
       identity.appendChild(repoLink);
     }
     appendPackActions(identity, pack, grantOverlap);
+    if (opts.packUpdateCaller && (pack.installed || pack.installed_any_version)) {
+      appendHistoryAction(identity,pack.slug);
+    }
     wrapper.appendChild(identity);
     // Inline consent dialog directly under the Install affordance.
     //
@@ -4035,7 +4145,7 @@ export const mountPacksPanel = (
     // an install dialog listing no recipes, no grants and no permissions — a
     // consent surface that under-states what the user is agreeing to. Absent ⇒
     // render nothing this pass; the resolve completing re-renders.
-    if (dialogOpenFor === pack.slug && pack.manifest === undefined
+    if (dialogOpenFor === pack.slug && !historyDialog && pack.manifest === undefined
       && detailResolving === pack.slug) {
       // Clicked Install while the manifest was still in flight. The intent is
       // recorded (`dialogOpenFor`), so stand in for the consent surface rather
@@ -4047,7 +4157,8 @@ export const mountPacksPanel = (
       waiting.textContent = COPY.dialog_pending_label;
       wrapper.appendChild(waiting);
     }
-    if (dialogOpenFor === pack.slug && pack.manifest !== undefined) {
+    if (dialogOpenFor === pack.slug && historyDialog) wrapper.append(renderHistoryDialog(pack));
+    else if (dialogOpenFor === pack.slug && pack.manifest !== undefined) {
       wrapper.appendChild(
         renderDialog({ ...pack, manifest: pack.manifest }, collision, grantOverlap),
       );
@@ -4498,6 +4609,11 @@ export const mountPacksPanel = (
   // (the surface hides this host).
   const renderReady = (): void => {
     if (selectedSlug === null) return;
+    if (completedRemoval?.slug === selectedSlug) {
+      const receipt = doc.createElement('p');receipt.setAttribute('data-pack-removal-completed','');receipt.setAttribute('role','status');
+      receipt.textContent = completedRemoval.installed_now ? `Removal receipt ${completedRemoval.request_id}. A current installation remains; review it before removing.`
+        : `Removal completed; receipt ${completedRemoval.request_id}.`;wrapper.append(receipt);
+    }
     // ⚠ HERE, not only in `selectPack`. A deep-link (`#packs/<slug>`, the normal
     // way this surface is reached) seeds `selectedSlug` at construction and
     // never goes through `selectPack` — wiring the recipe read only there meant
@@ -4527,6 +4643,7 @@ export const mountPacksPanel = (
       if (detailPack.manifest === undefined) {
         if (detailResolveError?.slug === selectedSlug) {
           renderDetailResolveError(selectedSlug, detailResolveError.message);
+          appendUnavailableHistory(selectedSlug);
           return;
         }
         ensureDetailResolved(selectedSlug);
@@ -4536,6 +4653,7 @@ export const mountPacksPanel = (
     }
     if (detailResolveError?.slug === selectedSlug) {
       renderDetailResolveError(selectedSlug, detailResolveError.message);
+      appendUnavailableHistory(selectedSlug);
       return;
     }
     // No resolver wired → a non-roster slug can never resolve. Show a terminal
@@ -4545,14 +4663,22 @@ export const mountPacksPanel = (
     // deep-linked-then-uninstalled slug.
     if (opts.runResolvePack === undefined) {
       renderDetailUnavailable(selectedSlug);
+      appendUnavailableHistory(selectedSlug);
       return;
     }
     ensureDetailResolved(selectedSlug); // idempotent; re-renders on completion
     renderDetailLoading(selectedSlug);
+    appendUnavailableHistory(selectedSlug);
   };
 
   const render = (): void => {
     if (disposed) return;
+    for (const [slug,review] of updateReviews) if (slug !== dialogOpenFor) {
+      review.panel.hide(); if (!review.panel.hasUnsavedChanges()) { review.panel.dispose(); updateReviews.delete(slug); }
+    }
+    for (const [slug,review] of removalReviews) if (slug !== confirmingDeleteFor) {
+      review.hide();if (!review.hasPendingRetry() && !review.hasInFlightWork()) { review.dispose();removalReviews.delete(slug); }
+    }
     if (pendingPermissionRepairReturn && state === 'ready' && dialogOpenFor === null
       && selectedSlug === pendingPermissionRepairReturn.resume.pack.slug) {
       const repair = pendingPermissionRepairReturn; const draft = repair.resume; const slug = draft.pack.slug;
@@ -4630,6 +4756,7 @@ export const mountPacksPanel = (
     pendingProgramsFocus = null;
     if (restoreResourceAccess === null && focusLost) restoreResourceAccess = pendingResourceAccessFocus;
     pendingResourceAccessFocus = null;
+    const repairFocus = installationRepair?.focusKey() ?? null;
     clearChildren();
     switch (state) {
       case 'loading':
@@ -4641,6 +4768,9 @@ export const mountPacksPanel = (
       case 'error':
         renderError();
         break;
+    }
+    if (installationRepair && selectedSlug === null) {
+      wrapper.appendChild(installationRepair.element);installationRepair.refresh();installationRepair.restoreFocus(repairFocus);
     }
     if (restoreListRetry) {
       focusPanelElement(
@@ -4746,6 +4876,9 @@ export const mountPacksPanel = (
   return {
     getState: () => state,
     refreshAppView: () => appView?.refresh(),
+    getRunPageContext: () => !disposed && selectedSlug === appViewSlug
+      && (!detailTabPinned || activeDetailTab === 'use')
+      ? appView?.getRunPageContext() ?? null : null,
     getActiveViewId: () => appView?.activeViewId() ?? null,
     // Codex review fold (MINOR 5) — return defensive copies so a test
     // caller / host that mutates the returned value cannot corrupt
@@ -4823,10 +4956,13 @@ export const mountPacksPanel = (
     clickSelectPack: (slug: string) => selectPack(slug),
     clickBackToList: () => selectPack(null),
     hasInFlightWork: () =>
+      installationRepair?.hasInFlightWork() === true ||
+      [...updateReviews.values()].some(review => review.panel.hasInFlightWork()) ||
+      [...removalReviews.values()].some(review => review.hasInFlightWork()) ||
       installing
       || deleting
       || appView?.hasInFlightWork() === true,
-    hasUnsavedChanges: () => appView?.hasUnsavedChanges() === true,
+    hasUnsavedChanges: () => installationRepair?.hasPendingRetry() === true || appView?.hasUnsavedChanges() === true || [...updateReviews.values()].some(review => review.panel.hasUnsavedChanges()),
     refresh: () => {
       // Slice A — no defer-while-dialog-open invariant (mirroring SI
       // panel Major #3 would suppress refresh while the dialog is
@@ -4844,6 +4980,9 @@ export const mountPacksPanel = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      for (const review of updateReviews.values()) review.panel.dispose(); updateReviews.clear();
+      for (const review of removalReviews.values()) review.dispose();removalReviews.clear();
+      installationRepair?.dispose();
       supervision.dispose();
       connectionsReadiness.dispose();
       packAccess.dispose();

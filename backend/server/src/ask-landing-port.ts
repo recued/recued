@@ -261,7 +261,7 @@ const isAskEditWindowClosed = (ask: PendingAsk, now: number): boolean =>
  *  Keyed on `created_at` — the ask's own mint time, the same instant the link
  *  was built and sent. */
 const isAskLinkExpired = (ask: PendingAsk, now: number): boolean =>
-  now - ask.created_at > ASK_LANDING_LINK_TTL_MS;
+  ask.delivery_group_id === undefined && now - ask.created_at > ASK_LANDING_LINK_TTL_MS;
 
 /** The generic "no longer available" page for an unknown / pruned `ask_id`.
  *  Static — no interpolation, no capability leak (the 122-bit id is
@@ -655,7 +655,8 @@ export const createAskLandingPortHandler = (
           // The block re-validates the option against the persisted ask + dedups
           // (first-answer-wins); a no-op leaves the ask open and the re-render
           // below shows the form again with a fresh nonce.
-          await deps.submitAnswer(submission.reply);
+          await deps.submitAnswer(current?.delivery_group_id
+            ? { ...submission.reply, landing_capability: true } : submission.reply);
         }
       }
 

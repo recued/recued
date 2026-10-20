@@ -94,7 +94,8 @@ const cardFor = async (slug: string, step: string, args: Record<string, unknown>
   };
   const context: PreflightAskContext = {
     recipe_id: 'calendar-invites', gated_step_id: step, tool_slug: slug, risk_tier: 'write',
-    reason: `op '${slug}' requires preflight approval under the active trust ceiling`,
+    // What `admitByOpRisk` gives a write held on a trigger's run (the `fire` unit below).
+    reason: 'Runs that start on their own, from a schedule or a trigger, can only read without asking you.',
     batch: { batch_id: 'b1', payload_version: 1, items: [member], unit: { kind: 'fire', id: 'run1' } },
   };
   const ask = buildPreflightAsk({ checkpoint, context });

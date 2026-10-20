@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { isAuthenticationIncidentHistoryPage, isAuthenticationIncidentHistoryQuery, isAuthenticationIncidentScope,
-  isAuthenticationRepairAction, type AuthenticationRepairAction, type AuthenticationIncidentHistoryPage, type AuthenticationRenewalHistory } from '../authentication-incident-history.js';
+  isAuthenticationRepairAction, isAuthenticationIncidentHistoryFilters, authenticationIncidentHistoryFilters, authenticationHistoryEntryOutcome, authenticationHistoryEntryMatches,
+  type AuthenticationRepairAction, type AuthenticationIncidentHistoryPage, type AuthenticationRenewalHistory } from '../authentication-incident-history.js';
+import type { AuthenticationAccessVerification } from '../authentication-access-verification.js';
 
 const page = (): AuthenticationIncidentHistoryPage => ({ scope: { kind: 'all' }, observed_at: 200, retention_days: 90,
   incidents: [{ id: '12345678-1234-4123-8123-123456789abc', status: 'open', started_at: 100, last_problem_at: 150, history_started_at: 100,
@@ -14,6 +16,44 @@ describe('connection incident history wire boundary', () => {
   const repair = (): AuthenticationRepairAction => ({ id: 'repair-' + 'd'.repeat(64), action: 'reauthorize', status: 'applied', started_at: 110, finished_at: 120,
     from: { type: 'direct_oauth', app_id: 'work' }, to: { type: 'broker', broker_profile_id: 'team' }, targets: [{ kind: 'connection', name: 'work' }],
     targets_truncated: false, incidents: [], incidents_truncated: false });
+  const access = (): AuthenticationAccessVerification => ({ id: 'verify-12345678-1234-4123-8123-123456789abc', selection: { kind: 'group', id: 'a'.repeat(64) },
+    started_at: 100, finished_at: 120, status: 'completed', results: [{ id: 'e'.repeat(64), label: 'École 100%_ reports', target: { kind: 'collection', platform: 'calendar', slug: 'team' },
+      authentication_revision: 'f'.repeat(64), current: 'no', checks: [{ kind: 'collection_read', status: 'passed' }, { kind: 'write_permissions', status: 'unconfirmed', reason: 'not_executed' }] }],
+    targets_truncated: false, uses: [{ kind: 'pack', id: 'work-pack', label: 'Daily planning' }], usage_available: true });
+  it.each([null, [], { search: 'x'.repeat(129) }, { search: '\u0344'.repeat(65) }, { search: '\ud800' }, { search: '\udfff' }, { search: 'line\nbreak' }, { search: 1 }, { type: ['incident'] }, { type: 'all' },
+    { outcome: 'healthy' }, { from: '2026-02-30' }, { through: '2026-2-03' }, { from: '2026-10-17', through: '2026-10-16' }, { token: 'secret' }])('refuses invalid filters %j at request and response boundaries', filters => {
+    expect(isAuthenticationIncidentHistoryFilters(filters)).toBe(false);
+    expect(isAuthenticationIncidentHistoryQuery({ scope: { kind: 'all' }, filters })).toBe(false);
+    expect(isAuthenticationIncidentHistoryPage({ ...page(), filters })).toBe(false);
+  });
+  it('canonicalizes empty search, Unicode and field order while accepting inclusive leap dates', () => {
+    expect(authenticationIncidentHistoryFilters({ through: '2028-02-29', search: '  E\u0301cole  ', type: 'verification' })).toEqual({ search: 'École', type: 'verification', through: '2028-02-29' });
+    expect(authenticationIncidentHistoryFilters({ search: '  ' })).toEqual({});
+    expect(isAuthenticationIncidentHistoryFilters({ from: '2028-02-29', through: '2028-02-29' })).toBe(true);
+    const boundary = { search: '\u0344'.repeat(64) }; expect(isAuthenticationIncidentHistoryFilters(boundary)).toBe(true);
+    expect(isAuthenticationIncidentHistoryFilters(authenticationIncidentHistoryFilters(boundary))).toBe(true);
+  });
+  it('keeps recorded read outcomes separate from writes, current authentication, repair apply and recovery', () => {
+    const v = access(); expect(authenticationHistoryEntryOutcome(v)).toBe('passed');
+    expect(authenticationHistoryEntryOutcome(page().incidents[0]!)).toBe('open'); expect(authenticationHistoryEntryOutcome(repair())).toBe('applied');
+    v.results[0]!.checks = [{ kind: 'write_permissions', status: 'unconfirmed', reason: 'not_executed' }]; expect(authenticationHistoryEntryOutcome(v)).toBe('unconfirmed');
+    v.results[0]!.checks.push({ kind: 'collection_read', status: 'failed', reason: 'access_rejected' }); expect(authenticationHistoryEntryOutcome(v)).toBe('failed');
+    v.status = 'checking'; delete v.finished_at; expect(authenticationHistoryEntryOutcome(v)).toBe('running');
+    const token = renewal(); token.results.push({ ...token.results[0]!, id: '1'.repeat(64), status: 'unconfirmed', reason: 'not_selected' });
+    expect(authenticationHistoryEntryOutcome(token)).toBe('unconfirmed'); token.results[0]!.status = 'failed'; token.results[0]!.reason = 'grant_rejected';
+    expect(authenticationHistoryEntryOutcome(token)).toBe('failed');
+  });
+  it('searches decoded public labels, uses and exact identifiers as literal Unicode text', () => {
+    const v = access(); Object.assign(v, { client_secret: 'private-marker' });
+    for (const search of ['e\u0301COLE', '100%_', 'work-pack', 'daily PLANNING', 'calendar team', v.id]) expect(authenticationHistoryEntryMatches(v, { search })).toBe(true);
+    for (const search of ['private-marker', 'current', 'authentication_revision', 'passed']) expect(authenticationHistoryEntryMatches(v, { search })).toBe(false);
+    expect(authenticationHistoryEntryMatches(repair(), { search: 'work' })).toBe(true); expect(authenticationHistoryEntryMatches(renewal(), { search: 'Work API' })).toBe(true);
+  });
+  it('uses original start times and inclusive UTC days without treating a historical pass as recovery', () => {
+    const v = access(); v.started_at = Date.parse('2026-10-16T23:59:59.999Z'); v.finished_at = v.started_at + 1;
+    expect(authenticationHistoryEntryMatches(v, { from: '2026-10-16', through: '2026-10-16', type: 'verification', outcome: 'passed' })).toBe(true);
+    for (const filters of [{ from: '2026-10-17' }, { through: '2026-10-15' }, { type: 'incident' as const }, { outcome: 'recovered' as const }]) expect(authenticationHistoryEntryMatches(v, filters)).toBe(false);
+  });
   it('accepts separately typed renewal history and rejects ambiguous or contradictory mixed orders', () => {
     const data = page(); const token = renewal(); const action = repair();
     const mixed = { ...data, repairs: [action], renewals: [token], order: [token.id, action.id, data.incidents[0]!.id] };

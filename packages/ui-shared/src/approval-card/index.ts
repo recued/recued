@@ -10,6 +10,7 @@ export {
   renderApprovalCard,
   renderAskCard,
   renderChatPlanCard,
+  splitSessionGrantTerms,
   APPROVAL_CARD_ACTION_ATTR,
   APPROVAL_CARD_ATTR,
   APPROVAL_CARD_CAUTION_ATTR,
@@ -22,6 +23,7 @@ export {
   ASK_CARD_CONFIRM_ATTR,
   ASK_CARD_DETAILS_ATTR,
   ASK_CARD_BODY_ATTR,
+  ASK_CARD_GRANT_ATTR,
   ASK_CARD_NOTE_ATTR,
   ASK_CARD_OPTION_ATTR,
   ASK_CARD_ERROR_ATTR,
@@ -46,4 +48,5 @@ export {
   type ChatPlanCardHandlers,
   type ChatPlanCardModel,
   type ChatPlanCardOptions,
+  type SessionGrantTerms,
 } from './card.js';

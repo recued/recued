@@ -1,3 +1,4 @@
+import { makeAutomationRehearsalHandlers, type AutomationRehearsalDeps } from './automation-rehearsal-handler.js';
 /** WebSocket server — real-time channel between server and extension(s).
  *
  *  Upgrades HTTP connections on /ws to WebSocket. Each connected client
@@ -64,6 +65,7 @@ import {
   type ServerRpcRegistry,
 } from '@recued/contracts';
 import type { BridgeRegistry } from './bridges/registry.js';
+import { createBridgeReminderPort } from './bridges/reminder-port.js';
 import {
   createBridgeDispatcher,
   createBridgeResultListener,
@@ -91,6 +93,14 @@ import { makeRecipeListHandlers } from './recipe-list-handler.js';
 import { makeRecipePiiHandlers } from './recipe-pii-handler.js';
 import { makeRecipeSaveHandlers } from './recipe-save-handler.js';
 import { makeRecipeSimulationHandlers } from './recipe-simulation-handler.js';
+import { makeRecipeRegressionHandlers, type RecipeRegressionDeps } from './recipe-regression-handler.js';
+import { makeRecipeRunCaptureHandlers, type RecipeRunCaptureDeps } from './recipe-run-capture-handler.js';
+import { makeRecipeReleaseHandlers, type RecipeReleaseDeps } from './recipe-release-handler.js';
+import { makePermissionRegressionHandlers, type PermissionRegressionDeps } from './permission-regression-handler.js';
+import { makePackUpdateHandlers, packUpdateOwner, type PackUpdateDeps } from './pack-update-handler.js';
+import { makePackRemovalHandlers } from './pack-removal-handler.js';
+import { makePackRepairHandlers } from './pack-repair-handler.js';
+import { makeConnectionReplacementHandlers } from './connection-replacement-handler.js';
 import { makeRecipeDeleteHandlers } from './recipe-delete-handler.js';
 import { makeRecipeRunnabilityHandlers } from './recipe-runnability-handler.js';
 import { makeApprovalHandlers, type ApprovalHandlerDeps } from './approval-handler.js';
@@ -124,6 +134,7 @@ import { makeServerTimeZoneHandlers } from './server-timezone-handler.js';
 import { makeNotificationKindPolicyHandlers } from './notification-kind-policy-handler.js';
 import { makeQuietHoursHandlers } from './quiet-hours-handler.js';
 import { makeReminderHandlers } from './reminders/reminder-rpc-handler.js';
+import { makeYoursHandlers } from './situations/yours-handler.js';
 import {
   makeHostnameHandlers,
   type HostnameRpcDeps,
@@ -482,6 +493,7 @@ const PRE_ENROLLMENT_ALLOWED_RPC_METHODS: ReadonlySet<string> = new Set([
   'server.archive.upload.finalize',
   'server.archive.upload.delete',
   'server.archive.import',
+  'server.archive.import_status',
 ]);
 
 /** Look up the merged prefs view for a paired instance. Returns
@@ -861,6 +873,7 @@ export interface WsServerHandle {
    *  eligibility filtering (Slice 4), sequential fall-through, and
    *  per-bridge 429 retry. */
   bridgeDispatcher?: BridgeDispatcher;
+  bridgeReminders?: import('@recued/notification').BridgeReminderPort;
   // D-103: peerCacheInvalidate + cache.invalidate rpc removed. TTL +
   // LRU handle expiry without cross-peer coordination.
   /** Phase G (D-109) — broadcast the server's current runtime state
@@ -1143,6 +1156,7 @@ export interface AttachWebSocketOptions {
   /** D-324 — `reminder.*`, the Data → Reminders list. `reminder.` is an MCP
    *  reserved prefix. Absent → those methods return `not_configured`. */
   reminderDeps?: { dispatchers: import('./reminders/reminder-service.js').ReminderDispatchers };
+  yoursDeps?: import('./situations/yours-service.js').YoursService;
   /** Supervision feature — owner-only `supervision.*` rpc deps (cli-daemon
    *  keep-alive). `supervision.` is in `MCP_RESERVED_RPC_PREFIXES`. Absent →
    *  those methods return `not_configured` (db-less harnesses). */
@@ -1419,6 +1433,12 @@ export interface AttachWebSocketOptions {
   recordsRpcDeps?: RecordsRpcDeps;
   savedDataViewStore?: SavedDataViewStore;
   preapprovalDeps?: PreapprovalHandlerDeps;
+  recipeRegressionDeps?: RecipeRegressionDeps;
+  recipeRunCaptureDeps?: RecipeRunCaptureDeps;
+  recipeReleaseDeps?: RecipeReleaseDeps;
+  automationRehearsalDeps?: AutomationRehearsalDeps;
+  permissionRegressionDeps?: PermissionRegressionDeps;
+  packUpdateDeps?: PackUpdateDeps;
   /** D-174 #22 — `data.timeline` read pair-RPC. Wraps the shared
    *  `handleTimelineRequest` query (third channel alongside MCP +
    *  recipe). Absent → returns `not_configured` (db-less harness or a
@@ -1561,6 +1581,7 @@ const buildWsBinding = (
     notificationKindPolicyDeps,
     quietHoursDeps,
     reminderDeps,
+    yoursDeps,
     supervisionDeps,
     hostnameDeps,
     networkDeps,
@@ -1609,6 +1630,12 @@ const buildWsBinding = (
     recordsRpcDeps,
     savedDataViewStore,
     preapprovalDeps,
+    recipeRegressionDeps,
+    recipeRunCaptureDeps,
+    recipeReleaseDeps,
+    automationRehearsalDeps,
+    permissionRegressionDeps,
+    packUpdateDeps,
     timelineRpcDeps,
     memoryRpcDeps,
     fileReadRpcDeps,
@@ -1739,8 +1766,14 @@ const buildWsBinding = (
     operationProfiles: executeDeps?.connectionOperationProfiles,
     localManifestStore: executeDeps?.localManifestStore,
   });
+  const regressionHandlers = makeRecipeRegressionHandlers(recipeRegressionDeps);
+  const reviewedPackInstallDeps = withSharedSignInConnections(packInstallDeps,packConnectionsDeps);
+  const packInstallWithReview = reviewedPackInstallDeps ? { ...reviewedPackInstallDeps,
+    ...(packUpdateDeps ? { packUpdateStore: packUpdateDeps.store } : {}),
+  } : undefined;
   const { handlers, wiredMethods } = composeHandlers<ServerRpcRegistry, WsClient>([
     makeExecuteHandlers(executeDeps),
+    makeRecipeRunCaptureHandlers(recipeRunCaptureDeps,executeDeps),
     makeExecutionControlHandlers(executionControlDeps),
     // D-172 resumable uploads — the owner-only webclient upload control plane
     // (create / probe / finalize / delete). The chunk BYTES ride the dedicated
@@ -1863,6 +1896,10 @@ const buildWsBinding = (
     // `recipeListDeps.store` is the full `recipeStore`).
     makeRecipeSaveHandlers(recipeSaveDeps ?? recipeListDeps),
     makeRecipeSimulationHandlers(),
+    regressionHandlers,
+    makeRecipeReleaseHandlers(recipeReleaseDeps,regressionHandlers),
+    makeAutomationRehearsalHandlers(automationRehearsalDeps),
+    makePermissionRegressionHandlers(permissionRegressionDeps),
     // D-247 D14.1 — `recipe.delete`. Rides the same writable store, plus the
     // `contract.*` store so the pack-ownership refusal can ask whether the owning
     // pack is still INSTALLED. ⚠ That qualifier is load-bearing: without it a
@@ -1919,6 +1956,7 @@ const buildWsBinding = (
     makeQuietHoursHandlers(quietHoursDeps),
     // D-324 — the owner's reminders list.
     makeReminderHandlers(reminderDeps),
+    makeYoursHandlers(yoursDeps),
     // D-152 — Settings → Reachability hostname registry CRUD +
     // ownership-proof transitions. Same store as the listener SNI
     // binding lookup, so a verified/enabled RPC mutation is the state
@@ -1983,12 +2021,14 @@ const buildWsBinding = (
     // D-138 ratchet test asserts the prefix stays reserved).
     // D-320 slice 2j — with the accounts a pack's sign-in shares, which its
     // install dialog offers and a first install adds.
-    makePackInstallHandlers(withSharedSignInConnections(packInstallDeps, packConnectionsDeps)),
+    makePackInstallHandlers(packInstallWithReview,packUpdateDeps ? client => packUpdateOwner(packUpdateDeps,client) : undefined),
+    makePackUpdateHandlers(packUpdateDeps,packInstallWithReview,regressionHandlers),
     // D-320 slice 2b — a pack's connections per slot, for the Access page's
     // Connections block: its list, its default, Add another / Make default /
     // Remove. Same `packs.` reserved-prefix gate, so no door's agent can move a
     // pack to another account.
     makePackConnectionsHandlers(packConnectionsDeps),
+    makeConnectionReplacementHandlers(packConnectionsDeps, connectionDeps, dishDeps, packInstallDeps, packUpdateDeps),
     // D-145 PA10 follow-on — Settings → Packs list rpc. Read counterpart
     // to `packs.install`; reads bundled pack manifests off disk +
     // joins each with the per-pair `RecipeStore` to compute the
@@ -2005,7 +2045,9 @@ const buildWsBinding = (
     // `<slug>:` prefix + deletes each recipe in the bundled manifest.
     // Same `packs.` reserved-prefix gate; same per-pair `RecipeStore` +
     // SI store handles as install + list.
-    makePackUninstallHandlers(packUninstallDeps),
+    makePackUninstallHandlers(packUninstallDeps,packUpdateDeps ? slug => packUpdateDeps.store.retire(slug) : undefined),
+    makePackRemovalHandlers(packUninstallDeps,packUpdateDeps),
+    makePackRepairHandlers(packUninstallDeps,packUpdateDeps),
     // D-170 — Kitchen / Connection Setup ingredient-authoring install rpc.
     // `ingredient.install` decomposes a composition / app_pack → persists
     // bodies + inventory + registers the catalog for gateway resolution (N.16);
@@ -2410,6 +2452,7 @@ const buildWsBinding = (
   // returned handle then carries `bridgeDispatcher: undefined`.
   let bridgeDispatcher: BridgeDispatcher | undefined;
   let bridgeResultListener: BridgeResultListener | undefined;
+  let bridgeReminders: ReturnType<typeof createBridgeReminderPort> | undefined;
   if (bridgeRegistry) {
     bridgeResultListener = createBridgeResultListener();
     /** Find the WsClient that owns the CURRENT session for a given
@@ -2493,6 +2536,8 @@ const buildWsBinding = (
         return sendEnvelope(client_token_id, { kind: 'cancel', cancel });
       },
     };
+    if (clientTokens) bridgeReminders = createBridgeReminderPort({ registry: bridgeRegistry,
+      tokens: () => clientTokens.list({ client_kind: 'bridge' }), send: sendEnvelope });
     bridgeDispatcher = createBridgeDispatcher({
       registry: bridgeRegistry,
       transport: bridgeTransport,
@@ -2974,6 +3019,11 @@ const buildWsBinding = (
   });
 
   const handleMessage = (client: WsClient, msg: Record<string, unknown>): void => {
+    if (msg.kind === 'notification_receipt') {
+      if (client.client_kind === 'bridge' && client.client_token_id && client.bridge_session_id)
+        bridgeReminders?.receive(client.client_token_id, client.bridge_session_id, msg.receipt);
+      return;
+    }
     // D-169 P0 follow-on — `BridgeFromBridgeWireEnvelope` discriminator.
     // The bridge SW serializes its inbound→server frames as
     // `{kind: 'result', result: BridgeResult}` (see
@@ -3759,6 +3809,7 @@ const buildWsBinding = (
     },
 
     ...(bridgeDispatcher ? { bridgeDispatcher } : {}),
+    ...(bridgeReminders ? { bridgeReminders } : {}),
 
     close() {
       if (closePromise) return closePromise;
@@ -3795,6 +3846,7 @@ const buildWsBinding = (
       // fold). Each pending awaitResult resolves to null — the same
       // shape callers see on timeout.
       bridgeResultListener?.clear?.();
+      bridgeReminders?.close();
       // cacheGetRequests is the odd one out: the peer-cache contract
       // treats "no answer" as a cache miss, not an error. Resolve each
       // pending fetch with `null` so warehouse fallbacks still succeed

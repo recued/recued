@@ -86,7 +86,10 @@ export const handleContactUpsert = async (
     mailing_address?: MailingAddress;
     company?: string;
     title?: string;
-    birthday?: string;
+    birthday?: string | null;
+    anniversary?: string | null;
+    relationship?: import('@recued/contracts').ContactRelationship | null;
+    privacy_marks?: import('@recued/contracts').ContactPrivacyMark[];
     network_domain?: NetworkDomain[];
   },
   /** D-210 audit finding 5 — TRUSTED, server-internal write options.
@@ -102,6 +105,8 @@ export const handleContactUpsert = async (
   if (typeof args.email !== 'string' || !args.email.trim()) {
     throw new RpcError('bad_request', 'contact.upsert: email is required');
   }
+  if ((args.relationship !== undefined || args.privacy_marks !== undefined)
+    && (deps.origin_actor !== 'user_self' || deps.origin_surface !== 'client_rpc')) throw new RpcError('unauthorized', 'Contact relationship and privacy marks are owner controls.', 403);
   if (args.network_domain !== undefined && !isStringArray(args.network_domain)) {
     throw new RpcError(
       'bad_request',
@@ -133,6 +138,9 @@ export const handleContactUpsert = async (
         ...(args.company !== undefined ? { company: args.company } : {}),
         ...(args.title !== undefined ? { title: args.title } : {}),
         ...(args.birthday !== undefined ? { birthday: args.birthday } : {}),
+        ...(args.anniversary !== undefined ? { anniversary: args.anniversary } : {}),
+        ...(args.relationship !== undefined ? { relationship: args.relationship } : {}),
+        ...(args.privacy_marks !== undefined ? { privacy_marks: args.privacy_marks } : {}),
       },
       deps.now?.(),
       // D-161 P2 — stamp the SERVER-INJECTED write-actor (from `deps`,
@@ -231,6 +239,9 @@ export const handleContactGet = async (
   if (typeof args.email !== 'string' || !args.email.trim()) {
     throw new RpcError('bad_request', 'contact.get: email is required');
   }
+  // D-325 — a reference by contact id (Today, an occasion) reads the same
+  // record as one by email.
+  if (!args.email.includes('@')) return { contact: deps.store.getByContactIdResolved(args.email.trim()) ?? deps.store.get(args.email) };
   return { contact: deps.store.get(args.email) };
 };
 

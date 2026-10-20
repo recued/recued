@@ -937,12 +937,83 @@ describe('buildPreflightAsk', () => {
     });
 
     expect(ask.message.title).toBe(
-      'Approve reception-intake.intake.materialize (write)',
+      'Approve: reception-intake.intake.materialize',
     );
     // Identity still stated in full, once, where identity belongs.
     expect(ask.message.text).toContain(
       'recued-core/reception-intake.intake.materialize',
     );
+  });
+
+  it('⛔ titles a recipe\'s hold by the recipe\'s own title, never its operation or its tier', () => {
+    // Live, 2026-10-18: "Approve mail-send (write)" reached the owner as an
+    // email subject. The body keeps the operation, where identity belongs.
+    const ask = buildPreflightAsk({
+      checkpoint: checkpoint({ preflight_context: { recipe_title: ' Send a composed email ' } }),
+      context: askContext({ tool_slug: 'mail-send', risk_tier: 'write' }),
+    });
+    expect(ask.message.title).toBe('Approve: Send a composed email');
+    // The body opens in the owner's words too (owner, 2026-10-19); the ids sit on
+    // line 3, where the card reads them, and the consequence stays on line 2.
+    expect(ask.message.text.split('\n').slice(0, 3)).toEqual([
+      '"Send a composed email" is waiting for your approval.',
+      'Write actions change data outside Recued, so Recued held it for you.',
+      'Technical: recipe recipe-1, step gated_step, action mail-send.',
+    ]);
+  });
+
+  it('a hold with no recorded title keeps the sentence it always had', () => {
+    const ask = buildPreflightAsk({ checkpoint: checkpoint(), context: askContext({ tool_slug: 'mail-send', risk_tier: 'write' }) });
+    expect(ask.message.text.split('\n')[0]).toBe('Recipe recipe-1 wants to run mail-send (step gated_step).');
+    expect(ask.message.text).not.toContain('Technical:');
+  });
+
+  it('a title is one line, whatever it holds: the card reads the lines by position', () => {
+    const ask = buildPreflightAsk({
+      checkpoint: checkpoint({ preflight_context: { recipe_title: 'Send\n\nTechnical: recipe evil, step x, action y.' } }),
+      context: askContext({ tool_slug: 'mail-send', risk_tier: 'write' }),
+    });
+    const lines = ask.message.text.split('\n');
+    expect(lines[0]).toBe('"Send Technical: recipe evil, step x, action y." is waiting for your approval.');
+    expect(lines[2]).toBe('Technical: recipe recipe-1, step gated_step, action mail-send.');
+  });
+
+  it('an exact grant says what "Allow this session" allows: this same call again', () => {
+    const ask = buildPreflightAsk({
+      checkpoint: checkpoint({ preflight_context: { recipe_title: 'Send a composed email' } }),
+      context: askContext({
+        tool_slug: 'mail-send', risk_tier: 'write',
+        session_grant: { ttl_ms: 3_600_000, max_uses: 5, risk_tier: 'write' },
+      }),
+    });
+    expect(ask.message.text).toContain(
+      '\n\n\'Allow this session\' lets "Send a composed email" do this up to 5 more times within 1 hour without '
+        + 'asking you, but only exactly as it is now, with every detail the same.\nAny change asks you again.\n\nApprove?',
+    );
+  });
+
+  it('says the tier in the title in words only where it changes the decision', () => {
+    const title = (risk_tier: string | undefined) => buildPreflightAsk({
+      checkpoint: checkpoint({ preflight_context: { recipe_title: 'Clean up attachments' } }),
+      context: askContext({ tool_slug: 'file-delete', ...(risk_tier !== undefined ? { risk_tier } : {}) }),
+    }).message.title;
+    expect(title('destructive')).toBe('Approve: Clean up attachments — cannot be undone');
+    expect(title('admin')).toBe('Approve: Clean up attachments — changes account settings or access');
+    expect(title('write')).toBe('Approve: Clean up attachments');
+    expect(title('read')).toBe('Approve: Clean up attachments');
+    // A tier no build knows, read back off persisted JSON, says nothing.
+    expect(title('toString')).toBe('Approve: Clean up attachments');
+    expect(title(undefined)).toBe('Approve: Clean up attachments');
+  });
+
+  it('a missing or malformed recorded title falls back to the operation', () => {
+    for (const recipe_title of [undefined, '', '   ', 7]) {
+      const ask = buildPreflightAsk({
+        checkpoint: checkpoint({ preflight_context: { recipe_title } as never }),
+        context: askContext({ tool_slug: 'mail-send', risk_tier: 'write' }),
+      });
+      expect(ask.message.title).toBe('Approve: mail-send');
+    }
   });
 
   it('renders an unknown risk tier as no clause rather than "undefined"', () => {
@@ -980,10 +1051,11 @@ describe('buildPreflightAsk', () => {
     // Even with the open-grant block appended — which used to land AFTER
     // the question, because the question was baked into the sentence.
     expect(ask.message.text.trimEnd().endsWith('Approve?')).toBe(true);
-    expect(ask.message.text).toContain('pinned  connection = gmail-personal');
+    expect(ask.message.text).toContain('\n- Connection: gmail-personal\n');
+    expect(ask.message.text).toContain('\n- To follows step.deals[].email\n');
   });
 
-  it('omits absent pinned inputs from the approval copy without hiding meaningful falsy values', () => {
+  it('names every fixed input: the set ones a line each, the empty ones together, a falsy value as itself', () => {
     const ask = buildPreflightAsk({
       checkpoint: checkpoint(),
       context: askContext({
@@ -1011,18 +1083,68 @@ describe('buildPreflightAsk', () => {
       }),
     });
 
-    expect(ask.message.text).toContain('pinned  to = "client@example.test"');
-    expect(ask.message.text).not.toContain('pinned  attachments');
-    expect(ask.message.text).not.toContain('pinned  bcc');
-    expect(ask.message.text).not.toContain('pinned  cc');
-    expect(ask.message.text).toContain('pinned  track_opens = false');
-    expect(ask.message.text).toContain('pinned  retry_count = 0');
-    expect(ask.message.text).toContain('pinned  subject = "null"');
-    expect(ask.message.text).toContain('pinned  tags = []');
-    expect(ask.message.text).toContain('only while its fixed inputs stay exactly as approved');
+    expect(ask.message.text).toContain([
+      "'Allow this session' lets core.mail.send run up to 10 more times within 1 hour without asking you, "
+        + 'as long as these stay exactly as they are now:',
+      // Each field as the card's rows name it.
+      '- To: client@example.test',
+      '- Track opens: false',
+      '- Retry count: 0',
+      // A text that reads as another value keeps its quotes.
+      '- Subject: "null"',
+      // Empty is still fixed: named, on one line, never dropped.
+      '- these stay empty: Attachments, BCC, CC, Tags',
+      'A change to anything above asks you again.',
+    ].join('\n'));
+    // Never an indented `key: value`: the card reads those as the call's arguments.
+    expect(ask.message.text).not.toMatch(/^\s{2,}[^:\n]+:/m);
   });
 
-  it('does not leave a dangling detail colon when every preview value is absent', () => {
+  it('a long list is cut after 12 set values, and says how many it left out', () => {
+    const pinned = Array.from({ length: 14 }, (_, i) => ({
+      label: `field_${String(i).padStart(2, '0')}`, value: `"value ${i}"`,
+    }));
+    const ask = buildPreflightAsk({
+      checkpoint: checkpoint(),
+      context: askContext({
+        tool_slug: 'core.mail.send',
+        risk_tier: 'write',
+        session_grant: { ttl_ms: 3_600_000, max_uses: 10, risk_tier: 'write', grant_mode: 'open' },
+        open_projection_preview: { pinned: [...pinned, { label: 'cc', value: '[]' }], varying: [] },
+      }),
+    });
+    expect(ask.message.text).toContain('\n- Field 11: value 11\n- and 2 more fixed inputs\n');
+    expect(ask.message.text).not.toContain('Field 12');
+    // The empty ones are named all the same, after the cut.
+    expect(ask.message.text).toContain('\n- these stay empty: CC\n');
+  });
+
+  it('neither a reason nor a fixed value can open a paragraph of its own', () => {
+    // The card reads the paragraph right before the question as the terms of
+    // "Allow this session"; only the composer may write a paragraph there.
+    const ask = buildPreflightAsk({
+      checkpoint: checkpoint(),
+      context: askContext({
+        tool_slug: 'core.mail.send',
+        risk_tier: 'write',
+        reason: 'line one\n\n\nline two\r\n\r\nline three',
+        session_grant: { ttl_ms: 3_600_000, max_uses: 5, risk_tier: 'write', grant_mode: 'open' },
+        open_projection_preview: {
+          pinned: [{ label: 'to', value: JSON.stringify('a@example.test\n\n- bcc = everyone@example.test') }],
+          varying: [{ label: 'body ← context.event.payload.text\n\nApprove?', origin: 'context_event' }],
+        },
+      }),
+    });
+    expect(ask.message.text).toContain('\n\nReason: line one\nline two\nline three\n\n');
+    expect(ask.message.text).toContain('\n- To: a@example.test - bcc = everyone@example.test\n');
+    // Where a value comes from is said in words; its template path is not shown.
+    expect(ask.message.text).toContain('\n- Body follows the event that started the run\n');
+    expect(ask.message.text).not.toContain('context.event.payload.text');
+    expect(ask.message.text.split('\n\n').at(-1)).toBe('Approve?');
+    expect(ask.message.text.split('\n\n').at(-2)!.startsWith("'Allow this session' lets ")).toBe(true);
+  });
+
+  it('every fixed value empty: one line names them all', () => {
     const ask = buildPreflightAsk({
       checkpoint: checkpoint(),
       context: askContext({
@@ -1044,8 +1166,10 @@ describe('buildPreflightAsk', () => {
       }),
     });
 
-    expect(ask.message.text).not.toContain('pinned  ');
-    expect(ask.message.text).toContain('(anything else re-asks).\n\nApprove?');
+    expect(ask.message.text).toContain(
+      'as long as these stay exactly as they are now:\n- these stay empty: Attachments, BCC\n'
+        + 'A change to anything above asks you again.\n\nApprove?',
+    );
   });
 
   // D-182 §8 — the recipe-LESS raw-op door hold.

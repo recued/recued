@@ -99,6 +99,7 @@ const mockedModulePaths = [
 ] as const;
 
 const alwaysTopLevelKeys = [
+  'resourceReview',
   'cacheMaxBytes',
   'cacheStore',
   'checkTokenBudget',
@@ -666,6 +667,7 @@ describe('composeExecutorConfig top-level shape', () => {
 
     expect(keySet(config)).toEqual([...alwaysTopLevelKeys].sort());
     expect(config.manifests).toBe(deps.manifests);
+    expect(config.resourceReview).toEqual({ capture: expect.any(Function), run: expect.any(Function) });
     expect(config.vault).toBe(deps.baseVault);
     expect('llmConfig' in config).toBe(true);
     expect(config.llmConfig).toBeUndefined();

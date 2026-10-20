@@ -139,8 +139,11 @@ const mkWorld = async (opts: { seed?: (watchedDir: string) => void } = {}): Prom
   });
   fileStack.instances.upsert({
     platform: 'file', slug: 'docs', adapter_type: 'fs', config: { path: watchedDir },
+    // Walked once, never watched: every file test here seeds before start, and on
+    // macOS a recursive watcher's close blocks the event loop for seconds under disk
+    // load. Live watching is tested in `watched-folders.test.ts`.
     caps: {
-      read: 'yes', write: 'yes', delete: 'yes', watch: 'realtime',
+      read: 'yes', write: 'yes', delete: 'yes', watch: 'none',
       mirror: 'optional', auth: 'none', path_style: 'posix',
     },
     auth_state: 'healthy', last_synced_at: null,
@@ -167,8 +170,8 @@ const mkWorld = async (opts: { seed?: (watchedDir: string) => void } = {}): Prom
   }
   // ⛔ NO SLEEP HERE, AND NONE IS NEEDED. `startAll()` is already the barrier:
   // it starts each adapter and awaits it, and the fs adapter's `start()`
-  // resolves only after the initial directory walk completes and the watch is
-  // attached. The 30 ms tick that used to sit here described a guarantee it did
+  // resolves only after the initial directory walk completes (and, on a watched
+  // folder, the watch is attached). The 30 ms tick that used to sit here described a guarantee it did
   // not provide and the loop above already had — a barrier made of hope beside
   // a real one.
 

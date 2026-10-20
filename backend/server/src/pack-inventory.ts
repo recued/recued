@@ -51,7 +51,8 @@
  *  `packages/contracts/src/contract-schema.ts`. */
 
 import { OWNER_OPERATION_SCOPE } from '@recued/contracts';
-import type { CatalogKind, IngredientManifest, PackContentRef } from '@recued/contracts';
+import type { CatalogKind, IngredientManifest, PackContentRef, PackDependency } from '@recued/contracts';
+import { capturePackDependencies } from './pack-dependencies.js';
 import type { PackOpBinding, PackOpResolution } from '@recued/recipes';
 
 import type { ContractRow, ContractStore } from './storage/contract-store.js';
@@ -161,6 +162,9 @@ export interface RecordPackInventoryInput {
   /** Monotonic pack-manifest version (`manifest.version`). Stored as a
    *  string per the `installed_pack_info.version` value_shape. */
   pack_version: number;
+  /** Supplied only when the installed manifest was observed. Omitted means
+   * unknown; [] records an explicitly dependency-free installed manifest. */
+  dependencies?: readonly PackDependency[];
   /** Normalized pack contents (`normalizeBulkPackInstallPlan(manifest).contents`).
    *  Only `type: 'ingredient'` entries become `installed_ingredient` rows;
    *  recipe / operation_group / channel_binding / policy entries are
@@ -269,6 +273,7 @@ export const recordPackInventory = (
       version: String(input.pack_version),
       installed_at: input.installed_at,
       ingredient_ids: ingredientIds,
+      ...(input.dependencies !== undefined ? { dependency_snapshot: capturePackDependencies(store,input.dependencies) } : {}),
       // Written only when it actually differs — a non-Records pack would just
       // duplicate `pack_slug`, and a redundant field invites a reader to pick
       // the wrong one of two identical values.

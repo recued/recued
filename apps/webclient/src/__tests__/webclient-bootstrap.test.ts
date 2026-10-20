@@ -42,7 +42,7 @@ import type {
 // ⚠ VALUE import, deliberately separate from the type block above — the
 // first cut folded it in there and it arrived `undefined` at runtime.
 import { CHAT_HISTORY_WINDOW, LIST_PAGE_DEFAULT_LIMIT } from '@recued/contracts';
-import { RECIPES_ROUTE_RECIPE_CARD_ATTR } from '../recipes/bootstrap-recipes-route.js';
+import { RECIPES_ROUTE_RECIPE_CARD_ATTR, type RecipeExecuteCaller } from '../recipes/bootstrap-recipes-route.js';
 import { RunModal } from '@recued/ui-shared';
 import { generateRecoveryKey } from '@recued/crypto';
 import type { WebclientLocalStore } from '../storage/local-store.js';
@@ -284,9 +284,31 @@ const makeFakeElement = (tag: string): FakeElement => {
   const listeners: Record<string, Set<(event: Event) => void>> = {};
   const attrs = new Map<string, string>();
   const childList: FakeElement[] = [];
+  const dataName = (key: string): string => 'data-' + key.replace(/[A-Z]/g, letter => '-' + letter.toLowerCase());
+  const styleValues = new Map<string, string>();
+  const styleName = (key: string): string => key.replace(/[A-Z]/g, letter => '-' + letter.toLowerCase());
   const el: Partial<FakeElement> & { _ref?: FakeElement } = {
     tagName: tag.toUpperCase(),
     attrs,
+    // Current route panels use native dataset and inline style properties.
+    // Reflect dataset writes through the same attributes queried by the fake.
+    dataset: new Proxy<DOMStringMap>({}, {
+      get: (_, key) => typeof key === 'string' ? attrs.get(dataName(key)) : undefined,
+      set: (_, key, value) => { if (typeof key !== 'string') return false; attrs.set(dataName(key), String(value)); return true; },
+      deleteProperty: (_, key) => { if (typeof key === 'string') attrs.delete(dataName(key)); return true; },
+      ownKeys: () => [...attrs.keys()].filter(key => key.startsWith('data-')).map(key => key.slice(5).replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase())),
+      getOwnPropertyDescriptor: (_, key) => typeof key === 'string' && attrs.has(dataName(key))
+        ? { configurable: true, enumerable: true, writable: true, value: attrs.get(dataName(key)) } : undefined,
+    }),
+    style: new Proxy({} as CSSStyleDeclaration, {
+      get: (_, key) => {
+        if (key === 'setProperty') return (name: string, value: string) => { styleValues.set(name, String(value)); };
+        if (key === 'getPropertyValue') return (name: string) => styleValues.get(name) ?? '';
+        if (key === 'removeProperty') return (name: string) => { const previous = styleValues.get(name) ?? ''; styleValues.delete(name); return previous; };
+        return typeof key === 'string' ? styleValues.get(styleName(key)) ?? '' : undefined;
+      },
+      set: (_, key, value) => { if (typeof key !== 'string') return false; styleValues.set(styleName(key), String(value)); return true; },
+    }),
     childList,
     parentRef: null,
     focusCallCount: 0,
@@ -315,7 +337,8 @@ const makeFakeElement = (tag: string): FakeElement => {
     removeEventListener: (evt: string, fn: (event: Event) => void): void => {
       listeners[evt]?.delete(fn);
     },
-    contains: (): boolean => true,
+    // Markup-backed descendants are opaque here; missing nodes are never contained.
+    contains: (node: Node | null): boolean => node != null,
     // D-322 mounts its editor into an attribute-addressed descendant. The fake
     // stores innerHTML as text, so only explicitly created children can match.
     querySelector: ((selector: string): FakeElement | null => {
@@ -327,6 +350,12 @@ const makeFakeElement = (tag: string): FakeElement => {
       }
       return null;
     }) as HTMLElement['querySelector'],
+    querySelectorAll: ((selector: string): NodeListOf<Element> => {
+      const match = selector.match(/^\[([\w-]+)(?:="([^"]*)")?\]$/);
+      const found = match === null ? [] : childList.flatMap(child => findChildrenByAttr(child, match[1]!))
+        .filter(child => match[2] === undefined || child.getAttribute(match[1]!) === match[2]);
+      return found as unknown as NodeListOf<Element>;
+    }) as HTMLElement['querySelectorAll'],
     setAttribute: (name: string, value: string): void => {
       attrs.set(name, value);
     },
@@ -343,6 +372,9 @@ const makeFakeElement = (tag: string): FakeElement => {
       child.parentRef = el as FakeElement;
       return child;
     }) as unknown as HTMLElement['appendChild'],
+    append: ((...children: FakeElement[]): void => {
+      for (const child of children) (el as FakeElement).appendChild(child);
+    }) as unknown as HTMLElement['append'],
     replaceChildren: ((...children: FakeElement[]): void => {
       for (const child of childList) child.parentRef = null;
       childList.length = 0;
@@ -1235,6 +1267,119 @@ describe('D-148 § A.4 — bootstrapWebclient: pair-state hydration', () => {
 // ══════════════════════════════════════════════════════════════════
 
 describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
+  it('restores server history filters through the real bootstrap without fetching connection inventories', async () => {
+    const fixture = buildOpts(); const hash = '#connections/others/incident-history/connection/work/filter/search/Work/type/verification/outcome/failed/from/2026-10-01/through/2026-10-17';
+    fixture.hashSource.setHash(hash); const handle = await bootstrapWebclient(fixture.opts); await flush();
+    const read = fixture.transportControls.sendCalls().find((m): m is { request_id: string; args: Record<string, unknown> } => !!m && typeof m === 'object' && 'method' in m
+      && m.method === 'collection.connection.managedOAuth' && 'request_id' in m && typeof m.request_id === 'string' && 'args' in m && !!m.args && typeof m.args === 'object' && 'action' in m.args && m.args.action === 'authentication_history')!;
+    const filters = { search: 'Work', type: 'verification', outcome: 'failed', from: '2026-10-01', through: '2026-10-17' };
+    expect(read.args).toEqual({ action: 'authentication_history', scope: { kind: 'connection', name: 'work' }, include_renewals: true, filters });
+    fixture.transportControls.fireMessage({ type: 'rpc_result', request_id: read.request_id, result: { action: 'authentication_history', history: {
+      scope: { kind: 'connection', name: 'work' }, filters, observed_at: 1, retention_days: 90, incidents: [], repairs: [], verifications: [], renewals: [], order: [] } } });
+    for (let n = 0; n < 8; n++) await flush(); expect(subtreeText(fixture.root)).toContain('No retained entries match');
+    // The root forwards the real caller; preview uses a separate explicit RPC,
+    // with the applied selection and no loaded-page cursor/renewal omission.
+    findChildByAttr(fixture.root, 'data-history-export')!.click(); await flush();
+    const exported = fixture.transportControls.sendCalls().find((m): m is { request_id: string; args: Record<string, unknown> } => !!m && typeof m === 'object' && 'method' in m
+      && m.method === 'collection.connection.managedOAuth' && 'request_id' in m && typeof m.request_id === 'string' && 'args' in m && !!m.args && typeof m.args === 'object' && 'action' in m.args && m.args.action === 'authentication_history_export')!;
+    expect(exported.args).toEqual({ action: 'authentication_history_export', scope: { kind: 'connection', name: 'work' }, filters });
+    // A stale/older server reply must fail closed instead of downloading the
+    // loaded page; actual Blob downloads are qualified in a browser fixture.
+    fixture.transportControls.fireMessage({ type: 'rpc_result', request_id: exported.request_id, result: { action: 'authentication_history', history: {} } });
+    for (let n = 0; n < 8; n++) await flush(); expect(subtreeText(fixture.root)).toContain('No partial report was prepared');
+    expect(fixture.hashSource.getHash()).toBe(hash); await handle.dispose();
+  });
+  it('rejects a malformed filter address without falling through into connection editors', async () => {
+    const fixture = buildOpts(); fixture.hashSource.setHash('#connections/others/incident-history/filter/type/authorize'); const handle = await bootstrapWebclient(fixture.opts); await flush();
+    expect(subtreeText(fixture.root)).toContain('incident history link is invalid');
+    expect(fixture.transportControls.sendCalls().filter(m => !!m && typeof m === 'object' && 'method' in m && m.method === 'collection.connection.managedOAuth')).toEqual([]); await handle.dispose();
+  });
+  it.each(['', '/compare', '/target/' + 'c'.repeat(64), '/target/' + 'c'.repeat(64) + '/compare'])(
+    'opens a saved-check address through the real bootstrap: %s', async tail => {
+      const fixture = buildOpts(); const id = 'verify-12345678-1234-4123-8123-123456789abc'; fixture.hashSource.setHash('#connections/others/access-check/' + id + tail);
+      const handle = await bootstrapWebclient(fixture.opts); await flush();
+      const requests = () => fixture.transportControls.sendCalls().filter((m): m is { request_id: string; args: { action: string; id?: string } } =>
+        !!m && typeof m === 'object' && 'method' in m && m.method === 'collection.connection.managedOAuth'
+        && 'request_id' in m && typeof m.request_id === 'string' && 'args' in m && !!m.args && typeof m.args === 'object' && 'action' in m.args && typeof m.args.action === 'string');
+      const read = requests().find(r => r.args.action === 'authentication_access_status')!; expect(read.args).toEqual({ action: 'authentication_access_status', id });
+      fixture.transportControls.fireMessage({ type: 'rpc_result', request_id: read.request_id, result: { action: 'authentication_access_status', verification: {
+        id, selection: { kind: 'group', id: 'a'.repeat(64) }, status: 'completed', started_at: 1, finished_at: 2, targets_truncated: false, uses: [], usage_available: true,
+        results: [{ id: 'c'.repeat(64), target: { kind: 'connection', name: 'work' }, label: 'Work API', authentication_revision: 'd'.repeat(64), current: 'yes', checks: [{ kind: 'api_read', status: 'passed' }] }] } } });
+      for (let n = 0; n < 8; n++) await flush();
+      expect(subtreeText(fixture.root)).toContain('Protected API read: Passed'); expect(requests().map(r => r.args.action)).toEqual(['authentication_access_status']);
+      expect(findChildByAttrValue(fixture.root, 'data-authentication-access-action', 'run')).toBeNull();
+      expect(fixture.hashSource.getHash()).toBe('#connections/others/access-check/' + id + tail); await handle.dispose();
+    });
+  it('keeps invalid saved-check addresses out of other connection editors', async () => {
+    const fixture = buildOpts(); fixture.hashSource.setHash('#connections/others/access-check/token/compare'); const handle = await bootstrapWebclient(fixture.opts); await flush();
+    expect(subtreeText(fixture.root)).toContain('saved-check link is invalid');
+    const requests = fixture.transportControls.sendCalls().filter(m => !!m && typeof m === 'object' && 'method' in m && m.method === 'collection.connection.managedOAuth');
+    expect(requests).toEqual([]); expect(findChildByAttrValue(fixture.root, 'data-authentication-access-action', 'run')).toBeNull(); await handle.dispose();
+  });
+  it('moves an accepted standalone access job to its exact saved-check address after the Run guard clears', async () => {
+    const fixture = buildOpts(); const group = 'a'.repeat(64); const target = 'c'.repeat(64); const id = 'verify-22345678-1234-4123-8123-123456789abc';
+    fixture.hashSource.setHash('#connections/others/verify-access/group/' + group); const handle = await bootstrapWebclient(fixture.opts); await flush();
+    const requests = () => fixture.transportControls.sendCalls().filter((m): m is { request_id: string; args: { action: string; id?: string } } =>
+      !!m && typeof m === 'object' && 'method' in m && m.method === 'collection.connection.managedOAuth'
+      && 'request_id' in m && typeof m.request_id === 'string' && 'args' in m && !!m.args && typeof m.args === 'object' && 'action' in m.args && typeof m.args.action === 'string');
+    const review = requests().find(r => r.args.action === 'authentication_access_preview')!;
+    fixture.transportControls.fireMessage({ type: 'rpc_result', request_id: review.request_id, result: { action: 'authentication_access_preview', preview: {
+      id: 'b'.repeat(43), fingerprint: 'd'.repeat(64), expires_at: Date.now() + 60000, selection: { kind: 'group', id: group }, label: 'Work', targets_truncated: false, uses: [], usage_available: true,
+      targets: [{ id: target, target: { kind: 'connection', name: 'work' }, label: 'Work API', authentication_revision: 'e'.repeat(64), check: 'api_read', base_url: 'https://vendor.test/v1' }] } } });
+    for (let n = 0; n < 8; n++) await flush(); findChildByAttrValue(fixture.root, 'data-authentication-access-action', 'run')!.click(); await flush();
+    const run = requests().find(r => r.args.action === 'authentication_access_run')!;
+    const verification = { id, selection: { kind: 'group', id: group }, status: 'completed', started_at: 1, finished_at: 2, targets_truncated: false, uses: [], usage_available: true,
+      results: [{ id: target, target: { kind: 'connection', name: 'work' }, label: 'Work API', authentication_revision: 'e'.repeat(64), current: 'yes', checks: [{ kind: 'api_read', status: 'passed' }] }] };
+    fixture.transportControls.fireMessage({ type: 'rpc_result', request_id: run.request_id, result: { action: 'authentication_access_run', verification } });
+    for (let n = 0; n < 12; n++) await flush(); expect(fixture.hashSource.getHash()).toBe('#connections/others/access-check/' + id);
+    const read = requests().find(r => r.args.action === 'authentication_access_status')!; expect(read.args).toEqual({ action: 'authentication_access_status', id });
+    fixture.transportControls.fireMessage({ type: 'rpc_result', request_id: read.request_id, result: { action: 'authentication_access_status', verification } });
+    for (let n = 0; n < 8; n++) await flush(); expect(subtreeText(fixture.root)).toContain('Protected API read: Passed');
+    expect(requests().filter(r => r.args.action === 'authentication_access_run')).toHaveLength(1); await handle.dispose();
+  });
+  it.each(['others/review-access/api/work', 'mail/work/manage-authentication', 'calendar/work/manage-authentication', 'others/switch-file-authentication/api/files'])(
+    'keeps the saved-check return when the real bootstrap opens %s', async destination => {
+      const fixture = buildOpts(); const id = 'verify-12345678-1234-4123-8123-123456789abc'; const target = 'c'.repeat(64);
+      fixture.hashSource.setHash('#connections/' + destination + '/from-access/' + id + '/' + target);
+      const handle = await bootstrapWebclient(fixture.opts); await flush();
+      expect(findChildByAttr(fixture.root, 'data-access-repair-return')?.getAttribute('href')).toBe('#connections/others/access-result/' + id + '/' + target);
+      const reads = fixture.transportControls.sendCalls().filter(m => !!m && typeof m === 'object' && 'method' in m && m.method === 'collection.connection.managedOAuth'
+        && 'args' in m && !!m.args && typeof m.args === 'object' && 'action' in m.args
+        && ['authentication_access_status', 'authentication_access_preview', 'authentication_access_run'].includes(String(m.args.action)));
+      expect(reads).toEqual([]); await handle.dispose();
+    });
+  it('does not treat an invalid return context as a saved check or automatic recheck', async () => {
+    const fixture = buildOpts(); fixture.hashSource.setHash('#connections/others/review-access/api/work/from-access/not-a-result/' + 'c'.repeat(64));
+    const handle = await bootstrapWebclient(fixture.opts); await flush();
+    expect(findChildByAttr(fixture.root, 'data-access-repair-return')).toBeNull();
+    expect(findChildByAttrValue(fixture.root, 'data-authentication-access-action', 'run')).toBeNull(); await handle.dispose();
+  });
+  it('wires a saved-check return through the real bootstrap and waits for an explicit fresh-review action', async () => {
+    const fixture = buildOpts(); const reference = { verification_id: 'verify-12345678-1234-4123-8123-123456789abc', target_id: 'c'.repeat(64) };
+    fixture.hashSource.setHash('#connections/others/access-result/' + reference.verification_id + '/' + reference.target_id);
+    const handle = await bootstrapWebclient(fixture.opts); await flush();
+    const managedRequests = () => fixture.transportControls.sendCalls().filter((m): m is { request_id: string; args: { action: string; id?: string; selection?: unknown } } =>
+      !!m && typeof m === 'object' && 'method' in m && m.method === 'collection.connection.managedOAuth'
+      && 'request_id' in m && typeof m.request_id === 'string' && 'args' in m && !!m.args && typeof m.args === 'object' && 'action' in m.args && typeof m.args.action === 'string');
+    const read = managedRequests().find(r => r.args.action === 'authentication_access_status')!;
+    expect(read.args).toEqual({ action: 'authentication_access_status', id: reference.verification_id });
+    fixture.transportControls.fireMessage({ type: 'rpc_result', request_id: read.request_id, result: { action: 'authentication_access_status', verification: {
+      id: reference.verification_id, selection: { kind: 'group', id: 'a'.repeat(64) }, status: 'completed', started_at: 1, finished_at: 2,
+      targets_truncated: false, uses: [], usage_available: true, results: [{ id: reference.target_id, target: { kind: 'connection', name: 'work' }, label: 'Work API',
+        authentication_revision: 'd'.repeat(64), current: 'no', checks: [{ kind: 'api_read', status: 'failed', reason: 'access_rejected' }] }] } } });
+    for (let n = 0; n < 5; n++) await flush();
+    expect(managedRequests().map(r => r.args.action)).toEqual(['authentication_access_status']);
+    findChildByAttrValue(fixture.root, 'data-authentication-access-action', 'review-returned')!.click(); await flush();
+    const review = managedRequests().find(r => r.args.action === 'authentication_access_preview')!;
+    expect(review.args).toEqual({ action: 'authentication_access_preview', selection: { kind: 'verification', id: reference.verification_id } });
+    fixture.transportControls.fireMessage({ type: 'rpc_result', request_id: review.request_id, result: { action: 'authentication_access_preview', preview: {
+      id: 'a'.repeat(43), fingerprint: 'b'.repeat(64), expires_at: Date.now() + 60000, selection: { kind: 'verification', id: reference.verification_id }, label: 'Current authentication',
+      targets_truncated: false, uses: [], usage_available: true, targets: [{ id: reference.target_id, target: { kind: 'connection', name: 'work' }, label: 'Work API',
+        check: 'api_read', authentication_revision: 'e'.repeat(64), base_url: 'https://vendor.test/v1' }] } } });
+    for (let n = 0; n < 5; n++) await flush();
+    expect(findChildByAttrValue(fixture.root, 'data-authentication-access-action', 'run')).not.toBeNull();
+    expect(managedRequests().some(r => r.args.action === 'authentication_access_run')).toBe(false); await handle.dispose();
+  });
   it('wires the renewal access address through the real webclient bootstrap into a local review', async () => {
     const fixture = buildOpts(); const selection = { kind: 'renewal' as const, id: 'renewal-12345678-1234-4123-8123-123456789abc' };
     fixture.hashSource.setHash('#connections/others/verify-access/renewal/' + selection.id);
@@ -1941,6 +2086,7 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
       // (Commitments / Projects / Bookings / mirrors / Records / Memory).
       'find',
       'today',
+      'yours',
       'tasks',
       'notes',
       'contacts',
@@ -1973,6 +2119,7 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
       '#chat',
       '#data/search',
       '#today',
+      '#yours',
       '#data/task',
       '#data/note',
       '#data/contact',
@@ -14704,12 +14851,15 @@ describe('D-222 — buildRecipeExecuteArgs (the execute wire)', () => {
       recipe_id: 'job-board',
       config: { status: 'open' },
       context: { entity_id: 'c-1' },
+      dish_id: 'dsh_job',
+      connections: { crm: 'sales' },
+      connection_revisions: { sales: 'a'.repeat(64) },
       invocation: {
         kind: 'output.filter' as const,
         recipe_hash: 'stored-hash',
         section_index: 0,
       },
-    };
+    } satisfies Required<Parameters<RecipeExecuteCaller>[0]>;
     const wire = buildRecipeExecuteArgs(supplied);
     for (const key of Object.keys(supplied)) {
       expect(

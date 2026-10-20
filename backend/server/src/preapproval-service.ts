@@ -2,8 +2,9 @@
  * kernel request must call this same service with their host-derived origin. */
 import { randomUUID } from 'node:crypto';
 import {
-  PREAPPROVAL_PROTOCOL_VERSION, RpcError, parsePreparePreapproval,
+  PREAPPROVAL_PROTOCOL_VERSION, RpcError, parsePreparePreapproval, evaluateScopeRestrictions,
   SEND_COMPOSED_MAIL_RECIPE_ID, normalizeMailSend, parsePreapprovalJson, type MailDraft,
+  parsePreapprovalContinuation, type PreapprovalContinuationRequest,
   type PreparePreapproval, type PreapprovalCapabilities,
 } from '@recued/contracts';
 import { deriveCommitKind } from '@recued/gateway';
@@ -17,14 +18,16 @@ import { collectPreapprovalContractReads, readPreapprovalContractQuery, withPrea
   withPreapprovalContractProjection, PREAPPROVAL_PACK_RESOLUTION_QUERY } from './storage/preapproval-contract-reads.js';
 import { readCurrentConnectionOperationProfile } from './connection-operation-profile-boot.js';
 import { buildPackOpResolution } from './pack-inventory.js';
-import type { OrdinaryRecipeContinuation, PreparedFutureExecution, PreparedRecipeSnapshot, PreparedInvocation, PreapprovalOrigin, PreapprovalValidationStage } from './preapproval-model.js';
+import type { OrdinaryRecipeContinuation, PreparedFutureExecution, PreparedRecipeSnapshot, PreparedInvocation, PreapprovalOrigin, PreapprovalResponder, PreapprovalValidationStage } from './preapproval-model.js';
 import type { PreapprovalStorage } from './storage/preapproval-storage.js';
 import type { createPreapprovalActivations } from './storage/preapproval-activations.js';
 import type { createPreapprovalMail } from './preapproval-mail.js';
 import type { MailDraftService } from './mail-draft-service.js';
 import { createSingleOperationAdmission } from './single-operation-admission.js';
 import { createPreapprovalAi } from './preapproval-ai.js';
+import { createPreapprovalResources } from './preapproval-resources.js';
 import { synchronizePreapprovalIdentity } from './storage/preapproval-lifecycle.js';
+import { buildPreapprovalContinuation, projectContinuationSource } from './preapproval-continuation.js';
 
 export interface PreapprovalServiceDeps {
   storage: PreapprovalStorage;
@@ -56,6 +59,7 @@ export const createPreapprovalService = (deps: PreapprovalServiceDeps) => {
   const { db } = deps.sources;
   const now = deps.now ?? Date.now;
   const ai = createPreapprovalAi({ db, executor: deps.execution.executorConfig, files: deps.mail });
+  const resources = createPreapprovalResources(deps.execution.executorConfig);
   const resolveRecipeOrigin = (origin: PreapprovalOrigin, snapshot: PreparedRecipeSnapshot) => deps.authority.resolve(
     snapshot.invocation_path.length > 1 ? deps.authority.bindTargetRecipe(origin, snapshot.publisher_id, snapshot.recipe_id) : origin);
   const memberOrigin = (plan: PreparedFutureExecution, member: PreparedInvocation) => {
@@ -72,7 +76,7 @@ export const createPreapprovalService = (deps: PreapprovalServiceDeps) => {
   };
   const preparation = (request: PreparePreapproval, target: PreparedFutureExecution['target'],
     plan?: PreparedFutureExecution, stage: PreapprovalValidationStage = 'prepare', draft = plan?.draft_snapshot,
-    draftOrigin = plan?.origin): PreapprovalPreparationDeps => {
+    draftOrigin = plan?.origin, continuation = plan?.continuation): PreapprovalPreparationDeps => {
     const root = request.subject.kind === 'recipe' ? request.subject : draftCarrier();
     const manifest = (slug: string, version?: number) => deps.execution.executorConfig.manifests.get(slug, version);
     const scanPacks = () => deps.execution.contractScan!('installed_pack', []);
@@ -99,8 +103,14 @@ export const createPreapprovalService = (deps: PreapprovalServiceDeps) => {
         { stage, admit: admission, ...(plan ? { plan } : {}) }, slot, index, recordId) } : {}),
       describeDomain: (call, decision) => deps.mail?.describe(call, decision, { stage, admit: admission, ...(plan ? { plan } : {}) })
         ?? ai(call, { stage, admit: admission, ...(plan ? { plan } : {}) })
+        ?? resources(call, { stage, admit: admission, ...(plan ? { plan } : {}) })
         ?? deps.describeDomain?.(call, decision) ?? null });
-    const loadRecipe = createPreapprovalRecipeSources(deps.sources, { ...root, target });
+    const loadSource = createPreapprovalRecipeSources(deps.sources, { ...root, target });
+    const loadRecipe: PreapprovalPreparationDeps['loadRecipe'] = (id, publisher) => {
+      const source = loadSource(id, publisher);
+      return source && continuation && id === root.recipe_id && publisher === root.publisher_id
+        ? projectContinuationSource(source, continuation) : source;
+    };
     return { loadRecipe, manifest,
       loadDraft: (id, revision) => {
         if (!draft || !deps.drafts || draft.draft_id !== id || draft.revision !== revision) return null;
@@ -140,16 +150,18 @@ export const createPreapprovalService = (deps: PreapprovalServiceDeps) => {
     }
   };
   const inventory = (request: PreparePreapproval, origin: PreapprovalOrigin, target: PreparedFutureExecution['target'],
-    expected?: PreparedFutureExecution, stage: PreapprovalValidationStage = 'prepare', draft = expected?.draft_snapshot) => {
+    expected?: PreparedFutureExecution, stage: PreapprovalValidationStage = 'prepare', draft = expected?.draft_snapshot,
+    continuation = expected?.continuation) => {
     // The initial draft read is asynchronous; the row is checked again in this
     // transaction before its content is used. Subsequent checks use the sealed copy.
     const collected = collectPreapprovalContractReads(db, () => {
       assertActivationAuthority(origin, request);
-      return prepareFutureExecution({ request, origin, target }, preparation(request, target, expected, stage, draft, origin));
+      return prepareFutureExecution({ request, origin, target }, preparation(request, target, expected, stage, draft, origin, continuation));
     });
     const plan = collected.result;
     plan.dependencies.push(...collected.dependencies);
     if (draft) plan.draft_snapshot = structuredClone(draft);
+    if (continuation) plan.continuation = structuredClone(continuation);
     for (const snapshot of plan.recipe_snapshots) {
       // Strict execution uses this same parser, which normalizes output aliases
       // in place. Validate a clone so its pre-entry identity remains identical
@@ -164,11 +176,11 @@ export const createPreapprovalService = (deps: PreapprovalServiceDeps) => {
   const validateLive = (plan: PreparedFutureExecution, stage: PreapprovalValidationStage, member?: PreparedInvocation): void => {
     if (!db.inTransaction) throw new Error('Pre-approval validation requires the realm transaction.');
     assertActivationAuthority(plan.origin, plan.request);
-    deps.activations.validate(plan, stage !== 'prepare' && stage !== 'decide');
+    deps.activations.validate(plan, stage !== 'prepare' && stage !== 'decide' && stage !== 'local_set');
     const fresh = inventory(plan.request, plan.origin, plan.target, plan, stage);
     if (preapprovalHash(fresh.recipe_snapshots) !== preapprovalHash(plan.recipe_snapshots)) stale('The saved execution or its effective configuration changed.');
     for (const dependency of plan.dependencies) {
-      if (dependency.until_phase === 'decision' && stage !== 'prepare' && stage !== 'decide') continue;
+      if (dependency.until_phase === 'decision' && stage !== 'prepare' && stage !== 'decide' && stage !== 'local_set') continue;
       const current = dependency.kind === 'contract_query' ? readPreapprovalContractQuery(db, dependency.key)
         : fresh.dependencies.find(pin => pin.kind === dependency.kind && pin.key === dependency.key);
       if (!current || current.incarnation !== dependency.incarnation || current.revision !== dependency.revision
@@ -228,7 +240,65 @@ export const createPreapprovalService = (deps: PreapprovalServiceDeps) => {
     validateLive,
     resolveOrigin: deps.authority.resolve,
     resolveRecipeOrigin,
+    validateReconciliationRead(plan: PreparedFutureExecution, member: PreparedInvocation) {
+      const origin = plan.origin, resolved = memberOrigin(plan, member);
+      const payload = normalizeMailSend(member.input);
+      const readSlug = payload.attachments?.length ? 'email-get' : 'email-list';
+      const admission = createSingleOperationAdmission({ source: origin.source, ...resolved,
+        manifest: slug => deps.execution.executorConfig.manifests.get(slug), contractScan: deps.execution.contractScan,
+        contractOverlay: deps.execution.contractOverlay, opAdmissionGate: deps.execution.opAdmissionGate,
+        granted_recipe_steps: false, recipeCoversOp: () => false })(readSlug, { slug: payload.instance, metadata_only: !payload.attachments?.length });
+      const checker = deps.execution.contractOverlay?.resolveReadGrantChecker?.(origin.source);
+      const scope = resolved.contract_snapshot?.scope_restrictions;
+      if (admission?.verdict !== 'admit' || checker && !checker.isCollectionReadGranted('mail')
+        || scope && evaluateScopeRestrictions(scope, 'data.mail.' + payload.instance).verdict === 'deny') {
+        throw new RpcError('preapproval_authority_changed', admission?.verdict === 'deny' ? admission.detail
+          : 'The original requester cannot read this mailbox for verification.', 403);
+      }
+    },
     ordinaryRecipe,
+    async continuePlan(raw: PreapprovalContinuationRequest, responder: PreapprovalResponder) {
+      const args = parsePreapprovalContinuation(raw);
+      if (!deps.storage.isReady() || !deps.executionCapabilities().activation_kinds.includes('one_shot')) {
+        throw new RpcError('preapproval_unsupported', 'The reviewed execution runtime is unavailable.', 503);
+      }
+      const source = await deps.storage.repository.continuationSource(args.proposal_id, responder);
+      const parent = source.plan;
+      if (parent.request.subject.kind !== 'recipe') throw new RpcError('preapproval_unsupported', 'This execution needs a separate review.', 409);
+      const request: PreparePreapproval = { idempotency_key: args.idempotency_key,
+        subject: { ...parent.request.subject, config: structuredClone(parent.recipe_snapshots[0]!.effective_config) },
+        activation: args.activation, decision_deadline: args.decision_deadline, dispatch_deadline: args.dispatch_deadline };
+      // The paired owner initiates preparation; their authority never replaces
+      // the original credential, recipe grant, contract or operation scope.
+      assertActivationAuthority(parent.origin, request);
+      const prior = await deps.storage.repository.preparedRequest(request, parent.origin, source.future_execution_ref);
+      if (prior) return prior;
+      const plan = db.transaction(() => {
+        assertActivationAuthority(parent.origin, request);
+        deps.storage.repository.assertContinuationAvailable(source.future_execution_ref);
+        const continuation = buildPreapprovalContinuation(source, args.proposal_id, {
+          executor: deps.execution.executorConfig, ...(deps.execution.recordsStore ? { records: deps.execution.recordsStore } : {}),
+        });
+        const target = deps.activations.prepareTarget(request);
+        const next = inventory(request, parent.origin, target, undefined, 'prepare', undefined, continuation);
+        if (next.uncovered.length || next.members.length !== continuation.steps.length || next.members.some(member => !member.review.eligible)) {
+          throw new RpcError('preapproval_authority_changed',
+            'The original requester cannot continue every remaining change under its current permissions. Prepare a separate plan.', 409);
+        }
+        for (const [index, member] of next.members.entries()) {
+          if (member.ingredient_slug !== 'mail-send') continue;
+          const original = parent.members.find(item => item.member_id === continuation.steps[index]?.original_member_id);
+          // A slug can survive account replacement. Keep the original account
+          // incarnation, configuration and payload binding in the new review.
+          if (!original || member.binding_hash !== original.binding_hash) {
+            throw new RpcError('preapproval_stale',
+              'The original mail account changed. Prepare a new full review.', 409);
+          }
+        }
+        return next;
+      }).immediate();
+      return deps.storage.repository.prepare(plan, false);
+    },
     capabilities(): PreapprovalCapabilities {
       const wired = deps.storage.isReady() ? deps.executionCapabilities()
         : { activation_kinds: [], bindings: [], child_calls: [], decision_channels: [] };

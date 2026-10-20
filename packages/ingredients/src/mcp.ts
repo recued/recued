@@ -54,7 +54,7 @@ let nextRequestId = 1;
  *  numeric or out-of-range values fall back to the default rather than
  *  throwing — static validation catches bad manifest defaults separately.
  */
-export const executeMCP = async (resolved: ResolvedCall): Promise<unknown> => {
+export const executeMCP = async (resolved: ResolvedCall, fetchImpl: typeof fetch = fetch): Promise<unknown> => {
   const { input, output, slug, risk_tier } = resolved;
   const serverUrl = input['mcp.server_url'] as string | undefined;
   const tool = input['mcp.tool'] as string | undefined;
@@ -80,7 +80,7 @@ export const executeMCP = async (resolved: ResolvedCall): Promise<unknown> => {
   };
 
   const headers = extractHeaders(input);
-  const response = await postJsonRpc(serverUrl, request, headers, timeoutMs, slug, isWrite);
+  const response = await postJsonRpc(serverUrl, request, headers, timeoutMs, slug, isWrite, fetchImpl);
 
   if (response.error) {
     throw new IngredientError(
@@ -124,6 +124,7 @@ const postJsonRpc = async (
   timeoutMs: number,
   slug: string,
   isWrite: boolean,
+  fetchImpl: typeof fetch,
 ): Promise<JsonRpcResponse> => {
   // Resolve the redirect-pin origin BEFORE the dispatch try, so a
   // malformed server_url fails as URL_REF_INVALID rather than being
@@ -144,7 +145,7 @@ const postJsonRpc = async (
     // JSON-RPC POST (with its headers) off that origin to an internal /
     // metadata host. The declared target (localhost MCP included —
     // deliberately allowed) is honored; same-origin redirects work.
-    const response = await fetchOriginPinned(fetch, url, {
+    const response = await fetchOriginPinned(fetchImpl, url, {
       method: 'POST',
       headers,
       body: JSON.stringify(request),

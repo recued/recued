@@ -512,7 +512,7 @@ describe('D-158 P0 NotificationBlock submitAnswer', () => {
 
     await expect(
       block.submitAnswer({ ask_id: 'ask-missing', option: 'approve', via: 'ui' }),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe('ignored');
 
     expect(handler).not.toHaveBeenCalled();
     expect(ui.closes).toEqual([]);
@@ -538,13 +538,14 @@ describe('D-158 P0 NotificationBlock submitAnswer', () => {
       'ui',
     );
 
+    // D-325 §5.1 — an offered option after the first answer: the surface may say so.
     await expect(
       block.submitAnswer({
         ask_id: 'ask-already-answered',
         option: 'reject',
         via: 'ui',
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe('closed');
 
     expect(handler).not.toHaveBeenCalled();
     expect(ui.closes).toEqual([]);
@@ -575,7 +576,7 @@ describe('D-158 P0 NotificationBlock submitAnswer', () => {
         option: 'maybe',
         via: 'ui',
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe('ignored');
 
     expect(handler).not.toHaveBeenCalled();
     expect(ui.closes).toEqual([]);

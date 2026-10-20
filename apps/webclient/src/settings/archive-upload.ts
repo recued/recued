@@ -86,6 +86,9 @@ const isTransportError = (err: unknown): boolean => {
   return (
     code === 'transport' ||
     code === 'transport_disposed' ||
+    code === 'connection_lost' ||
+    code === 'server_offline' ||
+    code === 'server_unresponsive' ||
     code === 'timeout' ||
     code === 'webclient_reauth_required'
   );

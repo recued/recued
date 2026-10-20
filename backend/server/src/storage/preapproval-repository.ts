@@ -30,6 +30,11 @@ import { createPreapprovalLimits, type PreapprovalRequestLimits } from '../preap
 import { canonicalJSONStringifyStrict } from '@recued/crypto';
 import { GATED_ACTION_TERMINAL_RETENTION_MS } from '../gated-action-store.js';
 import { initializePreapprovalLifecycle } from './preapproval-lifecycle.js';
+import { continuationShapeReason, effectiveContinuationOutcome } from '../preapproval-continuation.js';
+import { createLocalMutationReceipts, type LocalMutationReceipt } from './local-mutation-receipts.js';
+import { preapprovalLocalMutationBinding, preapprovalLocalMutationKind } from '../preapproval-local-mutations.js';
+import type { LocalMutationScope } from '../local-mutation-context.js';
+import { preapprovalMailAttemptId, supportsPreapprovalMailProof } from '../preapproval-mail-attempt.js';
 
 export interface PreapprovalAtomicHooks {
   /** Must read authoritative DB rows on this connection, not cached snapshots. */
@@ -146,6 +151,7 @@ export class PreapprovalRepository {
   private readonly hooks: PreapprovalAtomicHooks;
   private readonly workers: PreapprovalWorkerAuthority;
   private readonly checkpoints: ReturnType<typeof createPreapprovalCheckpointParticipant>;
+  private readonly localMutations: ReturnType<typeof createLocalMutationReceipts>;
   readonly limits: ReturnType<typeof createPreapprovalLimits>;
 
   constructor(private readonly db: Database.Database, options: PreapprovalRepositoryOptions) {
@@ -154,6 +160,7 @@ export class PreapprovalRepository {
     this.hooks = options.hooks;
     this.workers = options.workers;
     this.checkpoints = createPreapprovalCheckpointParticipant(db);
+    this.localMutations = createLocalMutationReceipts(db, this.now);
     this.limits = createPreapprovalLimits(db, options.limits);
     initializePreapprovalLifecycle(db);
     db.exec(`
@@ -194,6 +201,7 @@ export class PreapprovalRepository {
         action_ref TEXT UNIQUE, commit_id TEXT, actual_run_id TEXT, result_ciphertext TEXT,
         revision INTEGER NOT NULL, updated_at INTEGER NOT NULL,
         PRIMARY KEY(grant_id, member_id), UNIQUE(future_ref, path_key));
+      CREATE INDEX IF NOT EXISTS preapproval_member_attempt ON preapproval_members(attempt_id);
       CREATE TABLE IF NOT EXISTS preapproval_decisions (
         decision_id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL UNIQUE,
         future_ref TEXT NOT NULL, grant_id TEXT, responder_key TEXT NOT NULL,
@@ -240,6 +248,9 @@ export class PreapprovalRepository {
         attempt_id TEXT NOT NULL, action_ref TEXT NOT NULL, evidence_digest TEXT NOT NULL,
         outcome TEXT NOT NULL, observed_at INTEGER NOT NULL, adapter TEXT NOT NULL DEFAULT '',
         UNIQUE(attempt_id, evidence_digest));
+      CREATE TABLE IF NOT EXISTS preapproval_continuations (
+        child_ref TEXT PRIMARY KEY, parent_ref TEXT NOT NULL, created_at INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS preapproval_continuations_parent ON preapproval_continuations(parent_ref);
       CREATE TABLE IF NOT EXISTS preapproval_deliveries (
         delivery_id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL, proposal_revision INTEGER NOT NULL,
         review_digest TEXT NOT NULL, connection_id TEXT NOT NULL, owner_sender TEXT NOT NULL,
@@ -342,10 +353,38 @@ export class PreapprovalRepository {
   async loadExecution(futureRef: string): Promise<PreparedFutureExecution> {
     return (await this.load(this.execution(futureRef).proposal_id)).plan;
   }
+  /** Host-only handoff of an unaccepted, complete one-shot program. Its live
+   * source and dependency checks remain authoritative through the local commit.
+   * Resource versions are checked separately by every atomic participant. */
+  async localChangeSetSource(proposalId: string, responder: PreapprovalResponder) {
+    const loaded = await this.load(proposalId);
+    const revision = loaded.proposal.revision;
+    const validate = (): void => {
+      if (!this.db.inTransaction) throw new Error('Atomic source validation requires the realm transaction.');
+      this.responder(responder);
+      const { proposal, execution } = this.current(loaded);
+      if (responder.channel !== 'webclient' || proposal.status !== 'awaiting_owner' || execution.state !== 'prepared'
+        || proposal.revision !== revision || loaded.plan.target.kind !== 'one_shot' || loaded.plan.continuation
+        || this.now() >= proposal.decision_deadline) fail('preapproval_stale', 'This pending one-shot review cannot become an atomic change set.');
+      const reason = continuationShapeReason(loaded.plan, selectedIds(proposal));
+      if (reason) fail('local_changes_unsupported', reason.replaceAll('Continuation', 'An atomic change set'));
+      // local_set retains the unaccepted target and original resource snapshot
+      // while rechecking the source, program, manifests and live permissions.
+      this.liveLoaded(loaded, 'local_set');
+    };
+    this.db.transaction(validate).immediate();
+    return { plan: structuredClone(loaded.plan), revision, snapshot_hash: loaded.execution.snapshot_hash,
+      validate, consume: () => {
+        validate();
+        this.stopRow(this.execution(loaded.execution.future_ref), 'applied_as_atomic_change_set', 'cancelled');
+      } };
+  }
   inspectExecution(futureRef: string): Promise<PreapprovalInspection> {
     return this.inspect(this.execution(futureRef).proposal_id);
   }
-  private current(loaded: LoadedPlan): { execution: ExecutionRow; proposal: ProposalRow } {
+  // Evidence-only recovery can skip current ancestor outcomes. It still
+  // verifies this sealed snapshot and realm lineage, and supplies no permit.
+  private current(loaded: LoadedPlan, checkContinuation = true): { execution: ExecutionRow; proposal: ProposalRow } {
     this.codec.assertUnlocked();
     const execution = this.execution(loaded.execution.future_ref);
     const proposal = this.proposal(execution.proposal_id);
@@ -359,7 +398,92 @@ export class PreapprovalRepository {
     if (loaded.ordinary.some(item => preapprovalHash(ordinaryRows.get(item.row.run_id) ?? null) !== preapprovalHash(item.row))) {
       fail('preapproval_stale', 'A nested continuation changed while loading.');
     }
+    if (checkContinuation) this.assertContinuationParent(loaded.plan, execution.future_ref);
     return { execution, proposal };
+  }
+  private continuationOutcomes(plan: PreparedFutureExecution, proposal: ProposalRow): PreapprovalMemberOutcome[] {
+    const rows = this.db.prepare('SELECT * FROM preapproval_members WHERE future_ref=?').all(proposal.future_ref) as MemberRow[];
+    return plan.members.filter(member => selectedIds(proposal).includes(member.member_id)).map(member => {
+      const row = rows.find(item => item.member_id === member.member_id);
+      const evidence = row?.attempt_id ? this.db.prepare(`SELECT outcome FROM preapproval_reconciliations
+        WHERE attempt_id=? ORDER BY observed_at DESC,evidence_id DESC LIMIT 1`).get(row.attempt_id) as { outcome: 'succeeded' | 'failed' } | undefined : undefined;
+      const local = row ? this.localMutationReceipt({ plan, execution: this.execution(proposal.future_ref) }, row, member) : null;
+      return { member_id: member.member_id, parent_member_id: member.parent_member_id, op_id: member.op_id,
+        label: member.review.label, status: row?.state ?? 'available', action_ref: row?.action_ref ?? null,
+        commit_id: row?.commit_id ?? null, run_id: row?.actual_run_id ?? null, status_message: null,
+        reconciled_outcome: local && evidence?.outcome === 'failed' ? null : evidence?.outcome ?? null };
+    });
+  }
+  private continuationOutcomesHash(futureRef: string): string {
+    return preapprovalHash({
+      members: this.db.prepare(`SELECT member_id,state,attempt_id,action_ref,commit_id,actual_run_id,revision
+        FROM preapproval_members WHERE future_ref=? ORDER BY member_id`).all(futureRef),
+      evidence: this.db.prepare(`SELECT evidence_id,member_id,attempt_id,action_ref,evidence_digest,outcome,observed_at,adapter
+        FROM preapproval_reconciliations WHERE future_ref=? ORDER BY evidence_id`).all(futureRef),
+    });
+  }
+  private blockingSuccessor(parentRef: string, childRef = ''): { proposal_id: string } | undefined {
+    // Claiming reserves this branch even if entry fails before the first
+    // member dispatch. Its own successor must not race a new sibling.
+    return this.db.prepare(`SELECT e.proposal_id FROM preapproval_continuations c
+      JOIN preapproval_executions e ON e.future_ref=c.child_ref WHERE c.parent_ref=? AND c.child_ref<>?
+      AND (e.state IN ('prepared','active','running','held','in_doubt','succeeded')
+        OR e.root_run_id IS NOT NULL
+        OR EXISTS(SELECT 1 FROM preapproval_members m WHERE m.future_ref=e.future_ref AND m.attempt_id IS NOT NULL))
+      ORDER BY c.created_at DESC,c.child_ref DESC LIMIT 1`).get(parentRef, childRef) as { proposal_id: string } | undefined;
+  }
+  assertContinuationAvailable(parentRef: string, childRef?: string): void {
+    const other = this.blockingSuccessor(parentRef, childRef);
+    if (other) throw new RpcError('preapproval_already_claimed',
+      'This execution already has a continuation. Open that review to continue its remaining work.', 409, undefined,
+      { proposal_id: other.proposal_id });
+  }
+  private continuationReason(loaded: LoadedPlan, outcomes: PreapprovalMemberOutcome[]): string | null {
+    const execution = this.execution(loaded.execution.future_ref), proposal = this.proposal(loaded.proposal.proposal_id);
+    if (!['partial', 'failed', 'in_doubt'].includes(execution.state) || proposal.status !== 'approved') {
+      return 'Only a stopped, previously approved execution can have its unfinished changes reviewed.';
+    }
+    const shape = continuationShapeReason(loaded.plan, selectedIds(proposal));
+    if (shape) return shape;
+    if (outcomes.some(member => effectiveContinuationOutcome(member) === 'uncertain')) {
+      return 'An attempt has an unknown outcome. Verified reconciliation is required before another review can continue it.';
+    }
+    if (outcomes.every(member => effectiveContinuationOutcome(member) === 'succeeded')) return 'Every operation already completed.';
+    if (outcomes.some(member => effectiveContinuationOutcome(member) === 'succeeded' && !member.action_ref)) {
+      return 'A completed operation has no durable receipt.';
+    }
+    return null;
+  }
+  /** Host-only: inspect retained outcomes under a paired owner's proof.
+   * The returned origin remains the original requester's, never the owner. */
+  async continuationSource(proposalId: string, responder: PreapprovalResponder) {
+    const loaded = await this.load(proposalId);
+    return this.db.transaction(() => {
+      this.responder(responder);
+      if (responder.channel !== 'webclient') fail('preapproval_invalid_proof', 'Open continuation in your paired webclient.', 403);
+      const { proposal } = this.current(loaded);
+      const outcomes = this.continuationOutcomes(loaded.plan, proposal);
+      const reason = this.continuationReason(loaded, outcomes);
+      if (reason) fail(outcomes.some(member => effectiveContinuationOutcome(member) === 'uncertain')
+        ? 'preapproval_in_doubt' : 'preapproval_unsupported', reason);
+      return { plan: structuredClone(loaded.plan), outcomes,
+        snapshot_hash: loaded.execution.snapshot_hash, outcomes_hash: this.continuationOutcomesHash(proposal.future_ref),
+        future_execution_ref: proposal.future_ref };
+    }).immediate();
+  }
+  private assertContinuationParent(plan: PreparedFutureExecution, childRef?: string): void {
+    const continuation = plan.continuation;
+    if (!continuation) return;
+    const parent = this.execution(continuation.future_execution_ref);
+    if (parent.proposal_id !== continuation.proposal_id || parent.snapshot_hash !== continuation.snapshot_hash
+      || parent.lineage !== this.lineage() || !['partial', 'failed', 'in_doubt'].includes(parent.state)
+      || this.continuationOutcomesHash(parent.future_ref) !== continuation.outcomes_hash) {
+      fail('preapproval_stale', 'The original execution outcomes changed. Prepare a fresh continuation review.');
+    }
+    if (childRef && !this.db.prepare('SELECT 1 FROM preapproval_continuations WHERE child_ref=? AND parent_ref=?').get(childRef, parent.future_ref)) {
+      fail('preapproval_stale', 'The continuation has no durable link to its original execution.');
+    }
+    this.assertContinuationAvailable(parent.future_ref, childRef);
   }
   private enqueue(futureRef: string, revision: number, kind: string, payload: Record<string, string | number>): void {
     this.db.prepare('INSERT OR IGNORE INTO preapproval_outbox(event_id, future_ref, kind, payload_json) VALUES(?, ?, ?, ?)')
@@ -390,11 +514,11 @@ export class PreapprovalRepository {
       execution_status: this.execution(row.future_ref).state };
   }
 
-  async preparedRequest(request: PreparePreapproval, origin: PreapprovalOrigin): Promise<PreapprovalResult | null> {
+  async preparedRequest(request: PreparePreapproval, origin: PreapprovalOrigin, parentRef?: string): Promise<PreapprovalResult | null> {
     const prior = this.db.prepare('SELECT * FROM preapproval_proposals WHERE origin_key = ? AND idempotency_key = ?')
       .get(preapprovalOriginKey(origin), request.idempotency_key) as ProposalRow | undefined;
     if (prior) {
-      if (prior.input_digest !== preapprovalHash(request)) fail('preapproval_idempotency_conflict', 'This request key was used for different content.');
+      if (prior.input_digest !== this.requestDigest(request, parentRef)) fail('preapproval_idempotency_conflict', 'This request key was used for different content.');
       // ⛔⛔ A REPLAY IS AN IDEMPOTENCY REPLAY, NOT A STATUS QUERY. Both returns
       // below used to read the CURRENT status, which made re-calling with the
       // same key a polling loop: a caller could watch `awaiting_owner →
@@ -425,13 +549,16 @@ export class PreapprovalRepository {
     }
     return null;
   }
+  private requestDigest(request: PreparePreapproval, parentRef?: string): string {
+    return preapprovalHash(parentRef ? { request, continuation_of: parentRef } : request);
+  }
 
   async prepare(plan: PreparedFutureExecution, notifyOwner: boolean): Promise<PreapprovalResult> {
     validatePreparedFutureExecution(plan);
-    const prior = await this.preparedRequest(plan.request, plan.origin);
+    const prior = await this.preparedRequest(plan.request, plan.origin, plan.continuation?.future_execution_ref);
     if (prior) return prior;
     const originKey = preapprovalOriginKey(plan.origin);
-    const digest = preapprovalHash(plan.request);
+    const digest = this.requestDigest(plan.request, plan.continuation?.future_execution_ref);
     const selected = selectPreapprovalMembers(plan);
     const ciphertext = await this.codec.seal(plan);
     const snapshotHash = preapprovalHash(plan);
@@ -445,6 +572,7 @@ export class PreapprovalRepository {
         // outside this transaction after decrypting its own immutable plan.
         return raced.proposal_id;
       }
+      this.assertContinuationParent(plan);
       this.live(plan, 'prepare');
       const limits = this.limits();
       if (plan.members.length + plan.uncovered.length > limits.candidate_calls
@@ -476,6 +604,8 @@ export class PreapprovalRepository {
         .run(futureRef, proposalId, originKey, plan.target.kind, plan.target.key, plan.target.incarnation,
           plan.target.revision, plan.target.qualifying_sequence, snapshotHash, ciphertext,
           this.lineage(), notBefore, plan.request.dispatch_deadline, now, now);
+      if (plan.continuation) this.db.prepare('INSERT INTO preapproval_continuations(child_ref,parent_ref,created_at) VALUES(?,?,?)')
+        .run(futureRef, plan.continuation.future_execution_ref, now);
       this.db.prepare(`INSERT INTO preapproval_proposals(proposal_id, future_ref, origin_key,
         idempotency_key, input_digest, selected_json, review_digest, revision, status, decision_deadline, created_at, updated_at)
         VALUES(?, ?, ?, ?, ?, ?, ?, 1, 'awaiting_owner', ?, ?, ?)`)
@@ -505,6 +635,9 @@ export class PreapprovalRepository {
   async select(request: PreapprovalSelection, responder: PreapprovalResponder): Promise<PreapprovalResult> {
     const loaded = await this.load(request.proposal_id);
     const selected = selectPreapprovalMembers(loaded.plan, request.member_ids);
+    if (loaded.plan.continuation && selected.length !== loaded.plan.members.length) {
+      fail('preapproval_unsupported', 'A continuation reviews its fixed set of unfinished changes together. Prepare a separate plan to change its scope.');
+    }
     return this.db.transaction(() => {
       const { proposal } = this.current(loaded);
       this.responder(responder);
@@ -582,6 +715,8 @@ export class PreapprovalRepository {
   private reviewDetails(proposal: ProposalRow, execution: ExecutionRow, plan: PreparedFutureExecution):
     Omit<PreapprovalReview, 'challenge' | 'challenge_expires_at'> {
       return { ...this.result(proposal, plan), review_digest: proposal.review_digest,
+        ...(plan.continuation ? { continuation: { proposal_id: plan.continuation.proposal_id,
+          future_execution_ref: plan.continuation.future_execution_ref, completed: structuredClone(plan.continuation.completed) } } : {}),
         requested_through: { contract_id: plan.origin.mode === 'contract' ? plan.origin.contract_id : null,
           display_name: plan.origin.display_name, credential_label: plan.origin.credential_label },
         recipe: { recipe_id: plan.recipe.recipe_id, publisher_id: plan.recipe.publisher_id, display_name: plan.recipe.display_name },
@@ -1442,6 +1577,49 @@ export class PreapprovalRepository {
     });
   }
 
+  private memberClaim(execution: ExecutionRow, row: MemberRow): PreapprovalMemberClaim {
+    if (!execution.root_run_id || !execution.worker_id || !row.attempt_id || !row.idempotency_key || !row.action_ref || !row.actual_run_id) {
+      throw new Error('The pre-approval member is missing its durable attempt identity.');
+    }
+    return { future_execution_ref: execution.future_ref, root_run_id: execution.root_run_id, run_id: row.actual_run_id,
+      worker_id: execution.worker_id, fence: execution.fence, grant_id: row.grant_id,
+      member_id: row.member_id, attempt_id: row.attempt_id, idempotency_key: row.idempotency_key,
+      action_ref: row.action_ref, commit_id: row.commit_id, parent_attempt_id: row.parent_attempt_id };
+  }
+
+  private localMutationReceipt(loaded: Pick<LoadedPlan, 'plan' | 'execution'>, row: MemberRow, member: PreparedInvocation): LocalMutationReceipt | null {
+    if (loaded.execution.lineage !== this.lineage()) return null;
+    const binding = preapprovalLocalMutationBinding(loaded.plan, member, loaded.execution, row);
+    return binding ? this.localMutations.find(binding) : null;
+  }
+
+  /** Issued only to a private claimed invocation. It supplies no authority: the
+   * final local transaction rechecks the original live admission and fence. */
+  async localMutationScope(claim: PreapprovalMemberClaim): Promise<LocalMutationScope | undefined> {
+    const loaded = await this.load(this.execution(claim.future_execution_ref).proposal_id);
+    const member = loaded.plan.members.find(item => item.member_id === claim.member_id);
+    if (!member || !preapprovalLocalMutationKind(member)) return undefined;
+    return { record: (connection, kind, review) => {
+      if (connection !== this.db || !this.db.inTransaction) fail('preapproval_stale', 'The local mutation does not share its receipt database.');
+      const { execution } = this.current(loaded);
+      this.checkRun(execution, claim);
+      const row = this.db.prepare('SELECT * FROM preapproval_members WHERE grant_id=? AND member_id=?')
+        .get(claim.grant_id, claim.member_id) as MemberRow | undefined;
+      if (!row || row.state !== 'dispatching' || row.attempt_id !== claim.attempt_id
+        || row.actual_run_id !== claim.run_id || row.action_ref !== claim.action_ref
+        || row.commit_id !== claim.commit_id || row.idempotency_key !== claim.idempotency_key
+        || this.grant(execution.future_ref)?.status !== 'active') {
+        fail('preapproval_already_claimed', 'This attempt no longer owns the local mutation.');
+      }
+      const binding = preapprovalLocalMutationBinding(loaded.plan, member, execution, row);
+      if (!binding || kind !== binding.kind || preapprovalHash(review) !== binding.review_hash) {
+        fail('preapproval_stale', 'The local mutation differs from the reviewed invocation.');
+      }
+      this.liveLoaded(loaded, 'member', member);
+      this.localMutations.record(binding);
+    } };
+  }
+
   async settleMember(claim: PreapprovalMemberClaim,
     outcome: { status: 'succeeded' | 'failed' | 'in_doubt'; message: string; result: unknown }): Promise<void> {
     const ciphertext = await this.codec.seal(outcome);
@@ -1455,13 +1633,22 @@ export class PreapprovalRepository {
         || row.actual_run_id !== claim.run_id) fail('preapproval_already_claimed', 'The outcome does not belong to this attempt.');
       if (terminalMember(row.state)) return;
       if (row.state !== 'dispatching') fail('preapproval_already_claimed', 'The invocation was never dispatched.');
-      assertSync(this.hooks.settleDispatch(claim, outcome));
+      const member = loaded.plan.members.find(item => item.member_id === claim.member_id)!;
+      const local = this.localMutationReceipt(loaded, row, member);
+      const invalidLocal = !local && preapprovalLocalMutationKind(member) && this.localMutations.hasAttempt(claim.attempt_id);
+      const settled = invalidLocal
+        ? { status: 'in_doubt' as const, result: null, message: 'The local receipt could not be verified. No automatic retry is allowed.' }
+        : local && outcome.status !== 'succeeded'
+          ? { status: 'succeeded' as const, result: null, message: 'The local change committed before the caller stopped.' } : outcome;
+      const sealed = settled === outcome ? ciphertext : this.codec.sealSync(settled);
+      assertSync(this.hooks.settleDispatch(claim, settled));
       this.db.prepare(`UPDATE preapproval_members SET state = ?, result_ciphertext = ?, revision = revision + 1,
         updated_at = ? WHERE grant_id = ? AND member_id = ? AND state = 'dispatching'`)
-        .run(outcome.status, ciphertext, this.now(), claim.grant_id, claim.member_id);
-      if (outcome.status !== 'succeeded') this.stopRow(execution,
-        outcome.status === 'in_doubt' ? 'preapproval_in_doubt' : 'member_failed', 'invalidated');
+        .run(settled.status, sealed, this.now(), claim.grant_id, claim.member_id);
+      if (settled.status !== 'succeeded') this.stopRow(execution,
+        settled.status === 'in_doubt' ? 'preapproval_in_doubt' : 'member_failed', 'invalidated');
       this.enqueue(execution.future_ref, row.revision + 1, `member:${row.member_id}`, { action_ref: claim.action_ref });
+      if (local && settled.status === 'succeeded') this.projectStoppedLocalRun(loaded.plan, execution.future_ref);
     }).immediate();
   }
 
@@ -1608,18 +1795,43 @@ export class PreapprovalRepository {
     return this.db.transaction(() => {
       const { execution } = this.current(loaded);
       this.checkRun(execution, binding, true);
-      return this.finishRunRow(execution, reported);
+      return this.finishRunRow(execution, reported, loaded.plan);
     }).immediate();
   }
 
-  private finishRunRow(execution: ExecutionRow, reported: 'succeeded' | 'failed' | 'in_doubt'): PreapprovalExecutionStatus {
+  private provenLocalEffects(plan: PreparedFutureExecution, execution: ExecutionRow, members: MemberRow[]): boolean {
+    const attempted = members.filter(member => member.attempt_id !== null);
+    // An outer caller may stop before a local result settles. Its uncertainty
+    // is explained only when the complete program is inventoried and every
+    // attempted effect has its own committed proof; uncovered IO stays unknown.
+    return attempted.length > 0 && continuationShapeReason(plan, selectedIds(this.proposal(execution.proposal_id))) === null
+      && attempted.every(row => {
+        const member = plan.members.find(item => item.member_id === row.member_id);
+        return row.state === 'succeeded' && member !== undefined && this.localMutationReceipt({ plan, execution }, row, member) !== null;
+      });
+  }
+
+  private projectStoppedLocalRun(plan: PreparedFutureExecution, futureRef: string): void {
+    const execution = this.execution(futureRef);
+    if (execution.state !== 'in_doubt') return;
+    const members = this.db.prepare('SELECT * FROM preapproval_members WHERE future_ref=?').all(futureRef) as MemberRow[];
+    if (!this.provenLocalEffects(plan, execution, members)) return;
+    this.db.prepare(`UPDATE preapproval_executions SET state='partial',stop_requested=1,status_reason='local_mutation_recovered',
+      revision=revision+1,updated_at=? WHERE future_ref=? AND state='in_doubt'`).run(this.now(), futureRef);
+    this.enqueue(futureRef, execution.revision + 1, 'execution_recovered', { state: 'partial' });
+  }
+
+  private finishRunRow(execution: ExecutionRow, reported: 'succeeded' | 'failed' | 'in_doubt', plan?: PreparedFutureExecution): PreapprovalExecutionStatus {
       if (!this.db.inTransaction) throw new Error('Run completion requires the realm transaction.');
       if (execution.state !== 'running' && execution.state !== 'held') return execution.state;
       const members = this.db.prepare('SELECT * FROM preapproval_members WHERE future_ref = ?')
         .all(execution.future_ref) as MemberRow[];
-      const uncertain = reported === 'in_doubt' || members.some(member => member.state === 'in_doubt' || member.state === 'dispatching');
+      const localEffectsProven = plan ? this.provenLocalEffects(plan, execution, members) : false;
+      const uncertain = (reported === 'in_doubt' && !localEffectsProven)
+        || members.some(member => member.state === 'in_doubt' || member.state === 'dispatching');
       const succeeded = members.some(member => member.state === 'succeeded');
-      const failed = reported === 'failed' || execution.stop_requested !== 0 || members.some(member => member.state === 'failed');
+      const failed = reported === 'failed' || (reported === 'in_doubt' && localEffectsProven)
+        || execution.stop_requested !== 0 || members.some(member => member.state === 'failed');
       const state: PreapprovalExecutionStatus = uncertain ? 'in_doubt' : failed ? (succeeded ? 'partial' : 'failed') : 'succeeded';
       const now = this.now();
       this.db.prepare(`UPDATE preapproval_members SET state = 'skipped', revision = revision + 1,
@@ -1642,15 +1854,16 @@ export class PreapprovalRepository {
     const ciphertext = await this.codec.seal(outcome);
     return this.db.transaction(() => {
       this.workers.assertCurrent(recoveryWorkerId);
-      const { execution } = this.current(loaded);
+      const { execution } = this.current(loaded, false);
       const result = (status: PreapprovalRecoveryResult['status']): PreapprovalRecoveryResult => ({
         future_execution_ref: futureRef, status, execution_status: this.execution(futureRef).state,
       });
-      if (!['running', 'held'].includes(execution.state) || !execution.root_run_id || !execution.worker_id) return result('unchanged');
-      const workerStatus = this.workers.status(execution.worker_id);
-      if (workerStatus !== 'gone') return result(workerStatus === 'live' ? 'worker_live' : 'worker_unknown');
+      if (!['running', 'held', 'in_doubt'].includes(execution.state) || !execution.root_run_id || !execution.worker_id) return result('unchanged');
       const members = this.db.prepare('SELECT * FROM preapproval_members WHERE future_ref = ?').all(futureRef) as MemberRow[];
       const dispatching = members.filter(member => member.state === 'dispatching');
+      if (execution.state === 'in_doubt' && dispatching.length === 0) return result('unchanged');
+      const workerStatus = this.workers.status(execution.worker_id);
+      if (workerStatus !== 'gone') return result(workerStatus === 'live' ? 'worker_live' : 'worker_unknown');
       // A checkpoint is necessary, never by itself sufficient. Its consumed
       // member watermark, content and all original authority are revalidated
       // on resume. Do not steal a run here just because a pointer exists.
@@ -1658,25 +1871,27 @@ export class PreapprovalRepository {
         && !members.some(member => member.state === 'in_doubt')) return result('checkpoint_required');
       const now = this.now();
       for (const row of dispatching) {
-        if (!row.attempt_id || !row.idempotency_key || !row.action_ref || !row.actual_run_id) {
-          throw new Error('Interrupted pre-approval member is missing its durable attempt identity.');
-        }
-        const claim: PreapprovalMemberClaim = {
-          future_execution_ref: futureRef, root_run_id: execution.root_run_id, run_id: row.actual_run_id,
-          worker_id: execution.worker_id, fence: execution.fence, grant_id: row.grant_id,
-          member_id: row.member_id, attempt_id: row.attempt_id, idempotency_key: row.idempotency_key,
-          action_ref: row.action_ref, commit_id: row.commit_id, parent_attempt_id: row.parent_attempt_id,
-        };
-        assertSync(this.hooks.settleDispatch(claim, outcome));
-        this.db.prepare(`UPDATE preapproval_members SET state = 'in_doubt', result_ciphertext = ?,
+        const claim = this.memberClaim(execution, row);
+        const member = loaded.plan.members.find(item => item.member_id === row.member_id)!;
+        const local = this.localMutationReceipt(loaded, row, member);
+        const settled = local ? { status: 'succeeded' as const, result: null,
+          message: 'The local change committed before execution was interrupted.' } : outcome;
+        assertSync(this.hooks.settleDispatch(claim, settled));
+        this.db.prepare(`UPDATE preapproval_members SET state = ?, result_ciphertext = ?,
           revision = revision + 1, updated_at = ? WHERE grant_id = ? AND member_id = ? AND state = 'dispatching'`)
-          .run(ciphertext, now, row.grant_id, row.member_id);
-        this.enqueue(futureRef, row.revision + 1, `member:${row.member_id}`, { action_ref: row.action_ref });
+          .run(settled.status, local ? this.codec.sealSync(settled) : ciphertext, now, row.grant_id, row.member_id);
+        this.enqueue(futureRef, row.revision + 1, `member:${row.member_id}`, { action_ref: claim.action_ref });
       }
-      this.stopRow(execution, dispatching.length ? 'preapproval_in_doubt' : 'preapproval_checkpoint_missing', 'invalidated');
-      const uncertain = dispatching.length > 0 || members.some(member => member.state === 'in_doubt');
+      const settledMembers = this.db.prepare('SELECT * FROM preapproval_members WHERE future_ref=?')
+        .all(futureRef) as MemberRow[];
+      const uncertain = settledMembers.some(member => member.state === 'in_doubt' || member.state === 'dispatching')
+        // A local proof settles this member, not any unaccounted work in the
+        // interrupted program. Apply the same inventory bound as live recovery.
+        || ((execution.state === 'in_doubt' || dispatching.length > 0)
+          && !this.provenLocalEffects(loaded.plan, execution, settledMembers));
+      this.stopRow(execution, uncertain ? 'preapproval_in_doubt' : 'preapproval_checkpoint_missing', 'invalidated');
       const state: PreapprovalExecutionStatus = uncertain ? 'in_doubt'
-        : members.some(member => member.state === 'succeeded') ? 'partial' : 'invalidated';
+        : settledMembers.some(member => member.state === 'succeeded') ? 'partial' : 'invalidated';
       this.db.prepare(`UPDATE preapproval_executions SET state = ?, worker_id = ?, fence = fence + 1,
         revision = revision + 1, updated_at = ? WHERE future_ref = ?`)
         .run(state, recoveryWorkerId, now, futureRef);
@@ -1688,23 +1903,51 @@ export class PreapprovalRepository {
   async recoverInterruptedRuns(recoveryWorkerId: string, limit = 100, afterFutureRef = ''): Promise<PreapprovalRecoveryResult[]> {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) fail('bad_request', 'Invalid recovery batch size.', 400);
     this.workers.assertCurrent(recoveryWorkerId);
-    const rows = this.db.prepare(`SELECT future_ref FROM preapproval_executions
-      WHERE state IN ('running', 'held') AND future_ref > ? ORDER BY future_ref LIMIT ?`)
-      .all(afterFutureRef, limit) as { future_ref: string }[];
+    const rows = this.db.prepare(`SELECT e.future_ref FROM preapproval_executions e
+      WHERE (e.state IN ('running','held') OR (e.state='in_doubt' AND EXISTS(
+        SELECT 1 FROM preapproval_members m WHERE m.future_ref=e.future_ref AND m.state='dispatching')))
+        AND e.lineage=? AND e.future_ref>? ORDER BY e.future_ref LIMIT ?`)
+      .all(this.lineage(), afterFutureRef, limit) as { future_ref: string }[];
     const results: PreapprovalRecoveryResult[] = [];
     for (const row of rows) results.push(await this.recoverInterruptedExecution(row.future_ref, recoveryWorkerId));
     return results;
   }
 
+  /** A host-only read fence. It preserves the original principal across provider
+   * IO and rechecks the paired responder at every asynchronous boundary. */
+  async reconciliationTarget(proposalId: string, memberId: string, responder: PreapprovalResponder) {
+    const loaded = await this.load(proposalId);
+    const member = loaded.plan.members.find(item => item.member_id === memberId);
+    const row = this.db.prepare('SELECT * FROM preapproval_members WHERE future_ref=? AND member_id=?')
+      .get(loaded.execution.future_ref, memberId) as MemberRow | undefined;
+    if (!member || !selectedIds(loaded.proposal).includes(memberId) || row?.state !== 'in_doubt'
+      || !row.attempt_id || !row.action_ref) fail('preapproval_in_doubt', 'Choose an original uncertain operation to verify.');
+    const evidence = this.db.prepare(`SELECT evidence_id,future_ref AS future_execution_ref,member_id,attempt_id,
+      action_ref,adapter,evidence_digest,outcome,observed_at FROM preapproval_reconciliations WHERE attempt_id=?
+      ORDER BY observed_at DESC,evidence_id DESC LIMIT 1`).get(row!.attempt_id) as PreapprovalReconciliation | undefined;
+    const assertCurrent = () => this.db.transaction(() => {
+      this.responder(responder);
+      const { execution } = this.current(loaded);
+      if (!['in_doubt', 'partial', 'failed', 'cancelled', 'invalidated', 'expired'].includes(execution.state)
+        || preapprovalHash(this.db.prepare('SELECT * FROM preapproval_members WHERE future_ref=? AND member_id=?')
+          .get(execution.future_ref, memberId)) !== preapprovalHash(row)) fail('preapproval_stale', 'The uncertain attempt changed while checking.');
+      if (!evidence) this.liveLoaded(loaded, 'reconcile', member!);
+    }).immediate();
+    assertCurrent();
+    return { plan: loaded.plan, member: member!, claim: { future_execution_ref: loaded.execution.future_ref,
+      member_id: memberId, attempt_id: row!.attempt_id!, action_ref: row!.action_ref! }, evidence, assertCurrent };
+  }
+
   /** Host-only evidence from a verified provider outcome adapter. The adapter
    * must obtain the observation under the original live read authority. This
    * append-only record is not a dispatch/resume permit and cannot grant one. */
-  async recordReconciliation(input: Omit<PreapprovalReconciliation, 'evidence_id'>): Promise<PreapprovalReconciliation> {
+  async recordReconciliation(input: Omit<PreapprovalReconciliation, 'evidence_id'>, guard?: () => void): Promise<PreapprovalReconciliation> {
     if (!input.adapter || input.adapter.length > 200 || !/^sha256:[a-f0-9]{64}$/.test(input.evidence_digest)
       || !['succeeded', 'failed'].includes(input.outcome) || !Number.isSafeInteger(input.observed_at)
       || input.observed_at < 0 || input.observed_at > this.now()) fail('bad_request', 'Invalid provider reconciliation evidence.', 400);
     const loaded = await this.load(this.execution(input.future_execution_ref).proposal_id);
     return this.db.transaction(() => {
+      guard?.();
       const { execution } = this.current(loaded);
       const member = loaded.plan.members.find(item => item.member_id === input.member_id);
       const row = this.db.prepare('SELECT * FROM preapproval_members WHERE future_ref = ? AND member_id = ?')
@@ -1713,25 +1956,77 @@ export class PreapprovalRepository {
         fail('preapproval_in_doubt', 'The evidence does not identify the original uncertain attempt.');
       }
       this.liveLoaded(loaded, 'reconcile', member);
-      const prior = this.db.prepare(`SELECT evidence_id, future_ref AS future_execution_ref, member_id,
-        attempt_id, action_ref, adapter, evidence_digest, outcome, observed_at
-        FROM preapproval_reconciliations WHERE attempt_id = ?`).all(input.attempt_id) as PreapprovalReconciliation[];
-      if (prior.some(item => item.outcome !== input.outcome)) fail('preapproval_in_doubt', 'Conflicting provider evidence requires owner review.');
-      const replay = prior.find(item => item.evidence_digest === input.evidence_digest);
-      if (replay) {
-        if (replay.adapter !== input.adapter || replay.observed_at !== input.observed_at) {
-          fail('preapproval_stale', 'This evidence digest is already bound to a different observation.');
-        }
-        return replay;
-      }
-      const evidence: PreapprovalReconciliation = { ...input, evidence_id: `pae_${randomUUID()}` };
-      this.db.prepare(`INSERT INTO preapproval_reconciliations(evidence_id, future_ref, member_id, attempt_id,
-        action_ref, evidence_digest, outcome, observed_at, adapter) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(evidence.evidence_id, input.future_execution_ref, input.member_id, input.attempt_id,
-          input.action_ref, input.evidence_digest, input.outcome, input.observed_at, input.adapter);
-      this.enqueue(execution.future_ref, row.revision, `reconciliation:${evidence.evidence_id}`, { action_ref: row.action_ref });
-      return evidence;
+      const local = this.localMutationReceipt(loaded, row, member);
+      if (local && input.outcome !== 'succeeded') fail('preapproval_in_doubt', 'A committed local receipt contradicts this outcome.');
+      return this.appendReconciliation(input, row);
     }).immediate();
+  }
+
+  private appendReconciliation(input: Omit<PreapprovalReconciliation, 'evidence_id'>, row: MemberRow): PreapprovalReconciliation {
+    if (!this.db.inTransaction) throw new Error('Reconciliation evidence requires the realm transaction.');
+    const prior = this.db.prepare(`SELECT evidence_id, future_ref AS future_execution_ref, member_id,
+      attempt_id, action_ref, adapter, evidence_digest, outcome, observed_at
+      FROM preapproval_reconciliations WHERE attempt_id = ?`).all(input.attempt_id) as PreapprovalReconciliation[];
+    if (prior.some(item => item.outcome !== input.outcome)) fail('preapproval_in_doubt', 'Conflicting provider evidence requires owner review.');
+    const replay = prior.find(item => item.evidence_digest === input.evidence_digest);
+    if (replay) {
+      if (replay.adapter !== input.adapter || replay.observed_at !== input.observed_at) {
+        fail('preapproval_stale', 'This evidence digest is already bound to a different observation.');
+      }
+      return replay;
+    }
+    const evidence: PreapprovalReconciliation = { ...input, evidence_id: `pae_${randomUUID()}` };
+    this.db.prepare(`INSERT INTO preapproval_reconciliations(evidence_id, future_ref, member_id, attempt_id,
+      action_ref, evidence_digest, outcome, observed_at, adapter) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(evidence.evidence_id, input.future_execution_ref, input.member_id, input.attempt_id,
+        input.action_ref, input.evidence_digest, input.outcome, input.observed_at, input.adapter);
+    this.enqueue(input.future_execution_ref, row.revision, `reconciliation:${evidence.evidence_id}`, { action_ref: input.action_ref });
+    return evidence;
+  }
+
+  /** Facts only: this never dispatches, resumes or changes a terminal receipt.
+   * The proof was captured under live authority in the mutation transaction,
+   * so projecting its content-free result needs no new provider/data read. */
+  async reconcileLocalMutationReceipts(limit = 100, afterAttemptId = ''):
+  Promise<{ checked: number; reconciled: number; last_attempt_id: string }> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) fail('bad_request', 'Invalid local receipt recovery batch.', 400);
+    const rows = this.db.prepare(`SELECT m.attempt_id,e.proposal_id FROM local_mutation_receipts l
+      JOIN preapproval_members m ON m.attempt_id=l.attempt_id AND m.action_ref=l.owner_ref
+      JOIN preapproval_executions e ON e.future_ref=m.future_ref
+      WHERE l.owner='preapproval_member' AND (m.state='in_doubt' OR (m.state='dispatching' AND e.state='in_doubt'))
+        AND e.lineage=? AND m.attempt_id>?
+        AND NOT EXISTS(SELECT 1 FROM preapproval_reconciliations r
+          WHERE r.attempt_id=m.attempt_id AND r.outcome='succeeded')
+      ORDER BY m.attempt_id LIMIT ?`).all(this.lineage(), afterAttemptId, limit) as { attempt_id: string; proposal_id: string }[];
+    let reconciled = 0;
+    for (const candidate of rows) {
+      const loaded = await this.load(candidate.proposal_id);
+      reconciled += this.db.transaction(() => {
+        const { execution } = this.current(loaded, false);
+        const row = this.db.prepare('SELECT * FROM preapproval_members WHERE future_ref=? AND attempt_id=?')
+          .get(loaded.execution.future_ref, candidate.attempt_id) as MemberRow | undefined;
+        const member = loaded.plan.members.find(item => item.member_id === row?.member_id);
+        if (!row || !member || (row.state !== 'in_doubt' && !(row.state === 'dispatching' && execution.state === 'in_doubt'))) return 0;
+        const local = this.localMutationReceipt(loaded, row, member);
+        if (!local || this.db.prepare("SELECT 1 FROM preapproval_reconciliations WHERE attempt_id=? AND outcome='failed'").get(row.attempt_id)) return 0;
+        if (row.state === 'dispatching') {
+          const outcome = { status: 'succeeded' as const, result: null, message: 'The local change committed before its result could be settled.' };
+          assertSync(this.hooks.settleDispatch(this.memberClaim(execution, row), outcome));
+          this.db.prepare(`UPDATE preapproval_members SET state='succeeded',result_ciphertext=?,revision=revision+1,updated_at=?
+            WHERE grant_id=? AND member_id=? AND state='dispatching'`).run(this.codec.sealSync(outcome), this.now(), row.grant_id, row.member_id);
+          this.enqueue(execution.future_ref, row.revision + 1, `member:${row.member_id}`, { action_ref: row.action_ref! });
+          this.projectStoppedLocalRun(loaded.plan, execution.future_ref);
+          return 1;
+        }
+        const prior = this.db.prepare('SELECT 1 FROM preapproval_reconciliations WHERE attempt_id=? AND evidence_digest=?')
+          .get(row.attempt_id, local.digest);
+        this.appendReconciliation({ future_execution_ref: loaded.execution.future_ref, member_id: member.member_id,
+          attempt_id: row.attempt_id!, action_ref: row.action_ref!, adapter: 'local-mutation/v1',
+          evidence_digest: local.digest, outcome: 'succeeded', observed_at: local.committed_at }, row);
+        return prior ? 0 : 1;
+      }).immediate();
+    }
+    return { checked: rows.length, reconciled, last_attempt_id: rows.at(-1)?.attempt_id ?? afterAttemptId };
   }
 
   /** Synchronous lifecycle entry points can participate in the target writer's
@@ -1774,12 +2069,28 @@ export class PreapprovalRepository {
       }
       const evidence = row?.attempt_id ? this.db.prepare(`SELECT outcome FROM preapproval_reconciliations
         WHERE attempt_id = ? ORDER BY observed_at DESC, evidence_id DESC LIMIT 1`).get(row.attempt_id) as { outcome: 'succeeded' | 'failed' } | undefined : undefined;
-      members.push({ member_id: member.member_id, parent_member_id: member.parent_member_id,
+      const local = row ? this.localMutationReceipt(loaded, row, member) : null;
+      const verifyMail = row?.state === 'in_doubt' && row.attempt_id && row.action_ref
+        && member.ingredient_slug === 'mail-send' && supportsPreapprovalMailProof(member.input)
+        && this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='mail_send_claims'").get()
+        && this.db.prepare('SELECT 1 FROM mail_send_claims WHERE reconciliation_id=?').get(preapprovalMailAttemptId({
+          future_execution_ref: execution.future_ref, member_id: member.member_id, attempt_id: row.attempt_id, action_ref: row.action_ref }));
+      members.push({ ...(local ? { local_receipt: { receipt_id: local.receipt_id, kind: local.kind, committed_at: local.committed_at } } : {}),
+        ...(verifyMail ? { provider_verification: 'mail' as const } : {}),
+        member_id: member.member_id, parent_member_id: member.parent_member_id,
         op_id: member.op_id, label: member.review.label, status: row?.state ?? 'available',
         action_ref: row?.action_ref ?? null, commit_id: row?.commit_id ?? null, run_id: row?.actual_run_id ?? null,
-        status_message: message, reconciled_outcome: evidence?.outcome ?? null });
+        status_message: message, reconciled_outcome: local && evidence?.outcome === 'failed' ? null : evidence?.outcome ?? null });
     }
+    const recovery = ['partial', 'failed', 'in_doubt'].includes(execution.state) ? (() => {
+      const successor = this.blockingSuccessor(execution.future_ref);
+      const reason = this.continuationReason(loaded, members);
+      return { eligible: reason === null && !successor,
+        reason: successor ? 'This execution already has a continuation. Open its linked review.' : reason,
+        successor_proposal_id: successor?.proposal_id ?? null };
+    })() : undefined;
     return { ...this.result(proposal, loaded.plan), execution_status: execution.state,
+      ...(recovery ? { recovery } : {}),
       ...(includeReview ? { reviewed: this.reviewDetails(proposal, execution, loaded.plan) } : {}),
       status_reason: execution.status_reason, grant: grant ? { grant_id: grant.grant_id, revision: grant.revision, status: grant.status } : null,
       decision: decision ? this.decisionReceipt(decision) : null, members,
@@ -1847,6 +2158,8 @@ export class PreapprovalRepository {
       const inspection = await this.inspect(candidate.proposal_id);
       const { reviewed, ...outcome } = inspection;
       const summary = { schema_version: 1, inspection: { ...outcome,
+        ...(outcome.recovery ? { recovery: { ...outcome.recovery, eligible: false,
+          reason: 'The retained review content has expired. Prepare a new full review.' } } : {}),
         members: outcome.members.map(member => ({ ...member, status_message: null })),
         retired_review: { at: this.now(), recipe_name: reviewed?.recipe.display_name ?? 'Reviewed execution' } } };
       const ciphertext = await this.codec.seal(summary);

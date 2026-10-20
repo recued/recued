@@ -75,10 +75,12 @@ export interface ComposeTelegramCallbackAckDeps {
 /** Fire-and-await the Telegram `answerCallbackQuery` call for one
  *  inbound callback. Returns void on either success or any handled
  *  failure mode; the caller is responsible for not propagating throws
- *  past the webhook-port boundary. */
+ *  past the webhook-port boundary. `text`, when given, is the short notice
+ *  Telegram shows the presser (a press on a reminder that already closed). */
 export type TelegramCallbackAck = (
   payload: unknown,
   connection_name: string,
+  text?: string,
 ) => Promise<void>;
 
 /** Extract the `callback_query.id` from a verified inbound payload.
@@ -100,7 +102,7 @@ export const composeTelegramCallbackAck = (
   const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
   const timeoutMs = deps.timeoutMs ?? TELEGRAM_CALLBACK_ACK_TIMEOUT_MS;
 
-  return async (payload, connection_name) => {
+  return async (payload, connection_name, text) => {
     const callback_query_id = extractCallbackQueryId(payload);
     if (callback_query_id === null) return;
 
@@ -128,7 +130,7 @@ export const composeTelegramCallbackAck = (
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json; charset=utf-8' },
-          body: JSON.stringify({ callback_query_id }),
+          body: JSON.stringify({ callback_query_id, ...(text ? { text } : {}) }),
           signal: controller.signal,
         },
         new URL(url).origin,

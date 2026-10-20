@@ -57,6 +57,12 @@ const fakeAuditLog = (patch: Partial<AuditLogStore>): AuditLogStore =>
   patch as unknown as AuditLogStore;
 
 describe('D-169 P2 Slice 2 history handlers', () => {
+  it('D-325 reminder asks never enter the approval list', async () => {
+    const result = await handlePendingAsks({ listOpenAsks: async () => [
+      pendingAsk({ ask_id: 'approval' }), pendingAsk({ ask_id: 'reminder', delivery_group_id: 'clock-point' }),
+    ] } as HistoryDeps);
+    expect(result.asks.map(ask => ask.ask_id)).toEqual(['approval']);
+  });
   it('projects recent audit rows into ServerRecentExecution rows', async () => {
     const listRecent = vi.fn(async () => [
       auditEntry({

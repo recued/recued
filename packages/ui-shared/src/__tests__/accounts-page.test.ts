@@ -242,6 +242,7 @@ describe('project()', () => {
       }),
     );
     expect(out).toEqual({
+      backfill_days: 400,
       name: 'fastmail',
       host: 'imap.fastmail.com',
       port: 993,
@@ -1324,5 +1325,20 @@ describe('unified account authentication controls', () => {
       authenticationManagement: { slug: 'work', action: 'reauthorize' } };
     const html = renderAccountsPanel({ state }); expect(html).toContain('Continue to current sign-in');
     expect(html).not.toContain('Change OAuth app'); expect(html).toContain('Broker sign-in');
+  });
+});
+
+
+describe('D-325 mail history choice', () => {
+  it.each(['imap', 'gmail', 'graph'])('offers and projects history on %s', id => {
+    const provider = findAccountProvider(findAccountLane('mail')!, id)!;
+    const values: AccountFormValues = { ...seedAccountFormValues(provider), name: 'personal', host: 'imap.example.test', username: 'ana', password: 'fixture' };
+    expect(values.backfill_days).toBe('400');
+    expect(provider.project({ ...values, backfill_days: '400' }).backfill_days).toBe(400);
+    expect(validateAccountForm(provider, { ...values, backfill_days: '-1' })).toContain('Mail history');
+    for (const method of ['direct_oauth', 'managed_oauth']) {
+      const state = { ...initialAccountsPanelState('mail'), stage: 'form' as const, providerId: id, values: { ...values, auth_method: method } };
+      expect(renderAccountsPanel({ state })).toContain('acct-field-backfill-days');
+    }
   });
 });

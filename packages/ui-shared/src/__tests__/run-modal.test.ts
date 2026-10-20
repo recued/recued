@@ -345,6 +345,18 @@ describe('run-modal model', () => {
 // ── render ────────────────────────────────────────────────────────
 
 describe('run-modal render', () => {
+  it('keeps structured config values in the open JSON editor instead of a lossy text input', () => {
+    // Authored object hints are admitted at the recipe boundary ahead of the typed union.
+    const entry = recipeEntry('structured', { variables: {
+      customer: { label: 'Customer', type: 'object' },
+    } as unknown as RecipeDefinition['variables'] });
+    const html = renderRunModal(stateWith({ config_text: JSON.stringify({ customer: { name: 'Ana' } }) }), entry, CAPS_FULL);
+    expect(html).not.toContain('[object Object]');
+    expect(html).not.toContain('data-var-key="customer"');
+    expect(html).toContain('Customer: Edit <code>customer</code> in Config JSON below.');
+    expect(html).toContain('class="run-modal-advanced" open');
+    expect(html).toContain('&quot;name&quot;:&quot;Ana&quot;');
+  });
   it('Run tab: title, tabs, variable widget, raw-JSON field, Run button', () => {
     const recipe = recipeEntry('daily-brief', {
       variables: { topic: { label: 'Topic', type: 'text', default: 'news' } },
@@ -819,6 +831,178 @@ describe('run-modal render', () => {
 // ── wire ──────────────────────────────────────────────────────────
 
 describe('run-modal wire', () => {
+  const accountPrefill = () => ({ config: { person: '42', email: 'ana@example.test', local: 'keep' },
+    context: { contact_email: 'ana@example.test' }, connections: { crm: 'sales' },
+    connectionRevisions: { crm: 'a'.repeat(64) },
+    connectionFields: { crm: { config: ['person', 'email'], context: ['contact_email'] } } });
+  const accountSlots = (revision = 'a'.repeat(64)) => ({ slots: [{ slot: 'crm', variables: [], connections: [
+    { connection_name: 'sales', connection_revision: revision, display_name: 'Sales', is_default: true },
+  ] }] });
+
+  it('rechecks source accounts on submission and sends their expected revisions', async () => {
+    const execute = vi.fn(async () => executeResponse());
+    const connectionSlots = vi.fn(async () => accountSlots());
+    const handle = wire({ recipe: recipeEntry(), prefillSource: 'Ana', pagePrefill: accountPrefill(), execute, connectionSlots });
+    await Promise.resolve();
+    await handle.confirmRun();
+    expect(connectionSlots).toHaveBeenCalledTimes(2);
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ connections: { crm: 'sales' },
+      connection_revisions: { sales: 'a'.repeat(64) } }));
+    handle.destroy();
+  });
+
+  it.each(['replaced', 'removed', 'unversioned'])('requires review after an account is %s, preserving edits and unrelated fields', async change => {
+    const execute = vi.fn(async () => executeResponse());
+    let current = accountSlots();
+    const handle = wire({ recipe: recipeEntry(), prefillSource: 'Ana', pagePrefill: accountPrefill(), execute,
+      connectionSlots: async () => current });
+    await Promise.resolve();
+    handle.setConfigText('{"person":"42","email":"edited@example.test","local":"keep"}');
+    current = change === 'removed' ? { slots: [] } : accountSlots(change === 'unversioned' ? '' : 'b'.repeat(64));
+    await handle.confirmRun();
+    expect(execute).not.toHaveBeenCalled();
+    expect(handle.getState().run_error).toContain('account used by the page changed');
+    expect(JSON.parse(handle.getState().config_text)).toEqual({ email: 'edited@example.test', local: 'keep' });
+    expect(handle.getState().target_values).toEqual({});
+    handle.setTab('schedule'); handle.setTab('run');
+    expect(JSON.parse(handle.getState().config_text)).not.toHaveProperty('person');
+    handle.destroy();
+  });
+
+  it('keeps a failed account recheck retryable without sending a run', async () => {
+    const execute = vi.fn(async () => executeResponse());
+    let fail = false;
+    const handle = wire({ recipe: recipeEntry(), prefillSource: 'Ana', pagePrefill: accountPrefill(), execute,
+      connectionSlots: async () => { if (fail) throw new Error('Account check unavailable'); return accountSlots(); } });
+    await Promise.resolve(); fail = true;
+    await handle.confirmRun();
+    expect(execute).not.toHaveBeenCalled();
+    expect(handle.getState()).toMatchObject({ executing: false, run_error: 'Account check unavailable' });
+    expect(JSON.parse(handle.getState().config_text).person).toBe('42');
+    fail = false;
+    await handle.confirmRun();
+    expect(execute).toHaveBeenCalledOnce();
+    handle.destroy();
+  });
+
+  it('holds duplicate submissions and requires review if arguments change during an account recheck', async () => {
+    let resolve!: (value: ReturnType<typeof accountSlots>) => void;
+    const execute = vi.fn(async () => executeResponse());
+    const connectionSlots = vi.fn().mockResolvedValueOnce(accountSlots())
+      .mockImplementationOnce(() => new Promise<ReturnType<typeof accountSlots>>(done => { resolve = done; }));
+    const handle = wire({ recipe: recipeEntry(), prefillSource: 'Ana', pagePrefill: accountPrefill(), execute, connectionSlots });
+    await Promise.resolve();
+    const pending = handle.confirmRun();
+    expect(handle.getState().executing).toBe(true);
+    await handle.confirmRun();
+    handle.setConfigText('{"person":"edited"}');
+    resolve(accountSlots()); await pending;
+    expect(execute).not.toHaveBeenCalled();
+    expect(connectionSlots).toHaveBeenCalledTimes(2);
+    expect(handle.getState().run_error).toContain('Arguments changed');
+    handle.destroy();
+  });
+
+  it('keeps page-prefilled arguments and later edits on Run when switching to setup tabs', () => {
+    const handle = wire({ recipe: recipeEntry(), prefillSource: 'Ana' });
+    handle.setConfigText('{"contact_id":"edited"}');
+    handle.setTargetValue('contact_email', 'ana@example.test');
+    handle.setContextValues({ extra: { count: 1 } });
+    handle.setConnection('crm', 'sales');
+    handle.setTab('schedule');
+    expect(handle.getState()).toMatchObject({ config_text: '{}', target_values: {}, context_values: {}, connection_choice: {} });
+    handle.setConfigText('{"topic":"daily"}');
+    handle.setTab('trigger');
+    expect(handle.getState().config_text).toBe('{"topic":"daily"}');
+    handle.setTab('run');
+    expect(handle.getState()).toMatchObject({ config_text: '{"contact_id":"edited"}',
+      target_values: { contact_email: 'ana@example.test' }, context_values: { extra: { count: 1 } }, connection_choice: { crm: 'sales' } });
+    handle.setTab('schedule');
+    expect(handle.getState().config_text).toBe('{"topic":"daily"}');
+    handle.destroy();
+  });
+
+  it('clears untouched values from the changed account while retaining edits and other sources', () => {
+    const handle = wire({ recipe: recipeEntry(), prefillSource: 'Ana', pagePrefill: {
+      config: { person: '42', email: 'ana@example.test', local: 'keep', company: '7', details: { name: 'Ana', active: true } },
+      context: { contact_email: 'ana@example.test', company_id: '7' },
+      connections: { crm: 'sales', company: 'office' },
+      connectionFields: { crm: { config: ['person', 'email', 'details'], context: ['contact_email'] },
+        company: { config: ['company'], context: ['company_id'] } },
+    } });
+    expect(JSON.parse(handle.getState().config_text).person).toBe('42');
+    handle.setConfigText(JSON.stringify({ person: '42', email: 'edited@example.test', local: 'keep', company: '7',
+      details: { active: true, name: 'Ana' } }));
+    handle.setConnection('crm', 'personal');
+    expect(JSON.parse(handle.getState().config_text)).toEqual({ email: 'edited@example.test', local: 'keep', company: '7' });
+    expect(handle.getState()).toMatchObject({ target_values: { company_id: '7' },
+      connection_choice: { crm: 'personal', company: 'office' }, prefill_cleared: true });
+    handle.setTab('schedule'); handle.setTab('run');
+    expect(JSON.parse(handle.getState().config_text)).not.toHaveProperty('person');
+    handle.destroy();
+  });
+
+  it('preserves invalid raw JSON and the source account until the JSON is fixed', () => {
+    const handle = wire({ recipe: recipeEntry(), prefillSource: 'Ana', pagePrefill: {
+      config: { person: '42' }, context: {}, connections: { crm: 'sales' },
+      connectionFields: { crm: { config: ['person'], context: [] } },
+    } });
+    handle.setConfigText('{unfinished');
+    handle.setConnection('crm', 'personal');
+    expect(handle.getState()).toMatchObject({ config_text: '{unfinished', connection_choice: { crm: 'sales' },
+      run_error: 'Fix Config JSON before changing accounts.' });
+    handle.setConfigText('{"person":"42"}');
+    handle.setConnection('crm', 'personal');
+    expect(JSON.parse(handle.getState().config_text)).toEqual({});
+    expect(handle.getState().connection_choice).toEqual({ crm: 'personal' });
+    handle.destroy();
+  });
+
+  it('does not restore source-account targets after changing dishes on a setup tab', () => {
+    const handle = wire({ recipe: recipeEntry(), prefillSource: 'Ana', dishes: TWO_DISHES, pagePrefill: {
+      config: { person: '42' }, context: { contact_email: 'ana@example.test' }, connections: { crm: 'sales' },
+      connectionFields: { crm: { config: ['person'], context: ['contact_email'] } },
+    } });
+    handle.setTab('schedule'); handle.setDish('dsh_home'); handle.setTab('run');
+    expect(handle.getState()).toMatchObject({ config_text: '{}', target_values: {}, connection_choice: {} });
+    handle.destroy();
+  });
+
+  it.each([false, true])('pins a page source account even when the displayed default would omit it (single=%s)', async single => {
+    const execute = vi.fn(async () => executeResponse());
+    const sales = { connection_name: 'sales', display_name: 'Sales', is_default: true };
+    const handle = wire({ recipe: recipeEntry(), execute, prefillSource: 'Ana', connectionSlots: async () => ({
+      slots: [{ slot: 'crm', variables: [], connections: single ? [sales]
+        : [sales, { connection_name: 'personal', display_name: 'Personal', is_default: false }] }],
+    }) });
+    await Promise.resolve();
+    handle.setConnection('crm', 'sales');
+    await handle.confirmRun();
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ connections: { crm: 'sales' } }));
+    handle.destroy();
+  });
+
+  it('does not resurrect another dish\'s overrides when returning from a setup tab', () => {
+    const handle = wire({ recipe: recipeEntry(), prefillSource: 'Ana', dishes: TWO_DISHES });
+    handle.setConfigText('{"topic":"page topic"}');
+    handle.setTab('schedule');
+    handle.setDish('dsh_home');
+    handle.setTab('run');
+    expect(handle.getState()).toMatchObject({ dish_id: 'dsh_home', config_text: '{}' });
+    handle.destroy();
+  });
+
+  it('preserves structured page overrides through review and dispatch', async () => {
+    const execute = vi.fn(async () => executeResponse());
+    const handle = wire({ recipe: recipeEntry('structured', { variables: {
+      customer: { label: 'Customer', type: 'object' },
+    } as unknown as RecipeDefinition['variables'] }), execute, prefillSource: 'Ana' });
+    handle.setConfigText('{"customer":{"name":"Ana"}}');
+    await handle.confirmRun();
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ config: { customer: { name: 'Ana' } } }));
+    expect(handle.getState().result?.success).toBe(true);
+    handle.destroy();
+  });
   it('confirmRun executes with parsed config + paints the result', async () => {
     const execute = vi.fn(async () => executeResponse());
     const onRan = vi.fn();

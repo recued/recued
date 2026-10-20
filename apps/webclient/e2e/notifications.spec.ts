@@ -1,11 +1,53 @@
 import { expect, test } from '@playwright/test';
-import { installFullAppHooks } from './helpers/full-app.js';
+import { HARNESS_URL, installFullAppHooks } from './helpers/full-app.js';
 
 /** Notification browser journeys against the deterministic full-app harness. */
 const NOTIFY_TOAST = 'data-recued-notify-toast';
 const NOTIFY_TOAST_DISMISS = 'data-recued-notify-toast-dismiss';
 
 installFullAppHooks();
+
+test('D-325 reminder buttons survive the toast timer, answer independently, and dismissal records no answer', async ({ page }) => {
+  await page.setViewportSize({ width: 280, height: 653 });
+  await page.clock.install();
+  for (let index = 1; index <= 2; index++) await page.evaluate(i => window.__app.fireMessage({
+    type: 'server_event', event: { kind: 'notification.ask', reminder: true, ask_id: `reminder-demo-${i}`,
+      title: `Renew document ${i}`, text: 'Due in one month.', link_url: '#today', cursor: i,
+      options: [{ id: 'done', label: 'Done' }, { id: 'later', label: 'Later' },
+        { id: 'not_needed', label: 'Not needed' }, { id: 'stop', label: 'Stop reminding' }] },
+  }), index);
+  await page.clock.fastForward(7000);
+  await page.clock.resume();
+  const cards = page.locator(`[${NOTIFY_TOAST}]`);
+  await expect(cards).toHaveCount(2);
+  await expect(cards.first().getByRole('link', { name: 'Open' })).toHaveAttribute('href', '#today');
+  const answer = cards.first().getByRole('button', { name: 'Done', exact: true });
+  expect((await answer.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await answer.focus();
+  await page.keyboard.press('Enter');
+  await expect(cards).toHaveCount(1);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('notification.submitAnswer'))).toBe(1);
+  await cards.first().locator(`[${NOTIFY_TOAST_DISMISS}]`).click();
+  await expect(cards).toHaveCount(0);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('notification.submitAnswer'))).toBe(1);
+});
+
+test('D-325 Settings names the selected connection and retains keyboard focus after saving', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?notifications=ready&reminder_settings=named#settings/notifications`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const choice = page.getByRole('combobox', { name: 'Telegram connection' });
+  await expect(choice).toBeVisible();
+  await expect(choice.getByRole('option', { name: 'My phone (private)' })).toHaveCount(1);
+  await expect(choice.getByRole('option', { name: 'Family chat (household)' })).toHaveCount(1);
+  await expect(choice).toHaveValue('');
+  await choice.focus();
+  await choice.selectOption('private:100');
+  await expect(choice).toBeEnabled();
+  await expect(choice).toHaveValue('private:100');
+  await expect(choice).toBeFocused();
+  expect(await page.evaluate(() => window.__app.rpcCallCount('notifications.set_channel'))).toBe(1);
+});
 
 test('notification dismiss actions stay full-sized and contained', async ({ page }) => {
   await page.evaluate(() => window.__app.fireMessage({

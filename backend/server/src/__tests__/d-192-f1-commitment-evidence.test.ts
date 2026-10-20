@@ -261,7 +261,7 @@ describe('D-192 F1 commitment evidence approval lift', () => {
 
     expect(verdict.verdict).toBe('ask');
     if (verdict.verdict !== 'ask') throw new Error('expected ask verdict');
-    expect(verdict.detail).toMatch(/review-then-approve/);
+    expect(verdict.detail).toMatch(/proposes a commitment/);
   });
 
   it('lifts the core commitment-propose alias identically', () => {
@@ -274,7 +274,7 @@ describe('D-192 F1 commitment evidence approval lift', () => {
 
     expect(verdict.verdict).toBe('ask');
     if (verdict.verdict !== 'ask') throw new Error('expected ask verdict');
-    expect(verdict.detail).toMatch(/review-then-approve/);
+    expect(verdict.detail).toMatch(/proposes a commitment/);
   });
 
   it('does not lift plain commitment-create under owner automation trust', () => {

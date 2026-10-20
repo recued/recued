@@ -463,6 +463,7 @@ export interface AppContext extends LlmSubstrate {
    *  bus-wired dispatchers) and set back onto this ref, so the chat handler
    *  deps built HERE can reach it late. Null until that wiring runs; the tool
    *  then reports `execution_error` rather than silently doing nothing. */
+  situationAccessRef?: { current: import('../situations/access.js').SituationAccess | undefined };
   workEntityCrudDepsRef: { current: WorkEntityCrudRpcDeps | null };
   /** Slice 2 — the calendar write dispatchers behind `calendar.create` /
    *  `calendar.update`. Same late-bound shape and same reason: the stack is
@@ -678,6 +679,7 @@ export const composeAppContext = (
   // store below) + the targeted-read spine (populated alongside the
   // write executor once the gateway fetch deps exist).
   let workEntityChatResolverRef: WorkEntityResolver | undefined;
+  const situationAccessRef: { current: import('../situations/access.js').SituationAccess | undefined } = { current: undefined };
   const workEntityCrudDepsRef: { current: WorkEntityCrudRpcDeps | null } = { current: null };
   const calendarWriteDepsRef: { current: CalendarWriteDeps | null } = { current: null };
   const workEntityTargetedReadDepsRef: { current: WorkEntityTargetedReadDeps | null } =
@@ -987,6 +989,7 @@ export const composeAppContext = (
       // gateway fetch deps), hence late-bound.
       getWorkEntityResolver: () => workEntityChatResolverRef,
       getWorkEntityTargetedReadDeps: () => workEntityTargetedReadDepsRef.current ?? undefined,
+      getSituationAccess: () => situationAccessRef.current,
       getWorkEntityCrudDeps: () => workEntityCrudDepsRef.current ?? undefined,
       getCalendarWriteDeps: () => calendarWriteDepsRef.current ?? undefined,
       // D-192 P5 edges — `work.read`'s `include_related`. Late-bound for the
@@ -1781,6 +1784,7 @@ export const composeAppContext = (
     sharedBlobs,
     annotationDeps,
     annotationStoreRef,
+    situationAccessRef,
     chatStoreRef: chatBundle?.chatStore,
     chatConnectionMcpStoreRef: chatBundle?.connectionMcpStore,
     chatInboundTokenStoreRef: chatBundle?.inboundTokenStore,

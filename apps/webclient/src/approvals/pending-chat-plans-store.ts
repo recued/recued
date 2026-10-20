@@ -19,6 +19,7 @@ import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import { serializeChatPlanAddress } from '../shell/route.js';
 
 export interface PendingChatPlan {
+  resource_review?: import('@recued/contracts').ResourceReview;
   plan_id: string;
   session_id: string;
   turn_id: string;
@@ -153,6 +154,7 @@ const planFromRecord = (record: ChatPlanRecord): PendingChatPlan | null => {
       : {}),
     tool: plan.tool,
     tier: plan.tier,
+    ...(plan.resource_review ? { resource_review: plan.resource_review } : {}),
     args: plan.args,
     args_hash: plan.args_hash,
     payload_available: record.payload_available,
@@ -222,6 +224,7 @@ const proposedMutation = (
       : {}),
     tool: event.tool,
     tier: event.tier,
+    ...(event.resource_review ? { resource_review: event.resource_review } : {}),
     args: event.args,
     ...(event.args_hash !== undefined
       ? { args_hash: event.args_hash }

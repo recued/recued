@@ -56,6 +56,7 @@ const fixture = (ambiguous = false, intercept?: (request: ManagedOAuthRequest) =
       case 'review_direct_authentication':
       case 'authentication_worklist':
       case 'authentication_history':
+      case 'authentication_history_export':
       case 'authentication_access_preview':
       case 'authentication_access_retire':
       case 'authentication_access_run':

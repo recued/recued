@@ -167,6 +167,8 @@ import type {
 import type {
   ExecutionCaseOfferLifecycle,
 } from './execution-case-offer-lifecycle.js';
+import { createSituationPrefetch } from './situations/prefetch.js';
+import type { SituationAccess } from './situations/access.js';
 import type { ContactStore } from './storage/contact-store.js';
 import type { CorrectionEventsStore } from './storage/correction-events-store.js';
 
@@ -348,6 +350,7 @@ const readScopeSearchResult = (
  *  registry (for the enabled-state gate + the real middleware objects)
  *  plus the existing per-pair stores + the engine clock / tz resolver. */
 export interface ChatStreamMiddlewareDeps {
+  readonly getSituationAccess?: () => SituationAccess | undefined;
   /** The live first-party middleware registry (built in
    *  `wire-chat-orchestrator.ts`). Each source adapter gates on + delegates
    *  to a middleware sourced from `registry.enabled()`. Absent → the three
@@ -600,6 +603,11 @@ const createPromptCacheSource = (
 ): Middleware => ({
   id: PROMPT_CACHE_MIDDLEWARE_ID,
   async prompt(ctx: TurnContext): Promise<void> {
+    const access = deps.getSituationAccess?.();
+    if (access) {
+      try { const scope = access.context(ctx.source, null); if (!scope.owner && !scope.all_spheres) return; }
+      catch { return; }
+    }
     const mw = findEnabledMiddleware(deps.registry, PROMPT_CACHE_MIDDLEWARE_ID);
     if (mw?.prompt === undefined) return; // disabled / unregistered → no prefetch
     await mw.prompt(ctx);
@@ -646,6 +654,7 @@ export const createChatStreamMiddlewares = (
   // catalog source is wired; runs unconditionally (no enabled-state gate —
   // see `createCatalogSource`).
   if (deps.buildCatalog) middlewares.push(createCatalogSource(deps.buildCatalog));
+  if (deps.getSituationAccess) middlewares.push(createSituationPrefetch({ getAccess: deps.getSituationAccess }));
   // scoped-grant parse (D-177 rule 5, 5.c) — before-turn over the user's own
   // utterance; files an inert proposal row, contributes nothing model-visible.
   // Independent of `registry` like the catalog hook; absent deps → no-op.

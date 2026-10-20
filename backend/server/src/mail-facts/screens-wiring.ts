@@ -89,9 +89,10 @@ export interface MailFactScreensDeps {
   /** No AI call holding news waits on an email: a backfill that runs recipes
    *  waits for it after each email, so each is told as it came. */
   readonly aiSettled?: (email: MailFactEmailRef) => Promise<number>;
-  /** D-318 audit — the email chat door's chat mailbox, whose mail is the
-   *  conversation with Recued, not the owner's: no facts are read from it. */
-  readonly isChatMailbox?: (slug: string) => boolean;
+  /** D-318 audit — the email chat door's chat mailbox used for chat alone,
+   *  whose mail is the conversation with Recued, not the owner's: no facts are
+   *  read from it. One that is the owner's own too (§8.18) is read. */
+  readonly isChatOnlyMailbox?: (slug: string) => boolean;
   /** D-318 audit — the conversation's mail in the owner's other mailboxes. */
   readonly isConversationMail?: (fields: Readonly<Record<string, unknown>>) => boolean;
   /** D-318 audit — Recued's own sends, by its send claims: the editor, the
@@ -107,7 +108,7 @@ export const mailFactScreensRpcDeps = (deps: MailFactScreensDeps): MailFactRpcDe
     deps.mail === undefined
       ? []
       : deps.mail.registry.list().filter((collection): collection is MailCollection =>
-        collection.platform === 'mail' && deps.isChatMailbox?.(collection.slug) !== true);
+        collection.platform === 'mail' && deps.isChatOnlyMailbox?.(collection.slug) !== true);
   const progress = eventBus
     ? createMailFactAnnouncer((subkind) => { eventBus.emit({ kind: 'mail_fact', subkind }); }).announce
     : undefined;

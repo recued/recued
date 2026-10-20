@@ -338,6 +338,7 @@ export interface ComposeChatOrchestratorDeps {
    *  (the contract store bootstraps after the chat surface in
    *  compose-app-context); absent or resolving undefined → the parse hook
    *  is a faithful no-op. */
+  getSituationAccess?: () => import('../../situations/access.js').SituationAccess | undefined;
   getContractStore?: () => ContractStore | undefined;
   /** D-323 — the server's copy of the marketplace catalogue. Present, chat's
    *  `tools.search` offers a pack to install when nothing installed matches;
@@ -909,6 +910,7 @@ export const composeChatOrchestrator = (
     // pass-through of the app-context late-bound refs).
     ...(getWorkEntityResolver ? { getWorkEntityResolver } : {}),
     ...(getWorkEntityTargetedReadDeps ? { getWorkEntityTargetedReadDeps } : {}),
+    ...(deps.getSituationAccess ? { getSituationAccess: deps.getSituationAccess } : {}),
     ...(getWorkEntityCrudDeps ? { getWorkEntityCrudDeps } : {}),
     ...(getCalendarWriteDeps ? { getCalendarWriteDeps } : {}),
     ...(getWorkEntityEdgeStore ? { getWorkEntityEdgeStore } : {}),
@@ -1689,12 +1691,20 @@ export const composeChatOrchestrator = (
     executeAiCall: executeChatAiCall,
     ...(voiceTranscription ? { voiceTranscription } : {}),
     planApprovalStore: planApprovalStoreShared,
+    getResourceReview: () => getExecuteDeps()?.executorConfig.resourceReview,
+    validateLocalMutation: (source, tool) => {
+      const authority = getExecuteDeps()?.approvalResumeAuthority?.resolve({
+        execution_source: source, required_bearer_tool_names: [tool], require_live_owner_credential: true,
+      });
+      if (!authority?.admitted) throw new Error(authority?.detail ?? 'The original Chat write authority is unavailable.');
+    },
     // D-160 O-5 (light slice) — the live middleware registry + the
     // existing per-pair source the orchestrator feeds to the
     // `correction-learning` (before-turn) and `personal-recipes`
     // (after-turn) hooks. `getContactStore` reuses the same late-bound
     // getter the tool-registry inputs consume (resolves at dispatch
     // time); the correction store is a local SQLite read view.
+    ...(deps.getSituationAccess ? { getSituationAccess: deps.getSituationAccess } : {}),
     middlewareRegistry,
     getCorrectionEventsStore: () => correctionEventsStore,
     getContactStore,

@@ -35,6 +35,7 @@ import type { DependencyReadAdmission } from './work-entity-dependency-admission
 // the model simply is never told it exists, and no test of the backend can
 // see the omission.
 import { WORK_ENTITY_KINDS } from './work-entities.js';
+import { SITUATION_QUERY_SCHEMA } from './situation.js';
 
 // ────────────────────────────────────────────────────────────────
 // D-137 § A.1.1 — InternalToolRegistry: tier discriminator + closed
@@ -95,6 +96,7 @@ export type Tier1ToolName =
   | 'account.search'
   | 'work.search'
   | 'work.read'
+  | 'situation.query'
   | 'work.create'
   | 'calendar.create'
   | 'calendar.update'
@@ -117,6 +119,7 @@ export const TIER1_TOOL_NAMES: ReadonlyArray<Tier1ToolName> = [
   'account.search',
   'work.search',
   'work.read',
+  'situation.query',
   'work.create',
   'calendar.create',
   'calendar.update',
@@ -151,6 +154,7 @@ export const TIER1_TOPIC_TAGS: Readonly<Record<Tier1ToolName, ReadonlyArray<stri
   'deal.search': ['deal', 'crm', 'opportunity', 'pipeline', 'lookup'],
   'account.search': ['account', 'company', 'organization', 'crm', 'lookup'],
   'work.search': [...WORK_ENTITY_KINDS, 'todo', 'lookup'],
+  'situation.query': ['situation', 'asset', 'due', 'trip', 'occasion'],
   'work.read': [...WORK_ENTITY_KINDS, 'detail', 'lookup'],
   'work.create': [...WORK_ENTITY_KINDS, 'add', 'capture', 'todo', 'create'],
   'calendar.create': ['calendar', 'event', 'meeting', 'schedule', 'book', 'create'],
@@ -197,6 +201,7 @@ export const TIER1_CLASSIFICATIONS: Readonly<
   'account.search': 'read',
   'work.search': 'read',
   'work.read': 'read',
+  'situation.query': 'read',
   // Deliberately `unknown` — NOT `write` — on the `memory.write` precedent
   // above. A `write` classification forces the P3 plan-approval gate on EVERY
   // dispatch, and an approval card between "add a task" and a task is the
@@ -284,6 +289,7 @@ export const TIER1_CONCURRENCY_SAFE: Readonly<
   // idempotent vendor GETs — safe to batch alongside the other reads.
   'work.search': true,
   'work.read': true,
+  'situation.query': true,
   // Each create mints its own row id, so two creates in one turn ("add a task
   // for X and one for Y") never race a shared key — same append-only argument
   // as `memory.write`.
@@ -2110,6 +2116,7 @@ export const TIER1_TOOL_ENTITY: Readonly<Record<Tier1ToolName, OpEntity>> = {
   'account.search': 'crm',
   'work.search': 'work',
   'work.read': 'work',
+  'situation.query': 'situation',
   'work.create': 'work',
   'calendar.create': 'calendar',
   'calendar.update': 'calendar',
@@ -2411,7 +2418,7 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
   'work.search': {
     name: 'work.search',
     description:
-      "Search Mary's work items — one `kind` per call: `task`, `project`, `note`, `commitment`, or `booking` (a reservation: customer, price, how it ended, and its own date/time in `slot_start_at` / `slot_end_at` — a booking is NOT a calendar event and is never in the calendar) — across every registered Source: Recued's records, synced vendor mirrors, and `read_through` Sources fetched directly on demand without canonical work-entity materialization. Filter with `query` (word match over title + body text) / `source_id` / `done`. Each result `id` is Source-qualified routing metadata: pass it VERBATIM to `work.read` or the matching provider operation; never strip or rewrite its prefix. A mirrored row can also go to a generic `data.<kind>` update/delete; a `live: true` read-through item has no local row, so write it through its matching provider operation. `source_freshness: read_through` means the result was fetched live and was not written to `data_<kind>`; other external freshness states describe poll-synced local mirrors that can trail the vendor. `long_text.truncated: true` means the text was CUT to keep the result small, and `omitted_chars` says by how much — decide from that number whether a `work.read` is worth a round-trip (a hundred missing characters usually is not; several thousand usually is). ⛔ `truncated` is independent of `fidelity` and is the one that tells you text is missing: `fidelity: 'complete'` describes where the text CAME FROM (a canonical column rather than a vendor preview lane), NOT that you are holding all of it — a complete-fidelity field can still arrive truncated. `fidelity: 'preview'` is a bounded excerpt from a vendor and is never complete content whatever its length. In both cases `work.read` with `fidelity: 'remote_detail'` is the full text, and in neither case may you present a cut excerpt as the whole body. Set `current: true` only when the user asks for latest/right-now state, `detail: true` only when complete bodies are needed — both trigger bounded targeted reads for mirrored candidates; read-through Sources are already live. If the result carries `narrow`, the query exceeded the read cap: narrow it (or answer from retained local rows disclosing `limitations`), do not re-send unchanged. This tool never invokes an LLM, but it can invoke declared provider read operations.",
+      "Search Mary's work items — one `kind` per call: `task`, `project`, `note`, `commitment`, `asset` (a durable possession or document with typed facts and rule clocks), or `booking` (a reservation: customer, price, how it ended, and its own date/time in `slot_start_at` / `slot_end_at` — a booking is NOT a calendar event and is never in the calendar) — across every registered Source: Recued's records, synced vendor mirrors, and `read_through` Sources fetched directly on demand without canonical work-entity materialization. Filter with `query` (word match over title + body text) / `source_id` / `done`. Each result `id` is Source-qualified routing metadata: pass it VERBATIM to `work.read` or the matching provider operation; never strip or rewrite its prefix. A mirrored row can also go to a generic `data.<kind>` update/delete; a `live: true` read-through item has no local row, so write it through its matching provider operation. `source_freshness: read_through` means the result was fetched live and was not written to `data_<kind>`; other external freshness states describe poll-synced local mirrors that can trail the vendor. `long_text.truncated: true` means the text was CUT to keep the result small, and `omitted_chars` says by how much — decide from that number whether a `work.read` is worth a round-trip (a hundred missing characters usually is not; several thousand usually is). ⛔ `truncated` is independent of `fidelity` and is the one that tells you text is missing: `fidelity: 'complete'` describes where the text CAME FROM (a canonical column rather than a vendor preview lane), NOT that you are holding all of it — a complete-fidelity field can still arrive truncated. `fidelity: 'preview'` is a bounded excerpt from a vendor and is never complete content whatever its length. In both cases `work.read` with `fidelity: 'remote_detail'` is the full text, and in neither case may you present a cut excerpt as the whole body. Set `current: true` only when the user asks for latest/right-now state, `detail: true` only when complete bodies are needed — both trigger bounded targeted reads for mirrored candidates; read-through Sources are already live. If the result carries `narrow`, the query exceeded the read cap: narrow it (or answer from retained local rows disclosing `limitations`), do not re-send unchanged. This tool never invokes an LLM, but it can invoke declared provider read operations.",
     arg_schema: {
       type: 'object',
       properties: {
@@ -2457,7 +2464,7 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
   'work.read': {
     name: 'work.read',
     description:
-      "Read ONE work item (task / project / note / commitment / booking) by `kind` + `id`. A `booking` is the whole reservation — `lifecycle_state` (confirmed / completed / cancelled / no_show), price, customer, and its time in `slot_start_at` / `slot_end_at`. Answer 'when is it' from those two fields; do NOT look in the calendar, which holds personal events and never bookings. An absent slot pair means no time is agreed yet, not a failed lookup. For a retained row, default `fidelity: 'rich_meta'` serves the local record; use `remote_detail` for complete vendor detail or `current_remote` for latest state. A retained-row vendor failure degrades honestly to that local row with `escalation_error`. For a Source-qualified `read_through` id, every fidelity reads the declared provider directly, returns `live: true` plus `source_freshness: read_through`, and writes no canonical `data_<kind>` row; because no local fallback exists, a provider/config/policy failure is an explicit read error. Do not retry the same failed call unchanged. `long_text.fidelity: 'preview'` is always a bounded excerpt, never the complete body. Set `include_related: true` to also get the item's declared links (parent project, contacts, CRM records, sibling items) in one call.",
+      "Read ONE work item (task / project / note / commitment / booking / asset) by `kind` + `id`. A `booking` is the whole reservation — `lifecycle_state` (confirmed / completed / cancelled / no_show), price, customer, and its time in `slot_start_at` / `slot_end_at`. Answer 'when is it' from those two fields; do NOT look in the calendar, which holds personal events and never bookings. An absent slot pair means no time is agreed yet, not a failed lookup. For a retained row, default `fidelity: 'rich_meta'` serves the local record; use `remote_detail` for complete vendor detail or `current_remote` for latest state. A retained-row vendor failure degrades honestly to that local row with `escalation_error`. For a Source-qualified `read_through` id, every fidelity reads the declared provider directly, returns `live: true` plus `source_freshness: read_through`, and writes no canonical `data_<kind>` row; because no local fallback exists, a provider/config/policy failure is an explicit read error. Do not retry the same failed call unchanged. `long_text.fidelity: 'preview'` is always a bounded excerpt, never the complete body. Set `include_related: true` to also get the item's declared links (parent project, contacts, CRM records, sibling items) in one call.",
     arg_schema: {
       type: 'object',
       properties: {
@@ -2487,6 +2494,14 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
     classification: TIER1_CLASSIFICATIONS['work.read'],
     topic_tags: TIER1_TOPIC_TAGS['work.read'],
     concurrency_safe: TIER1_CONCURRENCY_SAFE['work.read'],
+  },
+  'situation.query': {
+    name: 'situation.query',
+    description: 'Read a short ranked situation for a time or span, optionally narrowed by place, people, subjects or text. Returns actual values, verdicts (match, near, outside, unknown), reasons and source references. Near misses are intentional; unknown is not outside. Sources and spheres are restricted by this contract. Multiple choices for one name require clarification before acting. This read cannot enable rules, create proposals or recall episodes or last-time suggestions. A refusal does not mean that no records exist.',
+    arg_schema: SITUATION_QUERY_SCHEMA,
+    classification: TIER1_CLASSIFICATIONS['situation.query'],
+    topic_tags: TIER1_TOPIC_TAGS['situation.query'],
+    concurrency_safe: TIER1_CONCURRENCY_SAFE['situation.query'],
   },
   'work.create': {
     name: 'work.create',
@@ -3155,6 +3170,7 @@ export const isChatPlanStatus = (value: unknown): value is ChatPlanStatus =>
  *  carry the same shape so paired clients render identical state
  *  across surfaces. */
 export interface ChatPlanProposal {
+  resource_review?: import("./resource-review.js").ResourceReview;
   plan_id: string;
   session_id: string;
   turn_id: string;
@@ -3217,6 +3233,8 @@ export type ChatPlanExecutionReceipt =
       status: 'completed';
       turn_id: string;
       result_ref: string;
+      local_receipt?: import('./resource-review.js').LocalMutationReceiptSummary;
+      recovered_from?: 'running' | 'failed' | 'unknown';
       /** Exact durable Logs run when the dispatch produced one. Older
        * receipts and non-run tools legitimately omit it. */
       run_id?: string;

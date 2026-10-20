@@ -1068,6 +1068,7 @@ export const composeReceptionSubstrate = async (
                   recipeId: RECEPTION_MANAGE_RESCHEDULE_RECIPE_ID,
                   capability: derived.capability,
                   mintedBy: 'system',
+                  ...(existing ? { previousContractIds: [existing.contract_id] } : {}),
                 },
                 mintDeps,
               ).contract_id;

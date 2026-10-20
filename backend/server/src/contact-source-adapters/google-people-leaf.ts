@@ -111,6 +111,9 @@ const PERSON_FIELDS = [
   'organizations',
   'addresses',
   'photos',
+  'birthdays',
+  // Anniversaries live among a person's dated `events`, not beside birthdays.
+  'events',
   'metadata',
 ].join(',');
 
@@ -124,6 +127,8 @@ const SUPPLIED_ATTRIBUTES: readonly ContactAttributeKind[] = [
   'org',
   'address',
   'photo',
+  'birthday',
+  'anniversary',
 ];
 
 // ────────────────────────────────────────────────────────────────
@@ -235,6 +240,40 @@ const photoOf = (person: Record<string, unknown>): string | null => {
   return null;
 };
 
+/** D-325 — a People `{ year, month, day }` as an annual date: yearless stays
+ *  yearless, and a rolled-over day (30 February) is no date at all. */
+const annualDateOf = (date: unknown): string | null => {
+  if (!date || typeof date !== 'object' || Array.isArray(date)) return null;
+  const { year, month, day } = date as Record<string, unknown>;
+  if (!Number.isInteger(month) || !Number.isInteger(day)
+    || (year !== undefined && year !== 0 && (!Number.isInteger(year) || (year as number) < 1 || (year as number) > 9999))) return null;
+  const knownYear = typeof year === 'number' && year > 0;
+  const check = new Date(0);
+  check.setUTCFullYear(knownYear ? year : 2000, (month as number) - 1, day as number);
+  if (check.getUTCMonth() + 1 !== month || check.getUTCDate() !== day) return null;
+  return `${knownYear ? String(year).padStart(4, '0') : '-'}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+};
+
+const birthdayOf = (person: Record<string, unknown>): string | null => {
+  for (const birthday of primaryFirst(asArray(person.birthdays))) {
+    const date = annualDateOf(birthday.date);
+    if (date) return date;
+  }
+  return null;
+};
+
+/** An anniversary is the `events` entry typed `anniversary`, People's own type or
+ *  the same word typed as a custom one. Other events (`other`, "Graduation") have
+ *  no field on a contact. */
+const anniversaryOf = (person: Record<string, unknown>): string | null => {
+  for (const event of primaryFirst(asArray(person.events))) {
+    if (str(event.type)?.toLowerCase() !== 'anniversary') continue;
+    const date = annualDateOf(event.date);
+    if (date) return date;
+  }
+  return null;
+};
+
 /** The record's OWN last-modified — EVENT time, never ingestion time (D-120
  *  bistemporal). It drives the C-2a recency tiebreak between two same-rung sources,
  *  so reading the clock here instead would silently turn freshest-wins into
@@ -277,6 +316,8 @@ const toContactRecord = (
   attributes.org = orgOf(person);
   attributes.address = addressOf(person);
   attributes.photo = photoOf(person);
+  attributes.birthday = birthdayOf(person);
+  attributes.anniversary = anniversaryOf(person);
 
   return {
     remote_id,

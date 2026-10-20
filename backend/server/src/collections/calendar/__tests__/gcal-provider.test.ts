@@ -331,6 +331,33 @@ describe('GcalProvider — connect', () => {
 // ────────────────────────────────────────────────────────────────
 
 describe('GcalProvider — initialScan', () => {
+  it('learns the account\'s address as it reads the calendar list: Google names the primary calendar by it', async () => {
+    const { fetcher } = makeRouter([
+      {
+        match: (u) => u.includes('/users/me/calendarList'),
+        response: { status: 200, body: { items: [
+          { id: 'team@group.calendar.google.com', summary: 'Team' },
+          { id: 'me@gmail.test', summary: 'Me', primary: true },
+        ] } },
+      },
+      {
+        match: (u) => u.includes('/events') && u.includes('singleEvents=true'),
+        response: { status: 200, body: { items: [], nextSyncToken: 'tok-1' } },
+      },
+    ]);
+    const provider = createGcalProvider({
+      slug: 'work', config: mkConfig(), accountStore: seedStore(), providerConfig, fetcher,
+      scheduler: () => () => undefined,
+    });
+    cleanup.push(() => provider.close());
+    // Not before the list is read.
+    expect(provider.accountEmail).toBe('');
+    await provider.initialScan({
+      backfill_days: 7, expansion_future_days: 30, expansion_past_days: 7, onEvent: async () => true,
+    });
+    expect(provider.accountEmail).toBe('me@gmail.test');
+  });
+
   it('streams expanded instances across the expansion window and saves syncToken', async () => {
     const store = seedStore();
     const events: GcalEvent[] = [
@@ -393,6 +420,45 @@ describe('GcalProvider — initialScan', () => {
     );
     expect(tokens.length).toBe(1);
     expect(tokens[0][1]).toBe('tok-1');
+  });
+
+  it('puts the series master’s RRULE on its listed instances, one read per series per pass', async () => {
+    const instance = (id: string, day: string, recurringEventId?: string): GcalEvent => ({
+      id, iCalUID: `${recurringEventId ?? id}@google.com`, status: 'confirmed', summary: id,
+      start: { dateTime: `${day}T10:00:00Z` }, end: { dateTime: `${day}T11:00:00Z` },
+      ...(recurringEventId ? { recurringEventId } : {}),
+      created: '2026-04-20T00:00:00Z', updated: '2026-04-20T00:00:00Z',
+    });
+    const { fetcher, calls } = makeRouter([
+      calendarListRoute([{ id: 'primary', summary: 'Primary' }]),
+      {
+        match: (u) => u.includes('/calendars/primary/events/bday?') && u.includes('fields=recurrence'),
+        response: { status: 200, body: { recurrence: ['EXDATE;VALUE=DATE:20250424', 'RRULE:FREQ=YEARLY'] } },
+      },
+      {
+        match: (u) => u.includes('/calendars/primary/events') && u.includes('singleEvents=true'),
+        response: { status: 200, body: { items: [instance('bday_1', '2026-04-24', 'bday'),
+          instance('bday_2', '2027-04-24', 'bday'), instance('standup_1', '2026-04-25', 'standup'),
+          instance('lunch', '2026-04-26')], nextSyncToken: 'tok-1' } },
+      },
+    ]);
+    const provider = createGcalProvider({
+      slug: 'work', config: mkConfig(), accountStore: seedStore(), providerConfig, fetcher,
+      scheduler: () => () => undefined,
+    });
+    cleanup.push(() => provider.close());
+    const rules = new Map<string, string | undefined>();
+    const scan = () => provider.initialScan({
+      backfill_days: 7, expansion_future_days: 30, expansion_past_days: 7,
+      onEvent: async (p) => { rules.set(p.event.source_id, p.event.recurrence_rule); return true; },
+    });
+    await scan();
+    expect(Object.fromEntries(rules)).toEqual({ bday_1: 'RRULE:FREQ=YEARLY', bday_2: 'RRULE:FREQ=YEARLY',
+      standup_1: undefined, lunch: undefined });
+    const masterReads = () => calls.filter(call => /\/events\/(?:bday|standup)\?/u.test(call.url)).map(call => call.url.split('?')[0]!.split('/').at(-1));
+    expect(masterReads()).toEqual(['bday', 'standup']);
+    await scan();
+    expect(masterReads()).toEqual(['bday', 'standup', 'bday', 'standup']);
   });
 
   it('rejects a repeated nextPageToken before refetching it forever', async () => {
@@ -1609,3 +1675,42 @@ function mkJson(
 // drop on ts-prune cleanups — `toMatchObject({ code })` above runs against
 // the same shape.
 void CalendarAdapterError;
+
+describe('Google Calendar reviewed writes', () => {
+  it.each(['update', 'delete'] as const)('carries the reviewed ETag across token refresh for %s and never rebases a 412', async verb => {
+    const requests: Array<{ method: string; etag?: string }> = [];
+    let writes = 0;
+    const fetcher: HttpFetcher = async (url, init) => {
+      if (url.includes('/token')) return {
+        status: 200, ok: true, async json() { return { access_token: 'fresh', expires_in: 3600 }; }, async text() { return ''; },
+      };
+      requests.push({ method: init?.method ?? 'GET', etag: init?.headers?.['If-Match'] });
+      writes += 1;
+      return { status: writes === 1 ? 401 : 412, ok: false,
+        async json() { return {}; }, async text() { return 'changed'; } };
+    };
+    const provider = createGcalProvider({ slug: 'work', config: mkConfig(), accountStore: seedStore(),
+      providerConfig, fetcher, scheduler: () => () => undefined });
+    cleanup.push(() => provider.close());
+    const call = { calendar_id: 'primary', source_id: 'meeting', expected_etag: '"reviewed-v1"' };
+    await expect(verb === 'update' ? provider.updateEvent({ ...call, patch: { summary: 'New' } })
+      : provider.deleteEvent(call)).rejects.toMatchObject({ code: 'version_conflict' });
+    expect(requests).toEqual([
+      { method: verb === 'update' ? 'PATCH' : 'DELETE', etag: '"reviewed-v1"' },
+      { method: verb === 'update' ? 'PATCH' : 'DELETE', etag: '"reviewed-v1"' },
+    ]);
+  });
+
+  it('retains the verified response ETag for the next review', async () => {
+    const provider = createGcalProvider({ slug: 'work', config: mkConfig(), accountStore: seedStore(),
+      providerConfig, scheduler: () => () => undefined,
+      fetcher: async () => ({ status: 200, ok: true,
+        async json() { return { id: 'meeting', etag: '"next-v2"', summary: 'New',
+          start: { dateTime: '2026-10-17T14:00:00Z' }, end: { dateTime: '2026-10-17T15:00:00Z' } }; },
+        async text() { return ''; } }) });
+    cleanup.push(() => provider.close());
+    const result = await provider.updateEvent({ calendar_id: 'primary', source_id: 'meeting',
+      expected_etag: '"reviewed-v1"', patch: { summary: 'New' } });
+    expect(result.etag).toBe('"next-v2"');
+  });
+});

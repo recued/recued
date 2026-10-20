@@ -1,3 +1,5 @@
+import type { PackUpdateCaller } from '../settings/pack-update-caller.js';
+import type { RecipeRegressionCaller } from '../kitchen/recipe-editor/recipe-regression-caller.js';
 /** D-187 §6 follow-on — top-level Packs route.
  *
  *  Promotes the installed-packs surface out of Settings into its own
@@ -263,6 +265,10 @@ export interface BootstrapPacksRouteOptions {
    *  disclosure + the grant picker's per-recipe tier. Optional: absent ⇒ the
    *  dialog renders its pre-D-247 surface. */
   packsInstallPreviewCaller?: PacksInstallPreviewCaller;
+  packUpdateCaller?: PackUpdateCaller;
+  packRemovalCaller?: import('../settings/pack-removal-caller.js').PackRemovalCaller;
+  packRepairCaller?: import('../settings/pack-repair-caller.js').PackRepairCaller;
+  packUpdateRegressionCaller?: RecipeRegressionCaller;
   onPermissionRepair?: import('../settings/packs-panel.js').MountPacksPanelOptions['onPermissionRepair'];
   initialPermissionRepairReturn?: import('../settings/pack-permission-repair.js').PackPermissionRepair;
   /** D-304 — `packs.uninstall_preview`, feeding the Delete confirmation's "also
@@ -369,6 +375,7 @@ export interface BootstrapPacksRouteOptions {
 }
 
 export interface PacksRoute {
+  getRunPageContext(): import('../shell/run-page-context.js').RunPageContext | null;
   packsPanel(): PacksPanelMount | null;
   cliGrantDialog(): CliGrantDialogMount | null;
   whenLoaded(): Promise<void>;
@@ -738,6 +745,10 @@ export const bootstrapPacksRoute = (
           ...(opts.packsResolveCaller !== undefined
             ? { runResolvePack: opts.packsResolveCaller }
             : {}),
+          ...(opts.packUpdateCaller ? { packUpdateCaller: opts.packUpdateCaller } : {}),
+          ...(opts.packRemovalCaller ? { packRemovalCaller: opts.packRemovalCaller } : {}),
+          ...(opts.packRepairCaller ? { packRepairCaller: opts.packRepairCaller } : {}),
+          ...(opts.packUpdateRegressionCaller ? { packUpdateRegressionCaller: opts.packUpdateRegressionCaller } : {}),
           ...(opts.packsInstallPreviewCaller !== undefined
             ? { runInstallPreview: opts.packsInstallPreviewCaller }
             : {}),
@@ -813,6 +824,7 @@ export const bootstrapPacksRoute = (
   let disposed = false;
   return {
     packsPanel: () => packs,
+    getRunPageContext: () => packs?.getRunPageContext() ?? null,
     cliGrantDialog: () => cliGrantDialog,
     whenLoaded: () => packs?.whenLoaded() ?? Promise.resolve(),
     hasInFlightWork: () => packs?.hasInFlightWork() === true || worklist?.busy() === true,

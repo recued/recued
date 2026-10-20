@@ -39,6 +39,7 @@ import { hashRecipe } from '@recued/recipes';
 
 import {
   buildPackOperationIndex,
+  deriveRecipeTargeting,
   isProvablyReadOnly,
   recipeSpendsPerRun,
   recipeConsumedEnrichments,
@@ -119,7 +120,13 @@ const projections = (
   notification_channels: string[];
   consumed_enrichments: string[];
   mailbox_settings?: MailboxSetting[];
+  run_context_targets?: string[];
 } => ({
+  ...((): { run_context_targets?: string[] } => {
+    const targets = deriveRecipeTargeting(recipe).targets
+      .filter(target => target.kind === 'context').map(target => target.key);
+    return targets.length === 0 ? {} : { run_context_targets: targets };
+  })(),
   ...(ops === null ? {} : { provably_read_only: isProvablyReadOnly(recipe as never, ops) }),
   // The cost half of the unprompted-run gate, always projected. A kernel op id,
   // or its lowered backing ingredient, names itself; a pack op marked

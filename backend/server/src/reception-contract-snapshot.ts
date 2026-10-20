@@ -130,6 +130,7 @@ export const buildReceptionContractSnapshot = (
     allowed_tools,
     approval_required: [],
     scope_restrictions: [],
+    ...(live && def?.read_spheres !== undefined ? { read_spheres: def.read_spheres } : {}),
     resolved_at: resolvedAt,
     // ⚠ An EMPTY closure is not the same as an absent one and must not be sent
     // as one: a door whose recipe dispatches no ops has nothing to admit, and

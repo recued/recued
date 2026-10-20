@@ -29,6 +29,21 @@ describe('cacheKey — determinism', () => {
 });
 
 describe('cacheKey — isolation', () => {
+  it('separates host scopes and legacy entries without exposing the scope', async () => {
+    const original = await cacheKey(base);
+    const scoped = await cacheKey({ ...base, scope: 'private-account-a' });
+    expect(scoped).toMatch(/^v2:deal-reader-hubspot@1\.0\.0:[0-9a-f]{64}$/);
+    expect(scoped).not.toContain('private-account');
+    expect(scoped).not.toBe(original);
+    expect(await cacheKey({ ...base, scope: 'private-account-a' })).toBe(scoped);
+    expect(await cacheKey({ ...base, scope: 'private-account-b' })).not.toBe(scoped);
+  });
+
+  it('keeps user input separate from host scope metadata', async () => {
+    const scoped = await cacheKey({ ...base, scope: 'account-a' });
+    expect(await cacheKey({ ...base, inputs: { scope: 'account-a', inputs: base.inputs } })).not.toBe(scoped);
+    await expect(cacheKey({ ...base, scope: '' })).rejects.toThrow('scope');
+  });
   it('different slug → different key', async () => {
     const a = await cacheKey(base);
     const b = await cacheKey({ ...base, ingredient_slug: 'contact-reader-hubspot' });

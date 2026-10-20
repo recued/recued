@@ -11,6 +11,8 @@
  *  lists these).
  */
 
+import { randomUUID } from 'node:crypto';
+
 import { repairCollectionPasswords } from './password-repair.js';
 import {
   collectionSourceFreshnessOf,
@@ -703,7 +705,7 @@ export const handleCollectionMailSend = async (
    *  which is a worse defect than the leak this closes. Only a server-internal
    *  seam that KNOWS its recipient is sealed visitor PII passes this, and the
    *  rpc path never passes it at all. ⇒ [[separate_authorization_axes]] */
-  internal?: { readonly redact_audit_recipients?: boolean; readonly before_dispatch?: () => void },
+  internal?: { readonly redact_audit_recipients?: boolean; readonly before_dispatch?: () => void; readonly self_addressed?: boolean },
 ): Promise<{
   source_id: string;
   message_id: string;
@@ -752,7 +754,43 @@ export const handleCollectionMailSend = async (
       ? { redact_audit_recipients: true as const }
       : {}),
     ...(internal?.before_dispatch ? { before_dispatch: internal.before_dispatch } : {}),
+    ...(internal?.self_addressed === true ? { self_addressed: true as const } : {}),
   });
+};
+
+/** The reconciliation id an owner notification is stamped with when its
+ *  caller supplies none. */
+export const OWNER_NOTIFICATION_RECONCILIATION_PREFIX = 'owner-notification:';
+
+/** D-158 amendment 2026-10-18 — send to a notification connection's ENROLLED
+ *  destination: the recipient the owner configured, or, when it names none,
+ *  the sending mailbox itself (one-address notifications: the mailbox Recued
+ *  sends from is the one the owner reads).
+ *
+ *  ⛔ The only send that may be addressed to the sending mailbox, because its
+ *  recipient is the owner's own setup and no caller's `to`. A one-recipient
+ *  send is stamped with a reconciliation id, so the copy that lands back in
+ *  the mailbox is Recued's own by its send claims: no mail fact, trigger or
+ *  reply check reads it as the owner's, and a recipe that fires on new mail
+ *  cannot loop on its own notification. */
+export const handleOwnerNotificationMailSend = async (
+  deps: CollectionHandlerDeps,
+  args: Omit<Parameters<typeof handleCollectionMailSend>[1], 'to'> & { to?: readonly string[] },
+): ReturnType<typeof handleCollectionMailSend> => {
+  const instance = requireString(args.instance, 'instance');
+  const own = requireMailCollection(deps, instance).accountEmail.trim().toLowerCase();
+  const to = args.to !== undefined && args.to.length > 0 ? [...args.to] : own ? [own] : null;
+  if (to === null) {
+    throw new RpcError('failed_precondition', `Mail account ${instance} does not know its own address, so `
+      + 'notifications cannot go to it: set a recipient on the email connection.', 409);
+  }
+  const single = to.length === 1 && !optionalStringArray(args.cc, 'cc')?.length
+    && !optionalStringArray(args.bcc, 'bcc')?.length;
+  const reconciliation_id = args.reconciliation_id
+    ?? (single ? `${OWNER_NOTIFICATION_RECONCILIATION_PREFIX}${randomUUID()}` : undefined);
+  const bare = (/<([^<>]+)>/.exec(to[0]!)?.[1] ?? to[0]!).trim().toLowerCase();
+  return handleCollectionMailSend(deps, { ...args, to, reconciliation_id },
+    single && bare === own ? { self_addressed: true } : undefined);
 };
 
 /** D-127 wire-up — when the mail enroll deps are wired (production
@@ -771,6 +809,7 @@ export const handleCollectionEnrollOAuth = async (
     redirect_uri?: unknown;
     oauth_app_id?: unknown;
     oauth_client_id?: unknown;
+    backfill_days?: unknown;
   },
 ): Promise<{ ok: true; account_key_prefix: string }> => {
   if (deps.mailEnroll) {
@@ -782,6 +821,7 @@ export const handleCollectionEnrollOAuth = async (
       redirect_uri: args.redirect_uri,
       oauth_app_id: args.oauth_app_id,
       oauth_client_id: args.oauth_client_id,
+      backfill_days: args.backfill_days,
     });
     return {
       ok: true,

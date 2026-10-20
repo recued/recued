@@ -186,6 +186,10 @@ const renderAppContentRow = (c: PackContentRef): string => {
       kind = 'Channel';
       label = `${c.channel_name} (${c.capability}) — backed by ${c.bound_to_catalog}`;
       break;
+    case 'asset_class':
+      kind = 'Asset class';
+      label = `${c.preset.name} v${c.preset.version} — a preset in Yours; existing clocks change only after your review`;
+      break;
     case 'policy':
       kind = 'Policy';
       label = c.policy_id;

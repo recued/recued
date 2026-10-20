@@ -51,6 +51,13 @@ describe('FileAdapterError taxonomy', () => {
 
 describe('fs adapter statRecord', () => {
   const makeRoot = (): string => mkdtempSync(join(tmpdir(), 'recued-fs-stat-'));
+  // Walked once, never watched: no test here reads a live event, and on macOS a
+  // recursive watcher's close blocks the event loop for seconds under disk load.
+  // Live watching is tested in `watched-folders.test.ts`.
+  const unwatched = {
+    read: 'yes', write: 'yes', delete: 'yes', watch: 'none',
+    mirror: 'optional', auth: 'none', path_style: 'posix',
+  } as const;
 
   it('returns exists: true with size + mtime + mime for a present file', async () => {
     const root = makeRoot();
@@ -59,6 +66,7 @@ describe('fs adapter statRecord', () => {
       const adapter = fsAdapterFactory.create({
         slug: 't',
         config: { path: root },
+        caps: unwatched,
         onEvent: () => {},
       }) as FileMutationCapable;
       await adapter.start();
@@ -82,6 +90,7 @@ describe('fs adapter statRecord', () => {
       const adapter = fsAdapterFactory.create({
         slug: 't',
         config: { path: root },
+        caps: unwatched,
         onEvent: () => {},
       }) as FileMutationCapable;
       await adapter.start();
@@ -102,6 +111,7 @@ describe('fs adapter statRecord', () => {
       const adapter = fsAdapterFactory.create({
         slug: 't',
         config: { path: root },
+        caps: unwatched,
         onEvent: () => {},
       }) as FileMutationCapable;
       await adapter.start();
@@ -123,6 +133,7 @@ describe('fs adapter statRecord', () => {
       const adapter = fsAdapterFactory.create({
         slug: 't',
         config: { path: root },
+        caps: unwatched,
         onEvent: () => {},
       }) as FileMutationCapable;
       await adapter.start();
@@ -149,6 +160,7 @@ describe('fs adapter statRecord', () => {
       const adapter = fsAdapterFactory.create({
         slug: 't',
         config: { path: root },
+        caps: unwatched,
         onEvent: () => {},
       }) as FileMutationCapable;
       await adapter.start();

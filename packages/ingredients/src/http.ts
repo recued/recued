@@ -73,7 +73,8 @@ export const describeHttpRequest = (resolved: Pick<ResolvedCall, 'slug' | 'input
   return { method, url, requestOrigin, headers, body, timeoutMs };
 };
 
-export const executeHTTP = async (resolved: ResolvedCall, beforeRequest?: () => Promise<void>): Promise<unknown> => {
+export const executeHTTP = async (resolved: ResolvedCall, beforeRequest?: () => Promise<void>,
+  fetchImpl: typeof fetch = fetch): Promise<unknown> => {
   const { input, output, fallback, slug, risk_tier } = resolved;
   const { method, url, requestOrigin, headers, body, timeoutMs } = describeHttpRequest(resolved);
   const isWrite = isWriteRiskTier(risk_tier);
@@ -89,7 +90,7 @@ export const executeHTTP = async (resolved: ResolvedCall, beforeRequest?: () => 
     // 3xx cannot pivot the request OFF that origin to an internal /
     // metadata host the recipe never named. Same-origin redirects work.
     const response = await fetchOriginPinned(
-      fetch,
+      fetchImpl,
       url,
       { method, headers, body, signal: controller.signal },
       requestOrigin,

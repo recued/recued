@@ -22,6 +22,7 @@
  *  Spec: D-157 § N.3 / A.2 / I-4 / I-6.
  */
 
+import type { ApprovalValueLabels } from './ask-detail-label.js';
 import type { ContractSnapshot, ExecutionSource } from './commits.js';
 import {
   isOperationApproval,
@@ -33,6 +34,7 @@ import type { PreflightOverrideOffer } from './preflight-signal.js';
 import { isOperationSpecHash } from './owner-operation-override.js';
 import type { GatedActionSettlementMode } from './gated-action.js';
 import type { ForeachCheckpointProgress } from './foreach-checkpoint.js';
+import { isResourceReview, type ResourceReview } from './resource-review.js';
 
 // ────────────────────────────────────────────────────────────────
 // Checkpoint — the resumable state of a preflight-gated run
@@ -118,6 +120,23 @@ export interface PreflightCheckpointContext {
    *  line", never to "hold discarded". Renderers match known values and emit
    *  nothing for the rest. */
   origin_actor?: string;
+  /** The held recipe's own title (its `metadata.name`), recorded when it was
+   *  held, so the approval is titled the way the owner knows the recipe: an ask
+   *  titled "Approve mail-send (write)" reached the owner as an email subject
+   *  (live, 2026-10-18), an operation name and a risk tier they see nowhere
+   *  else. Display only, on the widened-string lane like `origin_actor`: an
+   *  older binary ignores it, and an ask without it is titled by its
+   *  operation. */
+  recipe_title?: string;
+  /** A value the held call passes by a name the owner does not know it by,
+   *  and what they do know it by: each sending mailbox's name, as its address
+   *  (`{ sender_mail_instance: { recueddev: 'recued.dev@gmail.com (Gmail)' } }`).
+   *  Recorded when the run was held, so the approval's argument lines and the
+   *  card's rows read `recued.dev@gmail.com (Gmail)` where the call says
+   *  `recueddev`. Display only: an older binary ignores it, and the guard
+   *  below does not check it (`approvalValueLabel` reads it defensively), so a
+   *  malformed one names nothing instead of losing the hold. */
+  value_labels?: ApprovalValueLabels;
 }
 
 /** D-182 §8 (GRANT HALF, Inc B-writes) — the recipe-LESS raw-op door hold.
@@ -325,6 +344,7 @@ export interface Checkpoint {
    *  the type for legacy / bare pauses + the simple-form gate (no
    *  operation / connection axis, stays position-bound); the real catalog
    *  pause path always sets it. */
+  resource_review?: ResourceReview;
   approved_target?: PreflightApprovedTarget;
   /** D-211 — presentation/action metadata used by boot-time ask recovery. */
   preflight_context?: PreflightCheckpointContext;
@@ -558,6 +578,7 @@ export const isCheckpoint = (value: unknown): value is Checkpoint => {
   // security-boundary object — reject a non-string present field rather than
   // letting it through (the catalog match fails closed on a non-string
   // anyway, but the guard is the contract — codex review MED).
+  if (v.resource_review !== undefined && !isResourceReview(v.resource_review)) return false;
   if (v.approved_target !== undefined) {
     if (
       typeof v.approved_target !== 'object'
@@ -582,10 +603,12 @@ export const isCheckpoint = (value: unknown): value is Checkpoint => {
     // closed-union lane with `approval_clamped_from` below: a display-only
     // member must never be the reason a pending approval fails to load.
     for (const f of [
-      'tool_slug', 'connection_name', 'risk_tier', 'reason', 'origin_actor',
+      'tool_slug', 'connection_name', 'risk_tier', 'reason', 'origin_actor', 'recipe_title',
     ] as const) {
       if (c[f] !== undefined && typeof c[f] !== 'string') return false;
     }
+    // `value_labels` is not checked: display only, and its reader names nothing
+    // for a malformed one rather than costing the owner the pending approval.
     if (c.gated_action_settlement_mode !== undefined
       && c.gated_action_settlement_mode !== 'returned_result'
       && c.gated_action_settlement_mode !== 'durable_handoff') return false;

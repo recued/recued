@@ -3,7 +3,7 @@ import type {
   ExecutionSource, PreparePreapproval, PreapprovalBindingFamily,
   PreapprovalInvocationPath, PreapprovalJson, PreapprovalMemberReview,
   PreapprovalResourcePin, PreapprovalUncoveredCall,
-  RecipeDefinition, MailDraft,
+  RecipeDefinition, MailDraft, PreapprovalCompletedOperation,
 } from '@recued/contracts';
 
 export type PreapprovalOrigin = {
@@ -37,6 +37,8 @@ export interface PreparedInvocation {
   /** Private, encrypted dispatch material supplied only by a host resolver.
    * Included in effect identity; never accepted as a recipe/RPC permit. */
   dispatch_snapshot?: PreapprovalJson;
+  /** Sealed with the plan and checked again at the actual mutation boundary. */
+  resource_review?: import('@recued/contracts').ResourceReview;
   arguments_hash: string;
   effect_hash: string;
   condition_hash: string;
@@ -107,6 +109,16 @@ export interface PreparedFutureExecution {
   recipe_snapshots: PreparedRecipeSnapshot[];
   /** Private saved content, owned by this execution once accepted. */
   draft_snapshot?: MailDraft;
+  /** Host-compiled successor. Original receipts grant no new authority. */
+  continuation?: {
+    proposal_id: string;
+    future_execution_ref: string;
+    snapshot_hash: string;
+    outcomes_hash: string;
+    source_definition_hash: string;
+    completed: PreapprovalCompletedOperation[];
+    steps: Array<{ original_member_id: string; step: RecipeDefinition['steps'][number] }>;
+  };
   members: PreparedInvocation[];
   uncovered: PreapprovalUncoveredCall[];
   dependencies: PreapprovalDependency[];
@@ -142,7 +154,7 @@ export type PreapprovalResponder =
   | { channel: 'webclient'; key: string }
   | { channel: 'telegram'; key: string; connection_id: string; owner_sender: string };
 
-export type PreapprovalValidationStage = 'prepare' | 'decide' | 'run' | 'member' | 'resume' | 'reconcile';
+export type PreapprovalValidationStage = 'prepare' | 'decide' | 'local_set' | 'run' | 'member' | 'resume' | 'reconcile';
 
 export interface PreapprovalActivationRecord {
   future_execution_ref: string;

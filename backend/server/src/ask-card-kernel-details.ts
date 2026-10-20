@@ -26,6 +26,7 @@
 
 import {
   DAY_MS,
+  KNOWN_FIELD_NAMES,
   allDayEventDays,
   getKernelOp,
   kernelOpBackingSlug,
@@ -51,6 +52,11 @@ const PLUMBING = /idempotency/i;
 /** The subject of the action reads first: the card's headline was `title` only,
  *  which left a commitment and a calendar event without one. */
 const HEADLINE_LEAVES = ['title', 'statement', 'summary', 'subject', 'name'] as const;
+
+/** A top-level input the owner knows by another name ("From" for the sending
+ *  mailbox). Shared with the terms of "Allow this session", which name the same
+ *  inputs (`approvalFieldLabel`). */
+const INPUT_LABEL = KNOWN_FIELD_NAMES;
 
 /** An object input that expands into rows, and how its rows are labelled.
  *  `event.summary` reads as "Summary"; `patch.start_at` as "New start". */
@@ -173,7 +179,9 @@ export const kernelReviewDetails = (
     // implied (`event.summary` → "Summary") and says what it is otherwise
     // (`patch.status` → "New status").
     let label = row.prefix === null
-      ? (leaf === 'slug' && entity !== undefined ? SLUG_LABEL[entity] ?? leaf : base)
+      ? Object.hasOwn(INPUT_LABEL, leaf)
+        ? INPUT_LABEL[leaf]!
+        : leaf === 'slug' && entity !== undefined ? SLUG_LABEL[entity] ?? leaf : base
       : `${EXPANDED_PREFIX_LABEL[row.prefix] ?? `${row.prefix}.`}${base}`;
     if (labelled.has(label)) {
       // The same fact twice (`event.calendar_id` beside `calendar_id`) is one

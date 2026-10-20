@@ -76,6 +76,9 @@ export interface EventTrigger {
    *  dish it was added to. Fire-time honors `dish.enabled`: a dish switched
    *  off skips silently. Absent only on rows written before D-319. */
   dish_id?: string;
+  /** Owner-selected read/execution contract for this subscriber. A dead
+   * selection fails closed; absence retains the ordinary automation source. */
+  read_contract_id?: string;
   /** The settings of the trigger's dish, read at list time — shown with the
    *  row. Not persisted on the trigger row: the dish is the source of truth,
    *  and a trigger has no settings of its own (D-319). */

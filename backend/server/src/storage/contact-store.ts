@@ -1,3 +1,4 @@
+import { isContactAnnualDate } from '@recued/contracts';
 /** D-121 Phase 1 — `data.contact` warehouse storage.
  *  D-138 Phase 1 — cross-platform reconciliation delta.
  *
@@ -299,6 +300,9 @@ export const ensureContactSchema = (db: Database.Database): void => {
   // books routinely carry a year-less birthday ("March 4th"), which no epoch
   // field can represent.
   addColumn('birthday',                `birthday TEXT`);
+  addColumn('anniversary', `anniversary TEXT`);
+  addColumn('relationship', `relationship TEXT`);
+  addColumn('privacy_marks', `privacy_marks TEXT`);
   // Per-field provenance — `{ "<field>": { source, source_id } }`. Generalizes
   // `company_source` (the lone, company-only provenance column) to every field.
   addColumn('projection_provenance',   `projection_provenance TEXT`);
@@ -828,6 +832,9 @@ interface ContactRow {
   title: string | null;
   photo: string | null;
   birthday: string | null;
+  anniversary: string | null;
+  relationship: import('@recued/contracts').ContactRelationship | null;
+  privacy_marks: string | null;
   projection_provenance: string | null;
 }
 
@@ -936,6 +943,9 @@ const rowToRecord = (row: ContactRow): ContactRecord => {
   if (row.title) record.title = row.title;
   if (row.photo) record.photo = row.photo;
   if (row.birthday) record.birthday = row.birthday;
+  if (row.anniversary) record.anniversary = row.anniversary;
+  if (row.relationship) record.relationship = row.relationship;
+  if (row.privacy_marks) record.privacy_marks = JSON.parse(row.privacy_marks);
   const provenance = safeParseJsonObject<ContactProjectionProvenance>(
     row.projection_provenance,
   );
@@ -1006,8 +1016,12 @@ export interface ManualUpsertInput {
   /** A URL, never bytes (C-2's North star). */
   photo?: string;
   /** ISO-8601 `YYYY-MM-DD`, verbatim — "March 4th, year unknown" is a real vCard
-   *  value and a timestamp cannot hold it. */
-  birthday?: string;
+   *  value and a timestamp cannot hold it. `null` clears it; an empty string
+   *  supplies nothing. */
+  birthday?: string | null;
+  anniversary?: string | null;
+  relationship?: import('@recued/contracts').ContactRelationship | null;
+  privacy_marks?: import('@recued/contracts').ContactPrivacyMark[];
 }
 
 export interface ContactListQuery {
@@ -2424,7 +2438,7 @@ export const createContactStore = (
       ? CONTACT_SOURCE_ID_DERIVED
       : CONTACT_SOURCE_ID_MANUAL;
     const contribute = (
-      attr_kind: 'name' | 'org' | 'address' | 'title' | 'photo' | 'birthday',
+      attr_kind: 'name' | 'org' | 'address' | 'title' | 'photo' | 'birthday' | 'anniversary',
       value: unknown,
     ): void => {
       upsertContactAttribute(
@@ -2474,8 +2488,25 @@ export const createContactStore = (
     if (suppliedTitle) contribute('title', suppliedTitle);
     const suppliedPhoto = input.photo?.trim();
     if (suppliedPhoto) contribute('photo', suppliedPhoto);
+    // A typed `null` is the owner clearing it, at the top of the ladder, so a
+    // source that still has the date cannot bring it back (as for anniversary).
     const suppliedBirthday = input.birthday?.trim();
-    if (suppliedBirthday) contribute('birthday', suppliedBirthday);
+    if (input.birthday === null) contribute('birthday', null);
+    else if (suppliedBirthday) contribute('birthday', suppliedBirthday);
+    if (input.anniversary !== undefined) {
+      if (input.anniversary !== null && !isContactAnnualDate(input.anniversary)) throw new Error('Anniversary must be YYYY-MM-DD or --MM-DD');
+      contribute('anniversary', input.anniversary);
+    }
+    if ((input.relationship !== undefined || input.privacy_marks !== undefined)
+      && (opts.origin_actor !== 'user_self' || opts.origin_surface !== 'client_rpc')) throw new Error('Contact relationship and privacy marks are owner controls');
+    if (input.relationship !== undefined) {
+      if (input.relationship !== null && !['family', 'friend', 'colleague', 'client'].includes(input.relationship)) throw new Error('Invalid contact relationship');
+      db.prepare(`UPDATE ${CONTACT_TABLE} SET relationship=? WHERE contact_id=?`).run(input.relationship, contact_id);
+    }
+    if (input.privacy_marks !== undefined) {
+      if (!Array.isArray(input.privacy_marks) || input.privacy_marks.some(mark => !['hidden', 'deceased', 'former_partner'].includes(mark))) throw new Error('Invalid contact privacy marks');
+      db.prepare(`UPDATE ${CONTACT_TABLE} SET privacy_marks=? WHERE contact_id=?`).run(JSON.stringify([...new Set(input.privacy_marks)]), contact_id);
+    }
     if (suppliedPhone) {
       upsertContactAlias(
         {
@@ -3405,7 +3436,12 @@ export const createContactStore = (
           // projection actually changed. A tombstone would simply be skipped here
           // (`!target.merged_into`), silently leaving the real survivor stale.
           const target = resolvedLiveContact(survivor);
-          if (target) reproject.add(target.contact_id);
+          if (target) {
+            const marks = [...new Set([...(target.privacy_marks ? JSON.parse(target.privacy_marks) as string[] : []), ...(row.privacy_marks ?? [])])];
+            db.prepare(`UPDATE ${CONTACT_TABLE} SET privacy_marks=?,relationship=COALESCE(relationship,?) WHERE contact_id=?`)
+              .run(marks.length ? JSON.stringify(marks) : null, row.relationship ?? null, target.contact_id);
+            reproject.add(target.contact_id);
+          }
         } else {
           // A SPLIT — the row comes back from tombstone to standalone, and its
           // CONTRIBUTIONS were never destroyed, so re-projecting restores the phone /
@@ -4377,6 +4413,7 @@ export const createContactStore = (
     if (input.value === undefined) {
       throw new Error(`contact_attribute_value_required: ${input.kind}`);
     }
+    if (input.kind === 'anniversary' && input.value !== null && !isContactAnnualDate(input.value)) throw new Error('Anniversary must be YYYY-MM-DD or --MM-DD');
     // Same convention as `upsertContactAlias`: the contact must exist. No SQL
     // FK (the alias table's precedent — partial unique indexes do the work), so
     // the guard is explicit or an orphan contribution would project into
@@ -4630,6 +4667,7 @@ export const createContactStore = (
            title                 = @title,
            photo                 = @photo,
            birthday              = @birthday,
+           anniversary           = @anniversary,
            projection_provenance = @projection_provenance,
            name_key              = @name_key,
            address_zip_country_key = @address_zip_country_key,
@@ -4870,6 +4908,7 @@ export const createContactStore = (
       title: str('title'),
       photo: str('photo'),
       birthday: str('birthday'),
+      anniversary: str('anniversary'),
     };
     for (const [kind, winner] of winners) {
       if (projected[kind] === null || projected[kind] === undefined) continue;
@@ -4905,6 +4944,7 @@ export const createContactStore = (
       title: projected.title as string | null,
       photo: projected.photo as string | null,
       birthday: projected.birthday as string | null,
+      anniversary: projected.anniversary as string | null,
       projection_provenance:
         Object.keys(provenance).length > 0 ? JSON.stringify(provenance) : null,
       // ⚠ The D-138 BLOCKING KEYS must be recomputed from the PROJECTED values,

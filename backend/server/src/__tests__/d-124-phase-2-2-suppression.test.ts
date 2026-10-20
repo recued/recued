@@ -144,7 +144,7 @@ describe('D-124 Phase 2.2 — dispatcher backfill gate', () => {
       bus: h.bus,
       store: h.store,
       runtime: { runRecipe: h.runRecipe },
-      isChatMailbox: (slug) => slug === 'recued-chat',
+      isChatOnlyMailbox: (slug) => slug === 'recued-chat',
       now: () => 10_000,
     });
     dispatcher.rebuild();

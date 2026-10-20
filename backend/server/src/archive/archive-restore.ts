@@ -85,6 +85,7 @@ import {
 } from '../database-encryption.js';
 import { createInstanceLock } from '../lifecycle/instance-lock.js';
 import { openDatabase } from '../open-database.js';
+import { assertArchiveDatabaseSchema, migrateDatabaseSchema } from '../database-schema.js';
 import { FILE_NAMES, type ArchiveManifest } from './archive-format.js';
 import {
   DISCARD_RECORD_WRITER,
@@ -121,6 +122,14 @@ const WAL_SIDECAR_SUFFIXES = ['-wal', '-shm'] as const;
  *  whole-db write lands here while the live server keeps serving from
  *  the old db; the commit renames it onto `dbPath`. */
 const STAGING_SUFFIX = '.staging';
+
+/** The original failure did not complete its unwind. Callers must retain
+ * recovery uncertainty even though the live database was never replaced. */
+export class ArchiveRestoreCleanupError extends Error {
+  constructor(cause: unknown) {
+    super('ARCHIVE_RESTORE_RECOVERY_REQUIRED: restore cleanup could not finish; restart before importing again', { cause });
+  }
+}
 
 export interface RestoreTargets {
   /** Absolute path of the SQLite db file to (re)write. */
@@ -756,6 +765,7 @@ const rotateStagedGatedActionEpoch = async (
   stagedDbPath: string,
   serverBundle: ServerBundle | null,
   recoveryEntropy: Uint8Array,
+  manifestSchemaVersion: number,
 ): Promise<void> => {
   const databaseKey = serverBundle
     ? await deriveDatabaseKeyFromRecoveryEntropy(serverBundle, recoveryEntropy)
@@ -767,6 +777,8 @@ const rotateStagedGatedActionEpoch = async (
       databaseKey,
     });
     db.pragma('busy_timeout = 0');
+    assertArchiveDatabaseSchema(db, manifestSchemaVersion);
+    migrateDatabaseSchema(db);
     const receiptClock = createSqliteGatedActionChangeClock(db);
     receiptClock.rotateEpoch();
     if (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'preapproval_state'").get()) {
@@ -931,6 +943,7 @@ const streamRestoreInto = async (
       dbDestPath,
       serverBundle,
       importOpts.recoveryKey,
+      summary.manifest.schema_version,
     );
     return {
       manifest: summary.manifest,
@@ -944,7 +957,6 @@ const streamRestoreInto = async (
     };
   } catch (err) {
     dbSink.destroy();
-    try { unlinkSync(dbDestPath); } catch { /* never landed — best effort */ }
     // A blob mid-stream when the import aborted: tear its write stream down +
     // reclaim its temp (its `end` cleanup never ran). Blobs overlaid at a hash
     // nothing held are content-addressed CAS orphans the sweep reaps — harmless,
@@ -952,7 +964,7 @@ const streamRestoreInto = async (
     // orphans: the surviving database still references them, so put the
     // pre-restore versions back.
     for (const cleanup of pendingBlobCleanup) cleanup();
-    rollBackDisplacedBlobs(displacedBlobs);
+    if (!discardStagedRestore(dbDestPath, displacedBlobs)) throw new ArchiveRestoreCleanupError(err);
     throw err;
   } finally {
     // Null it, don't just zero it. `getBlobKey` closes over this ref for every
@@ -1211,7 +1223,7 @@ export const stageRestore = async (
       importOpts.recoveryKey,
     );
   } catch (err) {
-    discardStagedRestore(stagingPath, streamed.displacedBlobs);
+    if (!discardStagedRestore(stagingPath, streamed.displacedBlobs)) throw new ArchiveRestoreCleanupError(err);
     throw err;
   }
   return {
@@ -1242,16 +1254,17 @@ export const discardStagedRestore = (
    *  database keeps serving, so the archive's versions must not survive under
    *  hashes it still references. */
   displacedBlobs: readonly DisplacedBlob[] = [],
-): void => {
+): boolean => {
+  let complete = true;
   for (const p of [
     stagingPath,
     `${stagingPath}-wal`,
     `${stagingPath}-shm`,
     resolveServerBundlePath(stagingPath),
   ]) {
-    try { if (existsSync(p)) unlinkSync(p); } catch { /* best effort */ }
+    try { if (existsSync(p)) unlinkSync(p); } catch { complete = false; }
   }
-  rollBackDisplacedBlobs(displacedBlobs);
+  return rollBackDisplacedBlobs(displacedBlobs) && complete;
 };
 
 /** ONLINE step 2 — commit a previously staged restore by atomic rename.
@@ -1264,7 +1277,7 @@ export const discardStagedRestore = (
 export const commitStagedRestore = async (
   targets: RestoreTargets,
   staged: StagedRestore,
-  opts: { now?: () => number } = {},
+  opts: { now?: () => number; import_operation_id?: string } = {},
 ): Promise<RestoreResult> => {
   const { dbPath, dataPath, configPath } = targets;
   const startedAt = (opts.now ?? Date.now)();
@@ -1295,6 +1308,7 @@ export const commitStagedRestore = async (
       dbPath,
       stagingDbPath: stagingPath,
       stamp,
+      ...(opts.import_operation_id === undefined ? {} : { import_operation_id: opts.import_operation_id }),
       ...(staged.serverVaultBundle !== undefined
         ? { nextBundle: staged.serverVaultBundle }
         : {}),

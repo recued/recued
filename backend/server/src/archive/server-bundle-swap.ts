@@ -56,6 +56,7 @@ import {
 } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fsyncDir, writeFileAtomicSync } from '../durable-fs.js';
+import { archiveImportOperationId, createArchiveImportReceipts } from './archive-import-receipts.js';
 import {
   resolveServerBundlePath,
   SERVER_BUNDLE_SIDECAR_SUFFIX,
@@ -68,7 +69,10 @@ const SQLITE_SIDECAR_SUFFIXES = ['-wal', '-shm'] as const;
 export interface BundleSwapMarker {
   /** v1 markers predate config participation and remain readable so an update
    *  can recover a restore interrupted on the previous server version. */
-  v: 1 | 2;
+  v: 1 | 2 | 3;
+  /** v3 binds an owner-visible import receipt to this journal's verdict.
+   * Older servers reject v3 rather than silently retire its evidence. */
+  import_operation_id?: string;
   staging_name: string;
   stamp: string;
   has_next_bundle: boolean;
@@ -129,6 +133,7 @@ export type ServerBundleSwapTransition =
   | 'new_bundle_published'
   | 'swap_renames_fsynced'
   | 'parks_resolved'
+  | 'import_receipt_settled'
   | 'swap_marker_retired';
 
 export interface ServerBundleSwapObserver {
@@ -194,12 +199,29 @@ const unlinkIfPresent = (path: string): void => {
   }
 };
 
-const retireMarker = (tx: PreparedServerBundleSwap): void => {
+const retireMarker = (
+  tx: PreparedServerBundleSwap,
+  committed: boolean,
+  observer: ServerBundleSwapObserver = {},
+): boolean => {
+  if (tx.marker.import_operation_id !== undefined) {
+    try {
+      createArchiveImportReceipts(tx.dbPath).settle(
+        tx.marker.import_operation_id, tx.marker.staging_name, committed,
+      );
+    } catch {
+      // The pair can boot, but the only durable verdict must remain until its
+      // receipt is published. This is the same rule as unresolved CAS parks.
+      return false;
+    }
+    observer.onTransition?.('import_receipt_settled');
+  }
   unlinkSync(tx.markerPath);
   // Marker absence is itself the durable "nothing left to replay" state.
   // Flushing only before unlink can resurrect the marker after power loss and
   // make a settled transaction look live again on the next boot.
   fsyncDir(dirname(tx.markerPath));
+  return true;
 };
 
 const markerBytes = (marker: BundleSwapMarker): Buffer =>
@@ -238,7 +260,7 @@ const parseMarker = (dbPath: string, raw: string): BundleSwapMarker => {
   const validStamp = typeof marker.stamp === 'string'
     && /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[0-9a-f]{8}$/.test(marker.stamp);
   const validConfig = marker.config === undefined || (
-    marker.v === 2
+    (marker.v === 2 || marker.v === 3)
     && typeof marker.config === 'object'
     && marker.config !== null
     && /^[0-9a-f]{64}$/.test(marker.config.path_sha256)
@@ -250,7 +272,11 @@ const parseMarker = (dbPath: string, raw: string): BundleSwapMarker => {
       : marker.config.previous_sha256 === undefined)
   );
   if (
-    (marker.v !== 1 && marker.v !== MARKER_VERSION)
+    (marker.v !== 1 && marker.v !== MARKER_VERSION && marker.v !== 3)
+    || (marker.v === 3
+      ? typeof marker.import_operation_id !== 'string'
+        || archiveImportOperationId(marker.import_operation_id) !== marker.import_operation_id
+      : marker.import_operation_id !== undefined)
     || (marker.v === 1 && marker.config !== undefined)
     || typeof marker.staging_name !== 'string'
     || (!onlineName.test(marker.staging_name) && !offlineName.test(marker.staging_name))
@@ -595,8 +621,7 @@ export const reconcileServerBundleSwap = (
     // Only release the journal once the parks are actually gone. A park that
     // survived here with the marker deleted is unreadable state: the next boot
     // sees "park, no marker" and rolls PRE-restore bytes over the new database.
-    const retired = reclaimParks(true);
-    if (retired) retireMarker(tx);
+    const retired = reclaimParks(true) && retireMarker(tx, true);
     return { recovery: 'completed', retired };
   }
 
@@ -650,8 +675,7 @@ export const reconcileServerBundleSwap = (
   // staging while keeping the marker would send the next reconcile down the
   // COMMITTED branch — reaping the very parks that still have to be restored.
   // They are one signal; they retire together or not at all.
-  if (!reclaimParks(false)) return { recovery: 'rolled_back', retired: false };
-  retireMarker(tx);
+  if (!reclaimParks(false) || !retireMarker(tx, false)) return { recovery: 'rolled_back', retired: false };
   for (const path of [
     tx.stagingDbPath,
     `${tx.stagingDbPath}-wal`,
@@ -674,6 +698,7 @@ export const prepareServerBundleSwap = (args: {
   nextBundle?: Buffer;
   configPath?: string | null;
   nextConfig?: Buffer;
+  import_operation_id?: string;
   observer?: ServerBundleSwapObserver;
 }): PreparedServerBundleSwap => {
   const dbPath = resolve(args.dbPath);
@@ -713,7 +738,8 @@ export const prepareServerBundleSwap = (args: {
     : null;
   const hadConfig = configPath ? existsSync(configPath) : false;
   const marker: BundleSwapMarker = {
-    v: MARKER_VERSION,
+    v: args.import_operation_id === undefined ? MARKER_VERSION : 3,
+    ...(args.import_operation_id === undefined ? {} : { import_operation_id: args.import_operation_id }),
     staging_name: basename(stagingDbPath),
     stamp: args.stamp,
     has_next_bundle: args.nextBundle !== undefined,
@@ -756,6 +782,9 @@ export const prepareServerBundleSwap = (args: {
     parseMarker(dbPath, JSON.stringify(marker)),
     configPath,
   );
+  if (tx.marker.import_operation_id !== undefined) {
+    createArchiveImportReceipts(dbPath).assertStaged(tx.marker.import_operation_id, tx.marker.staging_name);
+  }
   assertBackupTargetsFree(tx);
   if (existsSync(tx.stagedBundlePath)) {
     throw new Error(
@@ -912,8 +941,7 @@ export const commitPreparedServerBundleSwap = (
     // marker for boot to reconcile forward.
     if (reclaimParks(true)) {
       observer.onTransition?.('parks_resolved');
-      retireMarker(tx);
-      observer.onTransition?.('swap_marker_retired');
+      if (retireMarker(tx, true, observer)) observer.onTransition?.('swap_marker_retired');
     }
   } catch (err) {
     let recovery: ServerBundleSwapReconcileResult;

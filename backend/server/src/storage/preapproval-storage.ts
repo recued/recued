@@ -12,6 +12,7 @@ import { registerPreapprovalInvalidator } from './preapproval-lifecycle.js';
 import { createMailDraftStore, type MailDraftStore } from './mail-drafts.js';
 import { createPreapprovalTriggerIngress, type PreapprovalTriggerIngress } from './preapproval-trigger-ingress.js';
 import type { PreapprovalRequestLimits } from '../preapproval-limits.js';
+import { createLocalUpdateUndoStore, type LocalUpdateUndoStore } from './local-update-undo-store.js';
 
 export type PreapprovalHostRuntime = Omit<PreapprovalAtomicHooks, 'createDispatch' | 'settleDispatch'> & {
   buildPendingCommit: Parameters<typeof createSqlitePreapprovalDispatchParticipant>[2]['buildPendingCommit'];
@@ -21,6 +22,7 @@ export interface PreapprovalStorage {
   workers: PreapprovalWorkers;
   drafts: MailDraftStore;
   triggerIngress: PreapprovalTriggerIngress;
+  localUndo?: LocalUpdateUndoStore;
   /** False while locked; no D-261 request or activation may run until this
    * succeeds. The normal unlock UI remains available during that interval. */
   recover(): Promise<boolean>;
@@ -47,6 +49,7 @@ export const createPreapprovalStorage = (
   });
   const workers = createPreapprovalWorkers(db);
   const codec = createPreapprovalCodec(getKey);
+  const localUndo = createLocalUpdateUndoStore(db, codec, options.now);
   const drafts = createMailDraftStore(db, codec, options.now);
   const repository = new PreapprovalRepository(db, {
     codec, workers,
@@ -69,7 +72,7 @@ export const createPreapprovalStorage = (
   registerPreapprovalInvalidator(db, (kind, key, incarnation) => repository.invalidateDependency(kind, key, incarnation));
   const triggerIngress = createPreapprovalTriggerIngress(db, codec, options.now, futureRef => repository.stopOversizedTrigger(futureRef));
   return {
-    repository, workers, drafts, triggerIngress,
+    repository, workers, drafts, triggerIngress, localUndo,
     isReady: () => recovered && runtime !== undefined && getKey() !== null,
     recover() {
       if (recovered) return Promise.resolve(true);
@@ -81,6 +84,12 @@ export const createPreapprovalStorage = (
             const batch = await repository.recoverInterruptedRuns(workers.worker_id, 100, cursor);
             if (batch.length < 100) break;
             cursor = batch[batch.length - 1]!.future_execution_ref;
+          }
+          let localCursor = '';
+          while (true) {
+            const batch = await repository.reconcileLocalMutationReceipts(100, localCursor);
+            if (batch.checked < 100) break;
+            localCursor = batch.last_attempt_id;
           }
           recovered = true;
           return true;

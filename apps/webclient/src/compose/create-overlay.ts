@@ -140,6 +140,8 @@ export interface OpenCreateOverlayOptions {
   /** Fired exactly once when the overlay tears down (Close / Escape / backdrop
    *  / `close()`), so the caller can drop its handle reference. */
   readonly onClose?: () => void;
+  /** Asset capture has its own full-page form with class presets. */
+  readonly onCreateAsset?: () => void;
 }
 
 export interface CreateOverlayHandle {
@@ -239,6 +241,7 @@ export const openCreateOverlay = (
   let trap: FocusTrapHandle | null = null;
   let discardGuard: HTMLElement | null = null;
   let discardFocusOwner: HTMLElement | null = null;
+  let afterUserClose: (() => void) | undefined;
   const teardown = (): void => {
     if (closed) return;
     closed = true;
@@ -256,6 +259,7 @@ export const openCreateOverlay = (
   };
 
   const closeDiscardGuard = (): void => {
+    afterUserClose = undefined;
     if (discardGuard === null) return;
     try {
       panel.removeChild(discardGuard);
@@ -311,7 +315,7 @@ export const openCreateOverlay = (
     discard.type = 'button';
     discard.setAttribute(CREATE_OVERLAY_DISCARD_COMMIT_ATTR, '');
     discard.textContent = 'Throw it away';
-    discard.addEventListener('click', teardown);
+    discard.addEventListener('click', () => { const after = afterUserClose; afterUserClose = undefined; teardown(); after?.(); });
     actions.appendChild(discard);
     guard.appendChild(actions);
     panel.appendChild(guard);
@@ -319,13 +323,16 @@ export const openCreateOverlay = (
     guard.focus?.({ preventScroll: true });
   };
 
-  const requestClose = (): void => {
+  const requestClose = (after?: () => void): void => {
     if (composeCommitting) return;
+    afterUserClose = after;
     if (compose.hasUnsavedChanges()) {
       showDiscardGuard();
       return;
     }
     teardown();
+    afterUserClose = undefined;
+    after?.();
   };
 
   keyHandler = (ev: KeyboardEvent): void => {
@@ -349,6 +356,11 @@ export const openCreateOverlay = (
     if (ev.target === overlay) requestClose();
   });
   closeBtn.addEventListener('click', () => requestClose());
+  const createAsset = opts.onCreateAsset ?? (doc.defaultView ? () => { doc.defaultView!.location.hash = '#yours/new'; } : undefined);
+  if (createAsset) {
+    const asset = doc.createElement('button'); asset.type = 'button'; asset.textContent = 'Asset'; asset.setAttribute('data-recued-create-asset', '');
+    asset.style.minHeight = '44px'; asset.addEventListener('click', () => requestClose(createAsset)); header.insertBefore(asset, closeBtn);
+  }
 
   const portal = opts.portal ?? (doc as { body?: HTMLElement }).body ?? overlay;
   portal.appendChild(overlay);
@@ -362,6 +374,6 @@ export const openCreateOverlay = (
     element: overlay,
     hasUnsavedChanges: () => !closed && compose.hasUnsavedChanges(),
     hasInFlightWork: () => !closed && composeCommitting,
-    close: teardown,
+    close: () => { afterUserClose = undefined; teardown(); },
   };
 };

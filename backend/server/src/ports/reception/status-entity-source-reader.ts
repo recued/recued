@@ -148,6 +148,7 @@ const resolveCounterparty = (
 
 const customTitle = (entity: WorkEntity): string => {
   switch (entity._kind) {
+    case 'asset': return entity.name;
     case 'commitment':
       return entity.statement;
     case 'note':

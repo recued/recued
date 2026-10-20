@@ -17,14 +17,13 @@
  *      shape (Slack: `channel_id` string-only; Telegram: `chat_id`
  *      string-OR-finite-number).
  *
- *  Lock-step invariant (D-163 I-4) — the `connection.notification.<name>`
- *  row this channel resolves against is keyed on `transport.vendor`, NOT
- *  a separate `connectionName` parameter. That makes adapter name
- *  (the channel's `name`, set by `createRemoteChannel` from
- *  `transport.vendor`) and credential row lookup
- *  (`connectionStore.get('notification', transport.vendor)`) share the
- *  same field — the probe's `hasAdapter(name)` and the credential read
- *  cannot diverge by construction.
+ *  D-325 keeps the vendor-named legacy default and adds a pinned named row for
+ *  reminders. Its enrollment, recipient and principal must still match; an
+ *  unavailable selection never falls back to another connection of that type.
+ *  A plain notify or ask, which names no destination, goes through the owner's
+ *  choice for the channel when the notification channels pass `plainConnection`
+ *  (D-158 amendment 2026-10-20); a messenger turn and live control keep the
+ *  vendor-named row, the conversation they answer in.
  *
  *  Spec: D-163 § N.5 / A.1; outbound transport contract:
  *  D-160 P0 (`@recued/transport`). */
@@ -33,11 +32,13 @@ import {
   getMessengerVendorDeclaration,
   MESSENGER_PRINCIPAL_CONFIG_KEY,
   resolveMessengerSendToken,
+  type ConnectionRow,
 } from '@recued/contracts';
 import {
   createRemoteChannel,
   type RemoteChannel,
   type RemoteChannelCredential,
+  type AskDeliveryDestination,
 } from '@recued/notification';
 import type { InteractiveTransport } from '@recued/transport';
 import { decodeAuthFromStorage } from '../../connection-handler.js';
@@ -83,9 +84,15 @@ export interface ComposeRemoteChannelDeps {
 
 export interface CreateRemoteCredentialResolverDeps {
   connectionStore: ConnectionStoreSqlite;
-  /** `connection.notification` row key — the transport's vendor
-   *  (D-163 I-4: row name IS the vendor). */
+  /** `connection.notification` row key — the transport's vendor (the row named
+   *  after it, D-163 N.5), unless `plainConnection` or a destination names another. */
   vendor: string;
+  /** D-158 amendment 2026-10-20 — the connection a call with no destination (a
+   *  plain notify or ask) goes through: the owner's choice for the channel, else
+   *  the only one, else the row named after the vendor, or why there is none
+   *  (`createOwnerNotificationConnection`). Absent ⇒ the row named after the
+   *  vendor, which a messenger turn and live control keep. */
+  plainConnection?: () => Promise<ConnectionRow | { reason: string }>;
   /** Vendor-specific recipient validator. */
   resolveRecipient: RemoteChannelRecipientResolver;
   /** Optional sub-DEK source — re-read per call, see
@@ -108,17 +115,23 @@ export interface CreateRemoteCredentialResolverDeps {
 
 /** The credential resolver `composeRemoteChannel` builds its channel
  *  over, exported standalone so the messenger turn wiring
- *  (`wire-messenger-turn.ts`) resolves the SAME `connection.
- *  notification.<vendor>` row through the SAME decode path — one
- *  credential read per vendor, two consumers. */
+ *  (`wire-messenger-turn.ts`) reads its row through the SAME decode
+ *  path. The notification channels pass `plainConnection` and the turn
+ *  wiring does not, so a turn answers through the row named after the
+ *  vendor while a plain notify or ask follows the owner's choice. */
 export const createRemoteCredentialResolver = (
   deps: CreateRemoteCredentialResolverDeps,
-): (() => Promise<RemoteChannelCredential | null>) => {
+): ((destination?: AskDeliveryDestination) => Promise<RemoteChannelCredential | null>) => {
   const { connectionStore, vendor, resolveRecipient, refreshAuth } = deps;
 
-  return async (): Promise<RemoteChannelCredential | null> => {
-    const row = connectionStore.get('notification', vendor);
+  return async (destination): Promise<RemoteChannelCredential | null> => {
+    const chosen = destination === undefined && deps.plainConnection ? await deps.plainConnection() : undefined;
+    if (chosen !== undefined && 'reason' in chosen) return null;
+    const row = chosen ?? connectionStore.get('notification', destination?.connection_name ?? vendor);
     if (row === null) return null;
+    if (destination && (destination.channel !== vendor || destination.connection_enrolled_at !== row.enrolled_at)) return null;
+    if ((destination || chosen) && row.subtype !== undefined && row.subtype !== vendor) return null;
+    const sourceIdentity = connectionStore.getAuthSourceId?.('notification', row.name);
 
     // Re-read state per call — see ComposeRemoteChannelDeps.keys doc.
     const keyProvider = deps.keys ? deps.keys.keyProvider('connection') : undefined;
@@ -144,7 +157,11 @@ export const createRemoteCredentialResolver = (
     // resolver wired without `refreshAuth`.
     const usable = refreshAuth === undefined
       ? auth
-      : await refreshAuth.refreshIfNeeded(vendor, auth);
+      : await refreshAuth.refreshIfNeeded(row.name, auth, { enrolled_at: row.enrolled_at,
+        auth_ciphertext: row.auth_ciphertext, config_json: row.config_json });
+    const current = connectionStore.get('notification', row.name);
+    if (!current || current.enrolled_at !== row.enrolled_at || current.config_json !== row.config_json
+      || connectionStore.getAuthSourceId?.('notification', row.name) !== sourceIdentity) return null;
 
     const token = resolveMessengerSendToken(usable);
     if (token === undefined) return null;
@@ -173,6 +190,7 @@ export const createRemoteCredentialResolver = (
     return {
       token,
       recipient,
+      ...(destination ? { connection_name: row.name, connection_enrolled_at: row.enrolled_at } : {}),
       ...(expected_sender !== undefined ? { expected_sender } : {}),
     };
   };

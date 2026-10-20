@@ -138,18 +138,17 @@ describe('D-157 outbound-send promise via D-187 op-risk lift (admitByOpRisk)', (
     if (decision.verdict === 'ask') {
       // Risk tier preserved for audit — a send is a `write`, not reclassified.
       expect(decision.risk_tier).toBe('write');
-      // ⚠ `peer-ask` IS EXEMPT FROM THE SLUG CHECK, AND ON PURPOSE RATHER THAN
-      // BECAUSE IT FAILED. `detail` renders VERBATIM into the ask body's
+      // ⛔ NO SEND NAMES ITS SLUG. `detail` renders VERBATIM into the ask body's
       // "Reason:" line (see the comment on the branch in `op-risk-admission.ts`),
-      // so it is owner-facing prose. The generic send sentence names the slug
-      // because it is otherwise identical for five different sends and the slug
-      // is the only thing that says which. § 234.4o's peer-ask sentence — "this
-      // puts your question on another server owner's screen" — is already
-      // self-identifying, and appending `'peer-ask'` would put a machine token
-      // in front of a person for no gain. The lift itself is asserted
-      // identically for it; only the wording differs.
-      if (slug !== 'peer-ask') expect(decision.detail).toContain(slug);
-      else expect(decision.detail).toContain('another server owner\'s screen');
+      // so it is owner-facing prose. The generic send sentence used to carry the
+      // slug because it is otherwise identical for five different sends, but the
+      // ask already says which: its opening, its `Technical:` line and the
+      // card's Action row. The slug was the last machine token in the email's
+      // prose (owner, 2026-10-19). § 234.4o's peer-ask sentence differs only in
+      // wording; the lift is asserted identically for it.
+      expect(decision.detail).not.toContain(slug);
+      expect(decision.detail).toContain(
+        slug === 'peer-ask' ? 'another server owner\'s screen' : 'someone outside this server');
     }
   });
 

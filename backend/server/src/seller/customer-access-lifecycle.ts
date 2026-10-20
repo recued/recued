@@ -381,6 +381,7 @@ export const createSellerCustomerAccessLifecycle = (
       scope: template.scope,
       grant_kind: 'customer_instance',
       ...(template.door_types !== undefined ? { door_types: [...template.door_types] } : {}),
+      ...(template.read_spheres !== undefined ? { read_spheres: [...template.read_spheres] } : {}),
       ...(template.approved_actions_template !== undefined
         ? { approved_actions_template: template.approved_actions_template }
         : {}),
@@ -470,6 +471,7 @@ export const createSellerCustomerAccessLifecycle = (
     return `sha256:${createHash('sha256').update(stableStringify({
       scope: def.scope,
       door_types: def.door_types ?? null,
+      read_spheres: def.read_spheres ?? null,
       approved_actions_template: def.approved_actions_template ?? null,
       grants,
     })).digest('hex')}`;

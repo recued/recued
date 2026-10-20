@@ -101,6 +101,16 @@ describe('Checkpoint', () => {
     })).toBe(false);
   });
 
+  it('isCheckpoint reads the recorded recipe title on the widened-string lane', () => {
+    // Display only: the approval's title. An older binary ignores it; a value
+    // that is not text is refused like any other string field.
+    expect(isCheckpoint(checkpoint({ preflight_context: { recipe_title: 'Send a composed email' } }))).toBe(true);
+    expect(isCheckpoint({
+      ...checkpoint(),
+      preflight_context: { recipe_title: 7 },
+    })).toBe(false);
+  });
+
   it('isCheckpoint accepts a checkpoint with approved_target identity fields', () => {
     expect(isCheckpoint(checkpoint({
       approved_target: {

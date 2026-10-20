@@ -118,6 +118,7 @@ export interface WorkEntityGetRpcResponse {
  *  recipe / MCP ingredient path does (reactive / trigger semantics
  *  hold). */
 export type WorkEntityUpsertRpcRequest =
+  | ({ kind: 'asset' } & (import('./assets.js').AssetCreateInput | import('./assets.js').AssetUpdateInput))
   | ({ kind: 'task' } & (TaskCreateInput | TaskUpdateInput))
   | ({ kind: 'note' } & (NoteCreateInput | NoteUpdateInput))
   | ({ kind: 'commitment' } & (CommitmentCreateInput | CommitmentUpdateInput))

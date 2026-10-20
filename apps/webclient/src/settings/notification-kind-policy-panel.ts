@@ -183,6 +183,11 @@ export const mountKindPolicyPanel = (
     const lede = el('p', 'Which kinds Recued tells you about, and how far ahead.');
     lede.className = 'kp-lede';
     opts.host.appendChild(lede);
+    const clocks = el('p', 'Asset and occasion clocks are set on each asset and rule. ');
+    const assets = el('a', 'Open Yours');
+    assets.setAttribute('href', '#yours/asset');
+    clocks.appendChild(assets);
+    opts.host.appendChild(clocks);
 
     for (const kind of NOTIFICATION_ANCHORED_KINDS) {
       const policy = policies.find((p) => p.kind === kind);

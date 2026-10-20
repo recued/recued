@@ -21,6 +21,7 @@
  */
 
 import { RpcError } from '@recued/contracts';
+import { assertProviderHandoffActive } from '../../execution/provider-handoff.js';
 import {
   CalendarAdapterError,
   type CalendarAdapterErrorCode,
@@ -48,6 +49,11 @@ const ADAPTER_ERROR_MAP: Record<
   CalendarAdapterErrorCode,
   { rpcCode: string; userCode: string; status: number }
 > = {
+  version_conflict: {
+    rpcCode: 'resource_conflict',
+    userCode: 'RESOURCE_CHANGED',
+    status: 409,
+  },
   event_not_found: {
     rpcCode: 'not_found',
     userCode: 'CALENDAR_EVENT_NOT_FOUND',
@@ -106,16 +112,15 @@ export const calendarAdapterErrorToRpc = (
   );
 };
 
-/** Run an adapter call and translate `CalendarAdapterError` into a
- *  classified `RpcError`. Non-CalendarAdapterError throws are unexpected
- *  (bugs) — rethrow unchanged so the outer rpc layer turns them into
- *  a 500. */
+/** Admit a fresh provider call and translate `CalendarAdapterError` into a
+ * classified `RpcError`. Preserve host cancellation and other errors unchanged. */
 export const callCalendarAdapter = async <T>(
   slug: string,
   verb: string,
   fn: () => Promise<T>,
 ): Promise<T> => {
   try {
+    assertProviderHandoffActive();
     return await fn();
   } catch (err) {
     if (isCalendarAdapterError(err)) {

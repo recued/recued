@@ -32,7 +32,7 @@ afterEach(async () => {
 
 /** Real OAuth exchange, Gmail provider, SQLite instance store, and collection
  * lifecycle. Only Google's HTTP responses and the WS delivery are fixtures. */
-const setup = (opts: { vaultLocked?: boolean; emptyFirstPage?: boolean } = {}) => {
+const setup = (opts: { vaultLocked?: boolean; emptyFirstPage?: boolean; backfillDays?: number } = {}) => {
   const db = new Database(':memory:');
   const bus = createWarehouseEventBus();
   const registry = createCollectionRegistry();
@@ -46,6 +46,7 @@ const setup = (opts: { vaultLocked?: boolean; emptyFirstPage?: boolean } = {}) =
   const scan = new Promise<number>((resolve) => { releaseScan = resolve; });
   let scanStatus = 200;
   let scanRequests = 0;
+  const scanQueries: string[] = [];
   let historyRequests = 0;
   let exchanges = 0;
   let vaultUnlocked = opts.vaultLocked !== true;
@@ -61,6 +62,7 @@ const setup = (opts: { vaultLocked?: boolean; emptyFirstPage?: boolean } = {}) =
     }
     if (parsed.pathname.endsWith('/messages')) {
       scanRequests += 1;
+      scanQueries.push(parsed.searchParams.get('q') ?? '');
       if (opts.emptyFirstPage && !parsed.searchParams.has('pageToken')) {
         return response({ messages: [], nextPageToken: 'second-page' });
       }
@@ -88,6 +90,7 @@ const setup = (opts: { vaultLocked?: boolean; emptyFirstPage?: boolean } = {}) =
   });
   const enroll = () => handleCollectionEnrollOAuth({ registry, mailEnroll: stack.enrollDeps }, {
     provider: 'gmail', account_slug: 'work', code: 'fixture-code', redirect_uri: 'https://fixture.example/oauth',
+    ...(opts.backfillDays !== undefined ? { backfill_days: opts.backfillDays } : {}),
   });
   const listeners = new Set<(message: unknown) => void>();
   const ws: WebclientWsClient = {
@@ -116,13 +119,23 @@ const setup = (opts: { vaultLocked?: boolean; emptyFirstPage?: boolean } = {}) =
     bus.dispose();
     db.close();
   });
-  return { stack, registry, credentials, conn, enroll,
+  return { stack, registry, credentials, conn, enroll, scanQueries,
     releaseScan, unlock: () => { vaultUnlocked = true; },
     counts: () => ({ scanRequests, historyRequests, exchanges }),
   };
 };
 
 describe('Mail enrollment does not wait for the first sync', () => {
+  it('D-325 carries the chosen history window through the RPC bridge into the actual Gmail scan', async () => {
+    const h = setup({ backfillDays: 400 });
+    await h.enroll();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.stack.instances.get('mail', 'work')?.config.backfill_days).toBe(400);
+    expect(h.scanQueries).toEqual(['newer_than:400d']);
+    h.releaseScan(200);
+    await vi.advanceTimersByTimeAsync(0);
+  });
+
   it('answers the OAuth RPC before a slow Gmail backfill reaches the webclient deadline', async () => {
     const h = setup();
     const received: unknown[] = [];

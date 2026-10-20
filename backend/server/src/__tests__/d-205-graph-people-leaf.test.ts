@@ -105,6 +105,7 @@ describe('D-205 — the Microsoft Graph contacts leaf', () => {
       'businessAddress',
       'homeAddress',
       'otherAddress',
+      'birthday',
     ]) {
       expect(select, `missing ${f}`).toContain(f);
     }
@@ -120,7 +121,27 @@ describe('D-205 — the Microsoft Graph contacts leaf', () => {
     // The two must not drift: `supplies` is verified per record, so a promised
     // attribute the leaf never emits fails EVERY record on the FIRST cycle.
     expect(MICROSOFT.supplies.attributes).not.toContain('photo');
-    expect([...MICROSOFT.supplies.attributes].sort()).toEqual(['address', 'name', 'org']);
+    expect([...MICROSOFT.supplies.attributes].sort()).toEqual(['address', 'birthday', 'name', 'org']);
+  });
+
+  it('D-325 reads the birthday as the calendar date Outlook meant', async () => {
+    for (const [birthday, expected] of [
+      ['1980-04-02T00:00:00Z', '1980-04-02'],
+      // A stored local midnight: Berlin's lands on the day before in UTC, Los
+      // Angeles' on the same day. Either way it is the nearest UTC midnight.
+      ['1980-04-01T23:00:00Z', '1980-04-02'],
+      ['1980-04-02T07:00:00Z', '1980-04-02'],
+      ['1980-04-02T11:59:00Z', '1980-04-02'],
+      ['1604-06-15T00:00:00Z', '--06-15'],
+      ['not a date', null],
+      [null, null],
+    ] as const) {
+      const out = await runLeaf([{ id: 'A', birthday }]);
+      expect(out.records[0]?.attributes.birthday, String(birthday)).toBe(expected);
+    }
+    // A contact with none still says so: the key is there, and empty.
+    const none = await runLeaf([{ id: 'A' }]);
+    expect(none.records[0]?.attributes).toHaveProperty('birthday', null);
   });
 
   it('collects emails in Graph order and canonicalizes them', async () => {

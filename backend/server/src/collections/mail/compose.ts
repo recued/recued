@@ -91,9 +91,9 @@ export type MailStackLogger = (
 ) => void;
 
 /** Default mail config knobs. Match the per-platform spec defaults
- *  (mail: 30 d backfill / 365 d retention / 512 MB quota). Per-row
+ *  (mail: 400 d first backfill / 365 d retention / 512 MB quota). Per-row
  *  config values override these. */
-const DEFAULT_MAIL_BACKFILL_DAYS = 30;
+const DEFAULT_MAIL_BACKFILL_DAYS = 400;
 const DEFAULT_MAIL_RETENTION_DAYS = 365;
 const DEFAULT_MAIL_QUOTA_BYTES = 512 * 1024 * 1024;
 const DEFAULT_GMAIL_POLL_SECONDS = 30;
@@ -118,6 +118,7 @@ export interface MailStackStorageDeps {
    *  `onRecordRekeyed`, so a message's derived facts follow it out and
    *  across a move. */
   onRecordsRemoved?: CreateMailCollectionOptions['onRecordsRemoved'];
+  onBeforeRetention?: CreateMailCollectionOptions['onBeforeRetention'];
   onRecordRekeyed?: CreateMailCollectionOptions['onRecordRekeyed'];
   /** D-318 audit — a mailbox was deleted (after it stopped): the email chat
    *  door forgets it. */
@@ -476,6 +477,7 @@ export const composeMailStack = (
         ...(storage.onRecordsRemoved
           ? { onRecordsRemoved: storage.onRecordsRemoved }
           : {}),
+        ...(storage.onBeforeRetention ? { onBeforeRetention: storage.onBeforeRetention } : {}),
         ...(storage.onRecordRekeyed
           ? { onRecordRekeyed: storage.onRecordRekeyed }
           : {}),

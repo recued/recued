@@ -23,6 +23,7 @@ import type { Checkpoint, ConnectionRow } from '@recued/contracts';
 import type {
   AskOption,
   NotificationMessage,
+  RemoteChannel,
 } from '@recued/notification';
 import type { MailRpcDep } from '@recued/ingredients';
 import {
@@ -34,6 +35,7 @@ import {
 
 import { composeEmailChannel } from '../composition/bin/wire-email-channel.js';
 import { composeNotificationBlock } from '../composition/bin/wire-notification-block.js';
+import { createOwnerEmailConnection, ownerEmailConnectionProblem } from '../composition/bin/owner-email-connection.js';
 import { createSQLiteCollection } from '../sqlite-collection.js';
 import { createBlobStore } from '../storage/blob-store.js';
 import { createAnnotationStore } from '../storage/annotation-store.js';
@@ -204,6 +206,39 @@ describe('composeEmailChannel', () => {
 // Wiring — composeNotificationBlock registers the email channel
 // ────────────────────────────────────────────────────────────────
 
+/** What a real notification block composes over, closed by `cleanups`. */
+const blockStores = (cleanups: Array<() => void>) => {
+  const db = new Database(':memory:');
+  cleanups.push(() => db.close());
+  const dir = mkdtempSync(join(tmpdir(), 'email-wiring-'));
+  cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+
+  const auditLog = createAuditLogStore(
+    createSQLiteCollection<AuditEntry>(db, 'audit_log'),
+    createSQLiteCollection<ActivityEntry>(db, 'activity_log'),
+  );
+  const checkpointStore = createCheckpointStore(
+    createSQLiteCollection<Checkpoint>(db, 'checkpoints'),
+  );
+  ensureCheckpointSchema(db);
+  ensureSourceDependencyEntitySchema(db);
+  const annotationStore = createAnnotationStore({
+    db,
+    blobs: createBlobStore(join(dir, 'blobs')),
+    now: () => 0,
+    newId: () => 'annotation-1',
+  });
+  const eventBus = {
+    cursor: vi.fn(() => 0), subscribe: vi.fn(), unsubscribe: vi.fn(),
+    emit: vi.fn((e) => ({ cursor: 1, ...e })), replay: vi.fn(() => []),
+    subscriberCount: vi.fn(() => 0),
+  } as unknown as EventBus;
+  return {
+    db, auditLog, checkpointStore, annotationStore, eventBus,
+    getExecuteDeps: (): ExecuteHandlerDeps | undefined => undefined,
+  };
+};
+
 describe('composeNotificationBlock email wiring', () => {
   const cleanups: Array<() => void> = [];
   afterEach(() => {
@@ -211,40 +246,13 @@ describe('composeNotificationBlock email wiring', () => {
   });
 
   const harness = (opts: { withEmail: boolean; connectionRow: ConnectionRow | null }) => {
-    const db = new Database(':memory:');
-    cleanups.push(() => db.close());
-    const dir = mkdtempSync(join(tmpdir(), 'email-wiring-'));
-    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
-
-    const auditLog = createAuditLogStore(
-      createSQLiteCollection<AuditEntry>(db, 'audit_log'),
-      createSQLiteCollection<ActivityEntry>(db, 'activity_log'),
-    );
-    const checkpointStore = createCheckpointStore(
-      createSQLiteCollection<Checkpoint>(db, 'checkpoints'),
-    );
-    ensureCheckpointSchema(db);
-    ensureSourceDependencyEntitySchema(db);
-    const annotationStore = createAnnotationStore({
-      db,
-      blobs: createBlobStore(join(dir, 'blobs')),
-      now: () => 0,
-      newId: () => 'annotation-1',
-    });
-    const eventBus = {
-      cursor: vi.fn(() => 0), subscribe: vi.fn(), unsubscribe: vi.fn(),
-      emit: vi.fn((e) => ({ cursor: 1, ...e })), replay: vi.fn(() => []),
-      subscriberCount: vi.fn(() => 0),
-    } as unknown as EventBus;
-
     const connectionStore = stubConnectionStore(opts.connectionRow);
     const emailChannel = opts.withEmail
       ? composeEmailChannel({ connectionStore, mailRpc: { send: okSend() } })
       : undefined;
 
     const { block } = composeNotificationBlock({
-      db, auditLog, checkpointStore, annotationStore, eventBus,
-      getExecuteDeps: (): ExecuteHandlerDeps | undefined => undefined,
+      ...blockStores(cleanups),
       connectionStore,
       ...(emailChannel ? { emailChannel } : {}),
     });
@@ -274,5 +282,171 @@ describe('composeNotificationBlock email wiring', () => {
     const rows = await block.describeNotificationChannels();
     const email = rows.find((r) => r.channel === 'email');
     expect(email!.ready).toBe(false);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// D-158 amendment 2026-10-18 — one address: notifications to the sending mailbox
+// ────────────────────────────────────────────────────────────────
+
+describe('composeEmailChannel — a connection naming no recipient notifies its own mailbox', () => {
+  const ownerSeam = () => {
+    const send = okSend();
+    const sendToOwner = vi.fn<NonNullable<MailRpcDep['sendToOwner']>>(async () => ({ source_id: 's2', message_id: 'm2', sent_at: 2 }));
+    return { send, sendToOwner, mailRpc: { send, sendToOwner } };
+  };
+  const pinnedRow = (config: Record<string, unknown>): ConnectionRow =>
+    ({ ...emailRow(config), pk: 'notification:owner-mail', name: 'owner-mail', subtype: 'email', enrolled_at: 7 }) as ConnectionRow;
+  const envelope = (recipient: string) => ({ group_id: 'g', attempt_id: 'attempt-7', repeat: false,
+    destination: { id: 'owner:email', channel: 'email' as const, connection_name: 'owner-mail', connection_enrolled_at: 7,
+      recipient, expected_sender: recipient, sender_source: 'mail-1' },
+    asks: [{ ask_id: 'ask-1', message: { title: 'Passport', text: 'Renew it.' }, options: [{ id: 'done', label: 'Done' }] }] as never });
+
+  it('sends notify and ask through the owner seam: to the mailbox when no recipient, else to it', async () => {
+    const { send, sendToOwner, mailRpc } = ownerSeam();
+    await composeEmailChannel({ connectionStore: stubConnectionStore(emailRow({ sender_mail_instance: 'mail-1' })), mailRpc })
+      .deliverNotify(notify);
+    await composeEmailChannel({ connectionStore: stubConnectionStore(emailRow(VALID_CONFIG)), mailRpc })
+      .deliverAsk('ask-9', ask, askOptions);
+    expect(sendToOwner.mock.calls.map(([args]) => [args.instance, args.to])).toEqual([['mail-1', undefined], ['mail-1', ['inbox@example.test']]]);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('delivers a pinned reminder to the mailbox’s own address, stamped with its attempt', async () => {
+    const { sendToOwner, mailRpc } = ownerSeam();
+    const row = pinnedRow({ sender_mail_instance: 'mail-1' });
+    const connectionStore = { get: (kind: string, name: string) => kind === 'notification' && name === row.name ? row : null } as unknown as ConnectionStoreSqlite;
+    const channel = composeEmailChannel({ connectionStore, mailRpc, mailboxAddress: slug => slug === 'mail-1' ? 'Owner@Example.test' : undefined });
+    expect(await channel.deliverAskDelivery!(envelope('owner@example.test'))).toMatchObject({ outcome: 'delivered' });
+    expect(sendToOwner.mock.calls[0]?.[0]).toMatchObject({ instance: 'mail-1', to: ['owner@example.test'], reconciliation_id: 'attempt-7' });
+    // The pinned recipient no longer the mailbox's (or no address to compare) ⇒ nothing is sent.
+    expect(await channel.deliverAskDelivery!(envelope('someone@example.test'))).toMatchObject({ outcome: 'not_delivered' });
+    expect(await composeEmailChannel({ connectionStore, mailRpc }).deliverAskDelivery!(envelope('owner@example.test')))
+      .toMatchObject({ outcome: 'not_delivered' });
+    expect(sendToOwner).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// D-158 amendment 2026-10-19 — a plain notify or ask goes through the
+// connection Settings names for it
+// ────────────────────────────────────────────────────────────────
+
+describe('a plain notify or ask goes through the connection Settings names for it', () => {
+  const cleanups: Array<() => void> = [];
+  afterEach(() => {
+    for (const c of cleanups.splice(0).reverse()) c();
+  });
+
+  /** An email notification connection sending from `mailbox`. */
+  const mailRow = (name: string, enrolled_at: number, mailbox: string): ConnectionRow =>
+    ({ ...emailRow({ sender_mail_instance: mailbox, default_recipient: 'inbox@example.test' }),
+      pk: `notification:${name}`, name, display_name: `${name} mailbox`, subtype: 'email', enrolled_at }) as ConnectionRow;
+  const telegramRow = (name: string, enrolled_at: number): ConnectionRow =>
+    ({ pk: `notification:${name}`, kind: 'notification', name, display_name: `${name} bot`, subtype: 'telegram',
+      config_json: '{}', auth_ciphertext: '', enrolled_at, updated_at: 0 }) as unknown as ConnectionRow;
+
+  const harness = (rows: ConnectionRow[]) => {
+    const stores = blockStores(cleanups);
+    // The production store's two reads, over rows a test enrolls and removes.
+    const connectionStore = {
+      list: ({ kind }: { kind?: string } = {}) => rows.filter(row => kind === undefined || row.kind === kind),
+      get: (kind: string, name: string) => rows.find(row => row.kind === kind && row.name === name) ?? null,
+    } as unknown as ConnectionStoreSqlite;
+    const send = okSend();
+    const emailChannel = composeEmailChannel({
+      connectionStore, mailRpc: { send },
+      ownerConnection: createOwnerEmailConnection(stores.db, connectionStore),
+      ownerConnectionProblem: ownerEmailConnectionProblem,
+    });
+    const telegram: RemoteChannel = {
+      name: 'telegram', capability: 'inline', owns_llm_egress: false,
+      deliverNotify: vi.fn(async () => undefined), deliverAsk: vi.fn(async () => undefined),
+      closeAsk: vi.fn(async () => undefined),
+      parseInboundMessage: vi.fn(() => null), parseInboundReply: vi.fn(() => null),
+    };
+    const { block } = composeNotificationBlock({
+      ...stores, connectionStore, emailChannel, messengerChannels: { telegram },
+    });
+    const view = async (channel: string) =>
+      (await block.describeNotificationChannels()).find(row => row.channel === channel)!;
+    const choose = async (channel: 'email' | 'telegram', connection: { name: string; enrolled_at: number } | null) =>
+      expect(await block.setNotificationChannelMode(channel, { connection })).toMatchObject({ ok: true });
+    // A new ask id each time: the channel sends one ask id once.
+    let asks = 0;
+    /** The mailboxes a plain notify, then a plain ask, went out from. */
+    const sentFrom = async () => {
+      send.mockClear();
+      await emailChannel.deliverNotify(notify);
+      await emailChannel.deliverAsk(`ask-${++asks}`, ask, askOptions);
+      return send.mock.calls.map(([args]) => args.instance);
+    };
+    const refusal = async () => {
+      await expect(emailChannel.deliverAsk(`ask-${++asks}`, ask, askOptions)).rejects.toThrow();
+      return emailChannel.deliverNotify(notify).then(() => 'sent', (error: Error) => error.message);
+    };
+    return { block, send, view, choose, sentFrom, refusal };
+  };
+
+  it('sends through the only email connection, whatever its name, as the ready row says', async () => {
+    const { block, send, view, sentFrom } = harness([mailRow('owner-mail', 1, 'mail-a')]);
+    expect(await view('email')).toMatchObject({ ready: true, plain_connection: { name: 'owner-mail', display_name: 'owner-mail mailbox' } });
+    expect(await sentFrom()).toEqual(['mail-a', 'mail-a']);
+    // Through the block's own fan-out once the owner turns it on.
+    expect(await block.setNotificationChannelMode('email', { notification: true })).toMatchObject({ ok: true });
+    send.mockClear();
+    await block.notify(notify);
+    expect(send.mock.calls.map(([args]) => args.instance)).toEqual(['mail-a']);
+  });
+
+  it('sends through the connection the owner chose among several, and a new choice applies at the next send', async () => {
+    const { view, choose, sentFrom } = harness([mailRow('email', 2, 'mail-b'), mailRow('owner-mail', 1, 'mail-a')]);
+    await choose('email', { name: 'owner-mail', enrolled_at: 1 });
+    expect(await view('email')).toMatchObject({ ready: true, plain_connection: { name: 'owner-mail' } });
+    expect(await sentFrom()).toEqual(['mail-a', 'mail-a']);
+    await choose('email', { name: 'email', enrolled_at: 2 });
+    expect(await view('email')).toMatchObject({ plain_connection: { name: 'email' } });
+    expect(await sentFrom()).toEqual(['mail-b', 'mail-b']);
+  });
+
+  it('keeps sending through the one named email while several wait for a choice, and Settings says so', async () => {
+    const { view, sentFrom } = harness([mailRow('owner-mail', 1, 'mail-a'), mailRow('email', 2, 'mail-b')]);
+    const row = await view('email');
+    expect(row).toMatchObject({ ready: false, plain_connection: { name: 'email' } });
+    expect(row.connection).toBeUndefined();
+    expect(await sentFrom()).toEqual(['mail-b', 'mail-b']);
+  });
+
+  it('sends nothing when no connection can carry it, and says what to do in Settings', async () => {
+    const rows = [mailRow('owner-mail', 1, 'mail-a'), mailRow('work-mail', 3, 'mail-c')];
+    const { send, view, choose, refusal } = harness(rows);
+    expect(await view('email')).toMatchObject({ plain_connection: null });
+    expect(await refusal()).toMatch(/^Several email connections are enrolled\. Choose the one notifications use in Settings/);
+    await choose('email', { name: 'work-mail', enrolled_at: 3 });
+    rows.splice(1, 1);
+    expect(await view('email')).toMatchObject({ plain_connection: null });
+    expect(await refusal()).toMatch(/is no longer enrolled\. Choose another/);
+    await choose('email', null);
+    expect(await view('email')).toMatchObject({ plain_connection: null });
+    expect(await refusal()).toMatch(/^Email notifications have no connection chosen/);
+    rows.length = 0;
+    expect(await refusal()).toMatch(/^No email connection can carry notifications\. Add one in Settings → Connections/);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  // D-158 amendment 2026-10-20 — Telegram follows the owner's choice too.
+  it('names the Telegram connection the owner chose, else the only one, else the one called “telegram”', async () => {
+    const rows = [telegramRow('family-bot', 5)];
+    const { view, choose } = harness(rows);
+    expect(await view('telegram')).toMatchObject({ plain_connection: { name: 'family-bot' } });
+    // A Telegram connection never carries email.
+    expect(await view('email')).toMatchObject({ plain_connection: null });
+    rows.push(telegramRow('telegram', 6));
+    expect(await view('telegram')).toMatchObject({ plain_connection: { name: 'telegram', display_name: 'telegram bot' } });
+    await choose('telegram', { name: 'family-bot', enrolled_at: 5 });
+    expect(await view('telegram')).toMatchObject({
+      connection: { name: 'family-bot', enrolled_at: 5 },
+      plain_connection: { name: 'family-bot', display_name: 'family-bot bot' },
+    });
   });
 });

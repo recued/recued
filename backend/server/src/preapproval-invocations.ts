@@ -3,7 +3,7 @@
 import { createHash } from 'node:crypto';
 import {
   PREAPPROVAL_LIMITS, RpcError, executionSourceContractId, parsePreapprovalHash,
-  parsePreapprovalId, parsePreparePreapproval, parsePreapprovalJson, parseMailDraftContent, parseMailDraftId,
+  parsePreapprovalId, parsePreparePreapproval, parsePreapprovalJson, parseMailDraftContent, parseMailDraftId, isResourceReview,
   type PreapprovalInvocationPath,
 } from '@recued/contracts';
 import { canonicalJSONStringifyStrict } from '@recued/crypto';
@@ -42,6 +42,7 @@ export const preapprovalEffectHash = (member: Omit<PreparedInvocation, 'effect_h
     definition_hash: member.definition_hash,
     binding_hash: member.binding_hash,
     ...(member.dispatch_snapshot !== undefined ? { dispatch_snapshot: member.dispatch_snapshot } : {}),
+    ...(member.resource_review ? { resource_review: member.resource_review } : {}),
     arguments_hash: member.arguments_hash,
     output: member.output,
     condition_hash: member.condition_hash,
@@ -108,6 +109,24 @@ export const validatePreparedFutureExecution = (plan: PreparedFutureExecution): 
     snapshotPaths.add(key);
   }
   const root = plan.recipe_snapshots[0]!;
+  if (plan.continuation) {
+    const continuation = plan.continuation;
+    parsePreapprovalJson(continuation);
+    parsePreapprovalId(continuation.proposal_id, 'pap');
+    parsePreapprovalId(continuation.future_execution_ref, 'paf');
+    for (const hash of [continuation.snapshot_hash, continuation.outcomes_hash, continuation.source_definition_hash]) parsePreapprovalHash(hash);
+    if (plan.request.activation.kind !== 'one_shot' || plan.recipe_snapshots.length !== 1 || plan.uncovered.length
+      || !Array.isArray(continuation.steps) || continuation.steps.length === 0 || continuation.steps.length !== plan.members.length
+      || preapprovalHash(root.definition.steps) !== preapprovalHash(continuation.steps.map(item => item.step))
+      || new Set(continuation.steps.map(item => item.original_member_id)).size !== continuation.steps.length
+      || !Array.isArray(continuation.completed) || continuation.completed.length > PREAPPROVAL_LIMITS.candidate_calls
+      || new Set(continuation.completed.map(item => item.action_ref)).size !== continuation.completed.length
+      || continuation.completed.some(item => !item.action_ref || typeof item.label !== 'string')) return invalidGraph();
+    for (const item of continuation.steps) parsePreapprovalId(item.original_member_id, 'pam');
+    for (const item of continuation.completed) {
+      parsePreapprovalId(item.proposal_id, 'pap'); parsePreapprovalId(item.member_id, 'pam');
+    }
+  }
   const targetGrant = plan.origin.target_recipe_grant_key;
   if (targetGrant !== undefined && targetGrant !== null
     && targetGrant !== `${root.publisher_id}/${root.recipe_id}`
@@ -144,6 +163,9 @@ export const validatePreparedFutureExecution = (plan: PreparedFutureExecution): 
       || preapprovalHash(member.output) !== preapprovalHash(member.review.output)
       || member.connection_id !== member.review.connection_id || member.account_id !== member.review.account_id
       || preapprovalHash(member.resources) !== preapprovalHash(member.review.resources)
+      || (member.resource_review !== undefined && (!isResourceReview(member.resource_review)
+        || Buffer.byteLength(JSON.stringify(member.resource_review), 'utf8') > 64 * 1024))
+      || preapprovalHash(member.resource_review ?? null) !== preapprovalHash(member.review.resource_review ?? null)
       || Object.values(member.output).some(value => typeof value !== 'string')
       || member.effect_hash !== preapprovalEffectHash(member)
       || member.review.member_id !== member.member_id

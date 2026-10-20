@@ -435,6 +435,7 @@ export const ensureChatSchema = (db: Database.Database): void => {
       tier                       INTEGER NOT NULL,
       classification             TEXT NOT NULL,
       args_encrypted             TEXT NOT NULL,
+      resource_review_encrypted  TEXT,
       args_hash                  TEXT NOT NULL,
       target_instance            TEXT,
       status                     TEXT NOT NULL,
@@ -482,6 +483,7 @@ export const ensureChatSchema = (db: Database.Database): void => {
     (db.prepare('PRAGMA table_info(chat_plans)').all() as Array<{ name: string }>)
       .map((row) => row.name),
   );
+  if (!planCols.has('resource_review_encrypted')) db.exec('ALTER TABLE chat_plans ADD COLUMN resource_review_encrypted TEXT');
   if (!planCols.has('retry_of_plan_id')) {
     db.exec('ALTER TABLE chat_plans ADD COLUMN retry_of_plan_id TEXT');
   }
@@ -1868,6 +1870,12 @@ export const createChatStore = (
       @metadata_blob, @contributor, @recall_eligibility, @recall_contract_id, @pair_id, @turn_id
     )
   `);
+  // Bounded below by the new row's own time, so it reads only the few rows at
+  // or after it (a tie), not the turn's history.
+  const newestTurnRowStmt = db.prepare<{ session_id: string; turn_id: string; ts: number }>(`
+    SELECT MAX(ts) AS ts FROM chat_messages
+     WHERE session_id = @session_id AND turn_id = @turn_id AND ts >= @ts
+  `);
   const bumpContentRevisionStmt = db.prepare(`
     UPDATE chat_sessions
        SET content_revision = content_revision + 1
@@ -2707,6 +2715,21 @@ export const createChatStore = (
     };
     db.transaction(() => {
       input.assert_active?.();
+      // A turn's rows list in the order the turn wrote them, whoever calls.
+      // The list is ORDER BY ts, message_id, and a turn can write several rows
+      // in one millisecond: on that tie the answer's bare id sorted before
+      // `tool:<id>:result`. So a row that would not land after its turn's
+      // newest row is written 1 ms after it. Only the turn's own rows count;
+      // every other row keeps the time it was given.
+      if (input.turn_id) {
+        const newest = newestTurnRowStmt.get({
+          session_id: input.session_id, turn_id: input.turn_id, ts,
+        }) as { ts: number | null };
+        if (newest.ts !== null) {
+          ts = newest.ts + 1;
+          row.ts = ts;
+        }
+      }
       if (input.assert_active) {
         const last = db.prepare('SELECT MAX(ts) AS ts FROM chat_messages WHERE session_id = ?').get(input.session_id) as { ts: number | null };
         ts = Math.max(ts, (last.ts ?? -1) + 1);

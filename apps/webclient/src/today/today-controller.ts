@@ -18,10 +18,10 @@
  *  surface owns the document — the Data route restores focus across its whole
  *  tab strip, a standalone route has only this view to worry about.
  */
-import type { WorkEntity } from '@recued/contracts';
+import type { SituationDismissal, WorkEntity, YoursCommand, YoursCommandResult } from '@recued/contracts';
 import { timedDueMs } from '@recued/contracts';
 import {
-  loadToday, replaceTodayTask, writableTodayTask,
+  loadToday, replaceTodayTask, situationRefHref, writableTodayTask,
   type TodaySnapshot, type TodayTaskEdit,
 } from '../data/today-view.js';
 import type { BootstrapDataRouteOptions } from '../data/bootstrap-data-route.js';
@@ -35,9 +35,9 @@ import type { BootstrapDataRouteOptions } from '../data/bootstrap-data-route.js'
  *  actually passes — the mismatch would surface as a runtime shape error at
  *  the one moment a task write lands. */
 export type TodayCallers = Pick<BootstrapDataRouteOptions,
-  | 'workEntityListCaller' | 'collectionListCaller' | 'collectionListInstancesCaller'
+  | 'spheres' | 'proactiveTodayCaller' | 'workEntityListCaller' | 'collectionListCaller' | 'collectionListInstancesCaller'
   | 'workEntitySourceListCaller' | 'workEntityGetCaller' | 'taskMarkDoneCaller'
-  | 'workEntityUpsertCaller'>
+  | 'workEntityUpsertCaller' | 'commitmentCloseCaller'>
   & {
     /** D-267 — the shell's shared Create opener, the same modal the chat
      *  composer chip and the drawer seat open. Wired → Today's zero-state
@@ -50,6 +50,12 @@ export type TodayCallers = Pick<BootstrapDataRouteOptions,
      *  effect. Nothing to drift: a nullary void opener has no signature to
      *  keep in step. */
     openCreateOverlay?: () => void;
+    /** §15.4 — `yours.change` for the coded answers on a cluster item and their
+     *  Undo. Absent (an older server) → no answer buttons. */
+    situationChangeCaller?: (input: Extract<YoursCommand, { action: 'situation.dismiss' | 'situation.restore' }>) => Promise<YoursCommandResult>;
+    /** D-325 §8 — the owner opened an item Today showed. Fire and forget: the link
+     *  navigates at once, so this must never hold the route-switch guard. */
+    situationOpenedCaller?: (input: Extract<YoursCommand, { action: 'navigation.open' }>) => void;
   };
 
 /** unix-ms → the `YYYY-MM-DDTHH:mm` a datetime-local input shows, in the
@@ -94,6 +100,14 @@ export interface TodayController {
   refreshing: () => boolean;
   edit: () => TodayTaskEdit | null;
   notice: () => string | null;
+  error: () => string | null;
+  /** The key the notice's Undo restores, after a dismissal. */
+  undoDismissal: () => string | null;
+  /** Answers a cluster item; resolves to its record's address for "That's wrong". */
+  dismissSituation: (clusterId: string, index: number, code: SituationDismissal) => Promise<string | null>;
+  restoreSituation: (key: string) => Promise<void>;
+  recordOpen: (clusterId: string, index: number) => void;
+  closeCommitment: (key: string, outcome: 'fulfill' | 'cancel') => Promise<void>;
   /** True while an editor is mid-write — the shell blocks navigation on it. */
   busy: () => boolean;
   /** One read. `stillCurrent` is the shell's generation guard. */
@@ -116,6 +130,9 @@ export const createTodayController = (host: TodayControllerHost): TodayControlle
   let liveRefreshQueued = false;
   let edit: TodayTaskEdit | null = null;
   let notice: string | null = null;
+  let error: string | null = null;
+  let closingCommitment = false;
+  let undoDismissal: string | null = null;
   let sequence = 0;
 
   const dueSelector = `[${host.actionAttr}="today-task-due"]`;
@@ -222,7 +239,7 @@ export const createTodayController = (host: TodayControllerHost): TodayControlle
       const carryFocus = host.ownsFocus();
       if (snapshot) snapshot = replaceTodayTask(snapshot, done);
       edit = null;
-      notice = `${current.action === 'complete' ? 'Completed' : 'Rescheduled'} “${current.title}”.`;
+      notice = `${current.action === 'complete' ? 'Completed' : 'Rescheduled'} “${current.title}”.`; undoDismissal = null;
       // Retire any older read before it can restore the pre-write row. Do not
       // hold a successful task change hostage to an unrelated calendar read.
       host.refreshActive();
@@ -242,7 +259,82 @@ export const createTodayController = (host: TodayControllerHost): TodayControlle
     refreshing: () => refreshing,
     edit: () => edit,
     notice: () => notice,
-    busy: () => edit?.busy === true,
+    error: () => error,
+    undoDismissal: () => undoDismissal,
+    dismissSituation: async (clusterId, index, code) => {
+      const change = host.callers.situationChangeCaller;
+      const item = snapshot?.items.find(row => row.cluster?.id === clusterId)?.cluster?.items[index];
+      if (!change || !item || item.basis === 'declared' || closingCommitment || edit?.busy || host.isDisposed() || !host.isActive()) return null;
+      const mine = ++sequence;
+      closingCommitment = true; error = null; notice = null; undoDismissal = null; host.render();
+      try {
+        const result = await change({ action: 'situation.dismiss', ref: item.ref, kind: item.kind, code, label: item.what.value ?? 'This item' });
+        if (host.isDisposed() || mine !== sequence) return null;
+        notice = result.message; undoDismissal = result.id ?? null;
+        host.refreshActive();
+        return code === 'wrong' ? situationRefHref(item.ref) : null;
+      } catch (cause) {
+        if (!host.isDisposed() && mine === sequence) error = host.errMessage(cause);
+        return null;
+      } finally {
+        closingCommitment = false;
+        if (!host.isDisposed() && mine === sequence) {
+          const carryFocus = host.ownsFocus(); host.render();
+          if (carryFocus) host.focusTask(error ? '[data-today-task-error]' : '[data-today-task-notice]');
+        }
+      }
+    },
+    /** Opening a bill or a delivery Today showed counts, for the learner, as acting on its
+     *  kind; "Not this one" and "Never this kind" count as setting it aside (Option A). */
+    recordOpen: (clusterId: string, index: number) => {
+      const item = snapshot?.items.find(row => row.cluster?.id === clusterId)?.cluster?.items[index];
+      if (item?.ref.collection === 'mail_fact' && !host.isDisposed()) host.callers.situationOpenedCaller?.({ action: 'navigation.open', ref: item.ref, from: 'today' });
+    },
+    restoreSituation: async (key) => {
+      const change = host.callers.situationChangeCaller;
+      if (!change || closingCommitment || host.isDisposed() || !host.isActive()) return;
+      const mine = ++sequence;
+      closingCommitment = true; error = null; host.render();
+      try {
+        const result = await change({ action: 'situation.restore', key });
+        if (host.isDisposed() || mine !== sequence) return;
+        notice = result.message; undoDismissal = null;
+        host.refreshActive();
+      } catch (cause) {
+        if (!host.isDisposed() && mine === sequence) error = host.errMessage(cause);
+      } finally {
+        closingCommitment = false;
+        if (!host.isDisposed() && mine === sequence) host.render();
+      }
+    },
+    closeCommitment: async (key, outcome) => {
+      const item = snapshot?.items.find(row => row.key === key);
+      const close = host.callers.commitmentCloseCaller;
+      if (!item?.commitmentId || item.unreachable || !snapshot?.sources.some(source => source.key === item.sourceKey && source.writeCapable) || !close || closingCommitment || edit?.busy
+        || host.isDisposed() || !host.isActive()) return;
+      const mine = ++sequence;
+      closingCommitment = true; error = null; notice = null; undoDismissal = null; host.render();
+      try {
+        const { entity } = await close({ id: item.commitmentId, outcome });
+        if (host.isDisposed() || mine !== sequence) return;
+        if (entity._kind !== 'commitment' || entity.id !== item.commitmentId
+          || entity.lifecycle_state !== (outcome === 'fulfill' ? 'fulfilled' : 'cancelled')) {
+          throw new Error('The server did not confirm the close. Refresh Today to check it.');
+        }
+        if (snapshot) snapshot = { ...snapshot, items: snapshot.items.filter(row => row.key !== key) };
+        notice = `${outcome === 'fulfill' ? 'Done' : 'Cancelled'} “${item.title}”.`;
+        host.refreshActive();
+      } catch (cause) {
+        if (!host.isDisposed() && mine === sequence) error = host.errMessage(cause);
+      } finally {
+        closingCommitment = false;
+        if (!host.isDisposed() && mine === sequence) {
+          const carryFocus = host.ownsFocus(); host.render();
+          if (carryFocus) host.focusTask(error ? '[data-today-task-error]' : '[data-today-task-notice]');
+        }
+      }
+    },
+    busy: () => edit?.busy === true || closingCommitment,
     load,
     queueLiveRefresh: () => { liveRefreshQueued = true; },
     takeQueuedLiveRefresh: () => {
@@ -251,7 +343,7 @@ export const createTodayController = (host: TodayControllerHost): TodayControlle
       return true;
     },
     openEditor: (taskKey, action) => {
-      if (edit?.busy || !host.isActive()) return;
+      if (edit?.busy || closingCommitment || !host.isActive()) return;
       if (edit) { host.focusTask(`${dueSelector}, [data-today-task-error]`); return; }
       const item = writableTodayTask(snapshot, taskKey);
       if (!item?.taskId || !host.callers.workEntityGetCaller
@@ -259,7 +351,7 @@ export const createTodayController = (host: TodayControllerHost): TodayControlle
       if (action === 'complete'
         ? !host.callers.taskMarkDoneCaller : !host.callers.workEntityUpsertCaller) return;
       sequence += 1;
-      notice = null;
+      notice = null; undoDismissal = null;
       edit = { key: item.key, id: item.taskId, title: item.title, action,
         value: toDatetimeLocal(item.when),
         ...(item.allDay === true ? { allDay: true } : {}),
@@ -270,6 +362,6 @@ export const createTodayController = (host: TodayControllerHost): TodayControlle
     setEditValue: (value) => { if (edit && !edit.busy) edit = { ...edit, value }; },
     closeEditor,
     submit,
-    reset: () => { edit = null; notice = null; sequence += 1; },
+    reset: () => { edit = null; notice = null; error = null; undoDismissal = null; sequence += 1; },
   };
 };

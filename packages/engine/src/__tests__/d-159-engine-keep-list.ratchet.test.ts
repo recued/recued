@@ -55,6 +55,11 @@ const KEEP_FILES = [
   // Kitchen's fixture-only deterministic executor reuses the real step core;
   // its owner RPC and lifecycle live in the server, never in the browser.
   'recipe-simulation.ts',
+  // Fixture assertions and comparisons reuse that executor; storage and RPC stay in the host.
+  'recipe-regression.ts',
+  // A reviewed run captured as a saved test: a fixture draft built from the
+  // engine's own result over that executor; storage and RPC stay in the host.
+  'recipe-run-capture.ts',
   'require-recipe.ts',
   // Shared in-process checkpoint derivation, including phase and loop state.
   'resume-from-approval.ts',

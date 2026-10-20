@@ -47,6 +47,14 @@ describe('runPrefetch — a failed prefetch op is named as a sequential one is',
     expect(log!.error!.message).toMatch(/was not found/);
   });
 
+  it('⛔ a step its stopped run cut off says so, not "a network error"', async () => {
+    // What the host's read-recovery and provider-handoff fences throw.
+    const [stopped] = await runPrefetch(throwing(
+      Object.assign(new Error('The run stopped before provider dispatch.'), { code: 'run_killed' }),
+    ));
+    expect(stopped!.error!.code).toBe('run_killed');
+  });
+
   it('an error that names nothing still falls back, and a cancelled slot keeps its marker', async () => {
     const [plain] = await runPrefetch(throwing(new Error('socket hang up')));
     expect(plain!.error!.code).toBe('NETWORK_ERROR');

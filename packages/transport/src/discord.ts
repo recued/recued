@@ -28,6 +28,7 @@ import {
   downloadToFile,
   classifyHttpError,
   retryAfterMs,
+  notSentMark,
   patchJson,
   postJson,
   type HttpPostOutcome,
@@ -145,7 +146,7 @@ const handleDiscordOutcome = (outcome: HttpPostOutcome): TransportSendResult => 
         : outcome.detail;
     const retryAfter = outcome.kind === 'http_error' ? Math.max(outcome.retry_after_ms ?? 0,
       retryAfterMs((outcome.json as { retry_after?: unknown } | undefined)?.retry_after) ?? 0) : 0;
-    return { ok: false, error: { kind, detail: `Discord: ${detail}`,
+    return { ok: false, error: { kind, detail: `Discord: ${detail}`, ...notSentMark(outcome),
       ...(retryAfter > 0 ? { retry_after_ms: retryAfter } : {}),
     } };
   }
@@ -251,7 +252,7 @@ export const createDiscordTransport = (
     return handleDiscordOutcome(outcome);
   };
 
-  const sendPrompt = async (prompt: OutboundPrompt): Promise<TransportSendResult> => {
+  const sendPrompt = async (prompt: OutboundPrompt, vendor_message_id?: string): Promise<TransportSendResult> => {
     // Refuse cap violations up front rather than let Discord reject the whole send
     // with a `50035 Invalid Form Body`. Discord's caps are generous enough that none
     // of these should ever fire for a real approval — which is exactly why they must
@@ -288,7 +289,7 @@ export const createDiscordTransport = (
           },
         };
       }
-      const custom_id = encodeChoice(prompt.correlation_id, opt.id);
+      const custom_id = encodeChoice(opt.correlation_id ?? prompt.correlation_id, opt.id);
       if (custom_id.length > DISCORD_CUSTOM_ID_MAX) {
         return {
           ok: false,
@@ -315,8 +316,9 @@ export const createDiscordTransport = (
         components: buttons.slice(i, i + DISCORD_BUTTONS_PER_ROW),
       });
     }
-    const outcome = await postJson(
-      `${API_BASE}/channels/${encodeURIComponent(prompt.recipient)}/messages`,
+    const outcome = await (vendor_message_id === undefined ? postJson : patchJson)(
+      `${API_BASE}/channels/${encodeURIComponent(prompt.recipient)}/messages`
+        + (vendor_message_id === undefined ? '' : `/${encodeURIComponent(vendor_message_id)}`),
       {
         headers: headers(prompt.token),
         body: JSON.stringify({
@@ -422,6 +424,8 @@ export const createDiscordTransport = (
     parseConversationId: interactionChannelId,
     parseCallbackConversationId: interactionChannelId,
     sendPrompt,
+    max_prompt_options: DISCORD_MAX_BUTTONS,
+    updatePrompt: prompt => sendPrompt(prompt, prompt.vendor_message_id),
     parseInboundChoice,
     closePrompt,
   };

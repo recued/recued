@@ -63,6 +63,15 @@ export const mintAskId = (): string => {
   return `ask-${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 };
 
+/** What an ask id looks like: the shape `mintAskId` mints, and the only one an
+ *  emailed reply carries back in its subject tag (`extractAskId`). A delivery
+ *  group with an email destination refuses any other: D-325's reminders once
+ *  minted bare UUIDs, and no reply to one could ever be read. */
+export const ASK_ID_SOURCE = 'ask-[A-Za-z0-9-]+';
+const ASK_ID = new RegExp(`^${ASK_ID_SOURCE}$`);
+export const isAskId = (value: unknown): value is string =>
+  typeof value === 'string' && value.length <= 200 && ASK_ID.test(value);
+
 // ────────────────────────────────────────────────────────────────
 // inbound-reply matching
 // ────────────────────────────────────────────────────────────────

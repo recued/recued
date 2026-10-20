@@ -89,9 +89,16 @@ export const mailChatRunOutcome = (settled: PreflightRunSettled): { outcome: Mai
   return detail === undefined ? { outcome: 'failed' } : { outcome: 'failed', detail };
 };
 
-/** The follow-up's words. */
-export const mailChatFollowUpText = (outcome: MailChatRunOutcome, tool_name: string, detail?: string | null): string => {
-  const action = `The action that waited for your approval (${tool_name})`;
+/** The follow-up's words, naming the action by its title when there is one.
+ *
+ *  ⛔ NOT BY ITS TOOL NAME. "The action that waited for your approval
+ *  (recued-core/send-composed-mail) is done." reached the owner by email (live,
+ *  2026-10-18): an id the owner never sees anywhere else. Without a title the
+ *  action is named by what it was, an action that waited for approval. */
+export const mailChatFollowUpText = (outcome: MailChatRunOutcome, title?: string, detail?: string | null): string => {
+  const action = title === undefined
+    ? 'The action that waited for your approval'
+    : `The action that waited for your approval, "${title}",`;
   switch (outcome) {
     case 'succeeded':
       return `${action} is done.`;
@@ -146,8 +153,18 @@ export interface MailChatFollowUps {
 export const createMailChatFollowUps = (deps: {
   readonly db: Database.Database;
   readonly chatStore: Pick<ChatStore, 'appendMessage'>;
+  /** The title of the tool a watched run came from (`recipeToolTitle`), read
+   *  when its follow-up is written. Absent, or no title ⇒ none is named. */
+  readonly toolTitle?: (tool_name: string) => string | undefined;
 }): MailChatFollowUps => {
   const { db, chatStore } = deps;
+  const titleOf = (tool_name: string): string | undefined => {
+    try {
+      return deps.toolTitle?.(tool_name);
+    } catch {
+      return undefined;
+    }
+  };
   ensureMailChatFollowUpSchema(db);
   const insertWatch = db.prepare(`INSERT OR IGNORE INTO mail_chat_watched_runs
     (run_id, session_id, turn_id, tool_name, picker_json, watched_at) VALUES (?, ?, ?, ?, ?, ?)`);
@@ -191,7 +208,7 @@ export const createMailChatFollowUps = (deps: {
             id,
             session_id: row.session_id,
             role: 'assistant',
-            content: mailChatFollowUpText(row.outcome, row.tool_name, row.detail),
+            content: mailChatFollowUpText(row.outcome, titleOf(row.tool_name), row.detail),
             target_server: 'self',
             picker_at_send: JSON.parse(row.picker_json) as ChatMessage['picker_at_send'],
             model_used: { provider: 'recued', model_id: 'approval-follow-up' },

@@ -29,13 +29,14 @@ describe('D-145 PA6 — WORK_ENTITY_NAV registry', () => {
     expect(Object.keys(WORK_ENTITY_NAV).length).toBe(WORK_ENTITY_KINDS.length);
   });
 
-  it('yields stable nav order task → commitment → booking → note → project', () => {
+  it('keeps the established nav order and appends the asset kind', () => {
     expect(WORK_ENTITY_NAV_ORDER).toEqual([
       'task',
       'commitment',
       'booking',
       'note',
       'project',
+      'asset',
     ]);
   });
 
@@ -104,6 +105,7 @@ describe('D-145 PA6 — workEntityNavSpecsInOrder', () => {
       'booking',
       'note',
       'project',
+      'asset',
     ]);
   });
 

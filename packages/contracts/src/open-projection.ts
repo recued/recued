@@ -236,8 +236,10 @@ export const OPEN_PROJECTION_MAX_BYTES = 8_192;
  *  handful of small values. */
 export const OPEN_PROJECTION_MAX_NODES = 4_096;
 
-/** Preview list ceiling per side — the ask body enumerates at most this
- *  many pinned/varying lines (the projection itself is never truncated). */
+/** How many value lines per side the ask body shows before it says how many
+ *  more there are. A RENDERING cap, applied by the renderer after it folds the
+ *  empty values onto one line: the preview itself is never cut, and neither is
+ *  the projection. */
 export const OPEN_PREVIEW_MAX_LINES = 12;
 
 /** Rendered pinned-value preview length ceiling (characters). */
@@ -855,9 +857,15 @@ const renderPreviewValue = (value: unknown): string => {
 
 /** Render the pinned/varies summary off a computed projection. A pure
  *  literal arg (no ref roots) renders one pinned line off its skeleton —
- *  the destination IS the literal. Lists are capped at
- *  `OPEN_PREVIEW_MAX_LINES` per side (rendering only — the projection and
- *  its hash are never truncated). */
+ *  the destination IS the literal.
+ *
+ *  ⛔ NOT CUT HERE. This list was capped at 12 lines per side, in path order,
+ *  BEFORE the renderer hid the empty values: a held mail send fixes nine inputs
+ *  at two lines each, so the cut fell after `references`, and the approval
+ *  listed four empty lists as its "fixed inputs" while `to` and the sending
+ *  mailbox, fixed all the same, were never shown (live, 2026-10-19). The owner
+ *  read it as "from/to is never in the picture". The renderer folds the empty
+ *  values first, then caps, and says how many it left out. */
 const buildPreview = (projection: OpenProjection): OpenProjectionPreview => {
   const pinned: Array<{ label: string; value: string }> = [];
   const varying: Array<{ label: string; origin: string }> = [];
@@ -877,6 +885,13 @@ const buildPreview = (projection: OpenProjection): OpenProjectionPreview => {
     }
     for (const root of arg.roots) {
       if (OPEN_PINNED_ORIGINS.has(root.origin)) {
+        // `to ← config.to = […]` under `to = […]` says the same value twice:
+        // a lone root whose value IS the arg's adds a line and nothing to read.
+        if (
+          arg.roots.length === 1
+          && 'derived_pinned' in arg
+          && renderPreviewValue(root.pinned) === renderPreviewValue(arg.derived_pinned)
+        ) continue;
         pinned.push({
           label: `${arg.path} ← ${root.ref}`,
           value: renderPreviewValue(root.pinned),
@@ -886,10 +901,7 @@ const buildPreview = (projection: OpenProjection): OpenProjectionPreview => {
       }
     }
   }
-  return {
-    pinned: pinned.slice(0, OPEN_PREVIEW_MAX_LINES),
-    varying: varying.slice(0, OPEN_PREVIEW_MAX_LINES),
-  };
+  return { pinned, varying };
 };
 
 const isKnownOrigin = (v: unknown): v is OpenOriginClass =>

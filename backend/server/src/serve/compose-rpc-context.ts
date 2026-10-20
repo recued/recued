@@ -1,3 +1,4 @@
+import { createAssetClassStore } from '../situations/asset-classes.js';
 import type { ContactMergeScanMode } from '@recued/contracts';
 import { createTrustStateStore, type TrustStateStore } from '@recued/approvals';
 
@@ -337,6 +338,7 @@ export const composeRpcContext = (
     getRecipeMailTemplates,
     getReceptionPairs,
     getSavedSettings,
+    ...(storage.db ? { getAssetClasses: () => createAssetClassStore(storage.db!) } : {}),
     recipeStore: storage.recipeStore,
     recordsStore: storage.recordsStore,
     webhookConsumerStore: app.webhookConsumerStoreRef,
@@ -407,6 +409,7 @@ export const composeRpcContext = (
     getSavedDataViewStore,
     // D-304 — the uninstall preview counts what goes with the pack's recipes.
     getRecipeOwnedState,
+    ...(storage.db ? { getAssetClasses: () => createAssetClassStore(storage.db!) } : {}),
     recipeStore: storage.recipeStore,
     recordsStore: storage.recordsStore,
     webhookConsumerStore: app.webhookConsumerStoreRef,

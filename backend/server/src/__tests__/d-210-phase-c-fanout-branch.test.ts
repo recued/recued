@@ -201,6 +201,98 @@ describe('D-210 Phase C — raisePreflightNotify', () => {
     });
     expect(notifies[0]!.text).toContain('An AI agent');
   });
+
+  // ⛔ IN THE OWNER'S WORDS (owner, 2026-10-20). A hold the server titled read
+  // "Waiting for you: core.task.create (write)" over "Recipe <id> asked to run
+  // <op> on personal.", and told the owner a task kept in Recued changed data
+  // "outside Recued". It now says what the ask says about the same hold.
+  const titled = (
+    stepInput: Record<string, unknown>,
+    extra: Partial<NonNullable<Checkpoint['preflight_context']>> = {},
+  ): Checkpoint => ({
+    ...checkpoint(),
+    step_state: { approved_operation: { input: stepInput } },
+    preflight_context: {
+      recipe_title: 'Intake to task',
+      // A reception visitor's run: the host stamps who started a door's run.
+      origin_actor: 'anonymous',
+      ...extra,
+    },
+  });
+  const VISITOR_REASON = 'Requests from outside this server can only read without asking you.';
+
+  it("names the hold by its recipe's title, says where it lands, and who started it", async () => {
+    const { notifier, notifies } = recordingNotifier();
+    await raisePreflightNotify(notifier, {
+      checkpoint: titled({ title: 'Call back about the boiler' }),
+      context: {
+        recipe_id: 'recued-core/reception-intake-materialize',
+        gated_step_id: 'approved_operation',
+        tool_slug: 'task-create',
+        risk_tier: 'write',
+        connection_name: 'personal',
+        reason: VISITOR_REASON,
+      },
+    });
+
+    const body = notifies[0]!;
+    expect(body.title).toBe('Waiting for you: Intake to task');
+    expect(body.text).toBe(
+      '"Intake to task" is waiting for your approval on personal.\n'
+        + 'Write actions change your data in Recued, so Recued is holding it for you.\n\n'
+        + 'Started by: someone outside this server, through a public door.\n\n'
+        + `Reason: ${VISITOR_REASON}\n\n`
+        + 'Nothing happens until you review it in your inbox.',
+    );
+  });
+
+  it('says in the title when the hold cannot be undone, and never shows the raw tier', async () => {
+    const { notifier, notifies } = recordingNotifier();
+    await raisePreflightNotify(notifier, {
+      checkpoint: titled({ id: 'task-1' }),
+      context: {
+        recipe_id: 'recued-core/reception-intake-materialize',
+        gated_step_id: 'approved_operation',
+        tool_slug: 'task-delete',
+        risk_tier: 'destructive',
+      },
+    });
+
+    const body = notifies[0]!;
+    expect(body.title).toBe('Waiting for you: Intake to task — cannot be undone');
+    expect(body.text).toContain(
+      'Destructive actions permanently remove data and cannot be undone, so Recued is holding it for you.',
+    );
+    expect(`${body.title}\n${body.text}`).not.toMatch(/\((write|admin|destructive)\)|task-delete|recued-core\//);
+  });
+
+  it("reads a foreach hold's every item before saying it stays in Recued", async () => {
+    // The step's own input looks local; one of the two covered items names an
+    // outside Source. Read from the step alone, the notice would wrongly promise
+    // the write stays in Recued.
+    const { notifier, notifies } = recordingNotifier();
+    await raisePreflightNotify(notifier, {
+      checkpoint: titled({ title: 'local-looking' }, {
+        foreach_cover: {
+          total: 2,
+          items: [
+            { summary: 'one', args_preview: { title: 'one' } },
+            { summary: 'two', args_preview: { title: 'two', source_id: 'hubspot.crm.task' } },
+          ],
+        },
+      }),
+      context: {
+        recipe_id: 'recued-core/reception-intake-materialize',
+        gated_step_id: 'approved_operation',
+        tool_slug: 'task-create',
+        risk_tier: 'write',
+      },
+    });
+
+    expect(notifies[0]!.text).toContain(
+      'Write actions change data outside Recued, so Recued is holding it for you.',
+    );
+  });
 });
 
 // ══════════════════════════════════════════════════════════════════

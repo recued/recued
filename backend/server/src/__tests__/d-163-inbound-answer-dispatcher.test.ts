@@ -29,9 +29,10 @@ import { listMessengerVendors } from '@recued/contracts';
 import type {
   NotificationBlock,
   RemoteChannel,
+  SubmitAnswerOutcome,
 } from '@recued/notification';
 
-import { composeInboundAnswerDispatcher } from '../composition/bin/wire-inbound-answer-dispatcher.js';
+import { composeInboundAnswerDispatcher, REMINDER_ALREADY_CLOSED } from '../composition/bin/wire-inbound-answer-dispatcher.js';
 import type {
   SlackInboundEvent,
 } from '../connections/providers/slack-provider.js';
@@ -176,11 +177,80 @@ const stubTelegramChannel = (): RemoteChannel & {
   };
 
 const stubBlock = (
-  submitAnswerImpl: NotificationBlock['submitAnswer'] = async () => {},
+  submitAnswerImpl: NotificationBlock['submitAnswer'] = async () => 'answered',
 ): NotificationBlock => ({
   submitAnswer: vi.fn(submitAnswerImpl),
+  restoreAskDeliveries: async () => {},
   // Everything else the block exposes is irrelevant to the dispatcher.
 }) as unknown as NotificationBlock;
+
+describe('D-325 household reminder ingress', () => {
+  it('routes only managed reminder replies and keeps group chatter out of owner consumers', async () => {
+    const block = stubBlock();
+    block.getAsk = vi.fn(async (id: string) => id === 'managed' ? { delivery_group_id: 'group' } : null) as unknown as NotificationBlock['getAsk'];
+    const preapprovalReview = vi.fn(async () => true); const messengerTurnIngest = vi.fn(async () => true);
+    const { messengerDispatchers: { telegram: dispatch } } = composeInboundAnswerDispatcher({ block,
+      messengerChannels: { telegram: stubTelegramChannel() }, householdRemindersOnly: () => true,
+      connectionEnrollment: () => 200, preapprovalReview, messengerTurnIngest,
+    });
+    await dispatch(telegramUpdate(telegramMessageUpdatePayload()));
+    await dispatch(telegramUpdate(telegramCallbackQueryPayload('private-approval', 'approve')));
+    expect(block.submitAnswer).not.toHaveBeenCalled();
+    await dispatch(telegramUpdate(telegramCallbackQueryPayload('managed', 'done')));
+    expect(block.submitAnswer).toHaveBeenCalledExactlyOnceWith({ ask_id: 'managed', option: 'done', via: 'telegram' });
+    expect(preapprovalReview).not.toHaveBeenCalled(); expect(messengerTurnIngest).not.toHaveBeenCalled();
+  });
+  it('keeps storage failure retryable before acknowledging a household callback', async () => {
+    const block = stubBlock(async () => { throw new Error('Storage unavailable'); });
+    block.getAsk = (async () => ({ delivery_group_id: 'group' })) as unknown as NotificationBlock['getAsk'];
+    const telegramAck = vi.fn(async () => {});
+    const { messengerDispatchers: { telegram: dispatch } } = composeInboundAnswerDispatcher({ block, telegramAck,
+      messengerChannels: { telegram: stubTelegramChannel() }, householdRemindersOnly: () => true, connectionEnrollment: () => 200 });
+    await expect(dispatch(telegramUpdate(telegramCallbackQueryPayload('managed', 'done')))).rejects.toThrow('Storage unavailable');
+    expect(telegramAck).not.toHaveBeenCalled();
+  });
+});
+
+describe('D-325 §5.1 — a press on a reminder that already closed says so', () => {
+  const blockSaying = (outcome: SubmitAnswerOutcome, reminder = true): NotificationBlock => {
+    const block = stubBlock(async () => outcome);
+    block.getAsk = vi.fn(async () => (reminder ? { delivery_group_id: 'group' } : {})) as unknown as NotificationBlock['getAsk'];
+    return block;
+  };
+
+  it('tells the Telegram presser in the ack, only when a reminder had closed', async () => {
+    for (const [outcome, reminder, notice] of [
+      ['closed', true, [REMINDER_ALREADY_CLOSED]], ['answered', true, []], ['ignored', true, []], ['closed', false, []],
+    ] as const) {
+      const telegramAck = vi.fn(async () => {});
+      const { messengerDispatchers: { telegram: dispatch } } = composeInboundAnswerDispatcher({
+        block: blockSaying(outcome, reminder), messengerChannels: { telegram: stubTelegramChannel() }, telegramAck });
+      const payload = telegramCallbackQueryPayload('ask-1', 'done');
+      await dispatch(telegramUpdate(payload));
+      // No notice is two arguments, never a trailing `undefined`.
+      expect(telegramAck, `${outcome} ${reminder}`).toHaveBeenCalledExactlyOnceWith(payload, 'telegram', ...notice);
+    }
+  });
+
+  it('tells a household member too', async () => {
+    const telegramAck = vi.fn(async () => {});
+    const { messengerDispatchers: { telegram: dispatch } } = composeInboundAnswerDispatcher({ block: blockSaying('closed'), telegramAck,
+      messengerChannels: { telegram: stubTelegramChannel() }, householdRemindersOnly: () => true, connectionEnrollment: () => 200 });
+    const payload = telegramCallbackQueryPayload('managed', 'done');
+    await dispatch(telegramUpdate(payload));
+    expect(telegramAck).toHaveBeenCalledExactlyOnceWith(payload, 'telegram', REMINDER_ALREADY_CLOSED);
+  });
+
+  it('replies to the Slack presser with the notice, and passes nothing to say after an answer', async () => {
+    const slackPressReply = vi.fn(async () => {});
+    for (const outcome of ['closed', 'answered'] as const) {
+      const { messengerDispatchers: { slack: dispatch } } = composeInboundAnswerDispatcher({
+        block: blockSaying(outcome), messengerChannels: { slack: stubSlackChannel() }, slackPressReply });
+      await dispatch(slackEvent(slackBlockActionsPayload('ask-1', 'done')));
+    }
+    expect(slackPressReply.mock.calls.map(call => call.slice(1))).toEqual([['slack', REMINDER_ALREADY_CLOSED], ['slack']]);
+  });
+});
 
 describe('D-163 — composeInboundAnswerDispatcher Slack routing', () => {
   it('routes a recognized block_actions payload through block.submitAnswer', async () => {
@@ -582,6 +652,7 @@ describe('D-163 polish — composeInboundAnswerDispatcher telegramAck integratio
     const order: string[] = [];
     const block = stubBlock(async () => {
       order.push('submitAnswer');
+      return 'answered';
     });
     const telegramAck = vi.fn(async () => {
       order.push('telegramAck');

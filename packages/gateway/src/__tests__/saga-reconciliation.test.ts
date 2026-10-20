@@ -503,7 +503,7 @@ describe('buildSagaAsk', () => {
     expect(ask.options).toEqual([SAGA_ASK_OPTIONS.undo, SAGA_ASK_OPTIONS.keep]);
     // Composed from the write's own catalog slug + operation key — the raw
     // `operation_id` remains the fallback for anything uncomposable.
-    expect(ask.message.text).toContain("Create deal · Hubspot on 'hubspot1'");
+    expect(ask.message.text).toContain("Create deal · HubSpot on 'hubspot1'");
     expect(ask.message.text).toContain('re-run the recipe');
     expect(ask.handler.kind).toBe(SAGA_HANDLER_KIND);
     expect(ask.handler.payload).toEqual({

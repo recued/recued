@@ -37,6 +37,7 @@ import {
   BATCH_ARGS_PREVIEW_MAX_BYTES,
   MAX_DISPATCH_DEPTH,
   canonicalArgHash,
+  captureResourceReview,
   extractScopedDestinationEmails,
   isTempFileRef,
   projectResolvedArgs,
@@ -304,6 +305,8 @@ export interface CommitRunIdentity {
 
 /** Everything `wrapWithCommitGateway` needs. */
 export interface CommitGatewayDeps {
+  resourceReview?: import('@recued/contracts').ResourceReviewHooks;
+  localMutations?: import('@recued/contracts').LocalMutationHooks;
   /** D-261 host-owned invocation frame. The receipt already exists in the
    * atomic member transaction. No public marker/id can resolve this hook. */
   reviewedDispatch?: {
@@ -311,6 +314,7 @@ export interface CommitGatewayDeps {
     assertRunActive?(): void;
     resolve(call: { slug: string; input: Record<string, unknown>; stepMeta: StepMeta | undefined }): Promise<{
       commit_id: string; action_ref: string; idempotency_key: string;
+      resource_review?: import('@recued/contracts').ResourceReview;
       validate(): Promise<void>;
     } | null>;
   };
@@ -347,7 +351,8 @@ export interface CommitGatewayDeps {
    *  slice 3b.2's inert default, and the runtime graceful-degradation
    *  path for any dispatch lacking a typed `ExecutionSource`. */
   identity?: CommitRunIdentity;
-  /** D-181 §7c / D-259 §7.4 — host-owned run cancellation. The
+  /** D-181 §7c / D-259 §7.4 — host-owned run cancellation, including
+   * the engine's effective budget signal (which the host may expose via a getter). The
    * caller-facing run may abandon this dispatch's await while the transport
    * itself is still settling (notably AI, where there is deliberately no
    * mid-flight inference cancel). A result observed after this signal fires is
@@ -445,7 +450,7 @@ export interface CommitGatewayDeps {
    *  contract (op in scope) and a recordUse that re-resolved op-agnostic (no op
    *  id ⇒ INERT) would silently skip the use decrement, under-counting a bounded
    *  contract. */
-  recordDispatchUse?: (slug: string, operationId?: string) => void;
+  recordDispatchUse?: (slug: string, operationId?: string) => unknown;
   /** D-196 direct-MCP customer multiplicity reservation. Runs at the same
    * post-approval proceed point as `recordDispatchUse`, before any pending row
    * or effect. A denial throws and prevents dispatch. The request-local MCP
@@ -941,10 +946,21 @@ export const wrapWithCommitGateway = (
         /* cannot compute action identity → stamp nothing (see above) */
       }
     }
+    const reviewInput = () => resolvedArgsForScoped
+      ?? (deps.resourceReview ? deps.resolveArgsForHash?.(slug, authorityInput, { surfaceDispatch }) : undefined) ?? input;
+    const retainedReview = reviewed?.resource_review ?? stepMeta?.resource_review;
+    let resourceReview = !surfaceDispatch && retainedReview
+      ? captureResourceReview(deps.resourceReview, slug, reviewInput(),
+        retainedReview, stepMeta?.preflight_admitted === true) : undefined;
     // The envelope-identity fields every hold raise attaches (N.10) — the
     // host registers batch members off the caught signal's hashes/preview.
     const raiseContext = {
       slug,
+      get resource_review() {
+        if (!surfaceDispatch && !resourceReview) resourceReview = captureResourceReview(
+          deps.resourceReview, slug, reviewInput(), undefined, stepMeta?.preflight_admitted === true);
+        return resourceReview;
+      },
       ...(argHashes !== undefined
         ? {
             arg_shape_hash: argHashes.arg_shape_hash,
@@ -1113,6 +1129,9 @@ export const wrapWithCommitGateway = (
           throw new PreflightDeniedError(slug, decision.code, decision.detail);
         }
         if (decision.verdict === 'ask' && !reviewed) {
+          if (!surfaceDispatch && stepMeta?.preflight_admitted === true && !resourceReview) {
+            resourceReview = captureResourceReview(deps.resourceReview, slug, reviewInput(), undefined, true);
+          }
           // D-165 follow-on (op-identity binding) — honor the resume grant
           // ONLY when the approved identity names THIS slug. Position alone
           // (the gated step id, via `preflight_admitted`) is insufficient: a
@@ -1485,9 +1504,9 @@ export const wrapWithCommitGateway = (
         // active-check agrees (else a bounded op-scoped contract under-counts).
         surfaceDispatch ? stepMeta?.surface_operation_key : undefined,
       );
-      return inner(slug, input, stepOutput, stepOptions, forwardedStepMeta, {
-        cached: false,
-      });
+      return deps.resourceReview
+        ? deps.resourceReview.run(resourceReview, () => inner(slug, input, stepOutput, stepOptions, forwardedStepMeta, { cached: false }))
+        : inner(slug, input, stepOutput, stepOptions, forwardedStepMeta, { cached: false });
     }
 
     // #22 loop backstop — refuse a dispatch whose depth is past the
@@ -1660,7 +1679,7 @@ export const wrapWithCommitGateway = (
       surfaceDispatch ? stepMeta?.surface_operation_key : undefined,
       stepMeta?.step_id,
     );
-    deps.recordDispatchUse?.(
+    const dispatchReservation = deps.recordDispatchUse?.(
       slug,
       // slice 2a — mirror the admission probe's op id so the overlay
       // active-check agrees (else a bounded op-scoped contract under-counts).
@@ -1686,15 +1705,28 @@ export const wrapWithCommitGateway = (
     try {
       await reviewed?.validate();
       deps.reviewedDispatch?.assertRunActive?.();
-      const result = await inner(
-        slug,
-        input,
-        stepOutput,
-        // A reviewed commit never reads a cache; a step's `pages` still applies.
-        reviewed ? { ...stepOptions, cache: 'fresh' } : stepOptions,
-        forwardedStepMeta,
-        probe,
-      );
+      const dispatch = () => (deps.resourceReview?.run.bind(deps.resourceReview) ?? ((_r, f) => f()))(resourceReview, () => {
+        // Validation and local preparation can yield after the admission fence.
+        // Recheck at the actual dispatch boundary inside every host wrapper.
+        if (deps.runAbortSignal?.aborted) {
+          throw Object.assign(new Error('run killed before provider dispatch'), { code: 'run_killed' });
+        }
+        return inner(
+          slug,
+          input,
+          stepOutput,
+          // A reviewed commit never reads a cache; a step's `pages` still applies.
+          reviewed || resourceReview ? { ...stepOptions, cache: 'fresh' } : stepOptions,
+          forwardedStepMeta,
+          probe,
+        );
+      });
+      const result = await (!reviewed && resourceReview && deps.localMutations
+        ? deps.localMutations.run({ slug, operation: resourceReview.operation, input: authorityInput, review: resourceReview,
+            commit: { ...pending, status: 'pending' }, ...(stepMeta ? { stepMeta } : {}),
+            ...(dispatchReservation !== null && typeof dispatchReservation === 'object'
+              ? { authority_reservation: dispatchReservation } : {}) }, dispatch)
+        : dispatch());
       // The upstream operation may still complete after the owner abandoned
       // the run's await. Its late value is evidence about a cancelled commit,
       // not a value the already-killed run may publish or cache as success.

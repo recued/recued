@@ -60,6 +60,7 @@ import type { WebclientUploadService } from '../../upload/webclient-upload-servi
 import type { ArchiveUploadService } from '../../archive/archive-upload-service.js';
 import type { RecipeStore } from '../../recipe-store.js';
 import type { CollectionRegistry } from '../../collections/registry.js';
+import type { FileStack } from '../../collections/file/compose.js';
 import type { ContactMergeCycleObserver } from '../../contact-merge-cycle-observer.js';
 import type { BlobStore } from '../../storage/index.js';
 import type {
@@ -483,9 +484,9 @@ export interface ComposeHousekeepingSchedulerDeps {
   crmRecordMirror?: CrmRecordMirrorStore;
   recipeStore: RecipeStore;
   collectionRegistry: CollectionRegistry;
-  /** D-318 step 1 — the email chat door's chat mailbox: no producer reads its
-   *  mail. Absent ⇒ none is. */
-  isChatMailbox?: (slug: string) => boolean;
+  /** D-318 step 1 — the email chat door's chat mailbox, used for chat alone:
+   *  no producer reads its mail. Absent ⇒ none is. */
+  isChatOnlyMailbox?: (slug: string) => boolean;
   /** D-318 step 5 — nor the conversation's mail in the owner's other
    *  mailboxes. Absent ⇒ none is. */
   isChatConversationRecord?: (record: CollectionRecord) => boolean;
@@ -541,6 +542,9 @@ export interface ComposeHousekeepingSchedulerDeps {
    *  session/scratch reaper + staged-archive TTL prune. Absent on a db-less
    *  boot ⇒ the task doesn't register. */
   archiveUploadService?: Pick<ArchiveUploadService, 'sweepExpired'>;
+  /** The file stack's watched folders; gates the `watched-folder-walk` task.
+   *  Absent on a db-less boot ⇒ the task doesn't register. */
+  watchedFolders?: Pick<FileStack, 'watchedFolderWalks' | 'walkFolderAgain'>;
   enrichmentCascade?: CascadeEngine;
   externalContextRegistry?: ExternalContextDependencyRegistry;
   /** D-184 — the shared per-(connection, vendor) rate gate, threaded onto the
@@ -1048,19 +1052,31 @@ export const composeHousekeepingScheduler = async (
     );
   }
 
+  // Each watched folder walked again on the idle cadence, for the changes its
+  // watch missed without a word (`watched-folder-walk.ts`).
+  if (deps.watchedFolders) {
+    const { buildWatchedFolderWalkTask } = await import(
+      '../../housekeeping/tasks/watched-folder-walk.js'
+    );
+    registerHousekeepingTask(
+      buildWatchedFolderWalkTask({ folders: deps.watchedFolders }),
+    );
+  }
+
   // Source walkers per kind. Mail-thread + contact + calendar come
   // from the shared registry; mail-body uses a body-hashing walker so
   // summary-style producers (`summarise_thread`, etc.) invalidate on
   // body changes too.
   const sourceWalkers = createSourceWalkerRegistry({
     collections: deps.collectionRegistry,
+    ...(deps.workEntityStore ? { workEntityStore: deps.workEntityStore } : {}),
     ...(deps.contactStore ? { contactStore: deps.contactStore } : {}),
-    ...(deps.isChatMailbox ? { isChatMailbox: deps.isChatMailbox } : {}),
+    ...(deps.isChatOnlyMailbox ? { isChatOnlyMailbox: deps.isChatOnlyMailbox } : {}),
     ...(deps.isChatConversationRecord ? { isChatConversationRecord: deps.isChatConversationRecord } : {}),
   });
   const summaryWalker = createMailSourceWalker(deps.collectionRegistry, {
     hashRecord: hashMailRecordWithBody,
-    ...(deps.isChatMailbox ? { isChatMailbox: deps.isChatMailbox } : {}),
+    ...(deps.isChatOnlyMailbox ? { isChatOnlyMailbox: deps.isChatOnlyMailbox } : {}),
     ...(deps.isChatConversationRecord ? { isChatConversationRecord: deps.isChatConversationRecord } : {}),
   });
   const fileWalker = createFileSourceWalker(deps.collectionRegistry);

@@ -33,7 +33,7 @@ import type {
   WorkEntityEdge,
   WorkEntityEdgeWrite,
   WorkEntityRelationshipTarget,
-  WorkEntitySourceDeclarableKind,
+  WorkEntityKind,
 } from '@recued/contracts';
 
 export const WORK_ENTITY_EDGE_TABLE = 'work_entity_edge';
@@ -75,7 +75,7 @@ export const ensureWorkEntityEdgeSchema = (db: Database.Database): void => {
 export interface WorkEntityEdgeReconcileInput {
   source_id: string;
   source_record_id: string;
-  owner_kind: WorkEntitySourceDeclarableKind;
+  owner_kind: WorkEntityKind;
   owner_local_id: string;
   desired: readonly WorkEntityEdgeWrite[];
 }
@@ -93,7 +93,7 @@ export interface WorkEntityEdgeStore {
   /** Live edges for one owner row (display order: local_field, then
    *  scoped key — deterministic for the read surface). */
   listByOwner(
-    owner_kind: WorkEntitySourceDeclarableKind,
+    owner_kind: WorkEntityKind,
     owner_local_id: string,
   ): WorkEntityEdge[];
   /** Live RESOLVED edges pointing at one local target — the reverse
@@ -125,6 +125,7 @@ export interface WorkEntityEdgeStore {
    *  derived state, rebuilt by the next sync of a re-registered
    *  Source). Returns the count deleted. */
   deleteForSource(source_id: string): number;
+  deleteForTarget(target_kind: WorkEntityRelationshipTarget, target_local_id: string): number;
 }
 
 interface EdgeDbRow {
@@ -147,7 +148,7 @@ interface EdgeDbRow {
 const rowToEdge = (row: EdgeDbRow): WorkEntityEdge => ({
   source_id: row.source_id,
   source_record_id: row.source_record_id,
-  owner_kind: row.owner_kind as WorkEntitySourceDeclarableKind,
+  owner_kind: row.owner_kind as WorkEntityKind,
   owner_local_id: row.owner_local_id,
   local_field: row.local_field,
   target_kind: row.target_kind as WorkEntityRelationshipTarget,
@@ -282,6 +283,9 @@ export const createWorkEntityEdgeStore = (
     },
     deleteForSource(source_id) {
       return deleteForSourceStmt.run(source_id).changes;
+    },
+    deleteForTarget(target_kind, target_local_id) {
+      return db.prepare(`DELETE FROM ${WORK_ENTITY_EDGE_TABLE} WHERE target_kind=? AND target_local_id=?`).run(target_kind, target_local_id).changes;
     },
   };
 };

@@ -9,7 +9,8 @@
  *  The owner writes from their own mailbox to the chat mailbox, and Recued
  *  answers from it in the thread (D-318 ruling 1), so it must be able to send.
  *  Naming it takes its mail out of the owner's mail at once: no mail facts, no
- *  contacts, no mail recipe (§4.10). Clearing it (`null`) puts it back.
+ *  contacts, no mail recipe (§4.10) — unless it is one of the owner's own too
+ *  (one mailbox, below). Clearing it (`null`) puts it back.
  *
  *  Owner-only: `collection.mail.chat_door.` is an MCP reserved prefix. Each
  *  change is audited (`mail_chat_door_set`).
@@ -31,13 +32,21 @@
  *  never the code. And `.check` no longer fails for none of the owner's
  *  mailboxes named: such a door is for added addresses.
  *
- *  Spec: D-318 §4.1, §4.12, §8 steps 1, 7 and 8. */
+ *  One mailbox (§8.18) — the chat mailbox may be named among the owner's own:
+ *  they write to it from itself. Its mail then stays theirs, the conversation's
+ *  emails aside, and its `ask:` filter cannot be switched off (the store turns
+ *  it back on; an explicit `null` is refused). `.check` asks it for its Sent
+ *  record as it asks any of the owner's mailboxes. The same account connected
+ *  twice, under another name, is still refused.
+ *
+ *  Spec: D-318 §4.1, §4.12, §8 steps 1, 7 and 8, §8.18. */
 
 import { randomUUID } from 'node:crypto';
 
 import {
   isMailChatAskPrefix,
   isMailChatEnrollableAddress,
+  isMailChatOneMailbox,
   isMailChatStaleAfterMinutes,
   MAIL_CHAT_ENROLLED_SENDERS_MAX,
   MAIL_CHAT_OWNER_MAILBOXES_MAX,
@@ -188,13 +197,17 @@ export const handleMailChatDoorSet = async (
     }
     chatAddress = typeof row.account_email === 'string' ? row.account_email : null;
   }
-  // A mailbox is the chat mailbox or one of the owner's, never both.
+  // One mailbox (§8.18): the chat mailbox may be one of the owner's own too, and
+  // then its `ask:` filter stays on — every email they write to themselves
+  // would otherwise start a conversation.
   const chatAfter = setsMailbox ? (chat_mailbox as string | null) : deps.store.get().chat_mailbox;
   const ownersAfter = setsOwners ? (owner_mailboxes as string[]) : deps.store.get().owner_mailboxes;
-  if (chatAfter !== null && ownersAfter.includes(chatAfter)) {
+  if (setsPrefix && ask_prefix === null
+    && isMailChatOneMailbox({ chat_mailbox: chatAfter, owner_mailboxes: ownersAfter })) {
     throw new RpcError(
       'failed_precondition',
-      `"${chatAfter}" cannot be both the chat mailbox and one of your own mailboxes.`,
+      `"${chatAfter}" is the chat mailbox and one of your own, so a new conversation must start with the prefix: `
+        + 'without it, every email you write to yourself would start one.',
       409,
     );
   }
@@ -237,9 +250,13 @@ export const handleMailChatDoorSet = async (
     }
   }
   let settings = deps.store.get();
+  const prefixBefore = settings.ask_prefix;
+  // The owner's mailboxes before the chat mailbox, and the prefix last: a step
+  // between them that read as one mailbox would turn the filter on (the store),
+  // whatever the call ends with.
+  if (setsOwners) settings = deps.store.setOwnerMailboxes(owner_mailboxes as string[]);
   if (setsMailbox) settings = deps.store.setChatMailbox(chat_mailbox as string | null, chatAddress);
   if (setsPrefix) settings = deps.store.setAskPrefix(ask_prefix as string | null);
-  if (setsOwners) settings = deps.store.setOwnerMailboxes(owner_mailboxes as string[]);
   if (setsStale) settings = deps.store.setStaleAfterMinutes(stale_after_minutes as number);
   if (resumes) settings = deps.store.resume();
   if (unenrolls) settings = deps.store.unenrollSender(bare(patch.unenroll as string));
@@ -254,7 +271,8 @@ export const handleMailChatDoorSet = async (
         // What this call changed, as it now stands.
         detail: JSON.stringify({
           ...(setsMailbox ? { chat_mailbox: settings.chat_mailbox } : {}),
-          ...(setsPrefix ? { ask_prefix: settings.ask_prefix } : {}),
+          // Named, or turned back on by one mailbox.
+          ...(setsPrefix || settings.ask_prefix !== prefixBefore ? { ask_prefix: settings.ask_prefix } : {}),
           ...(setsOwners ? { owner_mailboxes: settings.owner_mailboxes } : {}),
           ...(setsStale ? { stale_after_minutes: settings.stale_after_minutes } : {}),
           ...(resumes ? { resumed: true } : {}),
@@ -342,20 +360,21 @@ export const handleMailChatDoorCheck = async (
   // write to it until then.
   const chatAddress = chatSlug ? bare(connected(chatSlug)?.account_email) : '';
   for (const slug of ownerSlugs) {
-    if (slug === chatSlug) {
-      checks.push({ kind: 'owner_mailbox', slug, status: 'fail', text: 'It is the chat mailbox: pick the one you write from.' });
-      continue;
-    }
+    // One mailbox (§8.18): the chat mailbox named as the owner's too is asked
+    // for its Sent record like any of theirs — it is what proves an email they
+    // wrote to themselves.
+    const itself = slug === chatSlug;
     const problem = reachable('owner_mailbox', slug);
     if (problem !== null) {
       checks.push(problem);
       continue;
     }
     const address = bare(connected(slug)?.account_email);
-    if (chatAddress !== '' && address === chatAddress) {
+    if (!itself && chatAddress !== '' && address === chatAddress) {
       checks.push({
         kind: 'owner_mailbox', slug, status: 'fail',
-        text: 'It is the chat mailbox\'s own account, connected twice: pick the one you write from.',
+        text: 'It is the chat mailbox\'s own account, connected twice. To write to yourself, tick the chat mailbox '
+          + 'itself instead.',
       });
       continue;
     }
@@ -376,7 +395,9 @@ export const handleMailChatDoorCheck = async (
     } else {
       checks.push({
         kind: 'owner_mailbox', slug, status: 'pass',
-        text: 'Recued can look in its Sent folder, which is how it knows an email to the chat mailbox is yours.',
+        text: itself
+          ? 'Recued can look in its Sent folder, which is how it knows an email you write to yourself is yours.'
+          : 'Recued can look in its Sent folder, which is how it knows an email to the chat mailbox is yours.',
       });
     }
   }

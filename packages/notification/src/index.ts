@@ -26,13 +26,15 @@
  *  Spec: D-158 § N.1-N.9 / A.1-A.9 / P0.
  */
 
-import { CHANNEL_ROLES, RpcError } from '@recued/contracts';
+import { CHANNEL_ROLES, RpcError, isResourceReview } from '@recued/contracts';
 import { installProtectedAskHost, isProtectedAskKind, requireProtectedAskCreation } from './protected-asks.js';
 export { createProtectedAskController, type ProtectedAskController, type ProtectedAskAuthority } from './protected-asks.js';
 import { ASK_BODY_MAX, ASK_NOTE_MAX } from './types.js';
 import type { PersistedNotifyExtras } from './types.js';
 import { HANDLED_ASK_RETENTION_MS as ASK_LOAD_WINDOW_MS } from './ask-store.js';
 import type { AskStore, NewPendingAsk } from './ask-store.js';
+import { createAskDeliveryController, type AskDeliveryControllerDeps } from './ask-delivery.js';
+import type { AskDestinationResolution, AskDeliveryDestination, AskDeliveryGroup, AskDeliveryInput, AskDeliveryStore, UnmatchedAskReply } from './ask-delivery-store.js';
 import {
   createAskSerializer,
   mintAskId as defaultMintAskId,
@@ -51,7 +53,9 @@ import {
   type BridgeRowView,
   type ChannelReadinessProbe,
   type ChannelToggleView,
+  type ConnectionRosterProbe,
   type NotificationSettingsStore,
+  type PlainConnectionProbe,
   type SetBridgeModeResult,
   type SetChannelResult,
   type SetVerificationPhraseResult,
@@ -78,6 +82,7 @@ import type {
   AnswerAuditRecord,
   AskExtras,
   AskNotePrompt,
+  SubmitAnswerOutcome,
 } from './types.js';
 
 // ── Public surface ───────────────────────────────────────────────
@@ -88,6 +93,13 @@ export {
   type NewPendingAsk,
 } from './ask-store.js';
 export { mintAskId } from './correlation.js';
+export { createAskDeliveryStore } from './ask-delivery-store.js';
+export type {
+  AskDeliveryStore, AskDeliveryRecord, AskDeliveryGroup, AskDeliveryInput,
+  AskDeliveryDestination, AskDeliveryAttempt, AskDeliveryOutcome, AskDeliveryEnvelope,
+  AskDeliveryReceipt, AskWithdrawalJob, AskReplyOrigin, UnmatchedAskReply,
+  AskDestinationResolution,
+} from './ask-delivery-store.js';
 export {
   createHandlerRegistry,
   type HandlerRegistry,
@@ -104,7 +116,9 @@ export {
   type BridgeRowView,
   type ChannelReadinessProbe,
   type ChannelToggleView,
+  type ConnectionRosterProbe,
   type NotificationSettingsDeps,
+  type PlainConnectionProbe,
   type NotificationSettingsStore,
   type NotificationSettingsSurface,
   type SetBridgeModeResult,
@@ -127,6 +141,8 @@ export {
   createBridgeChannel,
   type BridgeChannelDeps,
   type BridgeSink,
+  type BridgeReminderPort,
+  type BridgeChannel,
 } from './channels/bridge.js';
 export {
   routeBridgeAsk,
@@ -143,6 +159,7 @@ export {
 export {
   createEmailChannel,
   extractAskId,
+  emailReplyText,
   parseEmailReply,
   type EmailChannelDeps,
   type EmailReplyInput,
@@ -180,6 +197,7 @@ export type {
   RemoteChannelName,
   AskExtras,
   AskNotePrompt,
+  SubmitAnswerOutcome,
 } from './types.js';
 
 /** What `createNotificationBlock` is wired with. The block is channel-
@@ -190,6 +208,19 @@ export interface NotificationBlockDeps {
   /** The durable pending-ask store (`createAskStore` over a
    *  `Collection<PendingAsk>`). */
   askStore: AskStore;
+  /** D-325 durable reminder attempts and withdrawals. Required when composing
+   * reminder delivery; legacy approval asks retain their existing recovery. */
+  deliveryStore?: AskDeliveryStore;
+  /** Sealing holds reminder I/O and its uncertain-attempt budget. */
+  isVaultUnlocked?: () => boolean;
+  /** Notification quiet hours, including retries after a provider failure. */
+  shouldHoldReminder?: () => boolean;
+  connectionRosterProbe?: ConnectionRosterProbe;
+  /** D-158 amendment 2026-10-19 — Settings says which connection plain notifications and approvals use. */
+  plainConnectionProbe?: PlainConnectionProbe;
+  resolveReminderDestinations?: (settings: NotificationSettings) => Promise<AskDestinationResolution>;
+  /** Secret-free live connection/member checks at the answer boundary. */
+  authorizeReminderOrigin?: AskDeliveryControllerDeps['authorizeOrigin'];
   /** The channel adapters the block fans out to. P0: `[ui]`. */
   channels: readonly Channel[];
   /** The block-owned per-pair notification-settings store (I-7). `ask`
@@ -271,6 +302,8 @@ export interface NotificationBlockDeps {
 
 /** The notification block's public operations. */
 export interface NotificationBlock {
+  /** Host binding after the authenticated bridge WebSocket transport exists. */
+  bindBridgeReminders(port: import('./channels/bridge.js').BridgeReminderPort): void;
   // ── N.2 — the flow-controller surface ──────────────────────────
 
   /** Fire-and-forget. Delivers `message` to the fan-out set; collects
@@ -297,6 +330,31 @@ export interface NotificationBlock {
     extras?: AskExtras,
   ): Promise<{ ask_id: string }>;
 
+  /** One transport message with independently answerable reminder items. The
+   * host persists random ask ids and a stable envelope id before invoking it. */
+  askBundle(input: AskDeliveryInput): Promise<{ ask_ids: string[] }>;
+  /** After cancelling its previous ask, the flow prepares the replacement
+   * without sending, rechecks its canonical occurrence, then releases. */
+  prepareAskBundle(input: AskDeliveryInput): Promise<{ ask_ids: string[] }>;
+  releaseAskBundle(group_id: string): Promise<void>;
+  /** Called before inbound traffic; never sends. Answer/recovery paths also
+   * enforce this ordering themselves. */
+  restoreAskDeliveries(): Promise<void>;
+  /** A bundle reply names an item ("2 done"). The result still goes through
+   * submitAnswer's authenticated-origin and first-answer checks. */
+  parseAskBundleReply(group_id: string, text: string, via: ChannelName): Promise<{ ask_id: string; option: string } | null>;
+  listUnmatchedAskReplies(): Promise<UnmatchedAskReply[]>;
+  /** A reminder reply that came after the reminder closed (`submitAnswer` said
+   * `closed`) by a surface that cannot answer back joins the unmatched replies,
+   * under the reminder's title. Not a reminder: nothing is kept. */
+  recordLateAskReply(ask_id: string, via: ChannelName, text: string): Promise<void>;
+  dismissUnmatchedAskReply(id: string): Promise<void>;
+  getAskDeliveryDestinations(group_id: string): Promise<AskDeliveryDestination[]>;
+  supportsReminderChannel(channel: ChannelName): boolean;
+  /** Host read of durable attempts, for actual-delivery accounting. */
+  getAskDelivery(group_id: string): Promise<AskDeliveryGroup | null>;
+  getReminderDestinations(): Promise<AskDestinationResolution>;
+
   /** Boot-time: wire the function a persisted `handler.kind` re-
    *  dispatches to. Each consumer calls this once at boot (I-4). */
   registerAskHandler(kind: AskHandlerKind, handler: AskHandlerFn): void;
@@ -311,8 +369,9 @@ export interface NotificationBlock {
    *  ask, or one carrying an option the ask never offered, is a no-op.
    *  Resolves once the reply is processed (a handler failure does not
    *  reject — the answer is durably recorded and the boot sweep
-   *  retries dispatch). */
-  submitAnswer(reply: InboundReply): Promise<void>;
+   *  retries dispatch), with what it did: a valid reply to an ask that
+   *  had already closed is `closed`, so the surface can say so. */
+  submitAnswer(reply: InboundReply): Promise<SubmitAnswerOutcome>;
 
   /** D-177 P5a — retire a still-`open` ask WITHOUT an answer and close
    *  its prompt on every delivered channel. The batch-approval JOIN uses
@@ -328,6 +387,16 @@ export interface NotificationBlock {
    *  re-dispatches `answered`-but-unhandled asks. Idempotent. Intended
    *  to run once at server boot, before live inbound traffic. */
   recoverPendingAsks(): Promise<void>;
+  /** Minute recovery for managed reminders, without redrawing legacy asks. */
+  recoverReminderAsks(): Promise<void>;
+  /** One built-in occurrence owner, installed before inbound traffic and boot
+   * recovery. Hooks run outside the per-ask lock, so a stale ask can be cancelled. */
+  registerReminderReconciler(reconciler: {
+    beforeRecovery(): Promise<void>;
+    beforeAnswer(ask_id: string): Promise<void>;
+    /** D-325 P31 — the item is no longer the household's; see the delivery controller. */
+    householdWithheld?(ask: NewPendingAsk): boolean | Promise<boolean>;
+  }): void;
   /** D-210 — drop `handled` asks older than `before` (unix-ms on
    *  `created_at`); returns how many went. The retention half of the
    *  store's long-standing "small + bounded" claim, which until now had no
@@ -474,10 +543,18 @@ export const createNotificationBlock = (
     );
   }
   const serializer = createAskSerializer();
+  const deliveries = deps.deliveryStore ? createAskDeliveryController({ store: deps.deliveryStore,
+    asks: store, channels: allChannels, now, mint, canDeliver: deps.isVaultUnlocked,
+    ...(deps.authorizeReminderOrigin ? { authorizeOrigin: deps.authorizeReminderOrigin } : {}),
+    // Installed later by the occurrence owner (`registerReminderReconciler`).
+    householdWithheld: ask => reminderReconciler?.householdWithheld?.(ask) ?? false,
+    canSend: () => deps.shouldHoldReminder?.() !== true }) : undefined;
   const settings = createNotificationSettings({
     store: deps.settingsStore,
     ...(deps.readinessProbe ? { readinessProbe: deps.readinessProbe } : {}),
     ...(deps.bridgeRosterProbe ? { bridgeRosterProbe: deps.bridgeRosterProbe } : {}),
+    ...(deps.connectionRosterProbe ? { connectionRosterProbe: deps.connectionRosterProbe } : {}),
+    ...(deps.plainConnectionProbe ? { plainConnectionProbe: deps.plainConnectionProbe } : {}),
   });
 
   // ── D-169 P2 Slice 4 — per-bridge bridge fan-out ─────────────────
@@ -665,11 +742,13 @@ export const createNotificationBlock = (
       .filter((channel): channel is Channel => channel !== undefined);
 
   /** Strip host-only ask controls before crossing a channel boundary. */
-  const channelAskExtras = (extras: AskExtras | undefined): AskExtras | undefined => {
-    if (extras?.note_prompt === undefined && extras?.body === undefined) return undefined;
+  const channelAskExtras = (extras: AskExtras | undefined, channel: Channel): AskExtras | undefined => {
+    const review = channel.name === 'ui' ? extras?.resource_review : undefined;
+    if (extras?.note_prompt === undefined && extras?.body === undefined && !review) return undefined;
     return {
-      ...(extras.note_prompt !== undefined ? { note_prompt: extras.note_prompt } : {}),
-      ...(extras.body !== undefined ? { body: extras.body } : {}),
+      ...(extras?.note_prompt !== undefined ? { note_prompt: extras.note_prompt } : {}),
+      ...(extras?.body !== undefined ? { body: extras.body } : {}),
+      ...(review ? { resource_review: review } : {}),
     };
   };
 
@@ -726,7 +805,7 @@ export const createNotificationBlock = (
           ask_id,
           protectedAsk ? message : withAnswerLink(channel, ask_id, message),
           options,
-          channelAskExtras(extras),
+          channelAskExtras(extras, channel),
         );
       } catch {
         // best-effort — the ask stays durably `open`; the boot sweep
@@ -763,6 +842,11 @@ export const createNotificationBlock = (
    *  (including the one the answer came in on) is correct and is what
    *  resolves the card on the user's other devices (I-6). */
   const closeOnAllChannels = async (ask: PendingAsk): Promise<void> => {
+    if (ask.delivery_group_id) {
+      if (!deliveries) throw new Error('Reminder delivery store is unavailable');
+      await deliveries.withdraw(ask);
+      return;
+    }
     for (const channel of channelsForAsk(ask)) {
       try {
         await channel.closeAsk(ask.ask_id);
@@ -773,7 +857,73 @@ export const createNotificationBlock = (
     }
   };
 
+  let reminderReconciler: Parameters<NotificationBlock['registerReminderReconciler']>[0] | undefined;
+  const recoverAnswered = async (which: 'managed' | 'legacy'): Promise<void> => {
+    for (const ask of await store.listByStatus('answered')) {
+      if ((which === 'managed') !== Boolean(ask.delivery_group_id)) continue;
+      await serializer.run(ask.ask_id, async () => {
+        const current = await store.get(ask.ask_id);
+        if (!current || current.status !== 'answered' || !current.answer || isProtectedAskKind(current.handler_kind)) return;
+        await closeOnAllChannels(current);
+        try { await dispatchAnswer({ registry, store, ask: current }); }
+        catch { /* Durable answer remains available for the next recovery. */ }
+      });
+    }
+  };
   const block: NotificationBlock = {
+    registerReminderReconciler(reconciler) {
+      if (reminderReconciler) throw new Error('The reminder reconciler is already installed');
+      reminderReconciler = reconciler;
+    },
+    async recoverReminderAsks() {
+      await reminderReconciler?.beforeRecovery();
+      await recoverAnswered('managed');
+      await reminderReconciler?.beforeRecovery();
+      await deliveries?.recover();
+    },
+    async askBundle(input) {
+      if (!deliveries) throw new Error('Reminder delivery store is unavailable');
+      return deliveries.create(input);
+    },
+    async prepareAskBundle(input) {
+      if (!deliveries) throw new Error('Reminder delivery store is unavailable');
+      return deliveries.create(input, false);
+    },
+    async releaseAskBundle(group_id) {
+      if (!deliveries) throw new Error('Reminder delivery store is unavailable');
+      await deliveries.release(group_id);
+    },
+    async restoreAskDeliveries() { await deliveries?.restore(); },
+    async parseAskBundleReply(group_id, text, via) {
+      return await deliveries?.parseTextReply(group_id, text, via) ?? null;
+    },
+    async listUnmatchedAskReplies() { return await deliveries?.unmatched() ?? []; },
+    async recordLateAskReply(ask_id, via, text) {
+      const ask = await store.get(ask_id);
+      if (!ask?.delivery_group_id || !deliveries) return;
+      await deliveries.recordUnmatched(ask.delivery_group_id, via, `${ask.message.title ?? ask.message.text}: ${text.trim()}`, 'already_closed');
+    },
+    async dismissUnmatchedAskReply(id) { await deps.deliveryStore?.dismissUnmatched(id, now()); },
+    async getAskDeliveryDestinations(group_id) { return (await deps.deliveryStore?.get(group_id))?.destinations ?? []; },
+    bindBridgeReminders(port) {
+      const bridge = bridgeChannel as import('./channels/bridge.js').BridgeChannel | undefined;
+      bridge?.bindReminderPort?.({ ...port, deliver: async envelope => {
+        const current = await settings.get();
+        if (!envelope.destination.connection_name || current.bridges?.[envelope.destination.connection_name]?.notification === false)
+          return { outcome: 'not_delivered', error: 'Notifications are off for this bridge' };
+        return port.deliver(envelope);
+      } });
+    },
+    supportsReminderChannel(channel) { return allChannels.some(item => item.name === channel && (item.name === 'ui' || !!item.deliverAskDelivery)); },
+    async getAskDelivery(group_id) { return await deps.deliveryStore?.get(group_id) ?? null; },
+    async getReminderDestinations() {
+      const current = await settings.get();
+      const base = deps.resolveReminderDestinations ? await deps.resolveReminderDestinations(current)
+        : { destinations: [{ id: 'owner:ui', channel: 'ui' as const }], issues: [] };
+      const bridge = bridgeChannel as import('./channels/bridge.js').BridgeChannel | undefined;
+      const extra = await bridge?.reminderDestinations?.(current) ?? [];
+      return { ...base, destinations: [...base.destinations, ...extra] };
+    },
     /** ⛔⛔⛔ `notify` HAS NO QUIET-HOURS GATE, AND THAT IS LOAD-BEARING BY
      *  OMISSION — DO NOT "FIX" IT BY ADDING ONE.
      *
@@ -824,6 +974,12 @@ export const createNotificationBlock = (
     },
 
     async ask(message, options, handler, channels, extras) {
+      if (extras?.resource_review !== undefined && (!isResourceReview(extras.resource_review)
+        || new TextEncoder().encode(JSON.stringify(extras.resource_review)).length > 64 * 1024)) {
+        throw new Error('NotificationBlock.ask: invalid or oversized resource review');
+      }
+      const resourceReview = extras?.resource_review ? structuredClone(extras.resource_review) : undefined;
+      if (resourceReview) extras = { ...extras, resource_review: resourceReview };
       const reservedAskId = extras?.reserved_ask_id;
       if (reservedAskId !== undefined && reservedAskId.length === 0) {
         throw new Error('NotificationBlock.ask: reserved_ask_id must be non-empty');
@@ -844,6 +1000,7 @@ export const createNotificationBlock = (
               === JSON.stringify(handler.payload)
             && JSON.stringify(existing.options) === JSON.stringify(options)
             && existing.note_prompt === extras?.note_prompt
+            && JSON.stringify(existing.resource_review) === JSON.stringify(resourceReview)
             && existing.body === (
               extras?.body !== undefined && extras.body !== ''
                 ? extras.body.slice(0, ASK_BODY_MAX)
@@ -904,6 +1061,7 @@ export const createNotificationBlock = (
           ...(extras?.note_prompt !== undefined
             ? { note_prompt: extras.note_prompt }
             : {}),
+          ...(resourceReview ? { resource_review: resourceReview } : {}),
         // D-234 § 234.4f — TRUNCATED at entry, not refused: the far side wrote
         // it, and a reviewer who can read four pages of five is better served
         // than one who gets an error where the draft should be.
@@ -987,7 +1145,7 @@ export const createNotificationBlock = (
                 ask_id,
                 message,
                 options,
-                channelAskExtras(extras),
+                channelAskExtras(extras, bridgeChannel),
               );
             } catch {
               // best-effort — the ask stays durably `open` on its inbound
@@ -1035,18 +1193,23 @@ export const createNotificationBlock = (
     },
 
     async submitAnswer(reply) {
+      const candidate = await store.get(reply.ask_id);
+      if (candidate?.delivery_group_id) await reminderReconciler?.beforeAnswer(reply.ask_id);
       // Serialize every reply for this ask_id — the load → dedup-check
       // → `open → answered` write cannot interleave, so a concurrent
       // second reply observes `answered` and is a no-op (I-6 dedup).
-      await serializer.run(reply.ask_id, async () => {
+      return await serializer.run(reply.ask_id, async (): Promise<SubmitAnswerOutcome> => {
         const ask = await store.get(reply.ask_id);
         // Unknown ask, or one already past `open` — first answer won;
         // every later reply is a no-op (I-6).
-        if (ask === null || ask.status !== 'open') return;
+        if (ask === null) return 'ignored';
+        if (ask.delivery_group_id && (!deliveries || !await deliveries.accepts(ask, reply))) return 'ignored';
+        // Only after the origin check: a stranger learns nothing about the ask.
+        if (ask.status !== 'open') return selectAskOption(ask, reply.option) === undefined ? 'ignored' : 'closed';
         if (isProtectedAskKind(ask.handler_kind)) throw new RpcError('preapproval_invalid_proof', 'Complete this review through its verified owner decision.', 403);
         // A reply carrying an option the ask never offered is not a
         // valid answer.
-        if (selectAskOption(ask, reply.option) === undefined) return;
+        if (selectAskOption(ask, reply.option) === undefined) return 'ignored';
 
         // D-234 § 234.4e — THE NOTE, admitted only if this ask invited one.
         //
@@ -1065,21 +1228,36 @@ export const createNotificationBlock = (
         // half-answer must not become the durable, once-only recorded answer.
         // The surface is expected to enforce this before sending; this is the
         // backstop for one that does not.
-        if (ask.note_prompt === 'required' && note === undefined) return;
+        if (ask.note_prompt === 'required' && note === undefined) return 'ignored';
 
         const answer: Answer = {
           option: reply.option,
           answered_at: now(),
           ...(note !== undefined ? { note } : {}),
         };
+        let participant: { owner: boolean } | undefined;
+        if (ask.delivery_group_id) {
+          const origin = reply.origin;
+          const group = await deps.deliveryStore?.get(ask.delivery_group_id);
+          // accepts() already verified the physical origin and its current
+          // authority. Persist only the role, never the sender or channel in
+          // the handler's Answer. A household member is not an owner signal.
+          const owner = reply.via === 'ui' || reply.landing_capability === true || !!origin && group?.destinations.some(destination =>
+            destination.channel === reply.via && destination.connection_name === origin.connection_name
+            && destination.connection_enrolled_at === origin.connection_enrolled_at && destination.recipient === origin.recipient
+            && destination.expected_sender === origin.sender) === true;
+          participant = { owner };
+        }
         // `open → answered` — the durable, once-only dedup point (A.5).
-        await store.recordAnswer(reply.ask_id, answer, reply.via);
+        if (participant) await store.recordAnswer(reply.ask_id, answer, reply.via, participant);
+        else await store.recordAnswer(reply.ask_id, answer, reply.via);
 
         const answered: PendingAsk = {
           ...ask,
           status: 'answered',
           answer,
           answered_via: reply.via,
+          ...(participant ? { owner_answer: participant.owner } : {}),
         };
         // Record the decision in the durable activity log, HERE — this is
         // the only point that knows which channel answered (`dispatchAnswer`
@@ -1093,6 +1271,7 @@ export const createNotificationBlock = (
           try {
             await deps.recordAnswerAudit({
               ask_id: ask.ask_id,
+              ...(ask.delivery_group_id ? { reminder: true } : {}),
               handler_kind: ask.handler_kind,
               // FN-2 — travels UNINTERPRETED; the host extracts identity.
               handler_payload: ask.handler_payload,
@@ -1118,14 +1297,23 @@ export const createNotificationBlock = (
         } catch {
           // handler threw — ask stays `answered`, next boot retries.
         }
+        return 'answered';
       });
     },
 
-    pruneHandledAsks(before) {
-      return store.pruneHandled(before);
+    async pruneHandledAsks(before) {
+      // Email replies carry the first item's tag even after it is answered.
+      // Keep the anchor while another item or a withdrawal job remains live.
+      const preserve = await deliveries?.preserveForPrune(before) ?? [];
+      return store.pruneHandled(before, preserve);
     },
 
     async recoverPendingAsks() {
+      await reminderReconciler?.beforeRecovery();
+      // Finish a winning answer before a new reminder can replace it.
+      await recoverAnswered('managed');
+      await reminderReconciler?.beforeRecovery();
+      await deliveries?.recover();
       let firstPreparationError: unknown;
       // `open` — re-deliver. A crash before / during the original
       // fan-out left the ask undelivered or partially delivered;
@@ -1145,7 +1333,7 @@ export const createNotificationBlock = (
         // by a stale recovered render of the same decision.
         await serializer.run(ask.ask_id, async () => {
           const current = await store.get(ask.ask_id);
-          if (current === null || current.status !== 'open') return;
+          if (current === null || current.status !== 'open' || current.delivery_group_id) return;
           if (isProtectedAskKind(current.handler_kind)) return;
           try {
             await deps.prepareRecoveredAsk?.(current);
@@ -1167,6 +1355,7 @@ export const createNotificationBlock = (
                 ? { note_prompt: current.note_prompt }
                 : {}),
               ...(current.body !== undefined ? { body: current.body } : {}),
+              ...(current.resource_review ? { resource_review: current.resource_review } : {}),
             },
           );
         });
@@ -1179,27 +1368,7 @@ export const createNotificationBlock = (
       // — then re-dispatch the handler (step 8, I-4). A still-
       // unregistered or throwing handler leaves the ask `answered` for
       // a later boot.
-      for (const ask of await store.listByStatus('answered')) {
-        // Use the same per-ask critical section as live `submitAnswer`. Recovery
-        // is also kicked on vault unlock, so two recovery passes (or recovery
-        // and the live reply that just recorded this answer) can overlap in one
-        // process. The list row is only a candidate: re-read after taking the
-        // lock so a preceding pass that already marked it handled cannot invoke
-        // the at-least-once handler a second time in the same live generation.
-        await serializer.run(ask.ask_id, async () => {
-          const current = await store.get(ask.ask_id);
-          if (current === null
-            || current.status !== 'answered'
-            || current.answer === undefined) return;
-          if (isProtectedAskKind(current.handler_kind)) return;
-          await closeOnAllChannels(current);
-          try {
-            await dispatchAnswer({ registry, store, ask: current });
-          } catch {
-            // handler threw again — stays `answered`, next boot/unlock retries.
-          }
-        });
-      }
+      await recoverAnswered('legacy');
       if (firstPreparationError !== undefined) throw firstPreparationError;
     },
 

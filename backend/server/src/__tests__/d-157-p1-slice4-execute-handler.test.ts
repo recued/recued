@@ -5,6 +5,7 @@ import type {
   ExecutionSource,
   IngredientManifest,
   RecipeDefinition,
+  ConnectionRow,
 } from '@recued/contracts';
 import type { PreflightNotifier } from '@recued/gateway';
 import {
@@ -25,6 +26,7 @@ import {
 } from '../execute-handler.js';
 import { createManifestRegistry, type ManifestRegistry } from '../manifest-loader.js';
 import { createRecipeStore } from '../recipe-store.js';
+import { connectionIdentity, connectionRevision } from '../connection-revision.js';
 
 const TOOL_SLUG = 'slice4-admin-tool';
 const STEP_ID = 'gated_step';
@@ -249,6 +251,32 @@ describe('handleExecute D-157 slice 4 audit anchor invariant', () => {
 
     expect(entry.commit_status).toBe('awaiting_approval');
     expect(entry.context_snapshot).toEqual({ entity_id: 'deal-9' });
+  });
+
+  it('persists page account revisions across a pause and refuses replacement before the resumed effect', async () => {
+    const recipe = buildRecipe('page-account-pause');
+    const log = auditLog();
+    const checkpoints = checkpointStore();
+    let row: ConnectionRow = { pk: 'api:sales', kind: 'api', name: 'sales', display_name: 'Sales',
+      config_json: '{}', auth_ciphertext: 'fixture', enrolled_at: 1, updated_at: 1 };
+    const revision = connectionRevision(connectionIdentity(row))!;
+    const deps = makeDeps(recipe, { auditLog: log, checkpointStore: checkpoints,
+      connectionStore: { get: () => row, list: () => [row] } as unknown as ExecuteHandlerDeps['connectionStore'] });
+    await handleExecute(deps, { recipe_id: recipe.recipe_id, execution_source: chatSource,
+      connection_revisions: { sales: revision } });
+    const anchor = await latestAuditEntry(log);
+    const checkpoint = checkpoints.write.mock.calls[0]![0] as Checkpoint;
+    expect(anchor.commit_status).toBe('awaiting_approval');
+    expect(anchor.connection_revisions).toEqual({ sales: revision });
+    row = { ...row, enrolled_at: 2 };
+    const fetchImpl = vi.fn(); vi.stubGlobal('fetch', fetchImpl);
+    try {
+      await expect(handleExecute(deps, { recipe_id: recipe.recipe_id, execution_source: chatSource,
+        config: anchor.config_snapshot, connection_revisions: anchor.connection_revisions },
+      { run_id: anchor.run_id, resume_from: { gated_step_id: checkpoint.gated_step_id!, step_state: checkpoint.step_state } }))
+        .rejects.toMatchObject({ code: 'connection_changed' });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); }
   });
 
   it('downgrades to failed with CHECKPOINT_WRITE_FAILED when checkpoint write throws', async () => {

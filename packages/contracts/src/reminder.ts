@@ -41,6 +41,9 @@ export interface Reminder {
    *  it was asked on. `null` when no zone resolved (UTC is used). */
   time_zone: string | null;
   origin: ReminderOrigin;
+  /** Built-in clock service correlation. Ordinary reminder ops cannot supply
+   * this; the managed ask owns delivery instead of the generic minute sender. */
+  clock?: { occurrence_id: string; point_key: string; ask_id: string };
   state: ReminderState;
   created_at: number;
   updated_at: number;

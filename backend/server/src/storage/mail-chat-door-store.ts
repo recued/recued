@@ -14,6 +14,12 @@
  *  to the chat mailbox it was enrolled through: another chat mailbox's provider
  *  makes other checks.
  *
+ *  One mailbox (§8.18) — the chat mailbox may be one of the owner's own too.
+ *  ⛔ Then it is NOT a chat-only mailbox (`isChatOnlyMailbox`): every reader of
+ *  the owner's mail still reads it, leaving out only the conversation's emails,
+ *  each marked as it is stored (`conversation-mail.ts`). And its `ask:` filter
+ *  is always on: a write that would leave it off turns it on (`withFilter`).
+ *
  *  ⚠ ONE STORE PER SERVER. `isChatMailbox` is asked for every synced message
  *  and every mail event, so the settings are read once and kept in memory; a
  *  `set` refreshes them. A second store over the same database would keep its
@@ -26,6 +32,7 @@ import type Database from 'better-sqlite3';
 import {
   isMailChatAskPrefix,
   isMailChatEnrollableAddress,
+  isMailChatOneMailbox,
   isMailChatStaleAfterMinutes,
   MAIL_CHAT_DOOR_DEFAULTS,
   MAIL_CHAT_ENROL_ATTEMPTS_MAX,
@@ -82,7 +89,18 @@ export interface MailChatDoorStore {
   settleEnrolment(chat_mailbox: string, address: string, outcome: MailChatEnrolOutcome): MailChatEnrolledSender | null;
   /** Is this mailbox the chat mailbox? */
   isChatMailbox(slug: string): boolean;
+  /** Is ALL of this mailbox's mail the conversation: the chat mailbox, and not
+   *  one of the owner's own too (one mailbox, §8.18)? What every reader of the
+   *  owner's mail leaves out whole. */
+  isChatOnlyMailbox(slug: string): boolean;
 }
+
+/** One mailbox keeps its `ask:` filter on: the owner's own email to themselves
+ *  is mail, and only one that asks starts a conversation. */
+const withFilter = (settings: MailChatDoorSettings): MailChatDoorSettings =>
+  settings.ask_prefix === null && isMailChatOneMailbox(settings)
+    ? { ...settings, ask_prefix: MAIL_CHAT_DOOR_DEFAULTS.ask_prefix }
+    : settings;
 
 const ENROL_FAILURES: ReadonlySet<string> = new Set<MailChatEnrolFailure>([
   'no_check', 'foreign_check', 'failed_check', 'no_pass', 'expired', 'too_many_attempts',
@@ -136,7 +154,7 @@ const parseSettings = (json: string | undefined): MailChatDoorSettings => {
       chat_mailbox?: unknown; ask_prefix?: unknown; owner_mailboxes?: unknown; chat_address?: unknown;
       stale_after_minutes?: unknown; paused_at?: unknown; enrolled_senders?: unknown;
     };
-    return {
+    return withFilter({
       chat_mailbox: typeof raw.chat_mailbox === 'string' && raw.chat_mailbox !== '' ? raw.chat_mailbox : null,
       // A row from before the setting names none: no request is proven until the
       // owner names theirs.
@@ -165,7 +183,7 @@ const parseSettings = (json: string | undefined): MailChatDoorSettings => {
           return sender === null ? [] : [sender];
         }).slice(0, MAIL_CHAT_ENROLLED_SENDERS_MAX)
         : [],
-    };
+    });
   } catch {
     // A row that does not parse names no chat mailbox: the mailbox's mail is
     // read as the owner's again, as before the door existed.
@@ -189,8 +207,9 @@ export const createMailChatDoorStore = (
 
   let current = parseSettings((read.get() as { settings_json: string } | undefined)?.settings_json);
   const save = (next: MailChatDoorSettings): MailChatDoorSettings => {
-    write.run({ settings_json: JSON.stringify(next), updated_at: now() });
-    current = next;
+    const kept = withFilter(next);
+    write.run({ settings_json: JSON.stringify(kept), updated_at: now() });
+    current = kept;
     return current;
   };
 
@@ -213,8 +232,8 @@ export const createMailChatDoorStore = (
         ...current,
         chat_mailbox,
         chat_address: chat_mailbox !== null && bare.includes('@') ? bare : null,
-        // A mailbox is the chat mailbox or the owner's, never both.
-        owner_mailboxes: current.owner_mailboxes.filter((owner) => owner !== chat_mailbox),
+        // The owner's mailboxes stay as named: one of them may be this one
+        // (one mailbox, §8.18).
         // An address is checked by the provider of the chat mailbox it was
         // enrolled through: another chat mailbox needs it enrolled again.
         // Switched off, a confirmed one is kept for the same chat mailbox
@@ -282,11 +301,7 @@ export const createMailChatDoorStore = (
       return view();
     },
     setOwnerMailboxes: (slugs) => {
-      save({
-        ...current,
-        owner_mailboxes: [...new Set(slugs)].filter((slug) => slug !== current.chat_mailbox)
-          .slice(0, MAIL_CHAT_OWNER_MAILBOXES_MAX),
-      });
+      save({ ...current, owner_mailboxes: [...new Set(slugs)].slice(0, MAIL_CHAT_OWNER_MAILBOXES_MAX) });
       return view();
     },
     forgetMailbox: (slug) => {
@@ -302,5 +317,7 @@ export const createMailChatDoorStore = (
       return view();
     },
     isChatMailbox: (slug) => current.chat_mailbox !== null && current.chat_mailbox === slug,
+    isChatOnlyMailbox: (slug) => current.chat_mailbox !== null && current.chat_mailbox === slug
+      && !current.owner_mailboxes.includes(slug),
   };
 };

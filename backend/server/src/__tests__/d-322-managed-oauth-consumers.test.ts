@@ -105,11 +105,11 @@ describe('managed foundational accounts', () => {
     const f = await setup(provider);
     f.proxy.mockImplementation(async () => Response.json(provider === 'gmail'
       ? { emailAddress: 'owner@example.test' } : { id: 'native-account', mail: null, userPrincipalName: 'owner@example.test' }));
-    const result = await handleMailEnrollManagedOAuth(f.mail, { provider, account_slug: 'work', connection_name: 'source' });
+    const result = await handleMailEnrollManagedOAuth(f.mail, { provider, account_slug: 'work', connection_name: 'source', backfill_days: 400 });
     expect(result).toEqual({ slug: 'work', account_email: 'owner@example.test', permission_state: 'unknown' });
     const row = f.instances.get('mail', 'work')!;
     expect(row.config).toMatchObject({ account_slug: 'managed-mail:work', managed_oauth: { connection_name: 'source' },
-      managed_send_enabled: false, managed_mutation_enabled: false });
+      managed_send_enabled: false, managed_mutation_enabled: false, backfill_days: 400 });
     expect(f.accountData.size).toBe(0);
     expect(f.connections.get('api', 'source')!.granted_scopes_json ?? null).toBeNull();
     expect(JSON.stringify(row.config)).not.toContain('fixture-environment-key');

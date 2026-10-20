@@ -145,6 +145,7 @@ export const createReminderDispatchers = (deps: ReminderServiceDeps): ReminderDi
       const current = now();
       const existing = deps.store.get(input.reminder_id);
       if (existing === null) return { updated: false, reason: 'not_found', message: NOT_FOUND };
+      if (existing.clock) throw new ReminderInputError('This reminder belongs to a clock. Edit its schedule in Yours.');
       if (existing.state !== 'pending') {
         return {
           updated: false, reason: 'not_pending', reminder: view(existing, current),

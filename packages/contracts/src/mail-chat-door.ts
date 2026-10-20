@@ -6,6 +6,13 @@
  *  Its mail is the conversation, not the owner's mail, so it makes no mail
  *  facts, no contacts, and starts no mail recipe (D-318 §4.10, P19).
  *
+ *  ONE MAILBOX (2026-10-18, §8.18): the chat mailbox may also be one of the
+ *  owner's own (`owner_mailboxes` names it, `isMailChatOneMailbox`). The owner
+ *  then writes to it from itself, and its mail stays theirs: only the
+ *  conversation's emails — each request, by what the provider recorded, and
+ *  Recued's answers — are left out of it, and the `ask:` filter is always on,
+ *  or every email they wrote to themselves would start a conversation.
+ *
  *  ⚠ The door's later settings (the proof, the `ask:` filter, stale requests,
  *  the burst guard, enrolled senders — D-318 §4.12) join this record as their
  *  steps are built. A mailbox carries no role of its own: its config is
@@ -20,14 +27,16 @@ export interface MailChatDoorSettings {
    *  with a subject that begins with this (after any `Re:`), case aside; a reply in
    *  a conversation continues without it. `null` switches the filter off. It keeps
    *  old mail between the two mailboxes, and a rule forwarding mail to the chat
-   *  mailbox, from starting turns. */
+   *  mailbox, from starting turns. Never `null` with one mailbox
+   *  (`isMailChatOneMailbox`). */
   readonly ask_prefix: string | null;
   /** D-318 audit — the owner's own mailboxes (slugs): proof (a) reads THEIR Sent
    *  record, and only an email from one of their addresses can be a request
    *  (§4.12's "the owner's mailboxes it reads"). Not every connected mailbox: a
    *  shared support@ box, or an assistant's, connected for recipes, is not the
    *  owner, and whoever sends from it must not start a turn under the owner's
-   *  authority. Empty until the owner names them: no request is proven. */
+   *  authority. Empty until the owner names them: no request is proven. It may
+   *  name the chat mailbox itself: one mailbox (§8.18). */
   readonly owner_mailboxes: readonly string[];
   /** D-318 audit — the chat mailbox's own address, kept when it is named: the
    *  door knows it while the chat mailbox is not running (at boot, while it
@@ -189,6 +198,13 @@ export const MAIL_CHAT_DOOR_DEFAULTS: MailChatDoorSettings = {
   paused_at: null,
   enrolled_senders: [],
 };
+
+/** D-318 one mailbox (§8.18) — is the chat mailbox also one of the owner's own?
+ *  The owner then writes to it from itself: its mail is theirs, the
+ *  conversation's emails aside, and the `ask:` filter is always on. */
+export const isMailChatOneMailbox = (
+  settings: Pick<MailChatDoorSettings, 'chat_mailbox' | 'owner_mailboxes'>,
+): boolean => settings.chat_mailbox !== null && settings.owner_mailboxes.includes(settings.chat_mailbox);
 
 /** D-318 step 7 — one check before the door is switched on (§4.12): the chat
  *  mailbox can send and is synced, and each of the owner's mailboxes can be

@@ -152,6 +152,7 @@ import {
   hierarchicalLevel,
 } from '../shell/hierarchical-navigation.js';
 import { serializeShellRoute } from '../shell/route.js';
+import { runPageContextFromOutput, type RunPageContext } from '../shell/run-page-context.js';
 import {
   recipeRequiredConnections,
   type RequiredConnection,
@@ -454,6 +455,8 @@ export type RecipeExecuteCaller = (args: {
   dish_id?: string;
   /** D-320 §3.5 — the connection this run uses, by slot; this run only. */
   connections?: Record<string, string>;
+  /** Expected source account revisions for page-prefilled arguments. */
+  connection_revisions?: Record<string, string>;
 }) => Promise<ServerExecuteResponse>;
 
 /** D-200 — owner-authenticated file-content read used only after an emitted
@@ -792,6 +795,7 @@ const withoutRenderedRecipe = (
 };
 
 export interface RecipesRoute {
+  getRunPageContext(): RunPageContext | null;
   getRecipes(): ReadonlyArray<ServerRecipeListEntry>;
   getTools(): ReadonlyArray<ToolCatalogEntryView>;
   getLoadErrors(): RecipesLoadErrors;
@@ -5330,6 +5334,11 @@ export const bootstrapRecipesRoute = (
 
   return {
     getRecipes: () => recipes,
+    getRunPageContext: () => !disposed && selectedRecipeId !== null
+      && resultPanel?.route_recipe_id === selectedRecipeId && resultPanel.result.success
+      ? runPageContextFromOutput(resultOutputSections(resultPanel.result),
+          recipes.find(entry => entry.recipe_id === resultPanel!.render_recipe_id))
+      : null,
     getTools: () => catalog,
     getLoadErrors: () => errors,
     selectedRecipe: () => selectedRecipeId,

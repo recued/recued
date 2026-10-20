@@ -45,7 +45,7 @@ describe('D-145 PA1 — work entity kinds', () => {
     // D-210 appended `booking`. Appended, NOT inserted: the order is
     // load-bearing for `SOURCE_TOP_TIER_KINDS` (which spreads this) and
     // for every derived list, so a reorder is a wider change than an add.
-    expect(WORK_ENTITY_KINDS).toEqual(['task', 'note', 'commitment', 'project', 'booking']);
+    expect(WORK_ENTITY_KINDS).toEqual(['task', 'note', 'commitment', 'project', 'booking', 'asset']);
   });
 
   it('isWorkEntityKind discriminates the closed list', () => {
@@ -177,6 +177,7 @@ describe('D-145 PA1 — commitment contracts (orthogonal axes)', () => {
       // for every evidence family; the evidence_blob entries' `kind`
       // discriminates). Derived-only — never a compose-authoring option.
       'evidence_captured',
+      'rule_emitted',
     ]);
   });
 
@@ -223,7 +224,7 @@ describe('D-145 PA1 — project contracts', () => {
 describe('D-145 PA1 — canonical schema definitions', () => {
   it('exposes one schema per work-entity kind', () => {
     expect(Object.keys(CANONICAL_SCHEMAS).sort()).toEqual(
-      ['booking', 'commitment', 'note', 'project', 'task'].sort(),
+      ['asset', 'booking', 'commitment', 'note', 'project', 'task'].sort(),
     );
   });
 

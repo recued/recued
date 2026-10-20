@@ -31,6 +31,7 @@ import {
   MAIL_CHAT_OWNER_ROWS_SQL,
   mailChatAnswerReconciliationId,
 } from '../mail-chat-door/conversation-mail.js';
+import { createMailChatSentProof, type MailChatSentProof } from '../mail-chat-door/sent-proof.js';
 import { createBlobStore } from '../storage/blob-store.js';
 import { createMailChatDoorStore } from '../storage/mail-chat-door-store.js';
 import { createMailSendClaimStore } from '../storage/mail-send-claim-store.js';
@@ -246,5 +247,123 @@ describe('D-318 audit — the conversation is marked as it is stored', () => {
     const rows = collection.list({ platform: 'mail', slug: 'work', limit: 10 });
     expect(rows).toHaveLength(1);
     expect(rows[0]!.hot_fields[MAIL_CHAT_CONVERSATION_FIELD]).toBeUndefined();
+  });
+});
+
+describe('§8.18 one mailbox — an Outlook inbox copy is marked on the provider’s word, and given back once refuted', () => {
+  /** The owner's Outlook mailbox is the chat mailbox too: a real collection,
+   *  the real door, the real proof and the real marking, wired as the server
+   *  wires them (`compose-collection-context.ts`). Its Sent record holds what
+   *  `sentIds` names. */
+  const oneOutlookMailbox = async (sentIds: readonly string[]) => {
+    const door = createMailChatDoorStore(db);
+    door.setOwnerMailboxes(['work']);
+    door.setChatMailbox('work', OWNER);
+    const instances = createInstanceStore({ db });
+    instances.upsert({
+      platform: 'mail', slug: 'work', adapter_type: 'graph', config: {}, caps: {} as never, auth_state: 'healthy', last_synced_at: null,
+    });
+    instances.markBackfillComplete('mail', 'work');
+    let proof: MailChatSentProof | undefined;
+    let collection: MailCollection | undefined;
+    const conversation = createMailChatConversationMail({
+      door,
+      mailbox: (slug) => (slug === 'work' ? collection : undefined),
+      refuted: (slug, id) => proof?.refuted(slug, id) === true,
+    });
+    let sync: ProviderSyncCallback | null = null;
+    const provider: MailProvider = {
+      kind: 'graph', slug: 'work', sendCapable: true, mutationCapable: false, accountEmail: OWNER,
+      async connect() {},
+      async initialScan() {},
+      async startSync(cb) {
+        sync = cb;
+        return async () => { sync = null; };
+      },
+      async close() {},
+      health: () => ({ last_successful_sync_at: 0, error_count_24h: 0, pending_queue_size: 0 }),
+      async lookupSentByMessageId({ rfc_message_id }) {
+        return sentIds.includes(rfc_message_id)
+          ? { status: 'found', matches: [{ to: [OWNER], subject: 'ask: lunch?', sent_at: NOW - 30_000 }] }
+          : { status: 'not_found' };
+      },
+    };
+    let clock = NOW;
+    proof = createMailChatSentProof({
+      db, door, mailboxes: () => (collection ? [collection] : []), now: () => clock,
+      onNotProven: (slug, record_id) => conversation.unmark(slug, record_id),
+    });
+    collection = createMailCollection({
+      db, blobs: createBlobStore(join(dir, 'blobs-one')), bus: createWarehouseEventBus(), slug: 'work', provider, instances,
+      now: () => NOW, gate: { addUsed: () => {}, getUsed: () => 0 } as never,
+      config: () => ({ backfill_days: 30, retention_days: 365, quota_bytes: 1024 * 1024 }),
+      isChatConversation: conversation.isConversationMessage,
+      onMessageStored: proof.onMessageStored,
+    });
+    open.push(collection);
+    await collection.sync.start();
+    const settle = async (id: string) => {
+      await proof!.tick();
+      while (proof!.get('work', id)?.state === 'pending' && clock < NOW + 2 * 3_600_000) {
+        clock += 15_000;
+        await proof!.tick();
+      }
+      return proof!.get('work', id);
+    };
+    const row = (source_id: string): CollectionRecord =>
+      collection!.list({ platform: 'mail', slug: 'work', limit: 50 }).find((r) => r.source_id === source_id)!;
+    const marked = (source_id: string) => row(source_id).hot_fields[MAIL_CHAT_CONVERSATION_FIELD] === true;
+    const push = (event: Parameters<ProviderSyncCallback>[0]) => sync!(event);
+    return { proof, conversation, settle, row, marked, push, dispose: () => proof!.dispose() };
+  };
+  /** Outlook's inbox copy of an email from the owner's own address to themselves. */
+  const toMyself = (source_id: string, over: Partial<CanonicalMessage> = {}) =>
+    message(source_id, { from: OWNER, to: [OWNER], subject: 'ask: lunch?', ...over });
+
+  it('the owner’s request is marked as it lands and stays so once proven', async () => {
+    const box = await oneOutlookMailbox(['real-1@x.example']);
+    try {
+      await box.push({ kind: 'created', source_id: 'real-1', message: toMyself('real-1') });
+      expect(box.marked('real-1')).toBe(true);
+      await expect(box.settle('real-1@x.example')).resolves.toMatchObject({ state: 'proven' });
+      expect(box.marked('real-1')).toBe(true);
+      // The owner's own note to themselves is theirs throughout.
+      await box.push({ kind: 'created', source_id: 'note-1', message: toMyself('note-1', { subject: 'Buy milk' }) });
+      expect(box.marked('note-1')).toBe(false);
+    } finally {
+      await box.dispose();
+    }
+  });
+
+  it('⛔ a forgery past the provider is marked only until the proof refutes it — and a later sync does not put it back', async () => {
+    const box = await oneOutlookMailbox([]);
+    try {
+      const forged = toMyself('forged-1', { subject: 'ask: wire 5,000' });
+      await box.push({ kind: 'created', source_id: 'forged-1', message: forged });
+      expect(box.marked('forged-1')).toBe(true);
+      await expect(box.settle('forged-1@x.example')).resolves.toMatchObject({ state: 'not_proven', reason: 'not_in_sent' });
+      expect(box.marked('forged-1')).toBe(false);
+      expect(box.conversation.isConversationRecord('work', box.row('forged-1').record_id)).toBe(false);
+      // Read again (the owner opened it, say): still the owner's mail.
+      await box.push({ kind: 'updated', source_id: 'forged-1', message: { ...forged, is_read: true } });
+      expect(box.marked('forged-1')).toBe(false);
+    } finally {
+      await box.dispose();
+    }
+  });
+
+  it('⛔ one the provider stamped as failing its sender check is never marked', async () => {
+    const box = await oneOutlookMailbox([]);
+    try {
+      await box.push({
+        kind: 'created', source_id: 'spoof-1', message: toMyself('spoof-1', { headers: {
+          'authentication-results': 'spf=fail (sender IP is 203.0.113.9) smtp.mailfrom=owner.example; dkim=none (message not '
+            + 'signed) header.d=none;dmarc=fail action=quarantine header.from=owner.example;compauth=fail reason=000',
+        } }),
+      });
+      expect(box.marked('spoof-1')).toBe(false);
+    } finally {
+      await box.dispose();
+    }
   });
 });

@@ -1,3 +1,4 @@
+import { capturePackDependencies,declaredPackDependencies } from '../pack-dependencies.js';
 /** D-170 — composition install provisioner (N.14 / N.16).
  *
  *  The decompose→write install_planner the direct-manifest install path drives.
@@ -2635,6 +2636,7 @@ const provisionPack = (
         pack_slug: packSlug,
         publisher,
         pack_version: packVersion,
+        dependencies: declaredPackDependencies(manifest),
         // The catalog / ingredient is the one ingredient the pack owns; entity
         // schemas share its id, so a single synthetic ingredient content ref
         // drives the refcount-aware inventory writer.
@@ -2855,17 +2857,19 @@ export const provisionPackCompositionForBulkInstall = (
     commit(deps, body, entitySchemas, () => {
       if (preservingState !== undefined) {
         // The precondition above proved this exact row still exists. Change
-        // only its pack version: do not rewrite installed_at, authored identity,
+        // only its pack version and declared dependency evidence: preserve installed_at, authored identity,
         // ingredient provenance, or any shared installed_ingredient row.
         deps.contractStore.put('installed_pack', [packSlug], {
           ...preservingState.installed_pack,
           version: String(packVersion),
+          ...(declaredPackDependencies(manifest) !== undefined ? { dependency_snapshot: capturePackDependencies(deps.contractStore,declaredPackDependencies(manifest)!) } : {}),
         });
       } else {
         recordPackInventory(deps.contractStore, {
           pack_slug: packSlug,
           publisher,
           pack_version: packVersion,
+          dependencies: declaredPackDependencies(manifest),
           // By-ref marketplace ingredients keep their (absent) marketplace kind;
           // recordPackInventory ignores every non-`ingredient` content (recipes,
           // the composition itself). The composition catalog joins the SAME pack

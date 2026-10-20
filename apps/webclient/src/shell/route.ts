@@ -52,6 +52,7 @@ export const WEBCLIENT_ROUTE_IDS = [
   // treated it as a first-class destination since D-267 while the address said
   // otherwise. `#data/today` rewrites to this below.
   'today',
+  'yours',
   'logs',
   // D-250 § D7 / § Open 10 — the owner's OWN metrics. Beside Logs in the review
   // section, NOT under Server (operational configuration) and not replacing Chat as the
@@ -790,6 +791,7 @@ export const WEBCLIENT_DEEP_LINK_ROUTES: ReadonlySet<WebclientRouteId> =
     // moving the address to its own surface silently left that behind, and
     // every unit test stayed green. Found by driving a real browser.
     'views',
+    'yours',
     // Set up Chat can detour from a durable thread through Settings and return
     // to `#chat/session/<id>`. Treat Chat as addressable so the shell's bare
     // `#chat` / New chat navigation also tears that restored thread down.
@@ -823,5 +825,5 @@ export const shouldRemountForSameRoute = (
 ): boolean =>
   (WEBCLIENT_DEEP_LINK_ROUTES.has(route)
     || (route === 'approvals' && [previousHash, nextHash].some(hash =>
-      parseShellRoute(hash).segments[0] === 'preapproval')))
+      ['preapproval','local-changes'].includes(parseShellRoute(hash).segments[0] ?? ''))))
   && normalizeShellHash(previousHash) !== normalizeShellHash(nextHash);

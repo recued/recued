@@ -158,7 +158,8 @@ describe('D-177 P2b — Tier-3 MCP kernel manifests', () => {
     expect(writeDecision.verdict).toBe('ask');
     if (writeDecision.verdict === 'ask') {
       expect(writeDecision.risk_tier).toBe('write');
-      expect(writeDecision.detail).toContain(CONNECTION_MCP_WRITE_SLUG);
+      // Held as a send: the send's reason, which names no slug.
+      expect(writeDecision.detail).toContain('sends a message to someone outside this server');
     }
   });
 

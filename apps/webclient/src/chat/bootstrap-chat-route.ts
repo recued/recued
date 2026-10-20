@@ -1,4 +1,7 @@
+import { renderResourceReview } from '@recued/contracts';
+import { localUpdateUndoControl, type LocalUpdateUndoCallers } from '../approvals/local-update-undo.js';
 import { copyComposerRecoveryDraft, hasComposerRecoveryDraft, type ChatComposerRecoveryDraft, type ChatRouteRecoveryDraft } from './draft-recovery.js';
+import { assetChatHref, assetChatMessage, readAssetChatMessage, type ChatAssetContext } from './asset-context.js';
 export type { ChatRouteRecoveryDraft } from './draft-recovery.js';
 import { openFilePreview, type FilePreviewCallers } from '../files/file-preview.js';
 import { openExistingFilePicker, type ChatFileListCaller, type CloudFileCallers } from './existing-file-picker.js';
@@ -1285,6 +1288,7 @@ export const CHAT_ROUTE_CHROME_STYLES = `
   padding: 10px;
 }
 [${CHAT_ROUTE_FOLLOWUP_CONTEXT_ATTR}],
+[data-recued-chat-asset-context],
 [${CHAT_ROUTE_DATA_DIAGNOSIS_CONTEXT_ATTR}],
 [${CHAT_ROUTE_PLAN_CONTEXT_ATTR}] {
   display: flex;
@@ -1297,6 +1301,8 @@ export const CHAT_ROUTE_CHROME_STYLES = `
   border-radius: var(--chat-radius-panel);
   background: var(--accent-weak);
 }
+[data-recued-chat-asset-context] > div {min-width:0;overflow-wrap:anywhere}
+[data-recued-chat-asset-context] p {margin:4px 0 0;font-size:0.85rem}
 [${CHAT_ROUTE_FOLLOWUP_CONTEXT_ATTR}] .chat-followup-context-copy,
 [${CHAT_ROUTE_DATA_DIAGNOSIS_CONTEXT_ATTR}] .chat-followup-context-copy,
 [${CHAT_ROUTE_PLAN_CONTEXT_ATTR}] .chat-followup-context-copy {
@@ -2410,6 +2416,14 @@ button.chat-composer-attachment-name, .chat-message-file-preview {
   border-radius: var(--chat-radius-control);
   background: var(--surface);
 }
+[${CHAT_ROUTE_PLAN_CARD_ATTR}] [data-resource-review] {
+  display: block;
+  min-width: 0;
+  padding: 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+}
 [${CHAT_ROUTE_PLAN_CARD_ATTR}] .chat-plan-card-detail {
   display: grid;
   grid-template-columns: minmax(86px, .35fr) minmax(0, 1fr);
@@ -2708,6 +2722,7 @@ export interface BootstrapChatRouteOptions {
   root: HTMLElement;
   document?: Document;
   conn: ChatRouteConn;
+  localUndo?: LocalUpdateUndoCallers;
   /** D-172 P2 — the `upload.*` control plane + the binary socket factory, the
    *  same pair Data → Files already receives. BOTH must be present for the
    *  attach control to render: half-wired, the button would open a picker that
@@ -3191,6 +3206,7 @@ const planStatusLabel = (card: PlanApprovalCard): string => {
 };
 
 const planExecutionTitle = (receipt: PlanExecutionReceipt): string => {
+  if (receipt.status === 'completed' && receipt.local_receipt) return 'Change confirmed';
   if (receipt.status === 'running') return 'Doing what you said yes to';
   if (receipt.status === 'completed') return 'Done';
   if (receipt.status === 'unknown') return 'Somebody needs to check what happened';
@@ -3205,6 +3221,16 @@ const planExecutionTitle = (receipt: PlanExecutionReceipt): string => {
 };
 
 const planExecutionDetail = (receipt: PlanExecutionReceipt): string => {
+  if (receipt.status === 'completed' && receipt.local_receipt) {
+    const caller = receipt.recovered_from === 'failed'
+      ? 'The caller reported a failure after this change committed. '
+      : receipt.recovered_from === 'running'
+        ? "The caller's result is still pending. "
+        : receipt.recovered_from === 'unknown' ? "The caller's result was not confirmed. " : '';
+    return `${receipt.local_receipt.kind === 'records' ? 'Records' : 'Calendar'} saved this change. `
+      + caller
+      + 'This confirmation does not run the action again.';
+  }
   if (receipt.status === 'running') {
     return 'Your server says Chat used the one-off yes you gave, for exactly these details.';
   }
@@ -3668,6 +3694,7 @@ export const bootstrapChatRoute = (
   // unsaved user work. Typing, choosing a follow-up, or preparing an action
   // draft promotes the composer to protected work for the shell leave guard.
   let composerDraftProtected = false;
+  let composerAssetContext: ChatAssetContext | null = null;
   let composerReply: ChatReplyDraft | null = null;
   // Bare #chat is a deliberate returning-user history view. It retires as
   // soon as the owner opens a conversation or explicitly starts a draft;
@@ -3886,11 +3913,13 @@ export const bootstrapChatRoute = (
     // Check AFTER every await. Typing, uploading, recording, navigation and a
     // concurrent send all keep ownership of the current composer.
     if (disposed || state.thread.session?.id !== draft.session_id || openingSessionId !== null
-      || state.sending || composerDraft.length > 0 || composerReply !== null
+      || state.sending || composerDraft.length > 0 || composerReply !== null || composerAssetContext !== null
       || composerAttachments.rows().length > 0 || pendingVoiceSend
       || (voiceComposer !== null && voiceComposer.phase() !== 'idle')
       || approvedPlanContinuationDraft !== null || dataVerificationDiagnosisDraft !== null) return false;
-    composerDraft = draft.message;
+    const assetHandoff = readAssetChatMessage(draft.message);
+    composerDraft = assetHandoff?.question ?? draft.message;
+    composerAssetContext = assetHandoff?.context ?? null;
     composerDraftProtected = true;
     composerReply = reply;
     pendingSubmission = null;
@@ -3982,6 +4011,8 @@ export const bootstrapChatRoute = (
     if (turns) turns.add(turnId);
     else turnsInFlightBySession.set(sessionId, new Set([turnId]));
   };
+  const sessionBusyForDeletion = (sessionId: string): boolean =>
+    sendDispatches.has(sessionId) || turnsInFlightBySession.has(sessionId);
   /** Has this chat moved since the owner last looked at it?
    *
    *  ⛔ WAS A TAB-LIFETIME `Set`, AND DIED ON RELOAD — you could be told an
@@ -4022,6 +4053,9 @@ export const bootstrapChatRoute = (
   const historyActionInFlight = (): boolean =>
     sessionAction?.kind === 'export-busy'
     || sessionAction?.kind === 'delete-busy';
+  const composerDeletionInFlight = (): boolean =>
+    sessionAction?.kind === 'delete-busy'
+    && sessionAction.sessionId === composerDraftOwner.sessionId;
   let pendingDraftGuard:
     | { readonly kind: 'new' }
     | { readonly kind: 'open'; readonly sessionId: string; readonly messageId?: string; readonly delivery?: boolean }
@@ -4879,7 +4913,7 @@ export const bootstrapChatRoute = (
     answer: ConnectedSourceTurn,
     followup: ConnectedSourceFollowup,
   ): void => {
-    if (composerDraft.trim().length > 0) {
+    if (composerDraft.trim().length > 0 || composerAssetContext !== null) {
       focusComposer(false, 'end');
       return;
     }
@@ -4910,7 +4944,7 @@ export const bootstrapChatRoute = (
     origin: DataVerificationDiagnosisDraft['origin'] = 'data_return',
     mode: DataVerificationDiagnosisDraft['mode'] = 'explanation',
   ): void => {
-    if (composerDraft.trim().length > 0) {
+    if (composerDraft.trim().length > 0 || composerAssetContext !== null) {
       focusComposer(false, 'end');
       return;
     }
@@ -4945,7 +4979,7 @@ export const bootstrapChatRoute = (
     mode: ApprovedPlanContinuationDraft['mode'],
     sourceMessageId?: string,
   ): void => {
-    if (composerDraft.trim().length > 0) {
+    if (composerDraft.trim().length > 0 || composerAssetContext !== null) {
       focusComposer(false, 'end');
       return;
     }
@@ -4983,6 +5017,7 @@ export const bootstrapChatRoute = (
       || state.thread.messages.length > 0
       || state.thread.inflight !== null
       || composerDraft.trim().length > 0
+      || composerAssetContext !== null
     ) return false;
     composerDraft = connectedSourcePrompt;
     composerDraftProtected = false;
@@ -4997,6 +5032,7 @@ export const bootstrapChatRoute = (
   // authoritative row), survives re-renders, dies with the tab.
   const collapsedActivity = new Set<string>();
   const expandedMailWorkContexts = new Set<string>();
+  const expandedAssetContexts = new Set<string>();
 
   const renderActivity = (
     host: HTMLElement,
@@ -5132,8 +5168,22 @@ export const bootstrapChatRoute = (
       // Record citations become in-app links; everything else stays text.
       renderAnswerText(doc, content, message.content);
     } else {
+      const assetHandoff = message.role === 'user' ? readAssetChatMessage(message.content) : null;
       const handoff = message.role === 'user' ? readMailWorkChatPrompt(message.content) : null;
-      if (handoff === null) content.textContent = message.content;
+      if (assetHandoff !== null) {
+        content.setAttribute('data-chat-asset-question', '');
+        const question = doc.createElement('p'); question.textContent = assetHandoff.question; content.appendChild(question);
+        const link = doc.createElement('a'); link.href = assetHandoff.href; link.textContent = 'Open selected asset'; content.appendChild(link);
+        const details = doc.createElement('details'); const summary = doc.createElement('summary'); summary.textContent = 'Context supplied to Recued';
+        if (expandedAssetContexts.has(message.id)) details.setAttribute('open', '');
+        details.addEventListener('toggle', () => {
+          if (!details.isConnected) return;
+          if (details.open) expandedAssetContexts.add(message.id);
+          else expandedAssetContexts.delete(message.id);
+        });
+        const raw = doc.createElement('pre'); raw.textContent = message.content; raw.style.whiteSpace = 'pre-wrap';
+        raw.style.overflowWrap = 'anywhere'; details.append(summary, raw); content.appendChild(details);
+      } else if (handoff === null) content.textContent = message.content;
       else {
         content.setAttribute('data-chat-mail-work-handoff', '');
         const purpose = doc.createElement('p');
@@ -5989,6 +6039,10 @@ export const bootstrapChatRoute = (
       const receiptDetail = doc.createElement('p');
       receiptDetail.className = 'chat-plan-receipt-detail';
       receiptDetail.textContent = planExecutionDetail(card.execution);
+      if (card.execution.status === 'completed' && card.execution.local_receipt) {
+        receipt.setAttribute('data-local-mutation-receipt', card.execution.local_receipt.receipt_id);
+        if (opts.localUndo) receipt.appendChild(localUpdateUndoControl(doc, opts.localUndo, card.execution.local_receipt.receipt_id));
+      }
       receipt.appendChild(receiptDetail);
       const runId = executionRunId;
       if (runId !== undefined) {
@@ -6172,6 +6226,13 @@ export const bootstrapChatRoute = (
       el.appendChild(verification);
     }
 
+    if (card.resource_review && card.payload_available !== false) {
+      const review = doc.createElement('pre');
+      review.className = 'chat-plan-card-details';
+      review.setAttribute('data-resource-review', '');
+      review.textContent = renderResourceReview(card.resource_review);
+      el.appendChild(review);
+    }
     const argsLabel = doc.createElement('span');
     argsLabel.className = 'chat-plan-card-args-label';
     argsLabel.textContent = 'The details';
@@ -7516,6 +7577,21 @@ export const bootstrapChatRoute = (
       if (more !== null) toolbar.appendChild(more);
     }
     composer.appendChild(toolbar);
+    if (composerAssetContext !== null) {
+      const context = composerAssetContext;
+      const row = doc.createElement('div'); row.setAttribute('data-recued-chat-asset-context', '');
+      row.setAttribute('role', 'group'); row.setAttribute('aria-label', 'Selected asset'); row.id = 'chat-asset-context';
+      const copy = doc.createElement('div');
+      const title = doc.createElement('a'); title.href = assetChatHref(context); title.textContent = context.name; copy.appendChild(title);
+      const detail = doc.createElement('p');
+      detail.textContent = context.filesUnavailable ? 'Use this asset’s saved details as context. Its linked files could not be listed.' : context.fileIds.length > 0
+        ? `Use this asset’s saved details and ${context.fileIds.length} linked file${context.fileIds.length === 1 ? '' : 's'} as context.${context.omittedFiles ? ` ${context.omittedFiles} more linked files are not included.` : ''}`
+        : 'Use this asset’s saved details as context.';
+      copy.appendChild(detail); row.appendChild(copy);
+      const clear = doc.createElement('button'); clear.type = 'button'; clear.textContent = 'Remove asset context'; clear.disabled = state.sending;
+      clear.addEventListener('click', () => { composerAssetContext = null; renderPreservingHandoffFocus(); focusComposer(true); });
+      row.appendChild(clear); composer.appendChild(row);
+    }
     if (composerReply) {
       const draft = composerReply;
       const preview = buildChatReplyDraft(doc, draft,
@@ -7800,6 +7876,8 @@ export const bootstrapChatRoute = (
         'aria-describedby',
         CHAT_ROUTE_PLAN_CONTEXT_DESCRIPTION_ID,
       );
+    } else if (composerAssetContext !== null) {
+      input.setAttribute('aria-describedby', 'chat-asset-context');
     }
     if (hasPendingInitialDraft()) {
       input.readOnly = true;
@@ -7823,6 +7901,7 @@ export const bootstrapChatRoute = (
       updateVoiceLabel?.();
       send.disabled =
         state.sending
+        || composerDeletionInFlight()
         || modelSourceWriteSessions.has(state.thread.session?.id ?? '')
         || state.aiAvailable === false
         || composerAttachments.hasUnfinished()
@@ -8026,6 +8105,7 @@ export const bootstrapChatRoute = (
     const hasAttached = (composerAttachments?.payload().length ?? 0) > 0;
     if (
       state.sending
+      || composerDeletionInFlight()
       || modelSourceWriteSessions.has(state.thread.session?.id ?? '')
       || aiUnavailable
       || composerAttachments.hasUnfinished()
@@ -8042,6 +8122,9 @@ export const bootstrapChatRoute = (
     }
     if (modelSourceWriteSessions.has(state.thread.session?.id ?? '')) {
       send.setAttribute('title', 'Waiting for your AI choice to finish saving.');
+    }
+    if (composerDeletionInFlight()) {
+      send.setAttribute('title', 'Waiting for this chat to finish deleting.');
     }
     if (aiUnavailable) {
       // Accessible disabled reason: tooltip for sighted users + an
@@ -8384,7 +8467,10 @@ export const bootstrapChatRoute = (
     const canAutoSend = singleVoiceFile && !hasDraftText && state.voiceAutoSend;
     // Defer eligible sends while the owner decides. Ineligible drafts still
     // retire their intent now, so removing extra files cannot revive it.
-    if (canAutoSend && pendingDraftGuard !== null) return;
+    const deletingDraft = sessionAction !== null
+      && sessionAction.sessionId === composerDraftOwner.sessionId
+      && (sessionAction.kind === 'delete-confirm' || sessionAction.kind === 'delete-busy');
+    if (canAutoSend && (pendingDraftGuard !== null || deletingDraft)) return;
     pendingVoiceSend = false;
     pendingVoiceRowId = null;
     if (!canAutoSend) return;
@@ -8440,6 +8526,7 @@ export const bootstrapChatRoute = (
     text: string;
     protected: boolean;
     reply: ChatReplyDraft | null;
+    assetContext: ChatAssetContext | null;
     submission: { key: string; id: string } | null;
     creationId: string | null;
     owner: typeof composerDraftOwner;
@@ -8462,6 +8549,7 @@ export const bootstrapChatRoute = (
     const draft = copyComposerRecoveryDraft(parked.draft);
     parkedComposerDrafts.set(parked.sessionId, {
       text: draft.text, protected: draft.protected, reply: draft.replyTo ?? null,
+      assetContext: draft.assetContext ?? null,
       owner: { sessionId: parked.sessionId, discarded: false }, modelSourceId: draft.modelSourceId,
       submission: null, creationId: null, investigation: undefined,
       followup: null, continuation: null, diagnosis: null, verification: null, error: null,
@@ -8478,6 +8566,7 @@ export const bootstrapChatRoute = (
     } else {
       parkedComposerDrafts.set(id, {
         text: composerDraft, protected: composerDraftProtected, reply: composerReply,
+        assetContext: composerAssetContext,
         submission: pendingSubmission, creationId: draftCreationId, owner: composerDraftOwner,
         investigation: workInvestigationDraft?.sessionId === id ? workInvestigationDraft : undefined,
         followup: connectedSourceFollowupDraft, continuation: approvedPlanContinuationDraft,
@@ -8503,6 +8592,7 @@ export const bootstrapChatRoute = (
     composerDraft = draft?.text ?? '';
     composerDraftProtected = draft?.protected ?? false;
     composerReply = draft?.reply ?? null;
+    composerAssetContext = draft?.assetContext ?? null;
     pendingSubmission = draft?.submission ?? null;
     draftCreationId = draft?.creationId ?? null;
     workInvestigationDraft = draft?.investigation
@@ -8519,12 +8609,12 @@ export const bootstrapChatRoute = (
   const hasComposerDraft = (id: string | null): boolean => {
     const draft = parkedComposerDrafts.get(id);
     return composerAttachments.hasDraft(id) || (id === composerDraftOwner.sessionId
-      ? composerReply !== null || (composerDraftProtected && composerDraft.trim().length > 0)
-      : draft !== undefined && (draft.reply !== null || (draft.protected && draft.text.trim().length > 0)));
+      ? composerReply !== null || composerAssetContext !== null || (composerDraftProtected && composerDraft.trim().length > 0)
+      : draft !== undefined && (draft.reply !== null || draft.assetContext !== null || (draft.protected && draft.text.trim().length > 0)));
   };
   const hasParkedComposerWork = (): boolean =>
     [...parkedComposerDrafts.values()].some(draft =>
-      draft.reply !== null || (draft.protected && draft.text.trim().length > 0));
+      draft.reply !== null || draft.assetContext !== null || (draft.protected && draft.text.trim().length > 0));
 
   interface AttachmentFocus {
     readonly control: string;
@@ -8575,14 +8665,45 @@ export const bootstrapChatRoute = (
     if (!focus('attach')) focusComposer(true);
   };
 
+  /** The composer's focus and caret, kept across a render that replaces it.
+   *
+   *  ⛔ A RENDER SWAPS THE TEXTAREA, AND FOCUS WENT WITH IT. Reads that finish
+   *  after Chat opens (the model preference, the transparency settings, the
+   *  session list) re-render with a plain `render()`, so the textarea the owner
+   *  was typing in was replaced and focus fell to the page. What they had typed
+   *  stayed; the next keystrokes went nowhere, and text inserted while the
+   *  render ran was lost whole. The paired browser drive typed a draft into Chat
+   *  as it opened and found the box empty, in Chromium (2026-10-19). */
+  const captureComposerFocus = (): { start: number | null; end: number | null } | null => {
+    const input = routeRoot.querySelector?.(
+      `[${CHAT_ROUTE_INPUT_ATTR}]`,
+    ) as HTMLTextAreaElement | null | undefined;
+    if (input == null || doc.activeElement !== input) return null;
+    return { start: input.selectionStart ?? null, end: input.selectionEnd ?? null };
+  };
+  const restoreComposerFocus = (saved: ReturnType<typeof captureComposerFocus>): void => {
+    if (saved === null || disposed) return;
+    // Whatever the render focused on purpose keeps focus.
+    const active = doc.activeElement as HTMLElement | null | undefined;
+    if (active != null && active !== doc.body && active.isConnected !== false) return;
+    const input = routeRoot.querySelector?.(
+      `[${CHAT_ROUTE_INPUT_ATTR}]`,
+    ) as HTMLTextAreaElement | null | undefined;
+    if (input == null) return;
+    input.focus?.({ preventScroll: true });
+    if (saved.start !== null && saved.end !== null) input.setSelectionRange?.(saved.start, saved.end);
+  };
+
   let renderedSessionId: string | null = null;
   let followFirstTranscriptFor: string | null = null;
 
   const render = (): void => {
     if (disposed) return;
     const attachmentFocus = captureAttachmentFocus();
+    const composerFocus = captureComposerFocus();
     renderContents();
     restoreAttachmentFocus(attachmentFocus);
+    restoreComposerFocus(composerFocus);
   };
 
   const renderContents = (): void => {
@@ -9003,7 +9124,7 @@ export const bootstrapChatRoute = (
             deleteButton.className = 'chat-session-action';
             deleteButton.setAttribute(CHAT_ROUTE_SESSION_DELETE_ATTR, session.id);
             deleteButton.textContent = 'Delete chat';
-            const deletingBusySession = turnsInFlightBySession.has(session.id);
+            const deletingBusySession = sessionBusyForDeletion(session.id);
             if (historyActionLocked || deletingBusySession) {
               deleteButton.disabled = true;
               if (deletingBusySession) {
@@ -9036,6 +9157,7 @@ export const bootstrapChatRoute = (
                 sessionAction = null;
                 render();
                 focusHistorySessionRow(session.id);
+                settleVoiceSend();
               };
               confirm.addEventListener('keydown', (event) => {
                 if (event.key !== 'Escape') return;
@@ -9075,6 +9197,9 @@ export const bootstrapChatRoute = (
                 // communicates the lock without removing focusability.
                 confirmDelete.setAttribute('aria-disabled', 'true');
                 confirmDelete.setAttribute('aria-busy', 'true');
+              } else if (deletingBusySession) {
+                confirmDelete.setAttribute('aria-disabled', 'true');
+                confirmDelete.setAttribute('title', 'Wait for Chat to finish answering before you delete this.');
               }
               confirmDelete.addEventListener('click', () => {
                 void deleteSession(session);
@@ -9174,6 +9299,7 @@ export const bootstrapChatRoute = (
 
     const aiNotice = state.aiAvailable === false ? buildAiNotice() : null;
     const mailNotice = buildMailNotice();
+    const assetQuestion = composerAssetContext ?? pendingRecoveryDraft?.assetContext ?? null;
     const showConnectedSourceHandoff =
       isEmpty
       && connectedSourceHandoffActive
@@ -9206,6 +9332,7 @@ export const bootstrapChatRoute = (
     const automateOutstanding = hasInstalledRecipe === false;
     const showFirstRunActivation =
       isEmpty
+      && assetQuestion === null
       && !showConnectedSourceHandoff
       && !showReturningHistory
       // Someone who deliberately continued from a connected source has
@@ -9219,6 +9346,7 @@ export const bootstrapChatRoute = (
     // line offering the steps they have not taken, and nothing once they have.
     const showActivationPointer =
       isEmpty
+      && assetQuestion === null
       && !showFirstRunActivation
       && !showConnectedSourceHandoff
       && connectedSource === null
@@ -9292,7 +9420,7 @@ export const bootstrapChatRoute = (
           const greeting = doc.createElement('h2');
           greeting.className = 'chat-thread-greeting';
           greeting.setAttribute(CHAT_ROUTE_GREETING_ATTR, '');
-          greeting.textContent = 'What can Recued help you with?';
+          greeting.textContent = assetQuestion === null ? 'What can Recued help you with?' : 'Ask about this asset';
           hero.appendChild(greeting);
           if (aiNotice !== null) hero.appendChild(aiNotice);
           if (showActivationPointer) {
@@ -9304,7 +9432,7 @@ export const bootstrapChatRoute = (
         hero.appendChild(buildComposer(false));
         // The activation cards already own the first-run actions; repeating the
         // Run/Create chip row underneath makes the landing harder to scan.
-        const actions = showFirstRunActivation || showConnectedSourceHandoff
+        const actions = showFirstRunActivation || showConnectedSourceHandoff || assetQuestion !== null
           ? null
           : buildComposerActions(false);
         if (actions !== null) hero.appendChild(actions);
@@ -10261,6 +10389,7 @@ export const bootstrapChatRoute = (
       composerDraft = recovery.text;
       composerDraftProtected = recovery.protected;
       composerReply = recovery.replyTo ?? null;
+      composerAssetContext = recovery.assetContext ?? null;
       if (state.thread.session === null) state = { ...state, draftSourceId: recovery.modelSourceId };
     }
     historyLandingActive = false;
@@ -11118,6 +11247,7 @@ export const bootstrapChatRoute = (
       !discardProtectedDraft
       && (hasPendingInitialDraft() || recordingActive
         || (composerDraftOwner.sessionId === null && (composerReply !== null || composerAttachments.rows().length > 0
+          || composerAssetContext !== null
           || recordingFinishing || (composerDraftProtected && composerDraft.trim().length > 0))))
     ) {
       pendingDraftGuard = { kind: 'new' };
@@ -11130,6 +11260,7 @@ export const bootstrapChatRoute = (
       && state.activeSessionId === null
       && composerDraftOwner.sessionId === null
       && composerDraft.trim().length === 0
+      && composerAssetContext === null
       && !connectedSourceHandoffActive
       && !historyLandingActive
       && !hasPendingInitialDraft()
@@ -11244,6 +11375,7 @@ export const bootstrapChatRoute = (
     if (
       sessionAction?.sessionId !== session.id
       || sessionAction.kind !== 'delete-confirm'
+      || sessionBusyForDeletion(session.id)
     ) return;
     sessionAction = { sessionId: session.id, kind: 'delete-busy' };
     render();
@@ -11284,6 +11416,7 @@ export const bootstrapChatRoute = (
       // Return to the safe delete initiator (not the permanent confirmation),
       // preserving the disclosure while requiring an explicit reconfirmation.
       focusSessionDelete(session.id);
+      settleVoiceSend();
     }
   };
 
@@ -11526,6 +11659,8 @@ export const bootstrapChatRoute = (
   };
 
   const sendMessage = async (message: string): Promise<void> => {
+    // A pending deletion retains the draft and its send intent until it settles.
+    if (composerDeletionInFlight()) return;
     // A manual send (including a failed attempt) consumes the entry intent.
     // Slow hydration must not subsequently dispatch it a second time.
     initialWorkSubmission = undefined;
@@ -11557,6 +11692,7 @@ export const bootstrapChatRoute = (
         (r) => voiceRowIds.has(r.id) && r.file_id !== undefined,
       )
     );
+    const assetContextAtSend = composerAssetContext;
     const activeBeforeSend = doc.activeElement as HTMLElement | null | undefined;
     const composerInputBeforeSend = routeRoot.querySelector?.(
       `[${CHAT_ROUTE_INPUT_ATTR}]`,
@@ -11675,7 +11811,7 @@ export const bootstrapChatRoute = (
       const sendPayload = {
         ...(queueGeneration ? { queue_generation: queueGeneration } : {}),
         session_id: session.id,
-        message,
+        message: assetContextAtSend === null ? message : assetChatMessage(message, assetContextAtSend),
         // The prepared investigation reads mail other people wrote, so it runs
         // read-only: nothing in that mail can make the turn act. An edited
         // draft is the owner's own request and runs as an ordinary turn.
@@ -11737,6 +11873,8 @@ export const bootstrapChatRoute = (
       const sendAck = await opts.conn('chat.send', { ...sendPayload, submission_id: submission.id });
       if (pendingSubmission === submission) pendingSubmission = null;
       const parked = parkedComposerDrafts.get(session.id);
+      if (parked?.assetContext === assetContextAtSend) parked.assetContext = null;
+      if (state.activeSessionId === session.id && composerAssetContext === assetContextAtSend) composerAssetContext = null;
       if (parked?.submission === submission) parked.submission = null;
       if (parked) {
         parked.investigation = undefined;
@@ -11922,9 +12060,14 @@ export const bootstrapChatRoute = (
         if (draft) draft.error = error;
       }
     } finally {
-      sendDispatches.delete(dispatchSessionId);
+      const releasedDispatch = sendDispatches.delete(dispatchSessionId);
       if (!disposed && state.activeSessionId === dispatchSessionId && state.sending) {
         state = { ...state, sending: false };
+        renderPreservingHandoffFocus();
+      } else if (!disposed && releasedDispatch && dispatchSessionId !== null
+        && !turnsInFlightBySession.has(dispatchSessionId)) {
+        // Failure or a terminal ack can paint before this last busy marker
+        // clears. Refresh the deletion controls once they can be used again.
         renderPreservingHandoffFocus();
       }
     }
@@ -12433,13 +12576,14 @@ export const bootstrapChatRoute = (
     openPlanLanding,
     getRecoveryDraft: () => {
       let active: ChatComposerRecoveryDraft | null;
-      if (composerDraft.trim().length === 0 && composerReply === null && composerAttachments.rows().length === 0) {
+      if (composerDraft.trim().length === 0 && composerReply === null && composerAssetContext === null && composerAttachments.rows().length === 0) {
         // Keep a pending rescue observable through a second immediate loss of
         // access, including the interval before its session has hydrated.
         active = pendingInitialFiles.length ? { ...(pendingRecoveryDraft ?? { text: '', protected: true, modelSourceId: null }),
           attachments: [...(pendingRecoveryDraft?.attachments ?? []), ...pendingInitialFiles] } : pendingRecoveryDraft;
       } else {
         active = { text: composerDraft, protected: composerDraftProtected,
+          ...(composerAssetContext ? { assetContext: composerAssetContext } : {}),
           ...(composerReply ? { replyTo: composerReply } : {}),
           ...((composerAttachments.payload().length || pendingInitialFiles.length)
             ? { attachments: [...composerAttachments.payload(), ...pendingInitialFiles] } : {}),
@@ -12449,6 +12593,7 @@ export const bootstrapChatRoute = (
       const parkedDrafts = [...parkedComposerDrafts].flatMap(([sessionId, parked]) => {
         const draft: ChatComposerRecoveryDraft = {
           text: parked.text, protected: parked.protected, modelSourceId: parked.modelSourceId ?? null,
+          ...(parked.assetContext ? { assetContext: parked.assetContext } : {}),
           ...(parked.reply ? { replyTo: parked.reply } : {}),
           attachments: composerAttachments.payload(sessionId),
           interruptedUploads: composerAttachments.recoveryUploads(sessionId),
@@ -12465,12 +12610,14 @@ export const bootstrapChatRoute = (
       || (voiceComposer !== null && voiceComposer.phase() !== 'idle')
       || hasPendingVoiceRecordings()
       || composerReply !== null
+      || composerAssetContext !== null
       || pendingInitialFiles.length > 0
       || composerAttachments.hasDrafts()
       || hasParkedComposerWork()
       || (composerDraftProtected && composerDraft.trim().length > 0)
       || (
         pendingRecoveryDraft?.replyTo !== undefined
+        || pendingRecoveryDraft?.assetContext !== undefined
         || (pendingRecoveryDraft?.attachments?.length ?? 0) > 0
         || (pendingRecoveryDraft?.interruptedUploads?.length ?? 0) > 0
         || (pendingRecoveryDraft?.protected === true && pendingRecoveryDraft.text.trim().length > 0)

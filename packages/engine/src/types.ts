@@ -340,6 +340,9 @@ import type {
 } from './fire-exchange-output.js';
 
 export interface ExecutionContext {
+  /** Host-only opt-in snapshot after defaults/continuity, before any step.
+   * Never read from recipe JSON. A failed observer cannot change execution. */
+  onTestCaptureInput?: (input: { recipe: RecipeDefinition; sample: import('@recued/contracts').RecipeSimulationInput }) => void;
   entry_tool_name?: string;
   governing_recipe_grant?: string;
   /** D-261 host-only addressing for the selected execution. Never copied from
@@ -358,6 +361,12 @@ export interface ExecutionContext {
       pii_fields?: readonly string[] },
       dispatch: () => Promise<unknown>): Promise<unknown>;
     catalogApproved(call: { slug: string; operation_id: string; connection_name: string; stepMeta: StepMeta | undefined }): Promise<boolean>;
+    /** Host frame evidence for this exact catalog invocation, never tool input. */
+    catalogResourceReview?(call: { slug: string; operation_id: string; connection_name: string;
+      stepMeta: StepMeta | undefined }): import('@recued/contracts').ResourceReview | undefined;
+    /** The host's synchronous Records write returned before a cancellation check. */
+    recordsMutationReturned?(call: { slug: string; operation_id: string; connection_name: string;
+      stepMeta: StepMeta | undefined }): void;
     delegate(call: { slug: string; input: Record<string, unknown>; stepMeta: StepMeta | undefined },
       dispatch: () => Promise<unknown>): Promise<unknown>;
   };
@@ -384,6 +393,8 @@ export interface ExecutionContext {
    *  unchanged; callers that own a stored snapshot pass its pre-lowering hash.
    *  Other engine hosts omit it and the execution hash is used. */
   outputRecipeHash?: string;
+  /** Host-computed SHA-256 of the canonical authored definition, before lowering. */
+  recipeDefinitionSha256?: string;
   stores: NamespaceStores;
   ingredientExecutor: IngredientExecutor;
   /** D-181 slice 4 — the execution-request anchor `run_id` for this run.
@@ -400,6 +411,11 @@ export interface ExecutionContext {
    *  *running* subprocess. Absent ⇒ no kill path (dbless tests / client
    *  contexts). The engine never aborts it — it is a host-driven input. */
   runAbortSignal?: AbortSignal;
+  /** Host-owned execution scope for the effective run signal, including the
+   * engine's linked budget deadline. Hosts can bind it to asynchronous call
+   * context without changing recipe inputs or sharing mutable state across
+   * runs. The callback must execute and await `run` within that scope. */
+  withRunAbortSignal?<T>(signal: AbortSignal | undefined, run: () => Promise<T>): Promise<T>;
   /** Optional server-side executor for catalog connector bindings with
    *  `kind: "cli_invocation"`. When absent, admitted CLI catalog ops fail
    *  closed after the catalog gate with `no_cli_executor`. */
@@ -414,6 +430,8 @@ export interface ExecutionContext {
   ) => boolean;
   /** D-221 server-local dispatch after the ordinary catalog policy/approval
    * path admits. Absent means Records fails closed. */
+  resourceReview?: import('@recued/contracts').ResourceReviewHooks;
+  localMutations?: import('@recued/contracts').LocalMutationHooks;
   recordsOperationExecutor?: RecordsOperationExecutor;
   /** D-232 — in-process dispatch for an `mcp` binding that names a LOCAL
    *  recipe. There is no separate declaration for local vs remote: the binding
@@ -531,6 +549,9 @@ export interface ExecutionContext {
    *  Omit and every `record_fields` block resolves `unresolved: 'no_schema'` —
    *  which reads as "could not look it up", never as "the record is empty". */
   entityFields?: (entity: string) => readonly EntityFieldDeclaration[] | null;
+  /** Host-only provenance of a directly displayed record, established from
+   * successful calls in this run. Missing evidence leaves the value manual. */
+  recordOutputSource?: (entity: string, step_id: string) => import('@recued/contracts').RecordOutputSource | undefined;
   /** D-181 Slice 2 — the long-op execution governor. Before each ingredient
    *  call the engine classifies it by kind (`callClassForKind` over the
    *  manifest) and acquires a lane slot from this governor; the heavy call then
@@ -899,6 +920,7 @@ export interface ExecutionContext {
     /** Exact chunked-request budget approved for the resumed dispatch. In a
      * foreach this admits only the current item; a following item must raise
      * its own bounded approval. */
+    resource_review?: import('@recued/contracts').ResourceReview;
     egress_bound?: { readonly requests: number; readonly total_bytes: number };
     /** D-165 follow-on (op-identity binding) — the identity the user
      *  approved (`Checkpoint.approved_target`). The engine threads it onto
@@ -1200,6 +1222,7 @@ export interface ExecutionResult {
      *  must see BEFORE approving, and it is the one thing an ask naming only
      *  the operation cannot convey. Fixed before the first dispatch (§ 8a), so
      *  it is exact rather than an estimate. Absent on single-request holds. */
+    resource_review?: import('@recued/contracts').ResourceReview;
     egress_bound?: { readonly requests: number; readonly total_bytes: number };
     /** D-211 — optional standing owner-ruling action + clamp warning. */
     owner_override_offer?: PreflightOverrideOffer;

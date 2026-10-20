@@ -52,6 +52,8 @@ export interface NotifyToast {
   /** Body text. */
   text: string;
   link_url?: string;
+  ask_id?: string;
+  options?: readonly { id: string; label: string }[];
 }
 
 export interface MountNotifyToastsOptions {
@@ -64,6 +66,8 @@ export interface MountNotifyToastsOptions {
    *  bus-driven). The mount subscribes to `notification.notify` on
    *  creation + unsubscribes on dispose. */
   subscribe: BroadcastSubscriber['on'];
+  /** Paired owner's reminder answer. Dismiss never invokes this seam. */
+  answerReminder?: (ask_id: string, option_id: string) => Promise<unknown>;
   /** Auto-dismiss delay (ms). Default 6000. A non-positive value disables
    *  auto-dismiss (manual / programmatic dismissal only). */
   durationMs?: number;
@@ -130,6 +134,12 @@ const safeNotifyLink = (value: unknown): string | undefined => {
   if (/^#data\/view\/view_[a-f0-9-]{36}$/.test(value)) return value;
   // D-324 — a delivered reminder links to the upcoming list. One exact address.
   if (value === REMINDER_LIST_LINK) return value;
+  if (value === '#today') return value;
+  if (value === '#settings/notifications') return value;
+  if (/^#yours\/asset\/(?:[A-Za-z0-9._~-]|%[0-9a-fA-F]{2})+$/.test(value)) return value;
+  // D-325 — occasion reminders, the last-time opt-in and the extension's open link.
+  if (/^#yours\/(?:occasions\/occasion|episodes\/episode)\/(?:[A-Za-z0-9._~-]|%[0-9a-fA-F]{2})+$/.test(value)) return value;
+  if (value === '#yours/episodes' || value === '#yours/occurrences' || value === '#yours/proposals') return value;
   try {
     const url = new URL(value);
     return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : undefined;
@@ -232,6 +242,33 @@ export const mountNotifyToasts = (
     }
     card.appendChild(body);
 
+    if (t.ask_id && t.options && opts.answerReminder) {
+      const actions = doc.createElement('div');
+      actions.className = 'notify-toast-actions';
+      const error = doc.createElement('span');
+      error.setAttribute('role', 'status');
+      const buttons: HTMLButtonElement[] = [];
+      for (const option of t.options) {
+        const button = doc.createElement('button');
+        button.type = 'button';
+        button.textContent = option.label;
+        button.setAttribute('data-reminder-answer', option.id);
+        button.addEventListener('click', () => {
+          if (button.disabled || disposed) return;
+          for (const action of buttons) action.disabled = true;
+          void opts.answerReminder!(t.ask_id!, option.id).then(() => dismiss_(t.id)).catch(() => {
+            if (disposed || !cards.has(t.id)) return;
+            error.textContent = 'The answer could not be saved. Try again.';
+            for (const action of buttons) action.disabled = false;
+          });
+        });
+        buttons.push(button);
+        actions.appendChild(button);
+      }
+      body.appendChild(actions);
+      body.appendChild(error);
+    }
+
     const dismiss = doc.createElement('button');
     dismiss.type = 'button';
     dismiss.setAttribute(NOTIFY_TOAST_DISMISS_ATTR, t.id);
@@ -313,14 +350,17 @@ export const mountNotifyToasts = (
     text: string,
     link_url?: string,
     sticky = false,
+    reminder?: { ask_id: string; options: readonly { id: string; label: string }[] },
   ): void => {
     if (disposed) return;
+    if (reminder && toasts.some(toast => toast.ask_id === reminder.ask_id)) return;
     const id = `toast-${(seq += 1)}`;
     const toast: InternalToast = {
       id,
       ...(title !== undefined ? { title } : {}),
       text,
       ...(link_url ? { link_url } : {}),
+      ...(reminder ? { ask_id: reminder.ask_id, options: reminder.options } : {}),
       timer: null,
     };
     // Evict oldest beyond the cap BEFORE appending the new one, cancelling
@@ -328,11 +368,12 @@ export const mountNotifyToasts = (
     // display bound, not data loss.
     const focusedId = focusedToastId();
     let evictedFocusedToast = false;
-    while (toasts.length >= maxVisible) {
+    while (!reminder && toasts.filter(toast => !toast.ask_id).length >= maxVisible) {
       const nonFocusedIndex = toasts.findIndex((candidate) =>
-        candidate.id !== focusedId);
+        !candidate.ask_id && candidate.id !== focusedId);
+      const evictIndex = nonFocusedIndex < 0 ? toasts.findIndex(candidate => !candidate.ask_id) : nonFocusedIndex;
       const [evicted] = toasts.splice(
-        nonFocusedIndex < 0 ? 0 : nonFocusedIndex,
+        evictIndex,
         1,
       );
       if (evicted) {
@@ -362,12 +403,26 @@ export const mountNotifyToasts = (
     if (typeof event.text !== 'string') return;
     push(typeof event.title === 'string' ? event.title : undefined, event.text, safeNotifyLink(event.link_url));
   });
+  const reminderSubscriptions = opts.answerReminder ? [
+    opts.subscribe('notification.ask', event => {
+      if (event.reminder !== true || typeof event.ask_id !== 'string' || typeof event.text !== 'string'
+        || !Array.isArray(event.options) || event.options.length < 1 || event.options.length > 8
+        || event.options.some(option => typeof option?.id !== 'string' || typeof option.label !== 'string')) return;
+      push(nonBlankTitle(event.title), event.text, safeNotifyLink(event.link_url), true,
+        { ask_id: event.ask_id, options: event.options });
+    }),
+    opts.subscribe('notification.ask_closed', event => {
+      const toast = toasts.find(candidate => candidate.ask_id === event.ask_id);
+      if (toast) dismiss_(toast.id);
+    }),
+  ] : [];
 
   return {
     getToasts: () => toasts.map((t) => ({
       id: t.id,
       ...(t.title !== undefined ? { title: t.title } : {}),
       ...(t.link_url ? { link_url: t.link_url } : {}),
+      ...(t.ask_id ? { ask_id: t.ask_id, options: t.options } : {}),
       text: t.text,
     })),
     dismiss: (id) => dismiss_(id),
@@ -383,11 +438,8 @@ export const mountNotifyToasts = (
       }
       toasts.length = 0;
       cards.clear();
-      try {
-        unsubscribe();
-      } catch {
-        // Unsubscribe errors are isolated — the subscriber owns its own
-        // teardown; we just drop the handle.
+      for (const stop of [unsubscribe, ...reminderSubscriptions]) {
+        try { stop(); } catch { /* One subscription cannot strand the others. */ }
       }
       try {
         opts.host.removeChild(container);
@@ -417,6 +469,28 @@ export const NOTIFY_TOASTS_STYLES = `
   width: min(320px, calc(100vw - 32px));
   max-width: 320px;
   pointer-events: none;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+}
+[${NOTIFY_TOASTS_HOST_ATTR}] .notify-toast-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+[${NOTIFY_TOASTS_HOST_ATTR}] .notify-toast-actions button {
+  min-height: 36px;
+  max-width: 100%;
+  padding: 6px 10px;
+  white-space: normal;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: inherit;
+  cursor: pointer;
+}
+@media (max-width: 600px), (pointer: coarse) {
+  [${NOTIFY_TOASTS_HOST_ATTR}] .notify-toast-actions button { min-height: 44px; }
 }
 [${NOTIFY_TOASTS_HOST_ATTR}] .notify-toast {
   pointer-events: auto;

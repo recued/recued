@@ -15,6 +15,8 @@ declare global { interface Window {
   };
   __repairChatDrafts: () => Promise<void>;
   __refreshChatDrafts: () => Promise<void>;
+  __sendChatDraft: (message: string) => Promise<void>;
+  __publishChatDraftEvent: (event: Record<string, unknown>) => void;
   __draftVoiceFixture: {
     attempts: Array<{ stopped: boolean; cancelled: boolean }>;
     allow: (attempt: number) => void;
@@ -38,6 +40,9 @@ const root = resolve(import.meta.dirname, '../../..');
 const origin = 'http://127.0.0.1:4319';
 const input = (page: Page) => page.locator('[data-recued-chat-route-input]');
 const voiceControl = (page: Page) => page.locator('[data-recued-chat-route-voice]:not([data-recued-chat-route-voice="discard"])');
+const publishChatBusy = (page: Page, sessionId: string, busy: boolean) => page.evaluate(({ sessionId, busy }) => {
+  window.__publishChatDraftEvent({ kind: 'chat.session_changed', session_id: sessionId, field: 'busy', value: busy, cursor: Date.now() });
+}, { sessionId, busy });
 const tabToVoiceDismiss = async (page: Page, browserName: string, name = 'Discard recording') => {
   const dismiss = page.getByRole('button', { name, exact: true });
   await expect(voiceControl(page)).toBeFocused();
@@ -81,8 +86,14 @@ test.beforeAll(async () => {
         const response = await fetch('/chat-drafts-rpc', { method: 'POST', body: JSON.stringify({ method, args }) });
         const { result, error } = await response.json(); if (error) throw new Error(error); return result;
       };
+      const listeners = new Map();
+      window.__publishChatDraftEvent = event => { for (const handler of listeners.get(event.kind) ?? []) handler(event); };
       const create = (sessionId, recovery) => bootstrapChatRoute({
         root: document.getElementById('app'), conn,
+        subscribe: (kind, handler) => {
+          const handlers = listeners.get(kind) ?? new Set(); listeners.set(kind, handlers); handlers.add(handler);
+          return () => handlers.delete(handler);
+        },
         ...(sessionId ? { initialSessionId: sessionId } : { initialLanding: 'new' }),
         initialRecoveryDraft: recovery,
         uploadCallers: {}, uploadConnect: async () => { throw new Error('The upload engine is fixture-owned.'); },
@@ -117,6 +128,7 @@ test.beforeAll(async () => {
       });
       let route = create('a', { text: '', protected: true, modelSourceId: null, attachments: [${JSON.stringify(selected)}] });
       window.__refreshChatDrafts = () => route.refresh();
+      window.__sendChatDraft = message => route.sendMessage(message);
       window.__repairChatDrafts = async () => {
         const recovery = route.getRecoveryDraft(); const sessionId = route.getThread().session?.id;
         route.dispose(); route = create(sessionId, recovery); await route.whenLoaded();
@@ -138,6 +150,7 @@ const setup = async (page: Page, picker: 'direct' | 'menu' = 'direct', voice = f
   const gates = new Map<string, Promise<void>>();
   const fail = new Set<string>();
   const deleted = new Set<string>();
+  const sendAck: { status?: string } = {};
   const hold = (key: string) => gates.set(key, new Promise(resolve => { held.set(key, resolve); }));
   const release = (key: string) => { held.get(key)?.(); held.delete(key); gates.delete(key); };
   const session = (id: string) => ({ id, title: `Conversation ${id}`, archived: false,
@@ -167,7 +180,7 @@ const setup = async (page: Page, picker: 'direct' | 'menu' = 'direct', voice = f
     if (method === 'file.attachment.select') result = selected;
     if (method === 'file.preview') result = { record_id: args.record_id, filename: 'Quote.pdf', mime_type: 'application/pdf',
       transient: false, can_download: false, unavailable_reason: 'No preview bytes in this fixture.' };
-    if (method === 'chat.send') result = { turn_id: `turn-${sends.length}` };
+    if (method === 'chat.send') result = { turn_id: `turn-${sends.length}`, ...sendAck };
     if (method === 'chat.session.create') result = { session_id: 'draft-created' };
     await route.fulfill({ json: error ? { error } : { result } });
   });
@@ -181,7 +194,7 @@ const setup = async (page: Page, picker: 'direct' | 'menu' = 'direct', voice = f
     await openChatHistory(page);
     await page.locator(`[data-recued-chat-route-session-row="${id}"]`).click();
   };
-  return { sends, deletes, hold, release, fail, open };
+  return { sends, deletes, hold, release, fail, open, sendAck };
 };
 
 for (const width of [1280, 390]) {
@@ -569,6 +582,418 @@ for (const width of [1280, 390]) {
         expect(f.sends).toHaveLength(0);
       }
       await expect(page.locator('[data-recued-chat-route-attachment]')).toHaveCount(0);
+    });
+  }
+
+  for (const outcome of ['rejected', 'running', 'completed'] as const) {
+    test(`delete confirmation waits for a ${outcome} send to settle at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 844 });
+      const f = await setup(page);
+      await input(page).fill('Check this first');
+      await openChatHistory(page);
+      await page.locator('[data-recued-chat-route-session-actions="a"] summary').click();
+      await page.locator('[data-recued-chat-route-session-delete="a"]').click();
+      const confirm = page.locator('[data-recued-chat-route-session-delete-confirm="a"]');
+      f.hold('chat.send');
+      if (width === 1280) await page.locator('[data-recued-chat-route-send]').click();
+      else await page.evaluate(() => { void window.__sendChatDraft('Check this first'); });
+      await expect.poll(() => f.sends.length).toBe(1);
+      await expect(confirm).toHaveAttribute('aria-disabled', 'true');
+      await expect(confirm).not.toHaveAttribute('aria-busy', 'true');
+      await expect(confirm).toHaveAttribute('title', 'Wait for Chat to finish answering before you delete this.');
+      await expect(page.getByRole('button', { name: 'Cancel', exact: true })).toBeEnabled();
+      await confirm.focus(); await expect(confirm).toBeFocused();
+      // Preserve real pointer activation while bypassing Playwright's
+      // aria-disabled check, so the execution guard is exercised too.
+      await confirm.click({ force: true }); expect(f.deletes).toEqual([]);
+      // Give the keyboard sequence its own focus target after the pointer action.
+      await confirm.focus(); await page.keyboard.press('Enter'); await page.keyboard.press('Space');
+      expect(f.deletes).toEqual([]); await expect(confirm).toBeFocused();
+      if (outcome === 'rejected') f.fail.add('chat.send');
+      else if (outcome === 'completed') f.sendAck.status = 'completed';
+      f.release('chat.send');
+      await expect(page.locator('[data-recued-chat-route-send]')).toHaveText('Send');
+      if (outcome === 'running') {
+        await expect(page.locator('[data-recued-chat-route-session-status="working"]')).toHaveCount(1);
+        await expect(confirm).toHaveAttribute('aria-disabled', 'true');
+        await page.keyboard.press('Enter'); expect(f.deletes).toEqual([]);
+        await publishChatBusy(page, 'a', false);
+      }
+      await expect(confirm).not.toHaveAttribute('aria-disabled', 'true');
+      await expect(confirm).not.toHaveAttribute('title', 'Wait for Chat to finish answering before you delete this.');
+      await expect(confirm).toBeFocused();
+      if (outcome === 'rejected') await expect(input(page)).toHaveValue('Check this first');
+      f.hold('chat.session.delete'); await page.keyboard.press('Enter');
+      await expect(confirm).toHaveText('Deleting…'); await expect(confirm).toBeFocused();
+      await expect.poll(() => f.deletes).toEqual(['a']);
+      f.release('chat.session.delete');
+      await expect(page.locator('[data-recued-chat-route-session-row="a"]')).toHaveCount(0);
+      expect(f.deletes).toEqual(['a']); expect(f.sends).toHaveLength(1);
+    });
+  }
+
+  for (const cancellation of ['Cancel', 'Escape'] as const) {
+    test(`${cancellation} remains available when an open deletion becomes busy at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 844 });
+      const f = await setup(page);
+      await input(page).fill('Keep this draft');
+      await openChatHistory(page);
+      const actions = page.locator('[data-recued-chat-route-session-actions="a"]');
+      await actions.locator('summary').click();
+      await page.locator('[data-recued-chat-route-session-delete="a"]').click();
+      const confirm = page.locator('[data-recued-chat-route-session-delete-confirm="a"]');
+      await expect(confirm).toBeFocused();
+      await publishChatBusy(page, 'a', true);
+      await expect(confirm).toHaveAttribute('aria-disabled', 'true'); await expect(confirm).toBeFocused();
+      const cancel = page.getByRole('button', { name: 'Cancel', exact: true });
+      await expect(cancel).toBeEnabled();
+      await confirm.click({ force: true }); expect(f.deletes).toEqual([]);
+      await confirm.focus();
+      if (cancellation === 'Cancel') await cancel.click(); else await page.keyboard.press('Escape');
+      await expect(confirm).toHaveCount(0);
+      await expect(page.locator('[data-recued-chat-route-session-row="a"]')).toBeFocused();
+      await expect(input(page)).toHaveValue('Keep this draft');
+      await expect(page.locator('[data-recued-chat-route-attachment="attached"]')).toHaveCount(1);
+      await publishChatBusy(page, 'a', false);
+      await actions.locator('summary').click();
+      const remove = page.locator('[data-recued-chat-route-session-delete="a"]');
+      await expect(remove).toBeEnabled(); await remove.click();
+      await expect(confirm).not.toHaveAttribute('aria-disabled', 'true');
+      await page.keyboard.press('Enter');
+      await expect(page.locator('[data-recued-chat-route-session-row="a"]')).toHaveCount(0);
+      expect(f.deletes).toEqual(['a']); expect(f.sends).toHaveLength(0);
+    });
+  }
+
+  test(`delete confirmation waits for every overlapping turn at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 });
+    const f = await setup(page);
+    await input(page).fill('First request');
+    await openChatHistory(page);
+    await page.locator('[data-recued-chat-route-session-actions="a"] summary').click();
+    await page.locator('[data-recued-chat-route-session-delete="a"]').click();
+    const confirm = page.locator('[data-recued-chat-route-session-delete-confirm="a"]');
+    for (const message of ['First request', 'Second request']) await page.evaluate(message => window.__sendChatDraft(message), message);
+    await expect(confirm).toHaveAttribute('aria-disabled', 'true'); await confirm.focus();
+    const finish = (n: number) => page.evaluate(n => window.__publishChatDraftEvent({
+      kind: 'chat.message_complete', session_id: 'a', turn_id: `turn-${n}`, cursor: n,
+      final: { id: `answer-${n}`, session_id: 'a', turn_id: `turn-${n}`, role: 'assistant', contributor: 'model',
+        content: `Answer ${n}`, target_server: 'self', ts: n + 2,
+        picker_at_send: { display_name: 'Self', signature: { server_kind: 'recued', version: 'fixture', instance_id: 'drafts' } },
+        model_used: { provider: 'local', model_id: 'fixture' } },
+    }), n);
+    await finish(1); await expect(confirm).toHaveAttribute('aria-disabled', 'true');
+    await page.keyboard.press('Space'); expect(f.deletes).toEqual([]);
+    await finish(2); await expect(confirm).not.toHaveAttribute('aria-disabled', 'true');
+    await expect(confirm).toBeFocused(); await page.keyboard.press('Enter');
+    await expect(page.locator('[data-recued-chat-route-session-row="a"]')).toHaveCount(0);
+    expect(f.sends).toHaveLength(2); expect(f.deletes).toEqual(['a']);
+  });
+
+  test(`another chat can be confirmed for deletion while the current chat sends and answers at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 });
+    const f = await setup(page);
+    await input(page).fill('Keep answering here');
+    await openChatHistory(page);
+    await page.locator('[data-recued-chat-route-session-actions="b"] summary').click();
+    await page.locator('[data-recued-chat-route-session-delete="b"]').click();
+    const confirm = page.locator('[data-recued-chat-route-session-delete-confirm="b"]');
+    f.hold('chat.send');
+    if (width === 1280) await page.locator('[data-recued-chat-route-send]').click();
+    else await page.evaluate(() => { void window.__sendChatDraft('Keep answering here'); });
+    await expect.poll(() => f.sends.length).toBe(1);
+    await expect(confirm).not.toHaveAttribute('aria-disabled', 'true');
+    f.release('chat.send');
+    await expect(page.locator('[data-recued-chat-route-session-status="working"]')).toHaveCount(1);
+    await expect(confirm).not.toHaveAttribute('aria-disabled', 'true');
+    await confirm.click();
+    await expect(page.locator('[data-recued-chat-route-session-row="b"]')).toHaveCount(0);
+    await expect(page).toHaveURL(/#chat\/session\/a$/);
+    expect(f.deletes).toEqual(['b']); expect(f.sends).toHaveLength(1);
+  });
+
+  test(`delete initiator waits for send admission and unlocks on failure at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 });
+    const f = await setup(page);
+    await input(page).fill('Keep the failed request');
+    f.hold('chat.send'); await page.locator('[data-recued-chat-route-send]').click();
+    await expect.poll(() => f.sends.length).toBe(1);
+    await openChatHistory(page);
+    await page.locator('[data-recued-chat-route-session-actions="a"] summary').click();
+    const remove = page.locator('[data-recued-chat-route-session-delete="a"]');
+    await expect(remove).toBeDisabled();
+    f.fail.add('chat.send'); f.release('chat.send');
+    await expect(remove).toBeEnabled();
+    await expect(input(page)).toHaveValue('Keep the failed request');
+    await remove.click(); await page.keyboard.press('Enter');
+    await expect(page.locator('[data-recued-chat-route-session-row="a"]')).toHaveCount(0);
+    expect(f.deletes).toEqual(['a']); expect(f.sends).toHaveLength(1);
+  });
+
+  for (const outcome of ['deleted', 'rejected'] as const) {
+    test(`blocks manual sends until current chat deletion is ${outcome} at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 844 });
+      const f = await setup(page);
+      let text = 'Keep this reply';
+      await input(page).fill(text);
+      await page.locator('[data-chat-reply-action="question-a"]').click();
+      await page.locator('[data-recued-chat-route-attach-input]').setInputFiles({
+        name: 'Other.pdf', mimeType: 'application/pdf', buffer: Buffer.from('other'),
+      });
+      await expect(page.locator('[data-recued-chat-route-attachment="uploading"]')).toHaveCount(1);
+      await openChatHistory(page);
+      await page.locator('[data-recued-chat-route-session-actions="a"] summary').click();
+      await page.locator('[data-recued-chat-route-session-delete="a"]').click();
+      const confirm = page.locator('[data-recued-chat-route-session-delete-confirm="a"]');
+      f.hold('chat.session.delete'); await page.keyboard.press('Enter');
+      await expect(confirm).toHaveText('Deleting…');
+      await expect.poll(() => f.deletes).toEqual(['a']);
+      await page.evaluate(() => window.__draftUploadFixture.finish(0, 'file:other'));
+      await expect(page.locator('[data-recued-chat-route-attachment="attached"]')).toHaveCount(2);
+      const send = page.locator('[data-recued-chat-route-send]');
+      await expect(send).toBeDisabled();
+      await expect(send).toHaveAttribute('title', 'Waiting for this chat to finish deleting.');
+      if (width === 1280) {
+        text = 'Keep this edited reply';
+        await input(page).fill(text);
+        await expect(send).toBeDisabled();
+        await send.evaluate(button => (button as HTMLButtonElement).click());
+        await input(page).focus(); await page.keyboard.press('Control+Enter');
+        await page.keyboard.press('Meta+Enter');
+      }
+      // The route's shared entry point must enforce the same lock even when
+      // a caller bypasses the disabled button or the mobile history pane.
+      await page.evaluate(text => window.__sendChatDraft(text), text);
+      expect(f.sends).toHaveLength(0);
+      await expect(input(page)).toHaveValue(text);
+      await expect(page.locator('[data-chat-reply-draft="question-a"]')).toHaveCount(1);
+      await expect(page.locator('[data-recued-chat-route-attachment="attached"]')).toHaveCount(2);
+      await expect(confirm).toHaveText('Deleting…');
+      if (outcome === 'rejected') f.fail.add('chat.session.delete');
+      f.release('chat.session.delete'); await expect(confirm).toHaveCount(0);
+      if (outcome === 'rejected') {
+        await expect(page.getByRole('alert')).toContainText('Recued could not delete this chat.');
+        await f.open('a');
+        await expect(input(page)).toHaveValue(text);
+        await expect(page.locator('[data-chat-reply-draft="question-a"]')).toBeVisible();
+        await expect(page.locator('[data-recued-chat-route-attachment="attached"]')).toHaveCount(2);
+        await expect(send).toBeEnabled();
+        await expect(send).not.toHaveAttribute('title', 'Waiting for this chat to finish deleting.');
+        expect(f.sends).toHaveLength(0);
+        await send.click();
+        await expect.poll(() => f.sends.length).toBe(1);
+        expect(f.sends[0]).toMatchObject({ session_id: 'a', message: text, reply_to_message_id: 'question-a',
+          attachments: [{ file_id: selected.file_id, selection_revision: selected.selection_revision },
+            { file_id: 'file:other', media_class: 'document' }] });
+      } else {
+        await expect(page.locator('[data-recued-chat-route-session-row="a"]')).toHaveCount(0);
+        await expect(page).toHaveURL(/#chat$/);
+        expect(f.sends).toHaveLength(0);
+        await openChatHistory(page); await page.locator('[data-recued-chat-route-new-session]').click();
+        await input(page).fill('A fresh draft'); await send.click();
+        await expect.poll(() => f.sends.length).toBe(1);
+        expect(f.sends[0]).toMatchObject({ session_id: 'draft-created', message: 'A fresh draft' });
+        expect(f.sends[0]).not.toHaveProperty('reply_to_message_id');
+        expect(f.sends[0]).not.toHaveProperty('attachments');
+      }
+      await expect(page.locator('[data-recued-chat-route-attachment]')).toHaveCount(0);
+      await expect(page.locator('[data-chat-reply-draft]')).toHaveCount(0);
+      await expect(input(page)).toHaveValue('');
+      expect(f.sends).toHaveLength(1); expect(f.deletes).toEqual(['a']);
+    });
+  }
+
+  test(`allows manual send while another chat deletion is pending at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 844 });
+    const f = await setup(page);
+    await input(page).fill('Send to the current chat');
+    await openChatHistory(page);
+    await page.locator('[data-recued-chat-route-session-actions="b"] summary').click();
+    await page.locator('[data-recued-chat-route-session-delete="b"]').click();
+    const confirm = page.locator('[data-recued-chat-route-session-delete-confirm="b"]');
+    f.hold('chat.session.delete'); await page.keyboard.press('Enter');
+    await expect(confirm).toHaveText('Deleting…');
+    await expect(page.locator('[data-recued-chat-route-send]')).toBeEnabled();
+    if (width === 1280) { await input(page).focus(); await page.keyboard.press('Control+Enter'); }
+    else await page.evaluate(() => window.__sendChatDraft('Send to the current chat'));
+    await expect.poll(() => f.sends.length).toBe(1);
+    expect(f.sends[0]).toMatchObject({ session_id: 'a', message: 'Send to the current chat',
+      attachments: [{ file_id: selected.file_id, selection_revision: selected.selection_revision }] });
+    await expect(page.locator('[data-recued-chat-route-attachment]')).toHaveCount(0);
+    await expect(input(page)).toHaveValue('');
+    await expect(confirm).toHaveText('Deleting…');
+    f.release('chat.session.delete'); await expect(confirm).toHaveCount(0);
+    await expect(page.locator('[data-recued-chat-route-session-row="b"]')).toHaveCount(0);
+    await expect(page).toHaveURL(/#chat\/session\/a$/);
+    expect(f.sends).toHaveLength(1); expect(f.deletes).toEqual(['b']);
+  });
+
+  for (const cancellation of ['Cancel', 'Escape'] as const) {
+    test(`voice auto-send waits for deletion ${cancellation} at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 844 });
+      const f = await setup(page, 'direct', true, { 'ui.voice.auto_send': true });
+      await page.getByRole('button', { name: 'Remove Quote.pdf', exact: true }).click();
+      const mic = voiceControl(page);
+      await mic.click();
+      await page.evaluate(() => { window.__draftVoiceFixture.allow(0); window.__draftVoiceFixture.holdStop(0); });
+      await expect(mic).toHaveAttribute('data-recued-chat-route-voice', 'recording'); await mic.click();
+      await openChatHistory(page);
+      await page.locator('[data-recued-chat-route-session-actions="a"] summary').click();
+      await page.locator('[data-recued-chat-route-session-delete="a"]').click();
+      const confirm = page.locator('[data-recued-chat-route-session-delete-confirm="a"]');
+      await expect(confirm).toBeFocused();
+      await page.evaluate(() => window.__draftVoiceFixture.finishStop(0));
+      await expect(page.locator('[data-recued-chat-route-attachment="uploading"]')).toHaveCount(1);
+      await page.evaluate(() => window.__draftUploadFixture.finish(0, 'file:cancelled-deletion-note'));
+      await expect(page.locator('[data-recued-chat-route-attachment="attached"]')).toHaveCount(1);
+      await expect(confirm).toBeFocused(); expect(f.sends).toHaveLength(0);
+      if (cancellation === 'Cancel') await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+      else await page.keyboard.press('Escape');
+      await expect(confirm).toHaveCount(0);
+      await expect.poll(() => f.sends.length).toBe(1);
+      expect(f.sends[0]).toMatchObject({ session_id: 'a', message: '',
+        attachments: [{ file_id: 'file:cancelled-deletion-note', media_class: 'voice' }] });
+      await expect(page.locator('[data-recued-chat-route-attachment]')).toHaveCount(0);
+      await expect(page.locator('[data-recued-chat-route-session-row="a"]')).toBeFocused();
+      expect(f.deletes).toEqual([]); expect(f.sends).toHaveLength(1);
+    });
+  }
+
+  for (const outcome of ['deleted', 'rejected'] as const) {
+    for (const completion of ['confirmation', 'deleting', 'uploading', 'afterwards'] as const) {
+      test(`voice auto-send handles ${outcome === 'deleted' ? 'successful' : 'failed'} deletion (${completion}) at ${width}px`, async ({ page }) => {
+        await page.setViewportSize({ width, height: 844 });
+        const f = await setup(page, 'direct', true, { 'ui.voice.auto_send': true });
+        await page.getByRole('button', { name: 'Remove Quote.pdf', exact: true }).click();
+        const mic = voiceControl(page);
+        await mic.click();
+        await page.evaluate(() => { window.__draftVoiceFixture.allow(0); window.__draftVoiceFixture.holdStop(0); });
+        await expect(mic).toHaveAttribute('data-recued-chat-route-voice', 'recording'); await mic.click();
+        await openChatHistory(page);
+        await page.locator('[data-recued-chat-route-session-actions="a"] summary').click();
+        await page.locator('[data-recued-chat-route-session-delete="a"]').click();
+        const confirm = page.locator('[data-recued-chat-route-session-delete-confirm="a"]');
+        const completeNote = async () => {
+          await page.evaluate(() => window.__draftVoiceFixture.finishStop(0));
+          await expect(page.locator('[data-recued-chat-route-attachment="uploading"]')).toHaveCount(1);
+          await page.evaluate(() => window.__draftUploadFixture.finish(0, 'file:deletion-note'));
+        };
+        await expect(confirm).toBeFocused();
+        if (completion === 'confirmation') {
+          await completeNote();
+          await expect(page.locator('[data-recued-chat-route-attachment="attached"]')).toHaveCount(1);
+          await expect(confirm).toBeFocused(); expect(f.sends).toHaveLength(0);
+        } else if (completion === 'uploading') {
+          await page.evaluate(() => window.__draftVoiceFixture.finishStop(0));
+          await expect(page.locator('[data-recued-chat-route-attachment="uploading"]')).toHaveCount(1);
+        }
+        f.hold('chat.session.delete'); await page.keyboard.press('Enter');
+        await expect(confirm).toHaveText('Deleting…'); await expect(confirm).toBeFocused();
+        await expect.poll(() => f.deletes).toEqual(['a']);
+        if (completion === 'deleting') {
+          await completeNote();
+          await expect(page.locator('[data-recued-chat-route-attachment="attached"]')).toHaveCount(1);
+          await expect(confirm).toBeFocused();
+        }
+        await page.keyboard.press('Escape'); await expect(confirm).toHaveText('Deleting…');
+        expect(f.sends).toHaveLength(0);
+        if (outcome === 'rejected') f.fail.add('chat.session.delete');
+        f.release('chat.session.delete'); await expect(confirm).toHaveCount(0);
+        if (outcome === 'rejected') {
+          await expect(page.getByRole('alert')).toContainText('Recued could not delete this chat.');
+          await expect(page.locator('[data-recued-chat-route-session-row="a"]')).toHaveCount(1);
+          await expect(page).toHaveURL(/#chat\/session\/a$/);
+          if (completion === 'afterwards') await completeNote();
+          else if (completion === 'uploading') {
+            await page.evaluate(() => window.__draftUploadFixture.finish(0, 'file:deletion-note'));
+          }
+          await expect.poll(() => f.sends.length).toBe(1);
+          expect(f.sends[0]).toMatchObject({ session_id: 'a', message: '',
+            attachments: [{ file_id: 'file:deletion-note', media_class: 'voice' }] });
+        } else {
+          await expect(page.locator('[data-recued-chat-route-session-row="a"]')).toHaveCount(0);
+          await expect(page).toHaveURL(/#chat$/);
+          if (completion === 'afterwards') {
+            expect(await page.evaluate(() => window.__draftVoiceFixture.attempts[0]?.cancelled)).toBe(true);
+            await page.evaluate(() => window.__draftVoiceFixture.finishStop(0));
+            expect(await page.evaluate(() => window.__draftUploadFixture.attempts.length)).toBe(0);
+          } else if (completion === 'uploading') {
+            expect(await page.evaluate(() => window.__draftUploadFixture.attempts[0]?.destroyed)).toBe(true);
+            await page.evaluate(() => window.__draftUploadFixture.finish(0, 'file:deletion-note'));
+          }
+          expect(f.sends).toHaveLength(0);
+        }
+        await expect(page.locator('[data-recued-chat-route-attachment]')).toHaveCount(0);
+        expect(f.deletes).toEqual(['a']);
+      });
+    }
+  }
+
+  for (const pending of [false, true]) {
+    test(`voice auto-send continues while another chat has ${pending ? 'pending deletion' : 'deletion confirmation'} at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 844 });
+      const f = await setup(page, 'direct', true, { 'ui.voice.auto_send': true });
+      await page.getByRole('button', { name: 'Remove Quote.pdf', exact: true }).click();
+      const mic = voiceControl(page);
+      await mic.click();
+      await page.evaluate(() => { window.__draftVoiceFixture.allow(0); window.__draftVoiceFixture.holdStop(0); });
+      await expect(mic).toHaveAttribute('data-recued-chat-route-voice', 'recording'); await mic.click();
+      await openChatHistory(page);
+      await page.locator('[data-recued-chat-route-session-actions="b"] summary').click();
+      await page.locator('[data-recued-chat-route-session-delete="b"]').click();
+      const confirm = page.locator('[data-recued-chat-route-session-delete-confirm="b"]');
+      if (pending) {
+        f.hold('chat.session.delete'); await page.keyboard.press('Enter');
+        await expect(confirm).toHaveText('Deleting…');
+      }
+      await page.evaluate(() => window.__draftVoiceFixture.finishStop(0));
+      await expect(page.locator('[data-recued-chat-route-attachment="uploading"]')).toHaveCount(1);
+      await page.evaluate(() => window.__draftUploadFixture.finish(0, 'file:unrelated-deletion-note'));
+      await expect.poll(() => f.sends.length).toBe(1);
+      expect(f.sends[0]).toMatchObject({ session_id: 'a', message: '',
+        attachments: [{ file_id: 'file:unrelated-deletion-note', media_class: 'voice' }] });
+      await expect(page.locator('[data-recued-chat-route-attachment]')).toHaveCount(0);
+      await expect(confirm).toBeFocused();
+      if (pending) {
+        f.release('chat.session.delete'); await expect(confirm).toHaveCount(0);
+        await expect(page.locator('[data-recued-chat-route-session-row="b"]')).toHaveCount(0);
+      } else {
+        await page.keyboard.press('Escape'); await expect(confirm).toHaveCount(0);
+      }
+      expect(f.deletes).toEqual(pending ? ['b'] : []); expect(f.sends).toHaveLength(1);
+    });
+  }
+
+  for (const extra of ['text', 'document'] as const) {
+    test(`deletion cancellation keeps voice with ${extra} for explicit Send at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 844 });
+      const f = await setup(page, 'direct', true, { 'ui.voice.auto_send': true });
+      if (extra === 'text') {
+        await page.getByRole('button', { name: 'Remove Quote.pdf', exact: true }).click();
+        await input(page).fill('Keep composing');
+      }
+      const mic = voiceControl(page);
+      await mic.click();
+      await page.evaluate(() => { window.__draftVoiceFixture.allow(0); window.__draftVoiceFixture.holdStop(0); });
+      await expect(mic).toHaveAttribute('data-recued-chat-route-voice', 'recording'); await mic.click();
+      await openChatHistory(page);
+      await page.locator('[data-recued-chat-route-session-actions="a"] summary').click();
+      await page.locator('[data-recued-chat-route-session-delete="a"]').click();
+      await page.evaluate(() => window.__draftVoiceFixture.finishStop(0));
+      await expect(page.locator('[data-recued-chat-route-attachment="uploading"]')).toHaveCount(1);
+      await page.evaluate(() => window.__draftUploadFixture.finish(0, 'file:mixed-deletion-note'));
+      await expect(page.locator('[data-recued-chat-route-attachment="attached"]')).toHaveCount(extra === 'text' ? 1 : 2);
+      await page.keyboard.press('Escape');
+      await expect(page.locator('[data-recued-chat-route-session-delete-confirm="a"]')).toHaveCount(0);
+      await f.open('a');
+      if (extra === 'text') await input(page).fill('');
+      else await page.getByRole('button', { name: 'Remove Quote.pdf', exact: true }).click();
+      await expect(page.locator('[data-recued-chat-route-attachment="attached"]')).toHaveCount(1);
+      expect(f.sends).toHaveLength(0); expect(f.deletes).toEqual([]);
+      await page.locator('[data-recued-chat-route-send]').click();
+      await expect.poll(() => f.sends.length).toBe(1);
+      expect(f.sends[0]).toMatchObject({ session_id: 'a', message: '',
+        attachments: [{ file_id: 'file:mixed-deletion-note', media_class: 'voice' }] });
     });
   }
 

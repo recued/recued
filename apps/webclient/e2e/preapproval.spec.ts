@@ -1,6 +1,108 @@
 import { expect, test } from '@playwright/test';
 
 const BASE = 'http://127.0.0.1:4319/full-app-harness.html?preapproval=1';
+const PARENT = 'pap_11111111-1111-4111-8111-111111111111';
+const CHILD = 'pap_33333333-3333-4333-8333-333333333333';
+for (const width of [280, 1280]) {
+  test(`a confirmed local change keeps its proof after refresh at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 800 });
+    await page.goto(BASE.replace('preapproval=1', 'preapproval=continuation') + '&local_receipt=1#approvals/preapproval/' + PARENT);
+    const route = page.locator('[data-recued-preapproval-route]');
+    await expect(route.locator('[data-local-mutation-receipt]')).toContainText('Records change confirmed');
+    await expect(route).toContainText('Completed first row: succeeded');
+    await page.reload();
+    await expect(route.locator('[data-local-mutation-receipt]')).toContainText('Records change confirmed');
+    expect(await page.evaluate(() => window.__app.rpcCallCount('preapproval.decide'))).toBe(0);
+    expect(await page.evaluate(() => window.__app.rpcCallCount('preapproval.continue'))).toBe(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  });
+}
+for (const width of [280, 1280]) {
+  test(`unfinished changes get a new review with original receipts at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 800 });
+    await page.goto(BASE.replace('preapproval=1', 'preapproval=continuation') + '#approvals/preapproval/' + PARENT);
+    const route = page.locator('[data-recued-preapproval-route]');
+    await expect(route).toContainText('Execution: partial');
+    const prepare = route.getByRole('button', { name: 'Prepare continuation review', exact: true });
+    await expect(prepare).toBeEnabled(); await prepare.focus(); await page.keyboard.press('Enter');
+    await expect(page).toHaveURL(new RegExp(CHILD + '$'));
+    await expect(route).toContainText('Execution: prepared');
+    await expect(route.locator('[data-preapproval-completed]')).toContainText('Completed first row');
+    await expect(route.locator('[data-preapproval-completed]')).toContainText('original-commit');
+    await expect(route.locator('[data-preapproval-resource-review]')).toHaveCount(1);
+    await expect(route.locator('[data-preapproval-resource-review]')).toContainText('Concurrent row value');
+    await expect(route).toContainText('Original assistant');
+    await expect(route.locator('input[type=checkbox]')).toHaveCount(0);
+    expect(await page.evaluate(() => window.__app.rpcCallCount('preapproval.decide'))).toBe(0);
+    expect(await page.evaluate(() => window.__app.rpcCallCount('execute'))).toBe(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.reload(); await expect(route.locator('[data-preapproval-completed]')).toContainText('original-commit');
+  });
+}
+test('lost continuation preparation recovers its saved review after reload without creating another', async ({ page }) => {
+  await page.goto(BASE.replace('preapproval=1', 'preapproval=continuation') + '&continuation_reply=lost#approvals/preapproval/' + PARENT);
+  const route = page.locator('[data-recued-preapproval-route]');
+  await route.getByRole('button', { name: 'Prepare continuation review', exact: true }).click();
+  await expect(route.getByRole('alert')).toContainText('Continuation response was lost');
+  await page.reload();
+  await route.getByRole('link', { name: 'Open continuation review', exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(CHILD + '$'));
+  await expect(route).toContainText('Execution: prepared');
+  expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem('recued-test-preapproval-continuation-attempts')!).length)).toBe(1);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('preapproval.decide'))).toBe(0);
+});
+test('an uncertain attempt explains why continuation is blocked', async ({ page }) => {
+  await page.goto(BASE.replace('preapproval=1', 'preapproval=continuation-uncertain') + '#approvals/preapproval/' + PARENT);
+  const route = page.locator('[data-recued-preapproval-route]');
+  await expect(route).toContainText('Verified reconciliation is required');
+  await expect(route.getByRole('button', { name: 'Prepare continuation review', exact: true })).toHaveCount(0);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('preapproval.continue'))).toBe(0);
+});
+test('retrying a lost continuation response retains the same request and execution window', async ({ page }) => {
+  await page.goto(BASE.replace('preapproval=1', 'preapproval=continuation') + '&continuation_reply=lost#approvals/preapproval/' + PARENT);
+  const route = page.locator('[data-recued-preapproval-route]');
+  const prepare = route.getByRole('button', { name: 'Prepare continuation review', exact: true });
+  await prepare.click(); await expect(route.getByRole('alert')).toContainText('Continuation response was lost');
+  await prepare.click(); await expect(page).toHaveURL(new RegExp(CHILD + '$'));
+  const attempts = await page.evaluate(() => JSON.parse(sessionStorage.getItem('recued-test-preapproval-continuation-attempts')!));
+  expect(attempts).toHaveLength(2); expect(attempts[1]).toEqual(attempts[0]);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('preapproval.decide'))).toBe(0);
+});
+test.describe('D-269 — a continuation runs on the server', () => {
+  test.use({ timezoneId: 'America/New_York' });
+  test('it carries the server\'s zone, not the zone of the browser that prepared it', async ({ page }) => {
+    await page.goto(BASE.replace('preapproval=1', 'preapproval=continuation') + '&server_zone=Asia/Hong_Kong#approvals/preapproval/' + PARENT);
+    const route = page.locator('[data-recued-preapproval-route]');
+    await route.getByRole('button', { name: 'Prepare continuation review', exact: true }).click();
+    await expect(page).toHaveURL(new RegExp(CHILD + '$'));
+    const attempts = await page.evaluate(() => JSON.parse(sessionStorage.getItem('recued-test-preapproval-continuation-attempts')!));
+    expect(attempts.map((attempt: { activation: { time_zone: string } }) => attempt.activation.time_zone)).toEqual(['Asia/Hong_Kong']);
+  });
+});
+for (const width of [280, 1280]) {
+  test(`resource versions and full changes survive preapproval refresh at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 800 });
+    await page.goto(BASE.replace('preapproval=1', 'preapproval=resources') + '#approvals/preapproval/pap_browser');
+    const records = page.locator('[data-preapproval-resource-review="pam_records"]');
+    const calendar = page.locator('[data-preapproval-resource-review="pam_calendar"]');
+    await expect(records).toContainText('Intermediate edit');
+    await expect(records).toContainText('Recreated final note');
+    await expect(records).toContainText('Before: Does not exist');
+    await expect(records).toContainText('<script>window.reviewInjected = true</script>');
+    expect(await page.evaluate(() => 'reviewInjected' in window)).toBe(false);
+    await expect(calendar).toContainText('Original meeting');
+    await expect(calendar).toContainText('Moved meeting');
+    await expect(calendar).toContainText('2027-01-15T');
+    await records.focus(); await expect(records).toBeFocused();
+    await page.keyboard.press('End');
+    await expect.poll(() => records.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await page.reload();
+    await expect(records).toContainText('Intermediate edit');
+    await expect(calendar).toContainText('Moved meeting');
+    expect(await page.evaluate(() => window.__app.rpcCallCount('preapproval.decide'))).toBe(0);
+  });
+}
 for (const [route, activation, approveButton] of [
   ['recipes/autorun-live-1', { kind: 'next_auto_run', recipe_id: 'autorun-live-1', publisher_id: 'recued-core', dish_id: 'dsh_autorun-live-1', expected_revision: 7 }, 'Say yes and set it up'],
   ['automation/auto-run/dsh_autorun-live-1', { kind: 'next_auto_run', recipe_id: 'autorun-live-1', publisher_id: 'recued-core', dish_id: 'dsh_autorun-live-1', expected_revision: 7 }, 'Say yes and set it up'],

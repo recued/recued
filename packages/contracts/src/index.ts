@@ -1,4 +1,7 @@
 export * from './customer-refunds.js';
+export type { LocalUpdateUndoReview, LocalUpdateUndoDecision, LocalUpdateUndoResult } from './local-update-undo.js';
+export { hasLocalUpdateResources, LOCAL_CHANGE_SET_LIMITS } from './local-change-sets.js';
+export type { LocalChangeSetPrepare, LocalChangeSetUndoPrepare, LocalChangeSetDecision, LocalChangeSetReview, LocalChangeSetInspection } from './local-change-sets.js';
 export * from './customer-refund-corrections.js';
 // Runtime constants
 export { OPS, UNARY_OPS } from './conditions.js';
@@ -52,6 +55,8 @@ export {
 
 // Types — steps
 export type { RecipeSimulationInput, RecipeSimulationRequest, RecipeSimulationResult, SimulatedStep } from './recipe-simulation.js';
+export * from './recipe-regression.js';
+export * from './recipe-release.js';
 export type { StepType, BaseStep, TransformStep, IngredientStep, GuardStep, CanonicalOpStep, RecipeStep, PrefetchStep, PrefetchOpStep, CacheFreshness, StepOptions, StepPages, StepMeta, StepFailureKind } from './steps.js';
 export { isPrefetchOpStep } from './steps.js';
 
@@ -95,6 +100,8 @@ export type {
   RecipeEventTrigger,
   UndeclaredConfigOrigin, UndeclaredConfigArgument, UndeclaredConfigArgumentDetails,
 } from './recipe.js';
+export { isRecordOutputSource } from './record-output-source.js';
+export type { RecordOutputSource } from './record-output-source.js';
 export {
   ALLOW_UPGRADE_VARIABLE,
   OUTPUT_TYPES,
@@ -945,8 +952,8 @@ export {
   // D-136 §A.4 — regen-policy closed lists
   REGEN_TRIGGERS, REGEN_DETERMINISMS, REGEN_INPUT_INVARIANTS,
 } from './ingredient.js';
-export type { ValueHintType, ValueHint } from './value-hint.js';
-export { VALUE_HINT_KEYS } from './value-hint.js';
+export type { ValueHintType, ValueHint, RecipePageBinding } from './value-hint.js';
+export { VALUE_HINT_KEYS, isRecipePageBinding } from './value-hint.js';
 export {
   isListOfNumbers,
   isListSetting,
@@ -1617,6 +1624,8 @@ export {
   resolveGrantEntry,
   isGrantedReadAdmissible,
   OWNER_DEFAULT_ONLY_GRANT_ENTRIES,
+  SITUATION_HISTORY_COLLECTIONS,
+  situationHistoryGrantEntry,
   isOwnerDefaultOnlyEntry,
   isGeneratedPackOpEntry,
   ownerOnlyAdjustedAuthorDefault,
@@ -1647,7 +1656,10 @@ export {
   summarizeArgsPreview,
 } from './batched-approval.js';
 // D-270 — how an approval's detail rows name a field, shared by the server and the cards.
-export { askDetailLabel, humanizeAskField } from './ask-detail-label.js';
+export {
+  approvalFieldLabel, approvalValueLabel, askDetailLabel, humanizeAskField, KNOWN_FIELD_NAMES,
+} from './ask-detail-label.js';
+export type { ApprovalValueLabels } from './ask-detail-label.js';
 // D-166 override-write path — rpc DTOs + pure wire normalizer for the
 // `collection.contract.*` family that authors `contract.override.*` rows (the
 // editable tightening layer the Slice 4d.4 catalog gateway reads).
@@ -3569,6 +3581,7 @@ export type { ContextRecipe } from './context.js';
 // Phase G — archive rpc shared shapes (D-109).
 export type {
   ArchiveImportRebind,
+  ArchiveImportOperationStatus,
   ArchiveJobStatus,
   ArchiveManifest,
   ArchiveRealmRelation,
@@ -4904,6 +4917,7 @@ export type {
   BridgeCancelCommand,
   BridgeWireEnvelope,
   BridgeFromBridgeWireEnvelope,
+  BridgeNotificationReceipt,
   BridgeQueueState,
   ServerToBridgeNotification,
   BridgeClickAction,
@@ -5828,6 +5842,7 @@ export {
   TASK_SCHEMA,
   NOTE_SCHEMA,
   COMMITMENT_SCHEMA,
+  ASSET_SCHEMA,
   PROJECT_SCHEMA,
   MAIL_MESSAGE_SCHEMA,
 } from './canonical-schemas/index.js';
@@ -6750,6 +6765,7 @@ export * from './download-frame.js';
 // chunk BYTES reuse the generic `upload-frame.ts` wire format; finalize STAGES
 // the assembled archive under `exports/` for `server.archive.import`).
 export * from './archive-upload.js';
+export * from './archive-remote.js';
 
 // D-148 § A.2.1 follow-on — the WS bearer's `Sec-WebSocket-Protocol` carrier.
 // Three surfaces must agree byte for byte (webclient + Bridge encode, server
@@ -6917,6 +6933,7 @@ export {
   MAIL_CHAT_ENROL_CODE_TTL_MS,
   MAIL_CHAT_ENROLLED_SENDERS_MAX,
   isMailChatEnrollableAddress,
+  isMailChatOneMailbox,
   mailChatCheckerOrg,
   MAIL_CHAT_OWNER_MAILBOXES_MAX,
   MAIL_CHAT_STALE_AFTER_MINUTES_DEFAULT,
@@ -6946,7 +6963,9 @@ export * from './file-source-authentication.js';
 export * from './file-download-verification.js';
 export * from './authentication-repair-worklist.js';
 export * from './authentication-incident-history.js';
+export * from './authentication-history-export.js';
 export * from './authentication-access-verification.js';
+export * from './authentication-access-summary.js';
 export * from './pack-access.js';
 export type { PackConnectionChange, PackConnectionsView } from './pack-connections.js';
 
@@ -6983,3 +7002,46 @@ export { isOAuthPermissionInventory, isOAuthPermissionCleanupPreview } from './o
 export * from './customer-receivables-aging.js';
 export type { OAuthPermissionCleanupJob, OAuthPermissionCleanupTarget, OAuthPermissionCleanupAuthorization, OAuthPermissionCleanupRequest } from './oauth-permission-cleanup.js';
 export { OAUTH_PERMISSION_CLEANUP_ACTIONS, isOAuthPermissionCleanupJob, isOAuthPermissionCleanupAuthorization } from './oauth-permission-cleanup.js';
+
+export * from './resource-review.js';
+export {
+  ASSET_STATUSES, ASSET_IDENTIFYING_FIELD_NOTE, ASSET_SOURCE_RANKS,
+  AssetValidationError, isAssetDate, validateAsset, validateAssetRule,
+} from './assets.js';
+export type {
+  Asset, AssetStatus, AssetAudience, AssetContributionKind, AssetFactSource,
+  AssetEvidence, AssetReading, AssetCondition, AssetValue, AssetAnchor,
+  AssetRuleOffset, AssetReminderSchedule, AssetRuleWhen, AssetRule,
+  AssetWriteSource, AssetPatch, AssetCreateInput, AssetUpdateInput, AssetObservationInput, AssetClassPreset, TravelValidityRule, Sphere,
+} from './assets.js';
+export { validateAssetClassPreset } from './assets.js';
+export {
+  assetDateAt, shiftAssetDate, assetRuleActBy, evaluateAssetRuleClock, planAssetReminderPoints,
+  ASSET_EXPECTED_PATTERNS, assetConditionExpected,
+} from './asset-rule-clock.js';
+export type { AssetRuleClock, AssetReminderPoint } from './asset-rule-clock.js';
+export * from './yours.js';
+export * from './asset-documents.js';
+export * from './proactive-history.js';
+export type {
+  SituationBasis, SituationVerdict, SituationReason, SituationRef, SituationPlace,
+  SituationDimension, SituationWindow, TripDetails, SituationQuery, SituationQueryInput, SituationFact, SituationItem,
+  SituationCluster, SituationResult, SituationState, SituationDismissal,
+  SituationSnapshot, SituationRevision, SituationDeliverySettings, SituationDeliveryStatus, ProactiveToday,
+} from './situation.js';
+export { SITUATION_QUERY_SCHEMA, parseSituationQueryInput } from './situation.js';
+
+export { isContactAnnualDate, contactExcludedFromProactive } from './contact.js';
+export type { ContactRelationship, ContactPrivacyMark } from './contact.js';
+
+export * from './pack-update.js';
+export * from './pack-removal.js';
+export * from './pack-repair.js';
+
+export * from './recipe-run-capture.js';
+
+export * from './connection-replacement.js';
+
+export * from './permission-regression.js';
+
+export * from './automation-rehearsal.js';

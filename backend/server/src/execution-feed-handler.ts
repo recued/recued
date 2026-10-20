@@ -14,6 +14,7 @@ import {
   RUN_ANCHOR_STATUSES,
   RpcError,
   isCliFailureDetail,
+  isLocalMutationReceiptSummary,
   provenanceAttributionFromSource,
   renderActorLabel,
   sanitizeTimelineOriginFilter,
@@ -319,6 +320,9 @@ const projectGatewayTrace = (
     if (commit.completed_at !== undefined) row.completed_at = commit.completed_at;
     if (commit.duration_ms !== undefined) row.duration_ms = commit.duration_ms;
     if (commit.cached === true) row.cached = true;
+    if (isLocalMutationReceiptSummary(commit.local_receipt)) row.local_receipt = {
+      receipt_id: commit.local_receipt.receipt_id, kind: commit.local_receipt.kind, committed_at: commit.local_receipt.committed_at,
+    };
     return row;
   });
 

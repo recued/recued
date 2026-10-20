@@ -73,12 +73,38 @@
  *  the time it pauses. A request found by a recovery scan is recorded as such
  *  (`recovered`), and its turn answers it in one line (`turns.ts`).
  *
- *  Spec: D-318 §4.2, §4.9, §4.13, §8 steps 2, 3 and 6. */
+ *  ONE MAILBOX (2026-10-18, §8.18) — the chat mailbox is one of the owner's
+ *  own too, and they write to it from itself. Proof (a) is unchanged: its own
+ *  Sent record, asked at its provider, proves the email theirs. What changes is
+ *  which copy is the request, since the provider files an email to oneself as
+ *  sent:
+ *  - ⛔ Gmail keeps it as ONE message, labelled `SENT` and `INBOX` — outbound.
+ *    Skipped as "what the chat mailbox itself sent", every request would be lost;
+ *    so with one mailbox a Gmail chat mailbox's outbound email to itself is
+ *    the request.
+ *  - Outlook and an IMAP server deliver a copy to the inbox, and the Sent copy
+ *    is another message under the same Message-ID. Where the Sent folder is
+ *    synced too (one-address notifications need it, D-158), the two copies
+ *    would refuse each other as `duplicate`. The Sent copy is the owner's own
+ *    record — only the account adds to it — so it is noted as it lands
+ *    (`mail_chat_sent_copies`), never a request, and left out of the copies
+ *    counted.
+ *  - Only an email to the chat mailbox ALONE can be a request: its address is
+ *    the owner's own, and mail to them and someone else is mail to that
+ *    someone. The `ask:` filter is always on (the store keeps it so).
+ *  - An email the proof does not prove the owner's is their mail again: the
+ *    composition takes the conversation's mark off its row (`onNotProven`),
+ *    which an email delivered to the chat mailbox carried on its provider's
+ *    word (`conversation-mail.ts`), and the next sync does not put it back
+ *    (`refuted`).
+ *
+ *  Spec: D-318 §4.2, §4.9, §4.13, §8 steps 2, 3 and 6, §8.18. */
 
 import { createHash } from 'node:crypto';
 
 import type Database from 'better-sqlite3';
 import {
+  isMailChatOneMailbox,
   isMailReconciliationId,
   MAIL_CHAT_BURST_MAX,
   MAIL_CHAT_BURST_WINDOW_MS,
@@ -256,6 +282,10 @@ export interface MailChatSentProofDeps {
   /** The audit — checks pause while the vault is locked (the mailboxes' keys are
    *  in it), and the waits start again when it opens. Absent ⇒ never locked. */
   readonly isUnlocked?: () => boolean;
+  /** One mailbox (§8.18) — an email of the chat mailbox settled as not the
+   *  owner's request (not proven, or set aside), by its stored row. Called once,
+   *  best-effort. Absent ⇒ nobody is told. */
+  readonly onNotProven?: (chat_slug: string, record_id: string) => void;
   readonly now?: () => number;
   readonly log?: (level: 'info' | 'warn', msg: string, data?: Record<string, unknown>) => void;
 }
@@ -282,6 +312,14 @@ export interface MailChatSentProof {
   get(chat_slug: string, rfc_message_id: string): MailChatRequest | null;
   /** Step 7 — a chat mailbox's latest requests, newest first. */
   recent(chat_slug: string, limit: number): MailChatRequestProgress[];
+  /** Does an email referring to these Message-IDs (nearest first) continue a
+   *  conversation of this chat mailbox — one chat has, or a request of it still
+   *  on its way? One mailbox reads it to tell a reply from the owner's own mail
+   *  (`conversation-mail.ts`). */
+  continuesConversation(chat_slug: string, references: readonly string[]): boolean;
+  /** Was the email with this Message-ID (bracketless) in this chat mailbox
+   *  settled as not the owner's request: not proven, or set aside? */
+  refuted(chat_slug: string, rfc_message_id: string): boolean;
 }
 
 interface RequestRow {
@@ -498,6 +536,16 @@ export const createMailChatSentProof = (deps: MailChatSentProofDeps): MailChatSe
   }
   db.exec(`CREATE INDEX IF NOT EXISTS mail_chat_requests_due
     ON mail_chat_requests (state, next_attempt_at)`);
+  // One mailbox (§8.18) — the owner's own Sent copies of an email to the chat
+  // mailbox, as they landed in it (Outlook, IMAP): never a request, and not a
+  // second copy of one.
+  db.exec(`CREATE TABLE IF NOT EXISTS mail_chat_sent_copies (
+    chat_slug TEXT NOT NULL,
+    record_id TEXT NOT NULL,
+    rfc_message_id TEXT NOT NULL,
+    landed_at INTEGER NOT NULL,
+    PRIMARY KEY (chat_slug, record_id)
+  )`);
 
   const insert = db.prepare(`INSERT OR IGNORE INTO mail_chat_requests
     (chat_slug, rfc_message_id, record_id, from_address, to_json, references_json, arrived_at, received_at, state,
@@ -562,6 +610,11 @@ export const createMailChatSentProof = (deps: MailChatSentProofDeps): MailChatSe
     WHERE chat_slug = @chat_slug AND state = 'proven' AND arrived_at BETWEEN @from AND @to`);
   const prune = db.prepare(`DELETE FROM mail_chat_requests
     WHERE state != 'pending' AND notice_state != 'due' AND admit_state IS NOT 'waiting' AND resolved_at < ?`);
+  const insertSentCopy = db.prepare(`INSERT OR IGNORE INTO mail_chat_sent_copies
+    (chat_slug, record_id, rfc_message_id, landed_at) VALUES (?, ?, ?, ?)`);
+  const selectSentCopies = db.prepare(`SELECT record_id FROM mail_chat_sent_copies
+    WHERE chat_slug = ? AND rfc_message_id = ?`);
+  const pruneSentCopies = db.prepare('DELETE FROM mail_chat_sent_copies WHERE landed_at < ?');
 
   let admit: MailChatAdmit | undefined;
   let notify: MailChatProofNotify | undefined;
@@ -630,6 +683,13 @@ export const createMailChatSentProof = (deps: MailChatSentProofDeps): MailChatSe
         reason,
         ...(notice_state === 'suppressed' ? { notice: 'held back: one was given within the hour' } : {}),
       });
+      try {
+        deps.onNotProven?.(row.chat_slug, row.record_id);
+      } catch (error) {
+        log?.('warn', 'chat mailbox: the email not proven could not be given back to the owner\'s mail', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
     return changed;
   };
@@ -640,13 +700,16 @@ export const createMailChatSentProof = (deps: MailChatSentProofDeps): MailChatSe
    *  that had been recorded: a copy the filters set aside (no `ask:`) recorded
    *  nothing, and a forged copy with the same Message-ID and an `ask:` subject
    *  was then proven by the owner's real Sent record. Never the Date line, which
-   *  the sender writes. */
+   *  the sender writes. One mailbox: the owner's own Sent copy of it, noted as
+   *  it landed, is not another copy. */
   const storedCopies = (chat_slug: string, rfc_message_id: string): string[] => {
     try {
+      const sent = new Set((selectSentCopies.all(chat_slug, rfc_message_id) as Array<{ record_id: string }>)
+        .map((row) => row.record_id));
       return (db.prepare(`SELECT record_id FROM "${collectionTableName('mail', chat_slug)}"
         WHERE json_extract(hot_fields, '$.rfc_message_id') = ? ORDER BY rowid`).all(rfc_message_id) as Array<{
         record_id: string;
-      }>).map((row) => row.record_id);
+      }>).map((row) => row.record_id).filter((record_id) => !sent.has(record_id));
     } catch {
       return [];
     }
@@ -711,8 +774,9 @@ export const createMailChatSentProof = (deps: MailChatSentProofDeps): MailChatSe
     }
     // Only the mailboxes the owner named as theirs: whoever can send from
     // another connected mailbox (a shared support@, an assistant's) is not the
-    // owner.
-    const named = door.get().owner_mailboxes.filter((slug) => slug !== row.chat_slug);
+    // owner. With one mailbox (§8.18) the chat mailbox is among them, and its
+    // own Sent record proves an email the owner wrote to themselves.
+    const named = door.get().owner_mailboxes;
     const owners = all.filter((mailbox) =>
       named.includes(mailbox.slug) && bareAddress(mailbox.accountEmail) === row.from_address);
     if (!row.from_address.includes('@') || owners.length === 0) {
@@ -964,6 +1028,7 @@ export const createMailChatSentProof = (deps: MailChatSentProofDeps): MailChatSe
       if (disposed) return;
       await deliverNotices();
       prune.run(now() - MAIL_CHAT_PROOF_KEEP_MS);
+      pruneSentCopies.run(now() - MAIL_CHAT_PROOF_KEEP_MS);
     } while (again && !disposed);
   };
 
@@ -1062,6 +1127,37 @@ export const createMailChatSentProof = (deps: MailChatSentProofDeps): MailChatSe
         if (disposed || !door.isChatMailbox(ctx.slug)) return;
         const rfc_message_id = normalizeRfcMessageId(msg.rfc_message_id);
         if (rfc_message_id === undefined || !plausibleMessageId(rfc_message_id)) return;
+        const settings = door.get();
+        const oneMailbox = isMailChatOneMailbox(settings);
+        // One mailbox — addressed to the chat mailbox alone: its address is the
+        // owner's own, and mail to them and someone else is not a request.
+        const toItAlone = (): boolean => {
+          const chatAddress = bareAddress(mailboxes().find((mailbox) => mailbox.slug === ctx.slug)?.accountEmail
+            ?? settings.chat_address ?? '');
+          return chatAddress.includes('@') && msg.to.length === 1 && bareAddress(msg.to[0]!) === chatAddress
+            && msg.cc.length === 0;
+        };
+        if (oneMailbox) {
+          // One mailbox — the owner's own Sent copy of an email to themselves,
+          // filed apart from the copy delivered to the inbox (Outlook, IMAP):
+          // their record, never a request, and not a second copy of one. Gmail
+          // keeps both as one message, which is the request (below). ⚠ A
+          // provider not named reads as Gmail: taken for a Sent copy, a request
+          // would be lost without a word; taken for a request, a second copy
+          // refuses it aloud.
+          if (msg.direction === 'outbound' && (ctx.provider_kind === 'graph' || ctx.provider_kind === 'imap')) {
+            if (toItAlone()) insertSentCopy.run(ctx.slug, ctx.record_id, rfc_message_id, now());
+            return;
+          }
+          // Everything else the owner's mailbox holds is their mail, set aside
+          // without a word: the log would otherwise name each email they get.
+          if (!toItAlone()) return;
+        }
+        // Set aside: logged where the chat mailbox is only that, never for the
+        // owner's own mail in one mailbox.
+        const ignored = (why: string, data?: Record<string, unknown>): void => {
+          if (!oneMailbox) log?.('info', why, { chat_slug: ctx.slug, ...data });
+        };
         // ⛔ Before any other check: only the first copy of a Message-ID to land
         // in the chat mailbox can be a request, whatever became of it.
         const copies = storedCopies(ctx.slug, rfc_message_id);
@@ -1071,13 +1167,15 @@ export const createMailChatSentProof = (deps: MailChatSentProofDeps): MailChatSe
         }
         // The chat mailbox's first sync is a backfill: old mail, never a request.
         if (!ctx.backfill_complete) return;
-        // Recued's own answers, drafts, and what the chat mailbox itself sent.
+        // Recued's own answers, drafts, and what the chat mailbox itself sent —
+        // but with one mailbox, the owner's email to themselves, which Gmail
+        // files as sent.
         if (isMailReconciliationId(msg.reconciliation_id)) return;
-        if (msg.direction === 'outbound' || msg.direction === 'draft') return;
+        if (msg.direction === 'draft' || (msg.direction === 'outbound' && !oneMailbox)) return;
         // Step 4 — what is not a request at all, before anything is looked up.
         const sign = automaticMailSign(msg.headers);
         if (sign !== null) {
-          log?.('info', 'chat mailbox message ignored: automatic reply', { chat_slug: ctx.slug, sign });
+          ignored('chat mailbox message ignored: automatic reply', { sign });
           return;
         }
         const from_address = bareAddress(msg.from);
@@ -1087,11 +1185,9 @@ export const createMailChatSentProof = (deps: MailChatSentProofDeps): MailChatSe
         // An emailed approval answer is D-158's (P23), never a chat message.
         if (extractAskId(msg.subject) !== null) return;
         const references = mailChatReferences(msg.headers);
-        const prefix = door.get().ask_prefix;
+        const prefix = settings.ask_prefix;
         if (prefix !== null && !subjectAsks(msg.subject, prefix) && !continuesConversation(ctx.slug, references)) {
-          log?.('info', 'chat mailbox message ignored: a new conversation starts with the ask prefix', {
-            chat_slug: ctx.slug,
-          });
+          ignored('chat mailbox message ignored: a new conversation starts with the ask prefix');
           return;
         }
         const arrived_at = now();
@@ -1179,6 +1275,21 @@ export const createMailChatSentProof = (deps: MailChatSentProofDeps): MailChatSe
     recent(chat_slug, limit): MailChatRequestProgress[] {
       return (selectRecent.all(chat_slug, Math.max(0, Math.floor(limit))) as RequestRow[])
         .map((row) => ({ ...toRequest(row), admit_reason: row.admit_reason }));
+    },
+    continuesConversation: (chat_slug, references) => {
+      try {
+        return continuesConversation(chat_slug, references);
+      } catch {
+        return false;
+      }
+    },
+    refuted(chat_slug, rfc_message_id): boolean {
+      try {
+        const state = (selectOne.get(chat_slug, rfc_message_id) as RequestRow | undefined)?.state;
+        return state === 'not_proven' || state === 'ignored';
+      } catch {
+        return false;
+      }
     },
   };
 };

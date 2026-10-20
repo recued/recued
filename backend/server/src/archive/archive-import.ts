@@ -279,8 +279,8 @@ export const parseManifest = (
  *  `min_consumer_version` is a static floor + `archive_format_version` tracks
  *  only the on-disk envelope, so neither catches a db-schema bump; this compares
  *  the manifest's `schema_version` against the binary's `SCHEMA_VERSION` directly.
- *  An OLDER/equal archive is fine — the newer binary's idempotent boot DDL
- *  applies the additive schema forward on the post-restore restart; only a NEWER
+ *  An OLDER/equal archive is fine — staging applies registered migrations
+ *  before committing, and boot retains legacy store convergence; only a NEWER
  *  archive (made by a newer Recued) is unrestorable here (no downgrade path). */
 export const archiveSchemaTooNew = (schemaVersion: number): boolean =>
   schemaVersion > SCHEMA_VERSION;
@@ -291,6 +291,9 @@ export const checkManifestCompat = (
   consumerVersion: string,
   allowFutureVersion: boolean,
 ): void => {
+  if (!Number.isSafeInteger(manifest.schema_version) || manifest.schema_version < 1) {
+    throw new Error('ARCHIVE_INVALID: schema_version must be a positive integer');
+  }
   if (manifest.archive_format_version > ARCHIVE_FORMAT_VERSION) {
     if (!allowFutureVersion) {
       throw new Error(

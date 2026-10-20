@@ -473,6 +473,7 @@ export const bindReceptionDoor = (
       recipeId: input.recipeId,
       capability,
       mintedBy: input.mintedBy,
+      ...(existingContractId !== null ? { previousContractIds: [existingContractId] } : {}),
       doorExecutionPolicy: executionPolicy,
       ...(input.standingClosure === true ? { standingClosure: true } : {}),
     },

@@ -286,6 +286,7 @@ describe('D-166 contract_definition schema substrate', () => {
         'display_name',
         'scope',
         'door_execution_policy',
+        'read_spheres',
         // D-187 §6 (step 7) — the level-1 door-type axis.
         'door_types',
         // D-209 #1 — the derived door's authored stage-trust ceiling.
@@ -327,6 +328,7 @@ describe('D-166 contract_definition schema substrate', () => {
         minted_by: 'string',
         display_name: 'string',
         scope: 'contract_scope',
+        read_spheres: 'enum:personal|professional[]?',
         door_execution_policy: 'door_execution_policy?',
         // D-187 §6 + D-196 — the level-1 door-type axis (optional array-of-enum).
         // D-207 — `reception` joins it. See the derivation ratchet below: this literal is

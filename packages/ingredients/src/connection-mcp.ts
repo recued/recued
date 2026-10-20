@@ -68,6 +68,7 @@ import {
   validateHeaderAuthEntries,
   describeHeaderAuthIssue,
   foldConnectionDispatchHealth,
+  canonicalArgHash,
 } from '@recued/contracts';
 import type {
   ConnectionAuth,
@@ -137,6 +138,14 @@ interface JsonRpcResponse {
   result?: unknown;
   error?: JsonRpcErrorEnvelope;
 }
+
+/** A host page fence can raise the shared RPC error before transport I/O.
+ * Preserve that refusal through setup and stream adapters. */
+const isConnectionAdmissionError = (error: unknown): error is Error => error instanceof IngredientError
+  || error instanceof Error && Reflect.get(error, 'code') === 'connection_changed';
+
+const isRunCancellation = (error: unknown): error is IngredientError =>
+  error instanceof IngredientError && error.code === 'run_killed';
 
 interface McpHttpEnvelopeRead {
   envelope: JsonRpcResponse;
@@ -286,14 +295,20 @@ export const readMcpHttpEnvelope = async (
   return { envelope, byteLength };
 };
 
+/** A connection name and endpoint can stay fixed while its account changes.
+ * Keep credentials opaque in pool keys and exclude routine health/use updates. */
+const sessionAccountKey = (row: ConnectionRow): string => canonicalArgHash({
+  enrolled_at: row.enrolled_at, auth: row.auth_ciphertext, config: row.config_json,
+  subtype: row.subtype ?? null, scope: row.subresource_path ?? null,
+  granted_scopes: row.granted_scopes_json ?? null,
+}).canonical_payload_hash;
+
 /** Pool entry per connection record. Modern HTTP holds metadata only; legacy
  * HTTP+SSE, websocket, and stdio carry a live `McpStreamSession`. */
 interface McpClient {
   transport: McpTransport;
-  /** Reuse-staleness key: the endpoint URL (`websocket`) or a stable
-   *  command signature (`stdio`). A pooled session is reused only while
-   *  this still matches the record's current config; a re-enrolled
-   *  connection (same pk, changed target) forces a reopen. */
+  /** Reuse key includes the account identity and endpoint/command. A changed
+   * enrollment, credential or target closes the old authenticated session. */
   endpoint: string;
   /** Wall-clock ms of the most recent successful dispatch. The reaper
    *  prunes entries whose `last_used_at` is older than
@@ -305,6 +320,7 @@ interface McpClient {
   /** Negotiated wire revision for stateless HTTP. Stream sessions retain the
    * same selection on the session itself. */
   protocolVersion?: RecuedMcpProtocolVersion;
+  protocolFlight?: Promise<RecuedMcpProtocolVersion>;
   /** `Mcp-Session-Id` minted by a handshake-era Streamable HTTP server during
    * `initialize`, echoed on every later POST. Absent for the modern era (which
    * removed sessions) and for servers that mint none. */
@@ -416,8 +432,9 @@ const MCP_CLIENT_INFO = { name: 'recued-connection-mcp', version: '1' } as const
  *  site supplies the concrete implementations (`mcp-ws-connector.ts` /
  *  `mcp-stdio-spawner.ts`); tests inject mocks. */
 export interface McpStreamHandle {
-  /** Send one framed JSON-RPC message (already serialized to a string). */
-  send: (data: string) => void;
+  /** Send one framed JSON-RPC message (already serialized to a string).
+   * Async admission failures reject this request; channel death uses onError. */
+  send: (data: string) => void | Promise<void>;
   /** Register a per-frame text listener. The handler registers exactly
    *  one router that correlates responses by JSON-RPC id. */
   onMessage: (listener: (data: string) => void) => void;
@@ -566,7 +583,7 @@ const openLegacyMcpSseHandle = async (
       if (closed || messageEndpoint === undefined) {
         throw new Error('MCP legacy SSE session is closed');
       }
-      void fetchOriginPinned(fetchImpl, messageEndpoint.toString(), {
+      return fetchOriginPinned(fetchImpl, messageEndpoint.toString(), {
         method: 'POST',
         headers: {
           ...baseHeaders,
@@ -595,7 +612,10 @@ const openLegacyMcpSseHandle = async (
         }
         discardResponseBody(response);
       }).catch((error: unknown) => {
-        if (!closed) fail(error as Error);
+        // A caller's refused handoff says nothing about another caller's
+        // admitted request. Leave the shared stream open and reject this send.
+        if (!closed && !isRunCancellation(error)) fail(error as Error);
+        throw error;
       });
     },
     onMessage(listener) { messageListeners.push(listener); },
@@ -629,7 +649,7 @@ class McpStreamSession {
       `MCP session closed${info.reason ? `: ${info.reason}` : ''}`
       + `${typeof info.code === 'number' ? ` (code ${info.code})` : ''}`,
     ));
-    handle.onError((err) => this.fail(`MCP session error: ${err.message}`));
+    handle.onError((err) => this.fail(`MCP session error: ${err.message}`, err));
   }
 
   get isClosed(): boolean {
@@ -683,10 +703,10 @@ class McpStreamSession {
   /** Tear down on close / error: reject every in-flight request with a
    *  non-abort error (→ NETWORK_ERROR / ACTION_DELIVERY_UNCERTAIN at the
    *  handler) + latch the session dead. Idempotent. */
-  private fail(reason: string): void {
+  private fail(reason: string, error?: Error): void {
     if (this.closed) return;
     this.closed = true;
-    this.closeError = new Error(reason);
+    this.closeError = isConnectionAdmissionError(error) ? error : new Error(reason);
     for (const waiter of this.pending.values()) {
       clearTimeout(waiter.timer);
       waiter.reject(this.closeError);
@@ -721,12 +741,16 @@ class McpStreamSession {
         reject(err);
       }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
-      try {
-        this.handle.send(JSON.stringify({ jsonrpc: '2.0', id, method, params }));
-      } catch (e) {
-        this.pending.delete(id);
+      const rejectSend = (error: unknown): void => {
+        if (!this.pending.delete(id)) return;
         clearTimeout(timer);
-        reject(e as Error);
+        reject(error);
+      };
+      try {
+        const sent = this.handle.send(JSON.stringify({ jsonrpc: '2.0', id, method, params }));
+        if (sent) void sent.catch(rejectSend);
+      } catch (e) {
+        rejectSend(e);
       }
     });
   }
@@ -780,10 +804,21 @@ class McpStreamSession {
         );
       }
       this.selectProtocolVersion(selected);
+      let notificationTimer: ReturnType<typeof setTimeout> | undefined;
+      const notificationTimeout = new Error(`MCP initialized notification timed out after ${timeoutMs}ms`);
+      notificationTimeout.name = 'AbortError';
       try {
-        this.handle.send(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }));
-      } catch {
+        const sent = this.handle.send(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }));
+        if (sent) await Promise.race([sent, new Promise<never>((_resolve, reject) => {
+          notificationTimer = setTimeout(() => reject(notificationTimeout), timeoutMs);
+        })]);
+      } catch (error) {
+        // A missing required notification cannot leave a stopped run's
+        // incomplete session in the pool. Bound async notification admission.
+        if (isRunCancellation(error) || error === notificationTimeout) throw error;
         // best-effort notification — see JSDoc.
+      } finally {
+        if (notificationTimer !== undefined) clearTimeout(notificationTimer);
       }
       this.initialized = true;
     })();
@@ -832,7 +867,11 @@ const openNegotiatedMcpStreamSession = async (
         `MCP modern version negotiation failed: ${discover.error?.message ?? 'protocol error'}`,
       );
     }
-  } catch {
+  } catch (error) {
+    if (isRunCancellation(error)) {
+      modernSession?.close();
+      throw error;
+    }
     // No positive modern evidence: retry on a fresh connection using the
     // legacy lifecycle. Auth/server failures during ordinary calls still fail
     // normally; this catch is confined to the version probe.
@@ -1619,6 +1658,9 @@ export const createConnectionMcpHandler = (
   // Per-record client state. Modern HTTP entries are bookkeeping; legacy
   // HTTP+SSE, websocket, and stdio entries carry a live stream session.
   const clientPool = new Map<string, McpClient>();
+  const superseded = () => new IngredientError('CONNECTION_REFUSED',
+    'The MCP account changed while its session was opening. Review the account and try again.',
+    { reason: 'connection_changed' });
   // Single-flight session open per record — two concurrent dispatches to
   // the same record share one ws-connect / stdio-spawn + initialize rather
   // than racing two channels. Keyed by record.pk; the entry carries the
@@ -1634,7 +1676,8 @@ export const createConnectionMcpHandler = (
       // Never reap a session with an in-flight request — closing it would
       // reject a legitimate long call (`last_used_at` only bumps on
       // success, so a slow request looks "idle" mid-flight).
-      if (client.session?.hasPending) continue;
+      if (client.session?.hasPending || client.protocolFlight
+        || openFlight.get(pk)?.targetKey === client.endpoint) continue;
       if (client.last_used_at < cutoff) {
         clientPool.delete(pk);
         // Close any long-lived legacy SSE / websocket / stdio channel.
@@ -1653,9 +1696,9 @@ export const createConnectionMcpHandler = (
   /** Reuse a live pooled session for `record` (same target, not closed), or
    *  run `open()` to make a fresh one — with a target-aware single-flight so
    *  concurrent dispatches to the SAME target share one open, while a
-   *  concurrent re-enrollment (different target) gets its own. Leak-safe:
-   *  the pool-write closes any session it would overwrite (a superseded
-   *  concurrent open can't orphan an un-pooled, never-reaped channel).
+   *  concurrent re-enrollment (different target) gets its own. A reserved pool
+   *  slot also detects replacements by a different transport while opening.
+   *  Superseded opens close their own channel and preserve the current one.
    *  `open()` returns an already-initialized session (or throws). */
   const openSession = async (
     pk: string,
@@ -1667,24 +1710,37 @@ export const createConnectionMcpHandler = (
     // Reuse only a LIVE session still pointed at the SAME target. A
     // re-enrolled connection (same pk, new endpoint / command) must not keep
     // talking to the old target — close + reopen.
-    if (existing?.session && !existing.session.isClosed && existing.endpoint === targetKey) {
+    if (existing?.session && !existing.session.isClosed && existing.transport === transport && existing.endpoint === targetKey) {
       return existing.session;
+    }
+    const inflight = openFlight.get(pk);
+    if (inflight && inflight.targetKey === targetKey
+      && existing?.transport === transport && existing.endpoint === targetKey) {
+      try { return await inflight.flight; }
+      catch (error) {
+        if (!isRunCancellation(error)) throw error;
+        // Only setup was shared. A stopped opener cannot cancel another run;
+        // the waiter re-enters setup under its own host admission checks.
+        const current = clientPool.get(pk);
+        if (current && (current.transport !== transport || current.endpoint !== targetKey)) throw superseded();
+        return openSession(pk, targetKey, transport, open);
+      }
     }
     if (existing) {
       existing.session?.close();
       clientPool.delete(pk);
     }
-    // Join a concurrent open ONLY when it targets the same key.
-    const inflight = openFlight.get(pk);
-    if (inflight && inflight.targetKey === targetKey) return inflight.flight;
+    const client: McpClient = { transport, endpoint: targetKey, last_used_at: now() };
+    clientPool.set(pk, client);
 
     const flight = (async (): Promise<McpStreamSession> => {
       const session = await open();
-      // Close any session this open overwrites (a superseding concurrent
-      // open of a different target) so it isn't orphaned out of the pool.
-      const prior = clientPool.get(pk);
-      if (prior?.session && prior.session !== session) prior.session.close();
-      clientPool.set(pk, { transport, endpoint: targetKey, last_used_at: now(), session });
+      if (clientPool.get(pk) !== client) {
+        session.close();
+        throw superseded();
+      }
+      client.session = session;
+      client.last_used_at = now();
       return session;
     })();
 
@@ -1695,6 +1751,7 @@ export const createConnectionMcpHandler = (
       // Only clear the slot if it's still OURS (a superseding open may have
       // replaced it with a different-target flight).
       if (openFlight.get(pk)?.flight === flight) openFlight.delete(pk);
+      if (!client.session && clientPool.get(pk) === client) clientPool.delete(pk);
     }
   };
 
@@ -1708,7 +1765,8 @@ export const createConnectionMcpHandler = (
     timeoutMs: number,
   ): Promise<McpStreamSession> => {
     const endpointStr = endpointUrl.toString();
-    return openSession(record.pk, endpointStr, 'websocket', async () => {
+    const targetKey = JSON.stringify([endpointStr, sessionAccountKey(record)]);
+    return openSession(record.pk, targetKey, 'websocket', async () => {
       const openHandle = async (): Promise<WsClientHandle> => {
         // Decode + refresh auth for every physical connection. Legacy fallback
         // deliberately opens a fresh connection after the modern probe.
@@ -1784,7 +1842,7 @@ export const createConnectionMcpHandler = (
     try { session = await openWsSession(record, wsConnect, endpointUrl, d.timeoutMs); }
     catch (error) {
       evictIfDead(record.pk);
-      if (error instanceof IngredientError) throw error;
+      if (isConnectionAdmissionError(error)) throw error;
       throw mapStreamDispatchError(error, record, call, d);
     }
     await deps.beforeRequest?.(call);
@@ -1814,7 +1872,7 @@ export const createConnectionMcpHandler = (
       return envelopeToShape(envelope, d.method === 'tools/call');
     } catch (e) {
       evictIfDead(record.pk);
-      if (e instanceof IngredientError) throw e;
+      if (isConnectionAdmissionError(e)) throw e;
       throw mapStreamDispatchError(e, record, call, d);
     }
   };
@@ -1871,13 +1929,14 @@ export const createConnectionMcpHandler = (
     const spec = readStdioCommand(record, call);
     // Stable reuse-key: command + args + env. A re-enrollment that changes
     // any of these respawns rather than reusing the stale child.
-    const targetKey = JSON.stringify([spec.command, spec.args, spec.env ?? null, deps.processIdentity?.(spec) ?? null]);
+    const targetKey = JSON.stringify([spec.command, spec.args, spec.env ?? null,
+      deps.processIdentity?.(spec) ?? null, sessionAccountKey(record)]);
 
     let session: McpStreamSession;
     try { session = await spawnStdioSession(record, spawnStdio, spec, targetKey, d.timeoutMs); }
     catch (error) {
       evictIfDead(record.pk);
-      if (error instanceof IngredientError) throw error;
+      if (isConnectionAdmissionError(error)) throw error;
       throw mapStreamDispatchError(error, record, call, d);
     }
     await deps.beforeRequest?.(call);
@@ -1905,7 +1964,7 @@ export const createConnectionMcpHandler = (
       return envelopeToShape(envelope, d.method === 'tools/call');
     } catch (e) {
       evictIfDead(record.pk);
-      if (e instanceof IngredientError) throw e;
+      if (isConnectionAdmissionError(e)) throw e;
       throw mapStreamDispatchError(e, record, call, d);
     }
   };
@@ -1915,7 +1974,7 @@ export const createConnectionMcpHandler = (
    * 4xx or method-not-found response falls back to the validated legacy
    * lifecycle. Recognized modern protocol errors, auth failures, rate limits,
    * and 5xx responses fail without downgrading. */
-  const negotiateHttpProtocol = async (
+  const negotiateHttpProtocolOnce = async (
     client: McpClient,
     record: ConnectionRow,
     url: URL,
@@ -1951,6 +2010,7 @@ export const createConnectionMcpHandler = (
           signal: controller.signal,
         }, url.origin);
       } catch (error) {
+        if (isConnectionAdmissionError(error)) throw error;
         // A probe that times out means "not a modern server" — the spec names a
         // non-response as a fallback trigger, not a fatal condition. Reporting
         // it as NETWORK_ERROR here would strand every legacy server that
@@ -2108,18 +2168,43 @@ export const createConnectionMcpHandler = (
         timeoutMs,
       ));
       await legacySession.ensureLegacyInitialized(() => nextRequestId++, timeoutMs);
+      if (clientPool.get(record.pk) !== client) throw superseded();
       client.session?.close();
       client.session = legacySession;
       client.protocolVersion = MCP_LEGACY_PROTOCOL_VERSION;
       return client.protocolVersion;
     } catch (error) {
       legacySession?.close();
+      if (isConnectionAdmissionError(error)) throw error;
       throw new IngredientError(
         'NETWORK_ERROR',
         `connection.mcp legacy HTTP+SSE negotiation with '${record.name}' failed: ${(error as Error).message}`,
         { name: record.name },
       );
     }
+  };
+
+  const negotiateHttpProtocol = async (
+    client: McpClient, record: ConnectionRow, url: URL,
+    headers: Record<string, string>, timeoutMs: number,
+  ): Promise<RecuedMcpProtocolVersion> => {
+    if (client.protocolVersion !== undefined) return client.protocolVersion;
+    const waiting = client.protocolFlight;
+    if (waiting) {
+      try { return await waiting; }
+      catch (error) {
+        if (!isRunCancellation(error)) throw error;
+        if (clientPool.get(record.pk) !== client) throw superseded();
+        if (client.protocolFlight === waiting) delete client.protocolFlight;
+        // No tool/resource request has been sent. Retry only negotiation,
+        // with the waiting caller's transport fence and credentials.
+        return negotiateHttpProtocol(client, record, url, headers, timeoutMs);
+      }
+    }
+    const flight = negotiateHttpProtocolOnce(client, record, url, headers, timeoutMs);
+    client.protocolFlight = flight;
+    try { return await flight; }
+    finally { if (client.protocolFlight === flight) delete client.protocolFlight; }
   };
 
   const dispatch = async (
@@ -2175,12 +2260,13 @@ export const createConnectionMcpHandler = (
     }
 
     const endpoint = readEndpoint(record, transport);
+    const targetKey = JSON.stringify([endpoint, sessionAccountKey(record)]);
 
     // ────────────── pool entry ──────────────
     const existing = clientPool.get(record.pk);
-    const client: McpClient = existing?.transport === transport && existing.endpoint === endpoint
+    const client: McpClient = existing?.transport === transport && existing.endpoint === targetKey
       ? existing
-      : { transport, endpoint, last_used_at: now() };
+      : { transport, endpoint: targetKey, last_used_at: now() };
     if (client !== existing) {
       existing?.session?.close();
       clientPool.set(record.pk, client);
@@ -2215,6 +2301,10 @@ export const createConnectionMcpHandler = (
       headers,
       timeoutMs,
     );
+    if (clientPool.get(record.pk) !== client) {
+      client.session?.close();
+      throw superseded();
+    }
 
     const requestId = nextRequestId++;
     const isLegacyEra = mcpProtocolEra(protocolVersion) === 'legacy';
@@ -2250,7 +2340,7 @@ export const createConnectionMcpHandler = (
         return envelopeToShape(envelope, method === 'tools/call');
       } catch (error) {
         evictIfDead(record.pk);
-        if (error instanceof IngredientError) throw error;
+        if (isConnectionAdmissionError(error)) throw error;
         throw mapStreamDispatchError(error, record, call, streamParams);
       }
     }
@@ -2334,7 +2424,7 @@ export const createConnectionMcpHandler = (
       }, url.origin);
     } catch (e) {
       clearTimeout(timer);
-      if (e instanceof IngredientError) throw e;
+      if (isConnectionAdmissionError(e)) throw e;
       if (e instanceof CrossOriginRedirectError) {
         throw new IngredientError(
           'URL_REF_INVALID',

@@ -15,7 +15,9 @@
  *  mount the next route, and it NEVER clears `contentRoot` — a route that
  *  paints into the shared container leaves itself behind and the next route
  *  renders underneath it (the defect `bootstrap-stats-route` records). */
+import type { SituationDismissal } from '@recued/contracts';
 import { renderToday, TODAY_CREATE_ACTION, TODAY_VIEW_STYLES } from '../data/today-view.js';
+import type { TodaySphereFilter } from '../data/today-view.js';
 import {
   createTodayController, type TodayCallers, type TodayController,
 } from './today-controller.js';
@@ -84,6 +86,7 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
   let generation = 0;
   let pending: Promise<void> = Promise.resolve();
   let sourcesOpen: boolean | undefined;
+  let sphereFilter: TodaySphereFilter = 'all';
 
   const render = (): void => {
     if (disposed) return;
@@ -125,20 +128,28 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
         canReschedule: opts.callers.workEntityUpsertCaller !== undefined,
         edit: controller.edit(),
         notice: controller.notice(),
+        error: controller.error(),
+        canCloseCommitment: opts.callers.commitmentCloseCaller !== undefined,
+        commitmentBusy: controller.busy(),
+        canDismissSituation: opts.callers.situationChangeCaller !== undefined,
+        undoDismissal: controller.undoDismissal(),
       },
+      sphereFilter,
     );
     if (held === null) return;
     const find = (selector: string, match: (el: HTMLElement) => boolean): HTMLElement | null =>
       Array.from(root.querySelectorAll?.<HTMLElement>(selector) ?? []).find(match) ?? null;
     const refresh = (): HTMLElement | null =>
       root.querySelector?.<HTMLElement>('.today-refresh') ?? null;
-    if (heldHref !== null && heldHref !== undefined) {
+    if (held.hasAttribute('data-today-sphere')) {
+      root.querySelector<HTMLSelectElement>('[data-today-sphere]')?.focus();
+    } else if (heldHref !== null && heldHref !== undefined) {
       (find('a', (el) => el.getAttribute('href') === heldHref) ?? refresh())
         ?.focus?.({ preventScroll: true });
     } else if (heldRefresh || heldSources) {
       root.querySelector?.<HTMLElement>(heldRefresh ? '.today-refresh' : '.today-sources summary')
         ?.focus?.({ preventScroll: true });
-    } else if (heldAction?.startsWith('today-task-') === true) {
+    } else if (heldAction?.startsWith('today-task-') === true || heldAction?.startsWith('today-commitment-') === true) {
       // ⚠ The due-date INPUT lands here too. Its draft lives in the
       // controller's `edit`, so the re-rendered field already carries the typed
       // value — what the repaint would otherwise lose is only the caret.
@@ -201,6 +212,24 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
       return;
     }
     if (action === 'today-task-save') { void controller.submit(); return; }
+    if (action === 'today-commitment-fulfill' || action === 'today-commitment-cancel') {
+      void controller.closeCommitment(target?.getAttribute('data-today-task') ?? '', action === 'today-commitment-fulfill' ? 'fulfill' : 'cancel');
+      return;
+    }
+    if (action === 'today-situation-dismiss') {
+      const code = target?.getAttribute('data-today-dismiss') as SituationDismissal | null;
+      if (!code) return;
+      void controller.dismissSituation(target?.getAttribute('data-today-dismiss-cluster') ?? '', Number(target?.getAttribute('data-today-dismiss-item')), code)
+        // "That's wrong" corrects the record itself: open it once the answer is kept.
+        .then(href => { if (href && !disposed && doc.defaultView) doc.defaultView.location.hash = href; });
+      return;
+    }
+    if (action === 'today-situation-restore') { void controller.restoreSituation(target?.getAttribute('data-today-dismissal') ?? ''); return; }
+    // The link still navigates; this only tells the learner it was opened.
+    if (action === 'today-situation-open') {
+      controller.recordOpen(target?.getAttribute('data-today-open-cluster') ?? '', Number(target?.getAttribute('data-today-open-item')));
+      return;
+    }
     if (action === 'today-task-cancel') { controller.closeEditor(); return; }
     if (action === TODAY_CREATE_ACTION) opts.callers.openCreateOverlay?.();
   };
@@ -243,6 +272,11 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
   root.addEventListener('click', onClick);
   root.addEventListener('input', onInput);
   root.addEventListener('keydown', onKeyDown);
+  root.addEventListener('change', event => { const target = event.target as HTMLSelectElement | null;
+    if (target?.hasAttribute('data-today-sphere') && ['all', 'personal', 'professional', 'unsorted'].includes(target.value)) {
+      sphereFilter = target.value as TodaySphereFilter; render(); root.querySelector<HTMLSelectElement>('[data-today-sphere]')?.focus();
+    }
+  });
 
   // ⛔ TIME IS AN INPUT TO THIS SURFACE, AND NOTHING BROADCASTS IT. Today
   // classifies by deadline — overdue, due today, the local-day boundary — so

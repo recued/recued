@@ -147,4 +147,28 @@ describe('chat-store — turn_id on messages', () => {
     const after = await store.listMessages('sess-3');
     expect(after.map((m) => m.turn_id)).toEqual([undefined, 'turn-9']);
   });
+
+  it('lists a turn\'s rows in the order it wrote them, and moves no other row\'s time', async () => {
+    const { store } = harness();
+    store.createSession({ id: 'sess-4', now: 1000 });
+    const append = async (id: string, ts: number, turn_id?: string) => (await store.appendMessage({
+      id, session_id: 'sess-4', role: 'assistant', content: id, target_server: 'self',
+      picker_at_send: samplePicker(), model_used: sampleModel(), ts,
+      ...(turn_id !== undefined ? { turn_id } : {}),
+    })).ts;
+    expect(await append('a', 2000, 'turn-1')).toBe(2000);
+    // Same millisecond, same turn: 1 ms after the turn's newest row.
+    expect(await append('b', 2000, 'turn-1')).toBe(2001);
+    // Given an earlier time than its turn already holds: still listed after it.
+    expect(await append('c', 1500, 'turn-1')).toBe(2002);
+    // Another turn, and a row outside any turn, keep the time they were given.
+    expect(await append('d', 2000, 'turn-2')).toBe(2000);
+    expect(await append('e', 1200)).toBe(1200);
+    // No tie: the given time stands.
+    expect(await append('f', 3000, 'turn-1')).toBe(3000);
+    const listed = await store.listMessages('sess-4');
+    expect(listed.map((m) => [m.id, m.ts])).toEqual([
+      ['e', 1200], ['a', 2000], ['d', 2000], ['b', 2001], ['c', 2002], ['f', 3000],
+    ]);
+  });
 });

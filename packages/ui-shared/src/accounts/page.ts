@@ -181,6 +181,9 @@ export const validateAccountForm = (
       if (!Number.isInteger(n)) {
         return `${field.label} must be a whole number.`;
       }
+      if (field.key === 'backfill_days' && (n < 1 || n > 3650)) {
+        return 'Mail history must be between 1 and 3650 days.';
+      }
       if (field.key === 'port' || field.key === 'smtp_port') {
         if (n < 1 || n > 65535) {
           return `${field.label} must be between 1 and 65535.`;
@@ -198,6 +201,11 @@ export const validateAccountForm = (
 // Lane + provider definitions (Slice 1)
 // ════════════════════════════════════════════════════════════════
 
+const MAIL_HISTORY_FIELD: AccountField = {
+  key: 'backfill_days', label: 'Mail history (days)', type: 'number', default: '400', optional: true,
+  help: 'Starts at 400 days for last year’s events; choose less if you prefer. Raw mail is normally kept for 365 days. Selected memory evidence is kept separately in Yours.',
+};
+
 const IMAP_PROVIDER: AccountProvider = {
   id: 'imap',
   label: 'IMAP / SMTP',
@@ -212,6 +220,7 @@ const IMAP_PROVIDER: AccountProvider = {
       placeholder: 'fastmail',
       help: 'A short lower-case name for this account. Recipes use it.',
     },
+    MAIL_HISTORY_FIELD,
     { key: 'host', label: 'IMAP Host', type: 'text', placeholder: 'imap.fastmail.com' },
     { key: 'port', label: 'IMAP Port', type: 'number', default: '993', placeholder: '993' },
     {
@@ -270,6 +279,7 @@ const IMAP_PROVIDER: AccountProvider = {
       username: (v['username'] ?? '').trim(),
       password: v['password'] ?? '',
       folders: splitAccountList(v['folders']),
+      ...(v.backfill_days?.trim() ? { backfill_days: Number(v.backfill_days) } : {}),
     };
     const smtpHost = (v['smtp_host'] ?? '').trim();
     if (smtpHost.length > 0) {
@@ -321,6 +331,7 @@ const mailOAuthFields = (
   sendHelp: string,
   extra: readonly AccountField[] = [],
 ): readonly AccountField[] => [
+  MAIL_HISTORY_FIELD,
   {
     key: 'name',
     label: 'Mailbox name',
@@ -347,6 +358,7 @@ const mailOAuthFields = (
  *  builder ignores it for Google rather than widening that consent. */
 const projectMailOAuth = (v: AccountFormValues): Record<string, unknown> => ({
   account_slug: (v['name'] ?? '').trim(),
+  ...(v.backfill_days?.trim() ? { backfill_days: Number(v.backfill_days) } : {}),
   send_enabled: v['send_enabled'] === 'true',
   calendar_enabled: v['calendar_enabled'] === 'true',
 });
@@ -1094,7 +1106,7 @@ const renderProviderForm = (
       { key: 'mutation_enabled', label: 'Allow moving, marking and deleting mail', type: 'boolean', default: 'false', optional: true },
     ]
     : [{ key: 'write_enabled', label: 'Allow calendar changes', type: 'boolean', default: 'false', optional: true }];
-  const fields = (managed ? [...provider.fields.filter(field => field.key === 'name'), ...managedFields] : provider.fields)
+  const fields = (managed ? [...provider.fields.filter(field => field.key === 'name' || field.key === 'backfill_days'), ...managedFields] : provider.fields)
     .map((f) => renderField(f, state.values)).join('');
   const backAction = lane.providers.length > 1 ? 'accounts-open-add' : 'accounts-back-to-list';
 

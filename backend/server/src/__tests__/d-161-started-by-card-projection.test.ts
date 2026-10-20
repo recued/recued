@@ -243,6 +243,8 @@ describe('D-161 — the composer writes it, the card shows it', () => {
     const card = cardFor({ origin_actor: 'anonymous' });
     expect(collectByAttr(card, ASK_CARD_SUMMARY_ATTR)).toHaveLength(1);
     expect(collectByAttr(card, ASK_CARD_DETAILS_ATTR)).toHaveLength(1);
-    expect(allText(card)).toContain('Approve write action');
+    // The composer's own title, in the owner's words since 2026-10-19 (no
+    // recipe title on this checkpoint, so the operation's).
+    expect(allText(card)).toContain('Approve: mail-send');
   });
 });

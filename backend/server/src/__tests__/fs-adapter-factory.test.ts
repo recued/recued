@@ -5,22 +5,37 @@
  *  fs-watcher.test.ts — these tests only exercise the Phase 7
  *  wrapping layer. */
 
+import { EventEmitter } from 'node:events';
 import {
-  mkdtempSync, existsSync, writeFileSync, rmSync, chmodSync, symlinkSync, readFileSync,
+  mkdtempSync, existsSync, writeFileSync, rmSync, chmodSync, symlinkSync, readFileSync, type FSWatcher,
 } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   fsAdapterFactory,
 } from '../collections/file/adapters/fs/index.js';
 import { probeFsCaps } from '../collections/file/adapters/fs/probe.js';
 import { probeAdapter } from '../collections/file/adapter-registry.js';
-import type { FileMutationCapable } from '../collections/file/adapter-registry.js';
+import type { FileAdapterFactory, FileMutationCapable } from '../collections/file/adapter-registry.js';
 
 const makeRoot = (): string =>
   mkdtempSync(join(tmpdir(), 'recued-fs-adapter-'));
+
+// No test here opens a real recursive watcher. On macOS closing one blocks the event
+// loop for seconds under disk load, and the test that attached one took 84 s in a
+// 2026-10-19 sweep. The probe's watch is faked or stubbed, and the adapters below are
+// walked once, never watched. Live watching is tested in `watched-folders.test.ts`.
+const fakeWatcher = () => Object.assign(new EventEmitter(), { close: vi.fn() });
+const stubbedProbe: FileAdapterFactory = {
+  ...fsAdapterFactory,
+  probeCaps: (config) => probeFsCaps({ path: String(config.path) }, { probeRealtimeWatch: async () => true }),
+};
+const unwatched = {
+  read: 'yes', write: 'yes', delete: 'yes', watch: 'none',
+  mirror: 'optional', auth: 'none', path_style: 'posix',
+} as const;
 
 describe('fs adapter probeCaps (Phase 7 / D-110)', () => {
   let root: string;
@@ -32,7 +47,7 @@ describe('fs adapter probeCaps (Phase 7 / D-110)', () => {
   });
 
   it('reports write + delete on a writable directory', async () => {
-    const caps = await probeAdapter(fsAdapterFactory, { path: root });
+    const caps = await probeAdapter(stubbedProbe, { path: root });
     expect(caps.read).toBe('yes');
     expect(caps.write).toBe('yes');
     expect(caps.delete).toBe('yes');
@@ -40,19 +55,34 @@ describe('fs adapter probeCaps (Phase 7 / D-110)', () => {
   });
 
   it('reports realtime only when a recursive watcher attaches', async () => {
-    const caps = await probeFsCaps(
-      { path: root },
-      { probeRealtimeWatch: async () => true },
-    );
+    const watcher = fakeWatcher();
+    const watchFactory = vi.fn((_path: string, _options: { recursive: true }) => watcher as unknown as FSWatcher);
+    const caps = await probeFsCaps({ path: root }, { watchFactory });
     expect(caps.watch).toBe('realtime');
+    expect(watchFactory).toHaveBeenCalledWith(root, { recursive: true });
+    // It keeps nothing once it has answered.
+    expect(watcher.close).toHaveBeenCalledOnce();
+    expect(watcher.listenerCount('error')).toBe(0);
   });
 
   it('reports none, never poll, when recursive watching is unavailable', async () => {
     const caps = await probeFsCaps(
       { path: root },
-      { probeRealtimeWatch: async () => false },
+      { watchFactory: () => { throw new Error('recursive watch unsupported'); } },
     );
     expect(caps.watch).toBe('none');
+  });
+
+  it('reports none when the watcher fails on its first turn, and closes it', async () => {
+    const watcher = fakeWatcher();
+    const caps = await probeFsCaps({ path: root }, {
+      watchFactory: () => {
+        process.nextTick(() => watcher.emit('error', new Error('watch handle lost')));
+        return watcher as unknown as FSWatcher;
+      },
+    });
+    expect(caps.watch).toBe('none');
+    expect(watcher.close).toHaveBeenCalledOnce();
   });
 
   it('rejects a non-existent path with a config error', async () => {
@@ -69,7 +99,7 @@ describe('fs adapter probeCaps (Phase 7 / D-110)', () => {
     }
     chmodSync(root, 0o500);
     try {
-      const caps = await probeAdapter(fsAdapterFactory, { path: root });
+      const caps = await probeAdapter(stubbedProbe, { path: root });
       expect(caps.write).toBe('no');
       expect(caps.delete).toBe('no');
     } finally {
@@ -88,21 +118,18 @@ describe('fs adapter factory.create (Phase 7 / D-110)', () => {
   });
 
   it('start + writeRecord + readRecord + deleteRecord round-trip', async () => {
-    const events: string[] = [];
     const adapter = fsAdapterFactory.create({
       slug: 't1',
-      config: { path: root, debounceMs: 10 },
-      onEvent: (e) => {
-        events.push(`${e.type}:${e.path.replace(root, '<root>')}`);
-      },
+      config: { path: root },
+      caps: unwatched,
+      onEvent: () => {},
     }) as FileMutationCapable;
 
     await adapter.start();
     try {
       await adapter.writeRecord('a/b.txt', new TextEncoder().encode('hello'));
       // File appears on disk immediately (write is synchronous
-      // on node fs); watcher events race against this step but
-      // aren't what we're asserting here.
+      // on node fs).
       expect(existsSync(join(root, 'a/b.txt'))).toBe(true);
       const roundTrip = await adapter.readRecord('a/b.txt');
       expect(new TextDecoder().decode(roundTrip)).toBe('hello');
@@ -144,6 +171,7 @@ describe('fs adapter factory.create (Phase 7 / D-110)', () => {
     const adapter = fsAdapterFactory.create({
       slug: 't2',
       config: { path: root },
+      caps: unwatched,
       onEvent: () => {},
     }) as FileMutationCapable;
     await adapter.start();
@@ -189,6 +217,7 @@ describe('fs adapter factory.create (Phase 7 / D-110)', () => {
       const adapter = fsAdapterFactory.create({
         slug: 't3b',
         config: { path: root },
+        caps: unwatched,
         onEvent: () => {},
       }) as FileMutationCapable;
       await adapter.start();
@@ -211,6 +240,7 @@ describe('fs adapter factory.create (Phase 7 / D-110)', () => {
     const adapter = fsAdapterFactory.create({
       slug: 't3',
       config: { path: root },
+      caps: unwatched,
       onEvent: () => {},
     }) as FileMutationCapable;
     await adapter.start();
@@ -227,6 +257,7 @@ describe('fs adapter factory.create (Phase 7 / D-110)', () => {
     const adapter = fsAdapterFactory.create({
       slug: 't4',
       config: { path: root },
+      caps: unwatched,
       onEvent: () => {},
     }) as FileMutationCapable;
     await adapter.start();
@@ -242,6 +273,7 @@ describe('fs adapter factory.create (Phase 7 / D-110)', () => {
     const adapter = fsAdapterFactory.create({
       slug: 't5',
       config: { path: root },
+      caps: unwatched,
       onEvent: () => {},
     }) as FileMutationCapable;
     await adapter.start();

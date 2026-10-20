@@ -1,3 +1,7 @@
+import { currentResourceReview, resourceReviewHash, withResourceReview } from '../resource-review.js';
+import { recordLocalMutation, withLocalMutationScope } from '../local-mutation-context.js';
+import { afterLocalCommit } from '../local-transaction.js';
+import type { LocalUpdateInverse } from '../local-update-undo-context.js';
 import {
   csvCell as sharedCsvCell,
   ORDERED_FIELD_KINDS,
@@ -49,6 +53,8 @@ import {
   type RecordsExportEnvelope,
   type RecordsExecutionBinding,
   type RecordsExecutionCall,
+  type ReviewedResource,
+  isRecordsBatchAction,
   type RecordsFieldKind,
   createRecordsAggregator,
   createRecordsGroupedAggregator,
@@ -217,6 +223,7 @@ export interface RecordsMigrationRequiredStep {
 type PhysicalValue = string | number | bigint | null;
 type PhysicalFields = Record<RecordsSlot, PhysicalValue>;
 type RowShape = PhysicalFields & {
+  resource_incarnation: string;
   publisher: string;
   pack_slug: string;
   kind: string;
@@ -280,6 +287,17 @@ export interface RecordsOwnerSearchInput {
 }
 
 export interface RecordsStore {
+  /** Host-only review using the normal write validators in a rolled-back
+   * transaction. No row, event, accounting or change notice is published. */
+  reviewMutation(binding: RecordsExecutionBinding, args: Record<string, unknown>,
+    approved?: readonly ReviewedResource[]): ReviewedResource[];
+  /** New owner review only: refresh CAS values by rehearsing the same intent
+   * under rollback. This supplies arguments, never execution authority. */
+  rebaseMutation(binding: RecordsExecutionBinding, args: Record<string, unknown>,
+    prior: readonly ReviewedResource[]): Record<string, unknown>;
+  /** Host-only identity for version-bound approval; never an agent row field. */
+  reviewSnapshot(owner: RecordsPackRef, entity: string, id: string):
+    { record: RecordsFriendlyRecord; incarnation: string } | null;
   installNamespace(input: RecordsInstallInput): RecordsNamespaceSummary;
   execute(call: RecordsExecutionCall): unknown;
   getNamespace(owner: RecordsPackRef): RecordsNamespaceSummary | null;
@@ -1153,6 +1171,23 @@ const ensureSchema = (db: Database.Database): void => {
       value TEXT NOT NULL
     );
   `);
+  // A deleted ID may be recreated at revision zero, even at the same clock
+  // tick. Keep its incarnation separate from the existing revision counter.
+  db.transaction(() => {
+    const columns = db.prepare('PRAGMA table_info(' + ROW_TABLE + ')').all() as { name: string }[];
+    if (!columns.some(column => column.name === 'resource_incarnation')) {
+      db.exec('ALTER TABLE ' + ROW_TABLE + ' ADD COLUMN resource_incarnation TEXT');
+    }
+    db.exec(`CREATE TRIGGER IF NOT EXISTS core_records_resource_incarnation
+      AFTER INSERT ON ${ROW_TABLE}
+      BEGIN
+        UPDATE ${ROW_TABLE} SET resource_incarnation=lower(hex(randomblob(16)))
+        WHERE publisher=NEW.publisher AND pack_slug=NEW.pack_slug AND kind=NEW.kind AND pk=NEW.pk;
+      END`);
+    // Also heal a column created by an interrupted older upgrade. Never
+    // rotate an existing token on a normal reopen.
+    db.exec('UPDATE ' + ROW_TABLE + ' SET resource_incarnation = lower(hex(randomblob(16))) WHERE resource_incarnation IS NULL');
+  }).immediate();
   const namespaceColumns = db.prepare(`PRAGMA table_info(${NAMESPACE_TABLE})`).all() as Array<{ name: string }>;
   if (!namespaceColumns.some((column) => column.name === 'migration_plans_json')) {
     db.exec(`ALTER TABLE ${NAMESPACE_TABLE} ADD COLUMN migration_plans_json TEXT NOT NULL DEFAULT '[]'`);
@@ -1526,6 +1561,21 @@ export const createRecordsStore = (
   ensureSchema(db);
   const now = options.now ?? (() => Date.now());
   const createId = options.id ?? (() => `rec_${randomUUID()}`);
+  // Store execution is synchronous. Save/restore this context around the
+  // rolled-back preview and the final transaction; it never crosses an await.
+  type ReviewContext = {
+    preview: boolean;
+    rebase?: boolean;
+    operationIndex: number;
+    allocations: Map<number, { entity: string; id: string }>;
+    notices: RecordsChangeNotice[];
+    rows: Map<string, {
+      entity: string; id: string; before: RecordsFriendlyRecord | null;
+      incarnation?: string;
+      changes: NonNullable<ReviewedResource['changes']>;
+    }>;
+  };
+  let mutationReview: ReviewContext | undefined;
   const namespaceKey = (owner: RecordsPackRef): string =>
     JSON.stringify([owner.publisher, owner.pack_slug]);
   const activeLeases = new Map<string, {
@@ -1547,6 +1597,33 @@ export const createRecordsStore = (
   const namespaceRow = (owner: RecordsPackRef): NamespaceRow | undefined =>
     db.prepare(`SELECT * FROM ${NAMESPACE_TABLE} WHERE publisher=? AND pack_slug=?`)
       .get(owner.publisher, owner.pack_slug) as NamespaceRow | undefined;
+
+  // Cache decoded declarations only. Each call still reads current namespace
+  // authority; changed database text replaces the corresponding single entry.
+  let lastOperations: {
+    text: string;
+    bindings: RecordsExecutionBinding[];
+    byDigest: Map<string, { binding: RecordsExecutionBinding; canonical: string }>;
+  } | undefined;
+  const installedOperations = (row: NamespaceRow) => {
+    if (lastOperations?.text === row.operations_json) return lastOperations;
+    const bindings = Object.values(JSON.parse(row.operations_json) as Record<string, RecordsExecutionBinding>);
+    const byDigest = new Map<string, { binding: RecordsExecutionBinding; canonical: string }>();
+    for (const binding of bindings) {
+      if (!byDigest.has(binding.operation_digest)) {
+        byDigest.set(binding.operation_digest, { binding, canonical: canonicalJson(binding) });
+      }
+    }
+    lastOperations = { text: row.operations_json, bindings, byDigest };
+    return lastOperations;
+  };
+  let lastSchema: { text: string; schema: RecordsSchemaSnapshot } | undefined;
+  const installedSchema = (row: NamespaceRow): RecordsSchemaSnapshot => {
+    if (lastSchema?.text === row.schema_json) return lastSchema.schema;
+    const schema = JSON.parse(row.schema_json) as RecordsSchemaSnapshot;
+    lastSchema = { text: row.schema_json, schema };
+    return schema;
+  };
 
   const globalLimit = (key: 'row_limit' | 'byte_limit' | 'outbox_limit'): number => {
     const row = db.prepare(`SELECT value FROM ${META_TABLE} WHERE key=?`)
@@ -1622,8 +1699,9 @@ export const createRecordsStore = (
         operation_version: binding.pack_version,
       });
     }
-    const installed = JSON.parse(row.operations_json) as Record<string, RecordsExecutionBinding>;
-    const exact = Object.values(installed).find((candidate) => candidate.operation_digest === binding.operation_digest);
+    const installed = installedOperations(row).byDigest.get(binding.operation_digest);
+    const exact = installed?.binding;
+    const exactJson = installed?.canonical;
     // ⛔⛔ THE ONE ADMITTED DIVERGENCE FROM AN EXACT MATCH: an op INSIDE a batch.
     //
     // A batch re-enters `execute` per op with the entity and action swapped to
@@ -1645,7 +1723,7 @@ export const createRecordsStore = (
       && (exact.allow as RecordsBatchAllow[]).some(
         (pair) => pair.entity === binding.entity && pair.action === binding.action)
       && canonicalJson({ ...binding, entity: exact.entity, action: exact.action })
-        === canonicalJson(exact);
+        === exactJson;
     // ⛔ THE SECOND ADMITTED DIVERGENCE: a row written BY an import. Same
     // structure as the batch's and deliberately NARROWER — an import declares
     // no allow-list because it needs none, so there is no pair to look up:
@@ -1682,13 +1760,13 @@ export const createRecordsStore = (
       && exact.action === 'import'
       && (binding.action === 'create' || binding.action === 'update')
       && binding.entity === exact.entity
-      && canonicalJson({ ...binding, action: exact.action }) === canonicalJson(exact);
+      && canonicalJson({ ...binding, action: exact.action }) === exactJson;
     if (!exact
-      || (canonicalJson(exact) !== canonicalJson(binding) && !admittedInBatch && !admittedInImport)) {
+      || (exactJson !== canonicalJson(binding) && !admittedInBatch && !admittedInImport)) {
       fail('records_stale_operation', 'Records operation digest/binding is not installed');
     }
     if (mutate && row.row_count < 0) fail('records_incoherent', 'negative Records accounting');
-    return { namespace: row, schema: JSON.parse(row.schema_json) as RecordsSchemaSnapshot };
+    return { namespace: row, schema: installedSchema(row) };
   };
 
   const blockersFor = (
@@ -1758,6 +1836,42 @@ export const createRecordsStore = (
       updated_at: safeNumber(row.updated_at, 'updated_at'),
     };
     return record as RecordsFriendlyRecord;
+  };
+
+  const friendlyValues = (row: RecordsFriendlyRecord): Record<string, unknown> =>
+    Object.fromEntries(Object.entries(row).filter(([key]) => key !== '_record'));
+
+  const rememberReviewedRow = (binding: RecordsExecutionBinding, id: string,
+    row: RowShape | undefined, schema: RecordsSchemaSnapshot): void => {
+    const context = mutationReview;
+    if (!context || !isRecordsBatchAction(binding.action)) return;
+    const key = JSON.stringify([binding.owner.publisher, binding.owner.pack_slug, binding.entity, id]);
+    const before = row ? projectRow(row, schema) : null;
+    let entry = context.rows.get(key);
+    if (!entry) {
+      entry = { entity: binding.entity, id, before,
+        ...(row ? { incarnation: row.resource_incarnation } : {}), changes: [] };
+      context.rows.set(key, entry);
+    }
+    entry.changes.push({ operation_index: context.operationIndex, action: binding.action,
+      before: before ? friendlyValues(before) : null, after: null });
+  };
+
+  const allocatedReviewId = (binding: RecordsExecutionBinding): string => {
+    const context = mutationReview;
+    if (!context) return assertId(createId());
+    const allocated = context.allocations.get(context.operationIndex);
+    if (allocated) {
+      if (allocated.entity !== binding.entity) fail('records_conflict', 'The reviewed insert target changed. Request a new review.');
+      return allocated.id;
+    }
+    if (!context.preview) fail('records_conflict', 'The reviewed insert identity is unavailable. Request a new review.');
+    // Reserve an identity in the host evidence, without seating a row or
+    // consuming a caller's ID factory during review.
+    let id: string;
+    do { id = `rec_${randomUUID()}`; } while (rowStmt(binding.owner, binding.entity, id));
+    context.allocations.set(context.operationIndex, { entity: binding.entity, id });
+    return id;
   };
 
   const normalizeValues = (
@@ -1886,6 +2000,11 @@ export const createRecordsStore = (
     }
   };
 
+  const publishChangeNotice = (event: RecordsChangeNotice): void => {
+    try { afterLocalCommit(db, () => options.onChange?.(event)); }
+    catch { /* a screen-refresh sink never breaks a committed write */ }
+  };
+
   const enqueue = (
     ns: NamespaceRow,
     kind: string,
@@ -1926,23 +2045,21 @@ export const createRecordsStore = (
         JSON.stringify([...changedFields].sort()), ns.activation_generation,
         ns.subscriber_digest, cause, rootEventId, depth, execution.watcher_digest ?? null, stamp,
       );
-    if (options.onChange !== undefined) {
-      try {
-        options.onChange({
-          owner: { publisher: ns.publisher, pack_slug: ns.pack_slug },
-          entity: kind,
-          id,
-          // ⛔ THE POINTER'S VOCABULARY IS `record.created`, NOT `created`. Comparing
-          // against the bare words matches nothing, so every event would have read as
-          // an `update` — a silent, uniformly-wrong mapping that no test of the write
-          // path would notice, because the write still happens.
-          op: type === 'record.created'
-            ? 'insert'
-            : type === 'record.deleted' ? 'delete' : 'update',
-        });
-      } catch {
-        /* a screen-refresh sink never breaks a write that already committed */
-      }
+    if (options.onChange !== undefined && !mutationReview?.preview) {
+      const notice: RecordsChangeNotice = {
+        owner: { publisher: ns.publisher, pack_slug: ns.pack_slug },
+        entity: kind,
+        id,
+        // ⛔ THE POINTER'S VOCABULARY IS `record.created`, NOT `created`. Comparing
+        // against the bare words matches nothing, so every event would have read as
+        // an `update` — a silent, uniformly-wrong mapping that no test of the write
+        // path would notice, because the write still happens.
+        op: type === 'record.created'
+          ? 'insert'
+          : type === 'record.deleted' ? 'delete' : 'update',
+      };
+      if (mutationReview) mutationReview.notices.push(notice);
+      else publishChangeNotice(notice);
     }
     const pointer: RecordsEventPointer = {
       event_id: eventId,
@@ -2013,7 +2130,7 @@ export const createRecordsStore = (
   };
 
   const immutableFields = (ns: NamespaceRow, entity: string): Set<string> => {
-    const binds = Object.values(JSON.parse(ns.operations_json) as Record<string, RecordsExecutionBinding>);
+    const binds = installedOperations(ns).bindings;
     return new Set(binds
       .filter((bind) => bind.entity === entity && bind.action === 'create')
       .flatMap((bind) => bind.natural_key ?? []));
@@ -2028,7 +2145,7 @@ export const createRecordsStore = (
    *  free to seat a row at a caller-chosen id holding an already-taken tuple.
    *  Uniqueness has to be a property of the entity, not of the dispatch. */
   const declaredNaturalKey = (ns: NamespaceRow, entity: string): string[] | undefined => {
-    const binds = Object.values(JSON.parse(ns.operations_json) as Record<string, RecordsExecutionBinding>);
+    const binds = installedOperations(ns).bindings;
     for (const bind of binds) {
       if (bind.entity === entity && bind.action === 'create' && bind.natural_key !== undefined) {
         return bind.natural_key;
@@ -2092,7 +2209,8 @@ export const createRecordsStore = (
           if (call.args.id !== undefined) fail('records_invalid', 'id is forbidden on a natural_key entity');
           return naturalId({ ...call.binding, natural_key: entityNaturalKey }, schema, values);
         })()
-      : call.args.id === undefined ? assertId(createId()) : assertId(call.args.id);
+      : call.args.id === undefined ? allocatedReviewId(call.binding) : assertId(call.args.id);
+    if (mutationReview?.rebase && entityNaturalKey === undefined && call.args.id === undefined) call.args.id = id;
     const payload = logicalPayloadBytes(id, normalized.physical);
     const cause = call.cause ?? 'recipe';
     const emits = !SUPPRESSED_CAUSES.has(cause);
@@ -2100,7 +2218,9 @@ export const createRecordsStore = (
       const currentNs = namespaceRow(call.binding.owner)!;
       requireState(call.binding, true);
       const existing = rowStmt(call.binding.owner, call.binding.entity, id);
+      rememberReviewedRow(call.binding, id, existing, schema);
       if (existing) {
+        if (mutationReview?.rebase) fail('records_conflict', 'The proposed insert ID is occupied. Prepare a separate change for this record.');
         assertRowCoherent(currentNs, existing);
         const current = physicalFromRow(existing);
         if (SLOT_NAMES.every((slot) => Object.is(current[slot], normalized.physical[slot]))) {
@@ -2168,6 +2288,7 @@ export const createRecordsStore = (
         `record '${id}' was not found`,
       );
       assertRowCoherent(currentNs, current);
+      rememberReviewedRow(call.binding, id, current, schema);
       const revision = safeNumber(current.revision, 'revision');
       const version = safeNumber(current.version, 'version');
       if (version !== expectedVersion || revision !== expectedRevision || expectedVersion !== currentNs.version) {
@@ -2254,6 +2375,7 @@ export const createRecordsStore = (
         `record '${id}' was not found`,
       );
       assertRowCoherent(currentNs, current);
+      rememberReviewedRow(call.binding, id, current, schema);
       const version = safeNumber(current.version, 'version');
       const revision = safeNumber(current.revision, 'revision');
       if (version !== expectedVersion || revision !== expectedRevision || expectedVersion !== currentNs.version) {
@@ -3119,8 +3241,13 @@ export const createRecordsStore = (
     // back through the front door means a batch cannot diverge from a single
     // write even in principle. `batch` is not a batchable action, so this
     // cannot recurse further.
-    const results = db.transaction(() => planned.map(({ binding, args }) =>
-      execute({ ...call, binding, args })))();
+    const results = db.transaction(() => planned.map(({ binding, args }, index) => {
+      const context = mutationReview;
+      const previousIndex = context?.operationIndex;
+      if (context) context.operationIndex = index;
+      try { return execute({ ...call, binding, args }); }
+      finally { if (context && previousIndex !== undefined) context.operationIndex = previousIndex; }
+    }))();
 
     return { batch: true, count: results.length, results };
   };
@@ -4679,13 +4806,7 @@ export const createRecordsStore = (
     return result;
   };
 
-  const execute = (call: RecordsExecutionCall): unknown => {
-    if (!call || typeof call.principal !== 'string' || call.principal.length === 0) {
-      fail('records_unauthorized', 'Records execution requires a derived principal');
-    }
-    assertJsonTree(call.args, '$.args');
-    assertExecutionAdmitted(call);
-    const { namespace, schema } = requireState(call.binding, ['create','update','upsert','delete'].includes(call.binding.action));
+  const dispatch = (call: RecordsExecutionCall, namespace: NamespaceRow, schema: RecordsSchemaSnapshot): unknown => {
     switch (call.binding.action) {
       case 'batch': return batchWrite(call, namespace, schema);
       // ⚠ Absent from the `mutate` list above for the same reason `batch` is:
@@ -4747,6 +4868,165 @@ export const createRecordsStore = (
           },
         }, namespace, schema);
       }
+    }
+  };
+
+  const reviewAllocations = (binding: RecordsExecutionBinding,
+    resources: readonly ReviewedResource[]): ReviewContext['allocations'] => {
+    const allocations: ReviewContext['allocations'] = new Map();
+    for (const resource of resources) {
+      if (resource.kind !== 'records' || resource.precondition.kind !== 'records_absent'
+        || resource.precondition.generated_for === undefined) continue;
+      let key: unknown;
+      try { key = JSON.parse(resource.key); }
+      catch { fail('records_conflict', 'The reviewed insert identity is invalid. Request a new review.'); }
+      if (Array.isArray(key) && key.length === 4 && typeof key[2] === 'string' && typeof key[3] === 'string'
+        && key[0] === binding.owner.publisher && key[1] === binding.owner.pack_slug
+        && !allocations.has(resource.precondition.generated_for)) {
+        allocations.set(resource.precondition.generated_for, { entity: key[2], id: assertId(key[3]) });
+      } else {
+        fail('records_conflict', 'The reviewed insert identity is invalid. Request a new review.');
+      }
+    }
+    return allocations;
+  };
+
+  const reviewMutation = (binding: RecordsExecutionBinding, args: Record<string, unknown>,
+    approved: readonly ReviewedResource[] = [], rebase = false): ReviewedResource[] => {
+    if (!['update', 'delete', 'upsert', 'batch'].includes(binding.action)) {
+      fail('records_invalid', 'This Records action does not support version-bound review.');
+    }
+    const previous = mutationReview;
+    const context: ReviewContext = { preview: true, rebase, operationIndex: 0,
+      allocations: reviewAllocations(binding, approved), notices: [], rows: new Map() };
+    const rollback = new Error('rollback Records resource review');
+    let resources: ReviewedResource[] = [];
+    try {
+      mutationReview = context;
+      withResourceReview(undefined, () => db.transaction(() => {
+        const { namespace, schema } = requireState(binding);
+        execute({ binding, args, principal: 'host-resource-review' });
+        const bindingHash = resourceReviewHash({ binding, generation: namespace.activation_generation, args });
+        resources = [...context.rows].map(([key, row]) => {
+          const after = rowStmt(binding.owner, row.entity, row.id);
+          const allocation = [...context.allocations].find(([, value]) => value.entity === row.entity && value.id === row.id);
+          return {
+            kind: 'records', key, label: row.entity + ' ' + row.id, binding: bindingHash,
+            version: resourceReviewHash(row.before ? { row: row.before, incarnation: row.incarnation }
+              : { absent: true, key, binding: bindingHash }),
+            precondition: row.before
+              ? { kind: 'records_revision', value: row.before._record.revision, incarnation: row.incarnation! }
+              : { kind: 'records_absent', ...(allocation ? { generated_for: allocation[0] } : {}) },
+            before: row.before ? friendlyValues(row.before) : {},
+            after: after ? friendlyValues(projectRow(after, schema)) : null,
+            ...(binding.action === 'batch' ? { changes: row.changes } : {}),
+          };
+        });
+        throw rollback;
+      }).immediate());
+    } catch (error) {
+      if (error !== rollback) throw error;
+    } finally { mutationReview = previous; }
+    return resources;
+  };
+
+  const execute = (call: RecordsExecutionCall): unknown => {
+    if (!call || typeof call.principal !== 'string' || call.principal.length === 0) {
+      fail('records_unauthorized', 'Records execution requires a derived principal');
+    }
+    assertJsonTree(call.args, '$.args');
+    // A preview is host-only and always rolls back. The actual caller's
+    // lease/fence is checked here again before the final write transaction.
+    if (!mutationReview?.preview) assertExecutionAdmitted(call);
+    const { namespace, schema } = requireState(call.binding, ['create','update','upsert','delete'].includes(call.binding.action));
+    if (mutationReview?.rebase && ['update', 'delete', 'upsert'].includes(call.binding.action)) {
+      // Batch operations re-enter this same front door. Read each operation's
+      // real preceding rehearsal result rather than predicting revisions.
+      const existing = rowStmt(call.binding.owner, call.binding.entity, assertId(call.args.id));
+      call.args.expected_version = safeNumber(existing?.version ?? call.binding.pack_version, 'row version');
+      if (existing) call.args.expected_revision = safeNumber(existing.revision, 'row revision');
+      else if (call.binding.action === 'upsert') delete call.args.expected_revision;
+    }
+    const approved = currentResourceReview();
+    if (approved) {
+      const notices: RecordsChangeNotice[] = [];
+      const result = db.transaction(() => {
+        let fresh: ReviewedResource[];
+        try { fresh = reviewMutation(call.binding, call.args, approved.resources); }
+        catch (error) {
+          if (error instanceof RecordsContractError && (error.code === 'records_conflict' || error.code === 'records_not_found')) {
+            fail('records_conflict', 'The record changed or was replaced after review. Refresh the data and request a new review.');
+          }
+          throw error;
+        }
+        if (resourceReviewHash(fresh) !== resourceReviewHash(approved.resources)) {
+          fail('records_conflict', 'The record changed or was replaced after review. Refresh the data and request a new review.');
+        }
+        const previous = mutationReview;
+        mutationReview = { preview: false, operationIndex: 0,
+          allocations: reviewAllocations(call.binding, fresh), notices, rows: new Map() };
+        try {
+          // All initial versions, absence conditions and exact arguments were
+          // checked under this write lock. Inner CAS calls remain unchanged;
+          // sequential edits to a row now compare to their own prior result.
+          const result = withResourceReview(undefined, () => execute(call));
+          recordLocalMutation(db, 'records', approved, updateInverse(call, schema));
+          return result;
+        } finally { mutationReview = previous; }
+      }).immediate();
+      // A later validator (including the actual watcher's causal budget) can
+      // still roll back the batch. Publish only after success, and without
+      // lending a callback this approval or its reserved insert identities.
+      withLocalMutationScope(undefined, () => withResourceReview(undefined, () => {
+        for (const notice of notices) publishChangeNotice(notice);
+      }));
+      return result;
+    }
+    const result = dispatch(call, namespace, schema);
+    if (mutationReview && call.binding.action !== 'batch') {
+      for (const row of mutationReview.rows.values()) {
+        const change = row.changes.at(-1);
+        if (change?.operation_index !== mutationReview.operationIndex) continue;
+        const after = rowStmt(call.binding.owner, row.entity, row.id);
+        change.after = after ? friendlyValues(projectRow(after, schema)) : null;
+      }
+    }
+    return result;
+  };
+
+  /** Rehearse the inverse under the same lock. An inverse that cannot pass
+   * today's normal validators is unavailable; the original write can still
+   * succeed. Atomic batches reverse each operation in reverse order, including
+   * repeated edits to one row, with new increasing revisions. */
+  const updateInverse = (call: RecordsExecutionCall, schema: RecordsSchemaSnapshot): LocalUpdateInverse | undefined => {
+    if (!mutationReview || !['update', 'batch'].includes(call.binding.action)) return undefined;
+    const changes = [...mutationReview.rows.values()].flatMap(row => row.changes.map(change => ({ row, change })));
+    if (!changes.length || changes.some(({ change }) => change.action !== 'update' || !change.before || !change.after)) return undefined;
+    const revisions = new Map<string, number>();
+    const ops = changes.sort((a, b) => b.change.operation_index - a.change.operation_index).map(({ row, change }) => {
+      const current = rowStmt(call.binding.owner, row.entity, row.id)!;
+      const key = JSON.stringify([row.entity, row.id]);
+      const revision = revisions.get(key) ?? safeNumber(current.revision, 'revision');
+      revisions.set(key, revision + 1);
+      const set: Record<string, unknown> = {}, unset: string[] = [];
+      for (const field of entityFor(schema, row.entity).fields) {
+        if (field.kind === 'id') continue;
+        const before = pathValue(change.before!, field.key).value;
+        const after = pathValue(change.after!, field.key).value;
+        if (canonicalJson(before) === canonicalJson(after)) continue;
+        if (before === null) unset.push(field.key);
+        else setPath(set, field.key, before);
+      }
+      return { entity: row.entity, action: 'update', args: { id: row.id,
+        expected_version: safeNumber(current.version, 'version'), expected_revision: revision, set, unset } };
+    });
+    const args = call.binding.action === 'batch' ? { ops } : ops[0]!.args;
+    try {
+      return { kind: 'records', binding: structuredClone(call.binding), args,
+        resources: reviewMutation(call.binding, args) };
+    } catch (error) {
+      if (error instanceof RecordsContractError) return undefined;
+      throw error;
     }
   };
 
@@ -5400,6 +5680,29 @@ export const createRecordsStore = (
     assertUpdateReviewFence,
     countActiveExecutionLeases,
     execute,
+    reviewMutation,
+    rebaseMutation(binding, args, prior) {
+      return db.transaction(() => {
+        const { namespace } = requireState(binding);
+        const identity = resourceReviewHash({ binding, generation: namespace.activation_generation, args });
+        if (prior.length === 0 || prior.some(resource => resource.kind !== 'records' || resource.binding !== identity)) {
+          fail('records_conflict', 'The original Records namespace or operation binding changed. Prepare a new full review.');
+        }
+        const refreshed = structuredClone(args);
+        reviewMutation(binding, refreshed, prior, true);
+        return refreshed;
+      }).immediate();
+    },
+    reviewSnapshot(owner, entity, id) {
+      return db.transaction(() => {
+        const namespace = requireValue(namespaceRow(owner), 'records_not_found', 'Records namespace was not found');
+        const row = rowStmt(owner, entity, id);
+        if (!row) return null;
+        assertRowCoherent(namespace, row);
+        return { record: projectRow(row, JSON.parse(namespace.schema_json) as RecordsSchemaSnapshot),
+          incarnation: row.resource_incarnation };
+      })();
+    },
     getNamespace(owner) {
       assertPackRef(owner);
       const row = namespaceRow(owner);

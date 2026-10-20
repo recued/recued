@@ -167,7 +167,8 @@ export const classifyDomReadOutcome = (outcome: DispatchOutcome): DomReadOutcome
     code === 'capacity_gap_logged_in' ||
     code === 'capacity_gap_tab_unavailable' ||
     code === 'capacity_gap_permission_missing' ||
-    code === 'mv3_lifecycle_killed'
+    code === 'mv3_lifecycle_killed' ||
+    code === 'delivery_uncertain'
   ) {
     // Strict single-bridge dispatch surfaces capacity gaps as a completed
     // error result (multi-bridge aggregates them above); an MV3 service

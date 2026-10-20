@@ -621,6 +621,41 @@ describe('wrapWithCommitGateway', () => {
     expect(row).not.toHaveProperty('output');
   });
 
+  it('refuses dispatch when a run stops during asynchronous reviewed validation', async () => {
+    const controller = new AbortController();
+    let enter!: () => void; let release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const held = new Promise<void>(resolve => { release = resolve; });
+    await store.writePending({ ...identity(), commit_id: 'reviewed', kind: 'action', ingredient: 'mail.send',
+      tool: 'mail.send', args: {}, idempotency_key: 'reviewed-idem', dispatched_at: DISPATCHED_AT });
+    const recordOutcome = vi.spyOn(store, 'recordOutcome');
+    const inner = vi.fn<GatewayInner>(async () => ({ sent: true }));
+    const executor = wrapWithCommitGateway(inner, deps({ runAbortSignal: controller.signal,
+      reviewedDispatch: { resolve: async () => ({ commit_id: 'reviewed', action_ref: 'action', idempotency_key: 'reviewed-idem',
+        validate: async () => { enter(); await held; } }) } }));
+    const execution = executor('mail.send', {});
+    try {
+      await entered; controller.abort(); release();
+      await expect(execution).rejects.toMatchObject({ code: 'run_killed' });
+      expect(inner).not.toHaveBeenCalled();
+      // The logical reviewed invocation owns this receipt's terminal outcome.
+      expect(recordOutcome).not.toHaveBeenCalled();
+      expect(await store.get('reviewed')).toMatchObject({ status: 'pending' });
+      expect(await store.get('reviewed')).not.toHaveProperty('output');
+    } finally { release(); await execution.catch(() => {}); }
+  });
+
+  it('rechecks cancellation inside the resource dispatch scope', async () => {
+    const controller = new AbortController();
+    const inner = vi.fn<GatewayInner>(async () => ({ sent: true }));
+    const executor = wrapWithCommitGateway(inner, deps({ runAbortSignal: controller.signal,
+      resourceReview: { capture: () => undefined, run: (_review, effect) => { controller.abort(); return effect(); } } }));
+    await expect(executor('mail.send', {})).rejects.toMatchObject({ code: 'run_killed' });
+    expect(inner).not.toHaveBeenCalled();
+    expect(await store.get('commit-1')).toMatchObject({ status: 'cancelled' });
+    expect(await store.get('commit-1')).not.toHaveProperty('output');
+  });
+
   it('a pre-aborted run burns no use, writes no commit, and never dispatches', async () => {
     const controller = new AbortController();
     controller.abort();

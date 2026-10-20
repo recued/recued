@@ -44,6 +44,7 @@ export const WORK_ENTITY_LONG_TEXT_FIELD: Readonly<Record<WorkEntityKind, string
   commitment: 'statement',
   // Deliberate, not an omission — see the module docstring.
   booking: null,
+  asset: null,
 };
 
 /** The TITLE column each kind carries, or `null` where the kind has none.
@@ -59,6 +60,7 @@ export const WORK_ENTITY_TITLE_FIELD: Readonly<Record<WorkEntityKind, string | n
   project: 'title',
   booking: 'title',
   commitment: null,
+  asset: 'name',
 };
 
 /** `title` is what the user NAMES the record, and for several kinds it is the
@@ -71,7 +73,8 @@ export const workEntitySearchableText = (
   row: { readonly title?: string | null } & Readonly<Record<string, unknown>>,
 ): string => {
   const parts: string[] = [];
-  const title = typeof row.title === 'string' ? row.title : '';
+  const titleField = WORK_ENTITY_TITLE_FIELD[kind];
+  const title = titleField !== null && typeof row[titleField] === 'string' ? row[titleField] as string : '';
   if (title.length > 0) parts.push(title);
   const field = WORK_ENTITY_LONG_TEXT_FIELD[kind];
   if (field !== null) {

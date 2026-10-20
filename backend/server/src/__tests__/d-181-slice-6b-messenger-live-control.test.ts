@@ -478,7 +478,7 @@ describe('D-181 slice 6b — inbound dispatcher live-control wiring', () => {
     const submitAnswer = vi.fn(async () => {});
     const liveControl = stubLiveControl({ press: true });
     const { messengerDispatchers: { slack: dispatchSlackEvent } } = composeInboundAnswerDispatcher({
-      block: { submitAnswer } as unknown as Parameters<typeof composeInboundAnswerDispatcher>[0]['block'],
+      block: { submitAnswer, restoreAskDeliveries: async () => {} } as unknown as Parameters<typeof composeInboundAnswerDispatcher>[0]['block'],
       messengerChannels: { slack: stubReplyChannel({ ask_id: 'ask-1', option: 'yes' }) },
       messengerLiveControl: liveControl,
     });
@@ -494,7 +494,7 @@ describe('D-181 slice 6b — inbound dispatcher live-control wiring', () => {
     const submitAnswer = vi.fn(async () => {});
     const liveControl = stubLiveControl({ press: false, command: false });
     const { messengerDispatchers: { slack: dispatchSlackEvent } } = composeInboundAnswerDispatcher({
-      block: { submitAnswer } as unknown as Parameters<typeof composeInboundAnswerDispatcher>[0]['block'],
+      block: { submitAnswer, restoreAskDeliveries: async () => {} } as unknown as Parameters<typeof composeInboundAnswerDispatcher>[0]['block'],
       messengerChannels: { slack: stubReplyChannel({ ask_id: 'ask-1', option: 'yes' }) },
       messengerLiveControl: liveControl,
     });

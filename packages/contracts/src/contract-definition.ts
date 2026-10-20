@@ -22,6 +22,7 @@
 
 import type { Actor, Channel } from './commits.js';
 import type { RiskTier } from './ingredient.js';
+import type { Sphere } from './assets.js';
 
 /** The `composite_keys` scope name a contract_definition row is keyed under (a
  *  row lives at `contract.contract_definition.<contract_id>`). The store mints /
@@ -326,6 +327,9 @@ export interface ContractDefinition {
   readonly minted_by: string;
   readonly display_name: string;
   readonly scope: ContractScope;
+  /** D-325: absent permits all spheres; [] permits none. A scoped contract
+   * withholds unknown placement. This restricts reads; it grants no source. */
+  readonly read_spheres?: ReadonlyArray<Sphere>;
   /** Derived per-run cost boundary for a door. Absent on legacy rows and ordinary
    *  contracts; a dispatch class that requires one must fail closed until re-bound. */
   readonly door_execution_policy?: DoorExecutionPolicy;
@@ -648,6 +652,7 @@ export interface MintContractRequest {
   /** The surface the contract authorizes. An empty/absent axis is a wildcard;
    *  `{}` authorizes every channel × actor × ingredient × operation × connection. */
   scope: ContractScope;
+  read_spheres?: ReadonlyArray<Sphere>;
   /** D-187 §6 (step 7) — the level-1 door types this contract may back
    *  ({@link DoorType}). Omit or `[]` = wildcard (any door type — the
    *  behaviour-preserving default). A non-empty list restricts the contract to

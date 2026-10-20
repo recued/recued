@@ -153,6 +153,13 @@ beforeEach(() => {
 });
 
 describe('D-166 4d.3 — handleExecute threads execution_source.actor onto ctx', () => {
+  it('requires the durable host receipt before entering the actual engine', async () => {
+    executeRecipeMock.mockResolvedValue(successResult());
+    await expect(handleExecute(makeDeps(), { recipe_id: RECIPE_ID,
+      execution_source: { channel: 'reactive', actor: 'system', event_kind: 'situation', source_recipe: RECIPE_ID } },
+    { beforeRunStart: () => { throw new Error('The situation revision already entered a run'); } })).rejects.toThrow('already entered a run');
+    expect(executeRecipeMock).not.toHaveBeenCalled();
+  });
   it('threads an anonymous actor (webhook channel — D-209 #1 W3 door source) onto ctx.actor', async () => {
     const actor = await capturedActorFor({
       channel: 'webhook',

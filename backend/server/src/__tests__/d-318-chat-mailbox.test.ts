@@ -150,11 +150,11 @@ describe('the chat mailbox store', () => {
 });
 
 describe('the D-318 audit — the owner’s mailboxes, and a mailbox deleted', () => {
-  it('names the owner’s own mailboxes: no repeats, never the chat mailbox, ten at most, kept across a restart', () => {
+  it('names the owner’s own mailboxes: no repeats, ten at most, kept across a restart', () => {
     const db = new Database(':memory:');
     const store = createMailChatDoorStore(db);
     store.setChatMailbox('recued-chat', ' Recued@Owner.example ');
-    store.setOwnerMailboxes(['me', 'work', 'me', 'recued-chat']);
+    store.setOwnerMailboxes(['me', 'work', 'me']);
     expect(createMailChatDoorStore(db).get()).toEqual(settings({
       chat_mailbox: 'recued-chat', chat_address: 'recued@owner.example', owner_mailboxes: ['me', 'work'],
     }));
@@ -162,11 +162,50 @@ describe('the D-318 audit — the owner’s mailboxes, and a mailbox deleted', (
     expect(store.get().owner_mailboxes).toHaveLength(10);
   });
 
-  it('naming one of the owner’s mailboxes the chat mailbox takes it off their list', () => {
-    const store = createMailChatDoorStore(new Database(':memory:'));
-    store.setOwnerMailboxes(['me', 'work']);
-    store.setChatMailbox('work');
-    expect(store.get()).toEqual(settings({ chat_mailbox: 'work', owner_mailboxes: ['me'] }));
+  it('§8.18 — the chat mailbox may be one of the owner’s own: their mail, not chat-only, kept across a restart', () => {
+    const db = new Database(':memory:');
+    const store = createMailChatDoorStore(db);
+    store.setChatMailbox('recued-chat', 'recued@owner.example');
+    // Used for chat alone: all its mail is the conversation.
+    expect(store.isChatOnlyMailbox('recued-chat')).toBe(true);
+    expect(store.isChatOnlyMailbox('me')).toBe(false);
+    store.setOwnerMailboxes(['recued-chat', 'me']);
+    expect(store.isChatMailbox('recued-chat')).toBe(true);
+    expect(store.isChatOnlyMailbox('recued-chat')).toBe(false);
+    expect(createMailChatDoorStore(db).get()).toEqual(settings({
+      chat_mailbox: 'recued-chat', chat_address: 'recued@owner.example', owner_mailboxes: ['recued-chat', 'me'],
+    }));
+    // Naming one of theirs the chat mailbox keeps it theirs.
+    const other = createMailChatDoorStore(new Database(':memory:'));
+    other.setOwnerMailboxes(['me', 'work']);
+    other.setChatMailbox('work');
+    expect(other.get()).toEqual(settings({ chat_mailbox: 'work', owner_mailboxes: ['me', 'work'] }));
+    expect(other.isChatOnlyMailbox('work')).toBe(false);
+    // Deleted, it is neither.
+    store.forgetMailbox('recued-chat');
+    expect(store.get()).toEqual(settings({ owner_mailboxes: ['me'] }));
+  });
+
+  it('§8.18 — one mailbox keeps its ask: filter on, whatever writes it or a stored row says', () => {
+    const db = new Database(':memory:');
+    const store = createMailChatDoorStore(db);
+    store.setChatMailbox('recued-chat', 'recued@owner.example');
+    store.setAskPrefix(null);
+    expect(store.get().ask_prefix).toBeNull();
+    // Naming it the owner's too turns the filter back on.
+    expect(store.setOwnerMailboxes(['recued-chat']).ask_prefix).toBe('ask:');
+    expect(store.setAskPrefix(null).ask_prefix).toBe('ask:');
+    store.setAskPrefix('recued:');
+    expect(createMailChatDoorStore(db).get().ask_prefix).toBe('recued:');
+    // A row written with none reads with the default.
+    db.prepare(`UPDATE mail_chat_door SET settings_json = ?`).run(JSON.stringify({
+      chat_mailbox: 'recued-chat', owner_mailboxes: ['recued-chat'], ask_prefix: null,
+    }));
+    expect(createMailChatDoorStore(db).get().ask_prefix).toBe('ask:');
+    // Two mailboxes again, the choice to switch it off is the owner's.
+    const two = createMailChatDoorStore(db);
+    two.setOwnerMailboxes([]);
+    expect(two.setAskPrefix(null).ask_prefix).toBeNull();
   });
 
   it('a row from before the audit names no owner’s mailbox and no address: nothing is proven until they are named', () => {
@@ -307,16 +346,48 @@ describe('collection.mail.chat_door.* — naming the chat mailbox', () => {
       .resolves.toEqual(settings());
   });
 
-  it('the D-318 audit — a mailbox is the chat mailbox or one of the owner’s, never both', async () => {
+  it('§8.18 — one mailbox: the chat mailbox named as the owner’s too, its filter on, and the prefix kept on', async () => {
     const h = harness();
-    await h.call('collection.mail.chat_door.set', { chat_mailbox: 'recued-chat' });
-    await expect(h.call('collection.mail.chat_door.set', { owner_mailboxes: ['archive', 'recued-chat'] }))
+    const one = settings({
+      chat_mailbox: 'recued-chat', chat_address: 'recued@owner.example', owner_mailboxes: ['recued-chat'],
+    });
+    await expect(h.call('collection.mail.chat_door.set', { chat_mailbox: 'recued-chat', owner_mailboxes: ['recued-chat'] }))
+      .resolves.toEqual(one);
+    expect(h.logActivity).toHaveBeenLastCalledWith(expect.objectContaining({
+      action: 'mail_chat_door_set', detail: JSON.stringify({ chat_mailbox: 'recued-chat', owner_mailboxes: ['recued-chat'] }),
+    }));
+    // ⛔ The filter cannot be switched off: every email the owner writes to
+    // themselves would start a conversation. Nothing changes.
+    await expect(h.call('collection.mail.chat_door.set', { ask_prefix: null }))
+      .rejects.toMatchObject({ code: 'failed_precondition', status: 409, message: expect.stringMatching(/write to yourself/) });
+    await expect(h.call('collection.mail.chat_door.set', { owner_mailboxes: ['recued-chat', 'archive'], ask_prefix: null }))
       .rejects.toMatchObject({ code: 'failed_precondition', status: 409 });
-    await expect(h.call('collection.mail.chat_door.set', { chat_mailbox: null, owner_mailboxes: ['recued-chat'] }))
-      .resolves.toEqual(settings({ owner_mailboxes: ['recued-chat'] }));
-    await expect(h.call('collection.mail.chat_door.set', { chat_mailbox: 'recued-chat' }))
-      .rejects.toMatchObject({ code: 'failed_precondition', status: 409 });
-    expect(h.mailChatDoor.get()).toEqual(settings({ owner_mailboxes: ['recued-chat'] }));
+    expect(h.mailChatDoor.get()).toEqual(one);
+    // Another prefix is the owner's to choose.
+    await expect(h.call('collection.mail.chat_door.set', { ask_prefix: 'recued:' }))
+      .resolves.toEqual({ ...one, ask_prefix: 'recued:' });
+    // Two mailboxes again in the same call, the filter may go off.
+    await expect(h.call('collection.mail.chat_door.set', { owner_mailboxes: ['archive'], ask_prefix: null }))
+      .resolves.toEqual({ ...one, owner_mailboxes: ['archive'], ask_prefix: null });
+  });
+
+  it('§8.18 — switching to one mailbox with the filter off turns it on, and the audit says so', async () => {
+    const h = harness();
+    await h.call('collection.mail.chat_door.set', { chat_mailbox: 'recued-chat', ask_prefix: null });
+    await expect(h.call('collection.mail.chat_door.set', { chat_mailbox: null })).resolves.toMatchObject({ ask_prefix: null });
+    // Off and on again, now writing to itself: the owner's mailboxes are named
+    // first, so no step between leaves a different filter than the call ends with.
+    await expect(h.call('collection.mail.chat_door.set', { chat_mailbox: 'recued-chat', owner_mailboxes: ['recued-chat'] }))
+      .resolves.toMatchObject({ owner_mailboxes: ['recued-chat'], ask_prefix: 'ask:' });
+    expect(h.logActivity).toHaveBeenLastCalledWith(expect.objectContaining({
+      detail: JSON.stringify({ chat_mailbox: 'recued-chat', ask_prefix: 'ask:', owner_mailboxes: ['recued-chat'] }),
+    }));
+    // ⚠ And the other way: named the owner's before, then a two-mailbox door with
+    // the filter off keeps it off — no step between read as one mailbox.
+    const g = harness();
+    await g.call('collection.mail.chat_door.set', { owner_mailboxes: ['recued-chat'], ask_prefix: null });
+    await expect(g.call('collection.mail.chat_door.set', { chat_mailbox: 'recued-chat', owner_mailboxes: ['archive'] }))
+      .resolves.toMatchObject({ chat_mailbox: 'recued-chat', owner_mailboxes: ['archive'], ask_prefix: null });
   });
 
   it('the D-318 audit — refuses an owner’s list that is not slugs, or names more than ten', async () => {
@@ -487,17 +558,37 @@ describe('D-318 step 7 — collection.mail.chat_door.check, before the door is s
       .resolves.toMatchObject({ ready: false, checks: [{}, { status: 'unknown' }] });
   });
 
-  it('asks the owner to sign in again, and refuses the chat mailbox as their own or one with its address', async () => {
+  it('asks the owner to sign in again, and refuses the chat mailbox’s account connected again under another name', async () => {
     const expired = checking({ auth: { work: 'expired' } });
     await expect(expired.check({ chat_mailbox: 'recued-chat', owner_mailboxes: ['work'] }))
       .resolves.toMatchObject({ ready: false, checks: [{}, { status: 'unknown', text: expect.stringMatching(/sign in to it again/) }] });
     expect(expired.lookup).not.toHaveBeenCalled();
     const h = checking();
-    await expect(h.check({ chat_mailbox: 'recued-chat', owner_mailboxes: ['recued-chat'] }))
-      .resolves.toMatchObject({ checks: [{}, { status: 'fail', text: expect.stringMatching(/It is the chat mailbox/) }] });
     await expect(h.check({ chat_mailbox: 'recued-chat', owner_mailboxes: ['twin'] }))
-      .resolves.toMatchObject({ checks: [{}, { status: 'fail', text: expect.stringMatching(/connected twice/) }] });
+      .resolves.toMatchObject({
+        ready: false,
+        checks: [{}, { status: 'fail', text: expect.stringMatching(/connected twice\. To write to yourself, tick the chat mailbox/) }],
+      });
     expect(h.lookup).not.toHaveBeenCalled();
+  });
+
+  it('§8.18 — one mailbox: the chat mailbox as the owner’s own is asked for its Sent record, as any of theirs', async () => {
+    const h = checking();
+    await expect(h.check({ chat_mailbox: 'recued-chat', owner_mailboxes: ['recued-chat'] })).resolves.toEqual({
+      ready: true,
+      checks: [
+        { kind: 'chat_mailbox', slug: 'recued-chat', status: 'pass', text: 'It can send, and its first sync is done.' },
+        {
+          kind: 'owner_mailbox', slug: 'recued-chat', status: 'pass',
+          text: 'Recued can look in its Sent folder, which is how it knows an email you write to yourself is yours.',
+        },
+      ],
+    });
+    expect(h.lookup).toHaveBeenCalledTimes(1);
+    // A Sent folder it cannot read fails it, as it fails any of theirs.
+    const blind = checking({ lookup: async () => ({ status: 'unavailable', reason: 'unsupported' }) });
+    await expect(blind.check({ chat_mailbox: 'recued-chat', owner_mailboxes: ['recued-chat'] }))
+      .resolves.toMatchObject({ ready: false, checks: [{ status: 'pass' }, { status: 'fail' }] });
   });
 
   it('with none named, says what to pick; refuses what is not a slug', async () => {
@@ -558,21 +649,30 @@ describe('the chat mailbox is checked wherever mail is read', () => {
   it('the collection context makes the one store and hands it to the mail stack', () => {
     const source = read('../serve/compose-collection-context.ts');
     expect(source).toContain('createMailChatDoorStore(db)');
-    expect(source).toContain('isChatMailbox: (slug: string) => mailChatDoor.isChatMailbox(slug)');
+    expect(source).toContain('isChatOnlyMailbox: (slug: string) => mailChatDoor.isChatOnlyMailbox(slug)');
+  });
+
+  it('§8.18 — the collection context gives an email the proof refutes back to the owner’s mail', () => {
+    const source = read('../serve/compose-collection-context.ts');
+    // The marking asks the proof, and the proof takes the mark off.
+    expect(source).toContain('refuted: (slug, rfc_message_id) => mailChatProof?.refuted(slug, rfc_message_id) === true,');
+    expect(source).toContain('onNotProven: (slug: string, record_id: string) => mailChatConversationMail.unmark(slug, record_id)');
+    // The marking reads each mailbox as the registry holds it, so `unmark` can write the row.
+    expect(source).toContain("mailbox: (slug) => collectionRegistry.get('mail', slug) as MailCollection | undefined,");
   });
 
   it('the listeners hand it to the trigger dispatcher and the mailbox rpcs', () => {
     const source = read('../serve/compose-listeners.ts');
-    expect(source).toContain('isChatMailbox: (slug: string) => collection.mailChatDoor!.isChatMailbox(slug)');
+    expect(source).toContain('isChatOnlyMailbox: (slug: string) => collection.mailChatDoor!.isChatOnlyMailbox(slug)');
     expect(source).toContain('mailChatDoor: collection.mailChatDoor');
-    expect(read('../composition/bin/wire-event-triggers.ts')).toContain('...(isChatMailbox ? { isChatMailbox } : {})');
+    expect(read('../composition/bin/wire-event-triggers.ts')).toContain('...(isChatOnlyMailbox ? { isChatOnlyMailbox } : {})');
   });
 
   it('the housekeeping scheduler hands it to the mail walkers', () => {
     expect(read('../serve/start-schedulers.ts'))
-      .toContain('isChatMailbox: (slug: string) => collection.mailChatDoor!.isChatMailbox(slug)');
+      .toContain('isChatOnlyMailbox: (slug: string) => collection.mailChatDoor!.isChatOnlyMailbox(slug)');
     const substrate = read('../composition/bin/wire-housekeeping-substrate.ts');
-    expect(substrate.match(/\.\.\.\(deps\.isChatMailbox \? \{ isChatMailbox: deps\.isChatMailbox \} : \{\}\)/g))
+    expect(substrate.match(/\.\.\.\(deps\.isChatOnlyMailbox \? \{ isChatOnlyMailbox: deps\.isChatOnlyMailbox \} : \{\}\)/g))
       .toHaveLength(2);
   });
 });

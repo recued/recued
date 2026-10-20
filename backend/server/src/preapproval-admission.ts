@@ -1,7 +1,7 @@
 /** Synchronous inventory/claim admission using the dispatcher's policy
  * primitives. Descriptions carry no authority; every call resolves it afresh. */
 import {
-  cliPrincipalFromExecutionSource, readOwnerOperationOverride,
+  cliPrincipalFromExecutionSource, readOwnerOperationOverride, recordsPrincipalFromExecutionSource,
   resolveCatalogOperationPolicy, resolveCliReachabilityPolicy, resolveSimpleFormOperationPolicy,
   resolveTrustCeiling, type CatalogOperationResolution, type ExecutionSource, type RecordsExecutionBinding,
 } from '@recued/contracts';
@@ -15,10 +15,11 @@ import { deriveGrantedRecipeCoverage } from './recipe-grant-coverage.js';
 import { grantingRecipeEntry, recipeCoversOp } from './policy-gate.js';
 import { recipeGrantKeyFor } from './recipe-grant-identity.js';
 import { readCurrentConnectionOperationProfile } from './connection-operation-profile-boot.js';
+import { recordsOperationReachable } from './records/reachability.js';
 
 export interface PreapprovalAdmissionDeps {
   authority: ReturnType<typeof createPreapprovalOriginAuthority>;
-  execution: Pick<ExecuteHandlerDeps, 'executorConfig' | 'recipeStore' | 'opAdmissionGate' | 'contractOverlay' | 'contractScan' | 'cliReachabilityResolver'>;
+  execution: Pick<ExecuteHandlerDeps, 'executorConfig' | 'recipeStore' | 'opAdmissionGate' | 'contractOverlay' | 'contractScan' | 'cliReachabilityResolver' | 'recordsStore'>;
   profiles: Parameters<typeof readCurrentConnectionOperationProfile>[0];
   /** Same synchronous Records namespace/group resolver used by the host's
    * engine context. Absence is a hard refusal for a Records operation. */
@@ -71,8 +72,13 @@ export const createPreapprovalAdmission = (deps: PreapprovalAdmissionDeps) => (
   } else {
     if (opKey === undefined) return deny('The catalog operation is unresolved.');
     const target = describeCatalogAuthority(call.manifest, opKey, call.connection_name);
+    const recordsReachable = !target.cli && target.records_binding && (deps.recordsReachable
+      ? deps.recordsReachable(source, call.slug, opKey, target.records_binding)
+      : execution.recordsStore && recordsOperationReachable({ records: execution.recordsStore,
+        manifest: slug => execution.executorConfig.manifests.get(slug), scan: execution.contractScan },
+      recordsPrincipalFromExecutionSource(source), call.slug, opKey, target.records_binding));
     const profile = target.cli ? null : target.records ? { catalog_slug: call.slug,
-      allowed_operations: target.records_binding && deps.recordsReachable?.(source, call.slug, opKey, target.records_binding) ? [opKey] : [] }
+      allowed_operations: recordsReachable ? [opKey] : [] }
       : target.local_recipe ? { catalog_slug: call.slug,
         allowed_operations: target.local_recipe_id && execution.recipeStore.get(target.local_recipe_id) ? [opKey] : [] }
       : call.connection_name ? readCurrentConnectionOperationProfile(deps.profiles, call.connection_name) : null;

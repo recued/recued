@@ -52,6 +52,8 @@ import {
   time_within_window, time_elapsed_since, http_changed,
 } from './reactive.js';
 import { wait } from './timing.js';
+import { held, transitions, window_change, within_distance } from './series.js';
+export { held, transitions, window_change, within_distance } from './series.js';
 import { enrichmentOrFetch } from './enrichment-or-fetch.js';
 import { piiProtect, piiRestore } from './pii-transforms.js';
 
@@ -200,6 +202,8 @@ export const TRANSFORMS: ReadonlyMap<string, TransformFn> = new Map([
   ['time_within_window', time_within_window],
   ['time_elapsed_since', time_elapsed_since],
   ['http_changed', http_changed],
+  ['held', held], ['transitions', transitions],
+  ['window_change', window_change], ['within_distance', within_distance],
   // D-117 calendar reactive helpers
   ['calendar_changed_since', calendar_changed_since],
   ['calendar_new_since', calendar_new_since],

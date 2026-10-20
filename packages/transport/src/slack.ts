@@ -23,6 +23,7 @@ import {
   DEFAULT_TIMEOUT_MS,
   classifyHttpError,
   downloadToFile,
+  notSentMark,
   postJson,
   type HttpPostOutcome,
 } from './http.js';
@@ -177,7 +178,7 @@ const handleSlackOutcome = (outcome: HttpPostOutcome): TransportSendResult => {
       outcome.kind === 'http_error'
         ? classifyHttpError(outcome.status)
         : outcome.kind;
-    return { ok: false, error: { kind, detail: `Slack: ${outcome.detail}`,
+    return { ok: false, error: { kind, detail: `Slack: ${outcome.detail}`, ...notSentMark(outcome),
       ...(outcome.kind === 'http_error' && outcome.retry_after_ms !== undefined ? { retry_after_ms: outcome.retry_after_ms } : {}),
     } };
   }
@@ -317,6 +318,7 @@ export const createSlackTransport = (
 
   const sendPrompt = async (
     prompt: OutboundPrompt,
+    vendor_message_id?: string,
   ): Promise<TransportSendResult> => {
     const messageText = composeSlackText(prompt);
     // One button per option; `value` round-trips the correlation id +
@@ -326,19 +328,23 @@ export const createSlackTransport = (
       type: 'button',
       text: { type: 'plain_text', text: opt.label },
       action_id: `recued_choice_${i}`,
-      value: encodeChoice(prompt.correlation_id, opt.id),
+      value: encodeChoice(opt.correlation_id ?? prompt.correlation_id, opt.id),
     }));
     const outcome = await post(
-      SLACK_POST_MESSAGE_URL,
+      vendor_message_id === undefined ? SLACK_POST_MESSAGE_URL : SLACK_UPDATE_URL,
       {
         channel: prompt.recipient,
+        ...(vendor_message_id === undefined ? {} : { ts: vendor_message_id }),
         // `text` is the notification-preview fallback for the blocks.
         text: messageText,
         blocks: [
           { type: 'section', text: { type: 'mrkdwn', text: messageText } },
           // A stable `block_id` (the correlation id) — Slack best
           // practice; the press is correlated by the button `value`.
-          { type: 'actions', block_id: prompt.correlation_id, elements },
+          ...Array.from({ length: Math.ceil(elements.length / 25) }, (_, index) => ({
+            type: 'actions', block_id: index === 0 ? prompt.correlation_id : `${prompt.correlation_id}_${index}`,
+            elements: elements.slice(index * 25, (index + 1) * 25),
+          })),
         ],
       },
       prompt.token,
@@ -520,6 +526,7 @@ export const createSlackTransport = (
     parseConversationId,
     fetchMedia,
     sendPrompt,
+    updatePrompt: prompt => sendPrompt(prompt, prompt.vendor_message_id),
     parseInboundChoice,
     parseCallbackConversationId,
     closePrompt,

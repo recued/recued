@@ -24,6 +24,7 @@ export interface PreapprovalRuntimeIdentity {
    * its own pure request builder. That exact request becomes review material. */
   normalized_input?: Record<string, PreapprovalJson>;
   dispatch_snapshot?: PreapprovalJson;
+  resource_review?: import('@recued/contracts').ResourceReview;
   children: PreapprovalResolvedCall['children'];
   parallel_children?: true;
   child_inventory: PreapprovalResolvedCall['child_inventory'];
@@ -94,6 +95,7 @@ export const describePreapprovalInvocation = (
       definition_hash: preapprovalHash(parsePreapprovalJson(manifest)),
       binding_hash: preapprovalHash({ dispatcher: binding, runtime: runtime.binding }),
       ...(runtime.dispatch_snapshot !== undefined ? { dispatch_snapshot: runtime.dispatch_snapshot } : {}),
+      ...(runtime.resource_review ? { resource_review: structuredClone(runtime.resource_review) } : {}),
       input, output: call.output, resources: runtime.resources,
       connection_id: runtime.connection_id, account_id: runtime.account_id,
       risk: admission.risk, pre_lift_approval: admission.approval,

@@ -35,6 +35,13 @@ import { createEditorHistory, readEditorDraft, writeEditorDraft, type DraftRecov
 import { renderRecipeSettings, EDITOR_WORKBENCH_STYLES } from './editor-panels.js';
 import type { RecipeSimulationResult } from '@recued/contracts';
 import type { RecipeSimulationCaller } from './recipe-simulation-caller.js';
+import type { RecipeRegressionCaller } from './recipe-regression-caller.js';
+import { createRecipeRegressionPanel } from './recipe-regression-panel.js';
+import { createRecipeRunCapturePanel } from './recipe-run-capture-panel.js';
+import type { RecipeRunCaptureCaller } from './recipe-run-capture-caller.js';
+import { createRecipeReleasePanel } from './recipe-release-panel.js';
+import type { RecipeReleaseCaller } from './recipe-release-caller.js';
+import type { RecipeReleaseView } from '@recued/contracts';
 import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
 import { RunModal, startPhrase } from '@recued/ui-shared';
 
@@ -235,6 +242,10 @@ export interface BootstrapRecipeEditorRouteOptions {
   recovery?: DraftRecovery;
   validateCaller: (args: { recipe: RecipeDefinition }) => Promise<RecipeValidateResult>;
   simulateCaller?: RecipeSimulationCaller;
+  regressionCaller?: RecipeRegressionCaller;
+  captureCaller?: RecipeRunCaptureCaller;
+  releaseCaller?: RecipeReleaseCaller;
+  releaseInitial?: RecipeReleaseView;
   saveCaller: (args: {
     recipe: RecipeDefinition;
     publisher_id?: string;
@@ -1508,6 +1519,11 @@ export const bootstrapRecipeEditorRoute = (
   let testCancelBtn: HTMLButtonElement | undefined;
   let testAbort: AbortController | undefined;
   let testGeneration = 0;
+  let regressionPanel: ReturnType<typeof createRecipeRegressionPanel> | undefined;
+  let capturePanel: ReturnType<typeof createRecipeRunCapturePanel> | undefined;
+  let regressionRecipeEpoch = state.editEpoch;
+  let releasePanel: ReturnType<typeof createRecipeReleasePanel> | undefined;
+  let releaseRecipeEpoch = state.editEpoch;
   const idsOnLoad = allStepIds(state.recipe);
   if (idsOnLoad.length > 100) for (const id of idsOnLoad.slice(1)) state.collapsed.add(id);
   const webhookSelections = new Map(
@@ -1715,6 +1731,7 @@ export const bootstrapRecipeEditorRoute = (
   let pendingFieldFocus: RecipeEditorFieldFocus | null = null;
 
   const saveLabel = (): string => {
+    if (releasePanel?.managesCurrentRecipe() && state.recipe.recipe_id === options.initialRecipe?.recipe_id) return 'Save draft';
     switch (state.saveStage) {
       case 'saving':
         return 'Saving…';
@@ -1728,6 +1745,8 @@ export const bootstrapRecipeEditorRoute = (
   };
 
   const syncActionLabels = (): void => {
+    if (releaseRecipeEpoch !== state.editEpoch) { releaseRecipeEpoch = state.editEpoch; releasePanel?.recipeChanged(); }
+    if (regressionRecipeEpoch !== state.editEpoch) { regressionRecipeEpoch = state.editEpoch; regressionPanel?.recipeChanged(); }
     if (testResult && testStatusEl && testEpoch !== state.editEpoch) {
       testStatusEl.textContent = `Test ${testResult.status} — recipe changed since this test`;
       testStatusEl.setAttribute('data-state', 'stale');
@@ -1745,7 +1764,7 @@ export const bootstrapRecipeEditorRoute = (
     }
     const busy = state.saveStage === 'validating'
       || state.saveStage === 'saving'
-      || webhookBusy;
+      || webhookBusy || (releasePanel?.hasInFlightWork() ?? false);
     const syncBusyState = (button: HTMLButtonElement): void => {
       // These RPC actions remain focusable while guarded. Native `disabled`
       // drops focus when rerender replaces the active button, stranding a
@@ -1829,6 +1848,7 @@ export const bootstrapRecipeEditorRoute = (
   const runSave = (): void => {
     if (blockInvalidFields()) return;
     if (disposed || rpcInFlight || webhookBusy) return;
+    if (releasePanel?.managesCurrentRecipe() && state.recipe.recipe_id === options.initialRecipe?.recipe_id) { void releasePanel.saveDraft(); return; }
     if (webhookStatus?.armed && state.recipe.recipe_id !== persistedRecipeId) {
       state.saveStage = 'error';
       state.status = 'Switch off the saved webhook before you copy this Recipe';
@@ -4950,6 +4970,9 @@ export const bootstrapRecipeEditorRoute = (
     renderBindingsSection(body);
     renderMailTemplatesSection(body);
     body.appendChild(renderTestPanel());
+    if (regressionPanel) body.appendChild(regressionPanel.element);
+    if (capturePanel) body.appendChild(capturePanel.element);
+    if (releasePanel) body.appendChild(releasePanel.element);
     if (restoreTestFocus) testRunBtn?.focus?.({ preventScroll: true });
     for (const issue of state.issues) {
       if (!issue.path) continue;
@@ -5066,6 +5089,44 @@ export const bootstrapRecipeEditorRoute = (
     }
   };
 
+  if (options.regressionCaller && options.initialRecipe) regressionPanel = createRecipeRegressionPanel({
+    document: doc,recipeId: options.initialRecipe.recipe_id,caller: options.regressionCaller,
+    changed: () => { capturePanel?.refreshAvailability(); syncActionLabels(); },
+    getRecipe: () => {
+      if (blockInvalidFields()) throw new Error('Fix unfinished recipe fields before running saved tests.');
+      return state.recipe;
+    },
+  });
+  if (options.captureCaller && options.regressionCaller && options.initialRecipe) capturePanel = createRecipeRunCapturePanel({
+    document: doc,recipeId: options.initialRecipe.recipe_id,caller: options.captureCaller,regressionCaller: options.regressionCaller,
+    testsBusy: () => !!regressionPanel && (regressionPanel.hasUnsavedChanges() || regressionPanel.hasInFlightWork()),
+    imported: () => { void regressionPanel?.load(); },changed: syncActionLabels,
+  });
+  if (options.releaseCaller && options.initialRecipe) releasePanel = createRecipeReleasePanel({
+    document: doc,recipeId: options.initialRecipe.recipe_id,caller: options.releaseCaller,
+    ...(options.releaseInitial ? { initial: options.releaseInitial } : {}),
+    getRecipe: () => {
+      if (blockInvalidFields()) throw new Error('Fix unfinished recipe fields before saving or reviewing a release draft.');
+      return state.recipe;
+    },
+    hasUnsavedChanges: () => state.dirty,
+    loadRecipe(recipe) {
+      for (const key of Object.keys(fieldDrafts)) delete fieldDrafts[key];
+      state.recipe = structuredClone(recipe); state.editEpoch++; state.dirty = false;
+      savedRecipe = structuredClone(recipe); history.record({ recipe: state.recipe,fields: {} }); history.breakGroup();
+      persistDraft(); rerender();
+    },
+    draftSaved(recipe,unchanged) {
+      if (unchanged && JSON.stringify(state.recipe) === JSON.stringify(recipe)) {
+        savedRecipe = structuredClone(recipe); state.dirty = false; state.saveStage = 'saved';
+        recoveredDraft = null; history.breakGroup(); persistDraft();
+      }
+      state.status = 'Release draft saved. The active recipe changes only after testing and activation.';
+      rerender();
+    },
+    activated(sequence) { state.status = `Activated release ${sequence}.`; rerender(); },
+    changed: syncActionLabels,
+  });
   rerender();
   if (focusHeadingOnMount) {
     routeHeading?.focus?.({ preventScroll: true });
@@ -5100,6 +5161,7 @@ export const bootstrapRecipeEditorRoute = (
   // only save DIRTY work — recipe.save mints a new version per call, so a
   // clean reflex-save must be a no-op, not a version bump.
   const onKeydown = (event: KeyboardEvent): void => {
+    if (regressionPanel?.element.contains(event.target as Node) || capturePanel?.element.contains(event.target as Node) || releasePanel?.element.contains(event.target as Node)) return;
     if (event.isComposing) return;
     if (!(event.metaKey || event.ctrlKey)) return;
     if (!['s', 'z', 'y'].includes(event.key.toLowerCase())) return;
@@ -5164,6 +5226,9 @@ export const bootstrapRecipeEditorRoute = (
       if (disposed) return;
       disposed = true;
       testGeneration += 1; testAbort?.abort();
+      regressionPanel?.dispose();
+      capturePanel?.dispose();
+      releasePanel?.dispose();
       if (state.dirty) persistDraft();
       else if (recoveryTimer !== undefined) clearTimeout(recoveryTimer);
       doc.defaultView?.removeEventListener('pagehide', persistDraft);
@@ -5176,10 +5241,10 @@ export const bootstrapRecipeEditorRoute = (
       return state.recipe;
     },
     hasUnsavedChanges() {
-      return state.dirty;
+      return state.dirty || (regressionPanel?.hasUnsavedChanges() ?? false) || (capturePanel?.hasUnsavedChanges() ?? false);
     },
     hasInFlightWork() {
-      return rpcInFlight || webhookBusy;
+      return rpcInFlight || webhookBusy || (capturePanel?.hasInFlightWork() ?? false) || (regressionPanel?.hasInFlightWork() ?? false) || (releasePanel?.hasInFlightWork() ?? false);
     },
   };
 };

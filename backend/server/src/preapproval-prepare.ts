@@ -208,6 +208,7 @@ export const prepareFutureExecution = (input: {
       op_id: material.op_id, family: material.family, risk: material.risk, label: description.review.label,
       detail: description.review.detail, arguments: base.input, conditional, eligible: reason === null, reason,
       output: base.output, connection_id: base.connection_id, account_id: base.account_id, resources: base.resources,
+      ...(base.resource_review ? { resource_review: structuredClone(base.resource_review) } : {}),
     } };
     plan.members.push(member); limit(); addDependencies(description.dependencies);
     addDependencies(material.resources.map(pin => ({ ...pin, until_phase: 'terminal' })));
@@ -334,6 +335,20 @@ export const prepareFutureExecution = (input: {
   };
   visitRecipe(source, subject.kind === 'recipe' ? subject.config : {}, [], null, new Set());
   plan.dependencies = [...pins.values()];
+  const changedResources = new Set<string>();
+  for (const member of plan.members) {
+    for (const resource of member.resource_review?.resources ?? []) {
+      const key = JSON.stringify([resource.kind, resource.key]);
+      if (changedResources.has(key)) {
+        member.review.eligible = false;
+        member.review.reason = 'An earlier operation changes this same resource. Combine Records changes into one batch, or request a new review after the earlier change finishes.';
+      }
+      changedResources.add(key);
+    }
+  }
+  if (plan.members.some(member => member.resource_review)) {
+    plan.interaction_notes.push('Each change requires the resource version shown in this review. Operations finish separately; a later conflict does not undo earlier completed changes.');
+  }
   if (request.activation.kind === 'next_auto_run') plan.interaction_notes.push('Qualification checks keep their ordinary approval rules before this execution is selected.');
   validatePreparedFutureExecution(plan);
   return plan;

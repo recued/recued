@@ -2,12 +2,13 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { RpcError, authenticationIncidentScope, managedOAuthVerificationUrl, isAuthenticationAccessRequest, isAuthenticationAccessCheck, isOAuthAppRenewalVerification,
-  isAuthenticationAccessPreview, isAuthenticationAccessVerification,
+  isAuthenticationAccessPreview, isAuthenticationAccessVerification, authenticationAccessRecheckResults,
   type AuthenticationAccessCheck, type AuthenticationAccessChoice, type AuthenticationAccessPreview, type AuthenticationAccessRequest,
   type AuthenticationAccessResponse, type AuthenticationAccessSelection, type AuthenticationAccessTarget, type AuthenticationAccessVerification,
   type AuthenticationRepairTarget, type AuthenticationRepairWorklist, type AuthenticationIncidentHistoryPage, type AuthenticationRepairAction, type AuthenticationRenewalHistory } from '@recued/contracts';
 import { ensureAuthenticationHistorySchema } from './authentication-history-schema.js';
 import { createAuthenticationIncidentStore } from './authentication-incident-store.js';
+import { createAuthenticationAccessSummaries, createAuthenticationAccessComparison, type AuthenticationAccessComparison } from './authentication-access-summary.js';
 
 export interface PreparedAuthenticationAccess {
   descriptor: Omit<AuthenticationAccessTarget, 'id' | 'target'>;
@@ -42,6 +43,7 @@ export const createAuthenticationAccessVerification = (deps: {
     sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, attempt_id TEXT NOT NULL UNIQUE,
     selection_key TEXT NOT NULL, request_hash TEXT NOT NULL, data TEXT NOT NULL, finished_at INTEGER);
     CREATE INDEX IF NOT EXISTS idx_auth_access_selection ON authentication_access_verifications(selection_key, sequence);`);
+  const summaries = createAuthenticationAccessSummaries({ db, prepare: deps.prepare, now });
   const save = db.transaction((v: AuthenticationAccessVerification): void => {
     if (!isAuthenticationAccessVerification(v)) throw new Error('Invalid authentication access receipt');
     db.prepare('UPDATE authentication_access_verifications SET data = ?, finished_at = ? WHERE id = ?').run(JSON.stringify(v), v.finished_at ?? null, v.id);
@@ -59,6 +61,7 @@ export const createAuthenticationAccessVerification = (deps: {
     db.prepare('DELETE FROM authentication_access_verifications WHERE finished_at < ?').run(now() - 90 * 86_400_000);
     db.exec(`DELETE FROM authentication_access_verifications WHERE sequence IN (SELECT sequence FROM authentication_access_verifications
       WHERE finished_at IS NOT NULL ORDER BY sequence DESC LIMIT -1 OFFSET 10000)`);
+    summaries.prune();
     historyStore.prune(now());
   };
   const reviews = new Map<string, { public: AuthenticationAccessPreview; membership: string }>();
@@ -66,10 +69,23 @@ export const createAuthenticationAccessVerification = (deps: {
   const running = new Map<string, Promise<void>>();
   const select = async (selection: AuthenticationAccessSelection) => {
     const inventory = await deps.inventory();
-    let targets: AuthenticationRepairTarget[]; let label: string; let incomplete = false;
+    let targets: AuthenticationRepairTarget[]; let label: string; let incomplete = false; let source: string | undefined;
     if (selection.kind === 'group') {
       const group = inventory.groups.find(g => g.id === selection.id); if (!group) throw changed();
       targets = group.targets; label = group.label;
+    } else if (selection.kind === 'verification') {
+      const row = db.prepare<[string, number], { data: string }>("SELECT data FROM authentication_incident_history WHERE kind = 'verification' AND id = ? AND ended_at >= ?")
+        .get(selection.id, now() - 90 * 86_400_000);
+      if (!row) throw new RpcError('not_found', 'This access result is no longer available. Open Authentication repairs to review the saved accounts.');
+      const verification: unknown = JSON.parse(row.data);
+      if (!isAuthenticationAccessVerification(verification) || verification.id !== selection.id || verification.status !== 'completed') {
+        throw new RpcError('bad_request', 'Wait for a valid access result before reviewing rechecks.');
+      }
+      targets = authenticationAccessRecheckResults(verification).map(r => r.target);
+      if (!targets.length) throw new RpcError('bad_request', 'This result has no failed or unconfirmed reads to recheck.');
+      source = hash(row.data);
+      incomplete = verification.targets_truncated;
+      label = 'Failed or unconfirmed reads from the saved access result';
     } else if (selection.kind === 'renewal') {
       const row = db.prepare<[string, number], { data: string }>("SELECT data FROM authentication_incident_history WHERE kind = 'renewal' AND id = ? AND (ended_at IS NULL OR ended_at >= ?)")
         .get(selection.id, now() - 90 * 86_400_000);
@@ -106,27 +122,40 @@ export const createAuthenticationAccessVerification = (deps: {
     const groups = inventory.groups.filter(g => (g.kind === 'account' || selection.kind === 'group' && g.id === selection.id)
       && g.targets.some(t => targets.some(candidate => key(t) === key(candidate))));
     const uses = [...new Map(groups.flatMap(g => g.uses).map(u => [JSON.stringify([u.kind, u.id]), u])).values()];
-    const membership = hash([targets, groups.map(g => [g.id, g.targets, g.uses, g.usage_available]), inventory.unavailable, incomplete]);
+    const membership = hash([targets, groups.map(g => [g.id, g.targets, g.uses, g.usage_available]), inventory.unavailable, incomplete, source]);
     return { targets: targets.slice(0, 32), label, targets_truncated: incomplete || targets.length > 32, uses: uses.slice(0, 256),
       usage_available: !inventory.unavailable.length && uses.length <= 256 && groups.length > 0 && groups.every(g => g.usage_available), membership };
   };
-  const project = async (value: AuthenticationAccessVerification): Promise<AuthenticationAccessVerification> => {
+  const project = async (value: AuthenticationAccessVerification, compare = createAuthenticationAccessComparison(deps.prepare)): Promise<AuthenticationAccessVerification> => {
     const result = structuredClone(value);
     for (const row of result.results) {
-      try { row.current = (await deps.prepare(row.target)).descriptor.authentication_revision === row.authentication_revision ? 'yes' : 'no'; }
+      delete row.file_connection;
+      try { const descriptor = await compare(row.target); row.current = !descriptor ? 'unknown' : descriptor.authentication_revision === row.authentication_revision ? 'yes' : 'no';
+        if (row.current === 'yes' && row.target.kind === 'file_source' && descriptor?.check === 'file_metadata' && descriptor.file_connection) {
+          row.file_connection = { name: descriptor.file_connection.name, updated_at: descriptor.file_connection.updated_at };
+        }
+      }
       catch { row.current = 'unknown'; }
     }
     return result;
   };
+  const decode = (row: { id: string; data: string }): AuthenticationAccessVerification | undefined => {
+    try { const value: unknown = JSON.parse(row.data); if (isAuthenticationAccessVerification(value) && value.id === row.id) return value; }
+    catch { /* A damaged receipt must not hide the rest of the local worklist. */ }
+    return undefined;
+  };
   const read = async (id: string): Promise<AuthenticationAccessVerification> => {
     const row = db.prepare<[string, number], { data: string }>('SELECT data FROM authentication_access_verifications WHERE id = ? AND (finished_at IS NULL OR finished_at >= ?)').get(id, now() - 90 * 86_400_000);
     if (!row) throw new RpcError('not_found', 'This access check is no longer retained. Start a new check.');
-    return project(JSON.parse(row.data) as AuthenticationAccessVerification);
+    const value = decode({ id, data: row.data });
+    if (!value) throw new RpcError('not_configured', 'This saved access result could not be read. Refresh connection history.');
+    return project(value);
   };
-  const latest = async (selection: AuthenticationAccessSelection): Promise<AuthenticationAccessVerification | undefined> => {
-    const row = db.prepare<[string, number], { data: string }>(`SELECT data FROM authentication_access_verifications WHERE selection_key = ?
+  const latest = async (selection: AuthenticationAccessSelection, compare: AuthenticationAccessComparison): Promise<AuthenticationAccessVerification | undefined> => {
+    const row = db.prepare<[string, number], { id: string; data: string }>(`SELECT id, data FROM authentication_access_verifications WHERE selection_key = ?
       AND (finished_at IS NULL OR finished_at >= ?) ORDER BY sequence DESC LIMIT 1`).get(selectionKey(selection), now() - 90 * 86_400_000);
-    return row ? project(JSON.parse(row.data) as AuthenticationAccessVerification) : undefined;
+    const value = row && decode(row);
+    return value && value.selection.kind === selection.kind && value.selection.id === selection.id ? project(value, compare) : undefined;
   };
   const active = async (selection: AuthenticationAccessSelection): Promise<AuthenticationAccessVerification | undefined> => {
     const row = db.prepare<[string], { data: string }>(`SELECT data FROM authentication_access_verifications WHERE selection_key = ?
@@ -158,7 +187,7 @@ export const createAuthenticationAccessVerification = (deps: {
             const checks = await Promise.race([prepared.run(choices.find(c => c.target_id === result.id), controller.signal), new Promise<never>((_resolve, reject) => {
               timeout = setTimeout(() => { controller.abort(); reject(new Error('Access check deadline')); }, Math.min(65_000, deadline - Date.now()));
             })]);
-            if (!checks.length || checks.length > 5 || !checks.every(isAuthenticationAccessCheck)
+            if (!checks.length || checks.length > 5 || !Array.from(checks).every(isAuthenticationAccessCheck)
               || new Set(checks.map(c => c.kind)).size !== checks.length) throw new Error('Invalid check result');
             result.checks = checks.map(c => ({ kind: c.kind, status: c.status, ...(c.reason ? { reason: c.reason } : {}) }));
           } finally { if (timeout !== undefined) clearTimeout(timeout); }
@@ -179,7 +208,7 @@ export const createAuthenticationAccessVerification = (deps: {
       if (request.action === 'authentication_access_status') return { action: request.action, verification: await read(request.id) };
       if (request.action === 'authentication_access_preview') {
         const selection: AuthenticationAccessSelection = { kind: request.selection.kind, id: request.selection.id };
-        if (selection.kind === 'renewal') {
+        if (selection.kind === 'renewal' || selection.kind === 'verification') {
           const running = await active(selection); if (running) return { action: request.action, preview: resume(selection, running) };
         }
         for (const [id, review] of reviews) if (review.public.expires_at <= now()) reviews.delete(id);
@@ -192,7 +221,7 @@ export const createAuthenticationAccessVerification = (deps: {
           }
           // Confirm membership again after asynchronous credential reads.
           if ((await select(selection)).membership !== selected.membership) throw changed();
-          if (selection.kind === 'renewal') {
+          if (selection.kind === 'renewal' || selection.kind === 'verification') {
             const running = await active(selection); if (running) return { action: request.action, preview: resume(selection, running) };
           }
           const preview: AuthenticationAccessPreview = { id: randomBytes(32).toString('base64url'), fingerprint: '', expires_at: now() + 15 * 60_000,
@@ -204,7 +233,11 @@ export const createAuthenticationAccessVerification = (deps: {
           return { action: request.action, preview };
         } finally { previewing--; }
       }
-      const requestHash = hash([request.review_id, request.fingerprint, request.choices]);
+      const choices = request.choices.map(c => ({ target_id: c.target_id, ...(c.url !== undefined ? { url: c.url } : {}), ...(c.file_id !== undefined ? { file_id: c.file_id } : {}) }));
+      const targetIds = request.target_ids?.slice();
+      // Keep the original hash format for existing full-review retries.
+      const requestHash = hash(targetIds === undefined ? [request.review_id, request.fingerprint, request.choices]
+        : [request.review_id, request.fingerprint, choices, targetIds]);
       const attemptKey = hash(request.attempt_id);
       const existing = () => db.prepare<[string], { id: string; request_hash: string }>('SELECT id, request_hash FROM authentication_access_verifications WHERE attempt_id = ?').get(attemptKey)
         ?? db.prepare<[string], { id: string; request_hash: string }>('SELECT id, request_hash FROM authentication_access_verifications WHERE request_hash = ? ORDER BY sequence LIMIT 1').get(requestHash);
@@ -213,16 +246,22 @@ export const createAuthenticationAccessVerification = (deps: {
       const review = reviews.get(request.review_id);
       if (!review || review.public.expires_at <= now() || review.public.fingerprint !== request.fingerprint) throw changed();
       const plan = review.public;
-      if (request.choices.some(c => !plan.targets.some(t => t.id === c.target_id && (!c.url || t.check === 'api_read') && (!c.file_id || t.check === 'file_metadata')))) {
+      if (plan.selection.kind === 'verification' && !targetIds
+        || targetIds?.some(id => !plan.targets.some(t => t.id === id))) {
+        throw new RpcError('bad_request', 'Select only the reviewed accounts to recheck.');
+      }
+      const targets = plan.targets.filter(t => targetIds === undefined || targetIds.includes(t.id));
+      if (!targets.length) throw new RpcError('bad_request', 'Select at least one reviewed account to check.');
+      if (choices.some(c => !targets.some(t => t.id === c.target_id && (!c.url || t.check === 'api_read') && (!c.file_id || t.check === 'file_metadata')))) {
         throw new RpcError('bad_request', 'Choose a resource only for its reviewed account.');
       }
-      for (const choice of request.choices) if (choice.url?.trim()) {
+      for (const choice of choices) if (choice.url?.trim()) {
         const target = plan.targets.find(t => t.id === choice.target_id)!;
         if (!target.base_url || !managedOAuthVerificationUrl(target.base_url, choice.url)) throw new RpcError('bad_request', 'Use a read-only resource URL within its saved vendor API.');
       }
       if ((await select(plan.selection)).membership !== review.membership) throw changed();
-      for (const t of plan.targets) if ((await deps.prepare(t.target)).descriptor.authentication_revision !== t.authentication_revision) throw changed();
-      if (plan.selection.kind === 'renewal' && (await select(plan.selection)).membership !== review.membership) throw changed();
+      for (const t of targets) if ((await deps.prepare(t.target)).descriptor.authentication_revision !== t.authentication_revision) throw changed();
+      if ((plan.selection.kind === 'renewal' || plan.selection.kind === 'verification') && (await select(plan.selection)).membership !== review.membership) throw changed();
       // Recheck after awaits: concurrent starts must reserve at most one job.
       const raced = existing();
       if (raced) { if (raced.request_hash !== requestHash) throw changed(); return { action: request.action, verification: await read(raced.id) }; }
@@ -232,29 +271,33 @@ export const createAuthenticationAccessVerification = (deps: {
         throw new RpcError('conflict', 'Access checks for this selection are already running. Refresh their saved status.');
       }
       const v: AuthenticationAccessVerification = { id: 'verify-' + randomUUID(), selection: plan.selection, status: 'checking', started_at: now(),
-        results: plan.targets.map(t => ({ id: t.id, target: t.target, label: t.label, authentication_revision: t.authentication_revision, current: 'yes',
+        results: targets.map(t => ({ id: t.id, target: t.target, label: t.label, authentication_revision: t.authentication_revision, current: 'yes',
           checks: [unconfirmed(t.check === 'unsupported' ? 'api_read' : t.check, 'not_checked')] })),
         targets_truncated: plan.targets_truncated, uses: plan.uses, usage_available: plan.usage_available };
       db.transaction(() => {
         db.prepare('INSERT INTO authentication_access_verifications (id, attempt_id, selection_key, request_hash, data) VALUES (?, ?, ?, ?, ?)')
           .run(v.id, attemptKey, selectionKey(plan.selection), requestHash, JSON.stringify(v));
+        summaries.register(v);
         db.prepare("INSERT INTO authentication_incident_history (id, group_id, signature, data, kind) VALUES (?, ?, '', ?, 'verification')")
           .run(v.id, plan.selection.kind === 'group' ? plan.selection.id : 'access', JSON.stringify(v));
-        for (const target of plan.targets) db.prepare('INSERT INTO authentication_incident_targets (incident_id, scope_key) VALUES (?, ?)').run(v.id, key(target.target));
-        if (plan.selection.kind === 'renewal') {
+        for (const target of targets) db.prepare('INSERT INTO authentication_incident_targets (incident_id, scope_key) VALUES (?, ?)').run(v.id, key(target.target));
+        if (plan.selection.kind === 'renewal' || plan.selection.kind === 'verification') {
           // Preserve the exact app/account groups in history after later auth changes.
           db.prepare(`INSERT OR IGNORE INTO authentication_history_groups (entry_id, group_id)
             SELECT ?, group_id FROM authentication_history_groups WHERE entry_id = ?`).run(v.id, plan.selection.id);
           db.prepare(`INSERT OR IGNORE INTO authentication_history_groups (entry_id, group_id)
-            SELECT ?, group_id FROM authentication_incident_history WHERE id = ? AND kind = 'renewal'`).run(v.id, plan.selection.id);
-          db.prepare('INSERT OR IGNORE INTO authentication_incident_targets (incident_id, scope_key) VALUES (?, ?)')
-            .run(v.id, key({ kind: 'oauth_apps' }));
+            SELECT ?, group_id FROM authentication_incident_history WHERE id = ?`).run(v.id, plan.selection.id);
+          if (plan.selection.kind === 'renewal' || db.prepare('SELECT 1 FROM authentication_incident_targets WHERE incident_id = ? AND scope_key = ?')
+            .get(plan.selection.id, key({ kind: 'oauth_apps' }))) {
+            db.prepare('INSERT OR IGNORE INTO authentication_incident_targets (incident_id, scope_key) VALUES (?, ?)')
+              .run(v.id, key({ kind: 'oauth_apps' }));
+          }
         }
-        if (plan.selection.kind === 'repair') db.prepare(`INSERT INTO authentication_repair_incidents (repair_id, incident_id, group_id)
+        if (plan.selection.kind === 'repair' || plan.selection.kind === 'verification') db.prepare(`INSERT INTO authentication_repair_incidents (repair_id, incident_id, group_id)
           SELECT ?, incident_id, group_id FROM authentication_repair_incidents WHERE repair_id = ?`).run(v.id, plan.selection.id);
       })();
       reviews.delete(plan.id);
-      const task = Promise.resolve().then(() => execute(v, plan, request.choices)).catch(() => {
+      const task = Promise.resolve().then(() => execute(v, plan, choices)).catch(() => {
         v.status = 'completed'; v.finished_at = Math.max(v.started_at, now());
         for (const row of v.results) row.checks = row.checks.map(c => c.reason === 'not_checked' ? unconfirmed(c.kind, 'unavailable') : c);
         save(v);
@@ -265,13 +308,26 @@ export const createAuthenticationAccessVerification = (deps: {
     },
     async worklist(value) {
       const result = structuredClone(value);
-      for (const group of result.groups) { const v = await latest({ kind: 'group', id: group.id }); if (v) group.access_verification = v; }
+      const compare = createAuthenticationAccessComparison(deps.prepare);
+      const projected = await summaries.project(result.groups.map(g => ({ selection: { kind: 'group', id: g.id }, targets: g.targets })), compare);
+      for (const [index, group] of result.groups.entries()) {
+        group.access_summary = projected[index]!;
+        delete group.access_verification;
+        const v = await latest({ kind: 'group', id: group.id }, compare); if (v) group.access_verification = v;
+      }
       return result;
     },
     async history(value) {
       const result = structuredClone(value);
-      for (const repair of result.repairs ?? []) { const v = await latest({ kind: 'repair', id: repair.id }); if (v) repair.access_verification = v; }
-      if (result.verifications) result.verifications = await Promise.all(result.verifications.map(project));
+      const repairs = result.repairs ?? [];
+      const compare = createAuthenticationAccessComparison(deps.prepare);
+      const projected = await summaries.project(repairs.map(r => ({ selection: { kind: 'repair', id: r.id }, targets: r.targets, targets_truncated: r.targets_truncated })), compare);
+      for (const [index, repair] of repairs.entries()) {
+        repair.access_summary = projected[index]!;
+        delete repair.access_verification;
+        const v = await latest({ kind: 'repair', id: repair.id }, compare); if (v) repair.access_verification = v;
+      }
+      if (result.verifications) result.verifications = await Promise.all(result.verifications.map(v => project(v, compare)));
       return result;
     },
   };

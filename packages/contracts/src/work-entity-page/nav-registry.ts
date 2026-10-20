@@ -41,6 +41,7 @@ export const WORK_ENTITY_NAV_ORDER: readonly WorkEntityKind[] = exhaustiveKindOr
   'booking',
   'note',
   'project',
+  'asset',
 ]);
 
 /** Closed registry keyed on `WorkEntityKind`. The `icon_name` value
@@ -49,6 +50,10 @@ export const WORK_ENTITY_NAV_ORDER: readonly WorkEntityKind[] = exhaustiveKindOr
  *  a matching SVG entry over there. */
 export const WORK_ENTITY_NAV: Readonly<Record<WorkEntityKind, WorkEntityNavSpec>> =
   Object.freeze({
+    asset: {
+      kind: 'asset', icon_name: 'asset', plural_label: 'Assets', singular_label: 'Asset',
+      empty_state_copy: 'Keep the things that matter to you here.',
+    },
     task: {
       kind: 'task',
       icon_name: 'task',

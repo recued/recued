@@ -85,6 +85,7 @@ export type PreflightOverrideOffer =
  *  `ExecutionResult.awaiting_approval` so the host can populate
  *  `PreflightAskContext` (and therefore the ask's body) verbatim. */
 export interface PreflightSignalDetails {
+  resource_review?: import('./resource-review.js').ResourceReview;
   /** The ingredient slug the gated dispatch targeted. */
   tool_slug?: string;
   /** The tool's `RiskTier` as a string — the ask body renders it as
@@ -198,6 +199,7 @@ export class PreflightRequiredSignal extends Error {
    *  `notification.ask` body with the structured reason. Absent on legacy
    *  raise sites that only supply a message — the engine falls back to a
    *  bare pause in that case. */
+  readonly resource_review?: import('./resource-review.js').ResourceReview;
   readonly tool_slug?: string;
   readonly risk_tier?: string;
   readonly reason?: string;
@@ -237,6 +239,7 @@ export class PreflightRequiredSignal extends Error {
    *  HERE TOO. */
   constructor(message?: string, details?: PreflightSignalDetails) {
     super(message ?? 'preflight approval required');
+    if (details?.resource_review !== undefined) this.resource_review = details.resource_review;
     if (details?.tool_slug !== undefined) this.tool_slug = details.tool_slug;
     if (details?.risk_tier !== undefined) this.risk_tier = details.risk_tier;
     if (details?.reason !== undefined) this.reason = details.reason;

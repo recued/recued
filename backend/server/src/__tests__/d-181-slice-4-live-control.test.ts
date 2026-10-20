@@ -227,6 +227,86 @@ const registerRun = (
     abort,
   });
 
+describe('InFlightRegistry — nested subprocess ownership', () => {
+  const register = (reg: InFlightRegistry, run_id: string, parent_run_id?: string) => {
+    const abort = vi.fn();
+    reg.registerRun({
+      run_id, recipe_id: run_id, source: OWNER_SOURCE, origin: 'attended',
+      started_at: 1, abort,
+      ...(parent_run_id !== undefined ? { parent_run_id } : {}),
+    });
+    return abort;
+  };
+
+  it('kills and drains every descendant subprocess without waiting for unrelated work', async () => {
+    const reg = new InFlightRegistry(new LaneSemaphore());
+    const rootAbort = register(reg, 'root');
+    register(reg, 'child', 'root');
+    register(reg, 'grandchild', 'child');
+    register(reg, 'unrelated');
+    const kills = Array.from({ length: 4 }, () => vi.fn());
+    const first = reg.attachSubprocess('child', 11, kills[0]!);
+    const second = reg.attachSubprocess('child', 12, kills[1]!);
+    const last = reg.attachSubprocess('grandchild', 13, kills[2]!);
+    const unrelated = reg.attachSubprocess('unrelated', 14, kills[3]!);
+
+    expect(reg.kill('root')).toBe('killed');
+    expect(rootAbort).toHaveBeenCalledOnce();
+    for (const kill of kills.slice(0, 3)) expect(kill).toHaveBeenCalledOnce();
+    expect(kills[3]).not.toHaveBeenCalled();
+    const drain = settled(reg.waitForSubprocessDrain('root'));
+    reg.detachSubprocess('child', first);
+    reg.detachSubprocess('grandchild', last);
+    await flush();
+    expect(drain.state()).toBe('pending');
+    reg.detachSubprocess('child', second);
+    await flush();
+    expect(drain.state()).toBe('resolved');
+    expect(reg.activeRunCount()).toBe(4);
+    expect(kills[3]).not.toHaveBeenCalled();
+    reg.detachSubprocess('unrelated', unrelated);
+  });
+
+  it('stopping a child excludes its parent and sibling subprocesses', async () => {
+    const reg = new InFlightRegistry(new LaneSemaphore());
+    const rootAbort = register(reg, 'root');
+    const childAbort = register(reg, 'child', 'root');
+    const siblingAbort = register(reg, 'sibling', 'root');
+    register(reg, 'grandchild', 'child');
+    const rootKill = vi.fn();
+    const siblingKill = vi.fn();
+    const descendantKill = vi.fn();
+    const rootProcess = reg.attachSubprocess('root', 21, rootKill);
+    const siblingProcess = reg.attachSubprocess('sibling', 22, siblingKill);
+    const descendantProcess = reg.attachSubprocess('grandchild', 23, descendantKill);
+
+    expect(reg.kill('child')).toBe('killed');
+    expect(childAbort).toHaveBeenCalledOnce();
+    expect(rootAbort).not.toHaveBeenCalled();
+    expect(siblingAbort).not.toHaveBeenCalled();
+    expect(descendantKill).toHaveBeenCalledOnce();
+    expect(rootKill).not.toHaveBeenCalled();
+    expect(siblingKill).not.toHaveBeenCalled();
+    const drain = settled(reg.waitForSubprocessDrain('child'));
+    await flush();
+    expect(drain.state()).toBe('pending');
+    reg.detachSubprocess('grandchild', descendantProcess);
+    await flush();
+    expect(drain.state()).toBe('resolved');
+    reg.detachSubprocess('root', rootProcess);
+    reg.detachSubprocess('sibling', siblingProcess);
+  });
+
+  it('does not wait for external-only descendant runs to retire', async () => {
+    const reg = new InFlightRegistry(new LaneSemaphore());
+    register(reg, 'root');
+    register(reg, 'child', 'root');
+    register(reg, 'grandchild', 'child');
+    await reg.waitForSubprocessDrain('root');
+    expect(reg.activeRunCount()).toBe(3);
+  });
+});
+
 describe('InFlightRegistry — D-259 running-twin attachment', () => {
   it('elects one leader atomically and gives every follower the same response', async () => {
     const reg = new InFlightRegistry(new LaneSemaphore());

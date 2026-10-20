@@ -541,6 +541,24 @@ describe('D-222 Slice 3 — stored output-filter admission', () => {
     expect(result.output.sidebar).toEqual([]);
   });
 
+  it.each(['owner', 'legacy', 'contract', 'snapshot'] as const)(
+    'projects API account metadata only to an unrestricted owner (%s)', async audience => {
+      const record_source = { kind: 'api' as const, platform: 'hubspot', connection_name: 'sales', entity: 'contact' };
+      const section = { type: 'record_fields', data: { id: '42' }, record_source };
+      executeRecipeMock.mockImplementationOnce(async () => ({ ...successResult(), recipe_id: FILTER_RECIPE_ID,
+        output: { render: [section], sidebar: [section] } }));
+      const result = await handleExecute(makeFilterDeps(), { recipe_id: FILTER_RECIPE_ID,
+        ...(audience === 'legacy' ? {} : { execution_source: audience === 'contract'
+          ? { ...OWNER_SOURCE, contract_id: 'restricted' } : OWNER_SOURCE }),
+        ...(['snapshot', 'contract'].includes(audience) ? { contract_snapshot: { contract_id: 'restricted', contract_version: 'v1', allowed_tools: [],
+          approval_required: [], scope_restrictions: [], resolved_at: 1_000 } } : {}),
+      });
+      for (const output of [result.output.render, result.output.sidebar]) {
+        expect(output[0]?.data).toEqual({ id: '42' });
+        expect(output[0]?.record_source).toEqual(audience === 'owner' ? record_source : undefined);
+      }
+    });
+
   it('retains resolved filter output for an unrestricted owner caller', async () => {
     executeRecipeMock.mockImplementationOnce(async () => ({
       ...successResult(),

@@ -85,6 +85,7 @@ export interface MintContractInput {
   /** The `(channels × actors × ingredient_ids × operation_ids × connection_names)`
    *  surface the contract authorizes. An empty/absent axis is a wildcard. */
   scope: ContractScope;
+  read_spheres?: import('@recued/contracts').Sphere[];
   /** Server-derived per-run limits for a door. Not exposed by the generic owner mint RPC. */
   door_execution_policy?: DoorExecutionPolicy;
   /** D-187 §6 (step 7) — the level-1 door types this contract may back
@@ -484,6 +485,7 @@ export interface ContractDefinitionStore {
    *  gate-consumed `session` / `delegation` grant or a customer instance (only
    *  standing doors and templates are human-editable here). Does NOT touch
    *  lifecycle; the value_shape gate validates the array on write. */
+  setReadSpheres(contract_id: string, spheres: readonly import('@recued/contracts').Sphere[] | null): ContractDefinition | null;
   setDoorTypes(
     contract_id: string,
     door_types: ReadonlyArray<DoorType>,
@@ -757,6 +759,7 @@ export const createContractDefinitionStore = (
         minted_by: input.minted_by,
         display_name: input.display_name,
         scope: input.scope,
+        ...(input.read_spheres !== undefined ? { read_spheres: [...input.read_spheres] } : {}),
         ...(input.door_execution_policy !== undefined
           ? { door_execution_policy: input.door_execution_policy }
           : {}),
@@ -907,6 +910,16 @@ export const createContractDefinitionStore = (
         revoked_at: now(),
         revocation_reason: reason,
       };
+      store.put(CONTRACT_DEFINITION_SCOPE, [contract_id], updated);
+      return updated;
+    },
+
+    setReadSpheres(contract_id, spheres) {
+      const def = read(contract_id);
+      if (!def || (!isStandingContractDefinition(def) && def.grant_kind !== 'customer_template')) return null;
+      const updated = { ...def };
+      delete (updated as Record<string, unknown>).read_spheres;
+      if (spheres !== null) (updated as { read_spheres?: readonly import('@recued/contracts').Sphere[] }).read_spheres = [...new Set(spheres)];
       store.put(CONTRACT_DEFINITION_SCOPE, [contract_id], updated);
       return updated;
     },

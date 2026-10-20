@@ -59,6 +59,7 @@ import {
   PreflightRequiredSignal,
   SESSION_GRANT_RISK_TIERS,
   canonicalArgHash,
+  captureResourceReview,
   checkPathScope,
   closedRequestSchemaViolation,
   deriveOriginUnit,
@@ -3035,7 +3036,14 @@ const runCatalogOperationInner = async (
    *  host's `allow_session` offer to `grant_mode: 'open'` (N.11), exactly
    *  the commit Gateway's raise contract. All lazy + memoized; a fallback
    *  re-raise recomputes nothing. */
+  let resourceReview = stepMeta?.resource_review || (resolution.verdict === 'ask' && stepMeta?.preflight_admitted === true)
+    ? captureResourceReview(ctx.resourceReview, slug,
+    { operation: call.operation_id, args: effectiveArgs }, stepMeta?.resource_review,
+    stepMeta?.preflight_admitted === true) : undefined;
   const raiseCatalogAsk = (): never => {
+    resourceReview ??= captureResourceReview(ctx.resourceReview, slug,
+      { operation: call.operation_id, args: effectiveArgs }, undefined,
+      stepMeta?.preflight_admitted === true);
     const hashes = getCatalogHashes();
     const openPreview = openProjectionOnce()?.preview;
     throw new PreflightRequiredSignal(
@@ -3043,6 +3051,7 @@ const runCatalogOperationInner = async (
         + `(risk_tier='${resolution.effective_risk_tier}') on connection `
         + `'${call.connection_name}'`,
       {
+        ...(resourceReview ? { resource_review: resourceReview } : {}),
         tool_slug: resolution.operation_id,
         risk_tier: resolution.effective_risk_tier,
         // No `reason` — `approve <tier> operation '<op_id>'` restated the
@@ -3100,6 +3109,12 @@ const runCatalogOperationInner = async (
 
   const reviewedApproved = ctx.reviewedExecution ? await ctx.reviewedExecution.catalogApproved({ slug, operation_id: resolution.operation_id,
     connection_name: call.connection_name, stepMeta }) : false;
+  if (reviewedApproved) {
+    const retainedReview = ctx.reviewedExecution?.catalogResourceReview?.({ slug, operation_id: resolution.operation_id,
+      connection_name: call.connection_name, stepMeta });
+    if (retainedReview) resourceReview = captureResourceReview(ctx.resourceReview, slug,
+      { operation: call.operation_id, args: effectiveArgs }, retainedReview);
+  }
   const resumeApproved =
     !reviewedApproved && stepMeta?.preflight_admitted === true
     && catalogTargetMatches(
@@ -3497,13 +3512,28 @@ const runCatalogOperationInner = async (
         throw new Error(`D-221 Records operation '${resolution.operation_id}' has no derived execution principal.`);
       }
       const principal = recordsPrincipal;
-      const executeRecords = (args: Record<string, unknown>): unknown => ctx.recordsOperationExecutor!({
-        binding: recordsBinding,
-        args,
-        principal,
-        ...(ctx.outputRecipeHash ? { recipe_digest: ctx.outputRecipeHash } : {}),
-        ...(ctx.recordsMutationContext ?? {}),
-      });
+      const executeRecords = (args: Record<string, unknown>): unknown => {
+        const dispatch = () => (ctx.resourceReview?.run.bind(ctx.resourceReview) ?? ((_r, f) => f()))(resourceReview, () => {
+          const result = ctx.recordsOperationExecutor!({
+            binding: recordsBinding,
+            args,
+            principal,
+            ...(ctx.outputRecipeHash ? { recipe_digest: ctx.outputRecipeHash } : {}),
+            ...(ctx.recordsMutationContext ?? {}),
+          });
+          // A write can commit and synchronously notify a sink that kills the
+          // run. Retain that boundary before yielding or checking cancellation.
+          if (reviewedApproved && resourceReview) ctx.reviewedExecution?.recordsMutationReturned?.({
+            slug, operation_id: resolution.operation_id, connection_name: call.connection_name, stepMeta,
+          });
+          return result;
+        });
+        return !reviewedApproved && resourceReview && ctx.localMutations
+          ? ctx.localMutations.run({ slug, operation: resolution.operation_id,
+              input: { operation: call.operation_id, args }, review: resourceReview,
+              ...(stepMeta ? { stepMeta } : {}) }, dispatch)
+          : dispatch();
+      };
       // A step that says `pages: "all"` reads its search page by page (the
       // check above refused it on anything but a search); every other call
       // reaches the store once, exactly as before.

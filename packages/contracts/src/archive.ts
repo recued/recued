@@ -21,6 +21,8 @@
  *  Once terminal, the status can be polled for a short grace window
  *  (~10 min) then the server drops the entry from the in-memory map. */
 export interface ArchiveJobStatus {
+  /** Durable remote-delivery identity, when this export also sends a backup. */
+  remote_backup_id?: string;
   state: 'running' | 'done' | 'error';
   /** Bytes written to the output file so far. 0 while scanning
    *  records before the first write. */
@@ -140,4 +142,18 @@ export interface ArchiveImportRebind {
   /** The paired-instance id the new bearer is bound to (carried in the
    *  token's `metadata.instance_id`), == the driving client's instance. */
   instance_id: string;
+}
+
+/** Owner-only lookup of one import, independent of the database it replaces.
+ * `completed` is the swap journal's durable verdict, never inferred from a
+ * successful request, a connected socket or server uptime. `not_applied`
+ * means the original database survived. `unknown` makes no delivery claim. */
+export interface ArchiveImportOperationStatus {
+  status:
+    | 'unknown'
+    | 'preparing'
+    | 'waiting_for_restart'
+    | 'completed'
+    | 'not_applied'
+    | 'recovery_required';
 }

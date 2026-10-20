@@ -46,6 +46,7 @@ import {
   spreadsheetImportProblems,
   mailTemplateStarterProblems,
   VALUE_HINT_KEYS,
+  isRecipePageBinding,
   LIST_VOCABULARIES,
   listSettingChoices,
   listVocabularyRef,
@@ -1895,6 +1896,17 @@ const validateValueHint = (
   }
   if (hint.optional !== undefined && typeof hint.optional !== 'boolean') {
     issue('optional', 'ValueHint.optional must be a boolean when present');
+  }
+
+  if (hint.page_binding !== undefined) {
+    if (!isRecipePageBinding(hint.page_binding)) {
+      issue('page_binding', 'page_binding requires a kind and a field path, with an optional platform; internal and prototype fields are refused');
+    } else if (['secret', 'oauth', 'connection', 'mail_template', 'file_slug'].includes(String(hint.type))) {
+      issue('page_binding', 'credentials, connections and setup settings cannot be supplied by a page object');
+    } else if (hint.type === 'record_ref'
+      && (hint.page_binding.kind !== hint.entity || hint.page_binding.field !== 'id' || hint.page_binding.platform !== undefined)) {
+      issue('page_binding', 'a record_ref page_binding must select id from its own local entity kind');
+    }
   }
 
   for (const field of ['help', 'link', 'provider'] as const) {

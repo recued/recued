@@ -30,6 +30,10 @@ import {
 import { buildMessengerRemoteChannels } from '../composition/bin/messenger-transport-leaves.js';
 import { getMessengerNotificationRefresher } from '../composition/bin/wire-messenger-refresher.js';
 import { composeEmailChannel } from '../composition/bin/wire-email-channel.js';
+import { createOwnerEmailConnection, createOwnerNotificationConnection, ownerEmailConnectionProblem } from '../composition/bin/owner-email-connection.js';
+import { createReminderMailReconciler } from '../reminders/mail-delivery-reconcile.js';
+import { createMailSendClaimStore } from '../storage/mail-send-claim-store.js';
+import type { MailCollection } from '../collections/mail/mail-collection.js';
 import type { PreflightResumer, TornSagaSweepResult } from '@recued/gateway';
 import { runTornSagaSweep } from '../saga-server-wiring.js';
 import { createSellerCustomerAccessLifecycle } from '../seller/customer-access-lifecycle.js';
@@ -165,6 +169,7 @@ export interface ComposeExecutionContextOptions {
     | 'serverInstanceId'
     | 'auditLog'
     | 'commitStore'
+    | 'localMutations'
     | 'checkpointStore'
     | 'mcpActionStore'
     | 'gatedActionStore'
@@ -237,6 +242,8 @@ export interface ComposeExecutionContextOptions {
     | 'publishExecutionCaseOfferNotifier'
   > & Partial<Pick<
     AppContext,
+    | 'situationAccessRef'
+    | 'isVaultUnlocked'
     | 'webhookConsumerStoreRef'
     | 'webhookDeliveryStoreRef'
   >>;
@@ -255,6 +262,13 @@ export interface ComposeExecutionContextOptions {
     | 'calendarStack'
     | 'channelDispatchers'
     | 'workEntityDispatchers'
+    | 'situationStore'
+    | 'scheduledSituations'
+    | 'episodeRuntime'
+    | 'querySituation'
+    | 'spheres'
+    | 'assetReminders'
+    | 'yours'
     | 'inboundFileCollection'
     | 'uploadStagingRegistry'
     | 'supervisionStack'
@@ -265,6 +279,7 @@ export interface ComposeExecutionContextOptions {
 }
 
 export interface ExecutionContext {
+  situationAccess?: import('../situations/access.js').SituationAccess;
   executorConfig: ServerExecutorConfig;
   executeDeps: ExecuteHandlerDeps;
   notificationBlock: NotificationBlock | undefined;
@@ -359,6 +374,14 @@ export const composeExecutionContext = async (
   // each live handle in boot order so the chat tool getters keep the
   // same late-bound behavior they had in serve-entry.
   lateBound.publishCollectionRegistry(collection.collectionRegistry);
+  const situationAccess = app.contractStoreRef && collection.querySituation
+    ? (await import('../situations/access.js')).createSituationAccess({ contracts: app.contractStoreRef, query: collection.querySituation,
+        ...(collection.spheres ? { spheres: collection.spheres } : {}),
+        ...(collection.episodeRuntime ? { memoryAllowed: cluster => collection.episodeRuntime!.memoryAllowed(cluster) } : {}),
+        ...(collection.situationStore ? { measure: (name, value, labels) => { collection.situationStore!.measure(name, value, labels, Date.now()); } } : {}), isVaultUnlocked: app.isVaultUnlocked ?? (() => false) }) : undefined;
+  if (app.situationAccessRef) app.situationAccessRef.current = situationAccess;
+  if (situationAccess) collection.scheduledSituations?.bindAccess(situationAccess);
+  collection.episodeRuntime?.bindMemory(app.userMemoryStore);
 
   // D-316 amendment — the chat's whole-warehouse known-value matcher, lent to a
   // recipe's own `content` PII tags: the same builder and the same three sources
@@ -372,6 +395,7 @@ export const composeExecutionContext = async (
   );
 
   const executorConfig = await composeExecutorConfig({
+    ...(situationAccess ? { situationQuery: (input, source) => situationAccess.read(input, source), situationAccess } : {}),
     piiKnownValues,
     // D-234 § 234.4 — the inbound peer door needs the notification block, which
     // is composed after this config. Same late-binding seam the container-pick
@@ -594,6 +618,9 @@ export const composeExecutionContext = async (
             );
           },
         }),
+        // D-158 amendment 2026-10-20 — a plain notify or ask goes through the
+        // connection the owner chose for the channel, as email's does.
+        ...(storage.db ? { plainConnection: (vendor: string) => createOwnerNotificationConnection(storage.db!, app.connectionStoreRef!, vendor) } : {}),
       })
     : {};
   // D-158 P2b email-adapter slice — OUTBOUND server-wiring for the
@@ -620,6 +647,15 @@ export const composeExecutionContext = async (
     ? composeEmailChannel({
         connectionStore: app.connectionStoreRef,
         mailRpc: emailMailRpc,
+        mailboxAddress: slug => (collection.collectionRegistry.get('mail', slug) as MailCollection | undefined)?.accountEmail,
+        ...(storage.db ? { ownerConnection: createOwnerEmailConnection(storage.db, app.connectionStoreRef), ownerConnectionProblem: ownerEmailConnectionProblem } : {}),
+        ...(storage.db ? { reconcileEmailAttempt: createReminderMailReconciler({ claims: createMailSendClaimStore(storage.db),
+          mailbox: slug => {
+            const mailbox = collection.collectionRegistry.get('mail', slug);
+            return mailbox && 'lookupSentByReconciliationId' in mailbox && typeof mailbox.lookupSentByReconciliationId === 'function'
+              ? mailbox as MailCollection : undefined;
+          },
+        }) } : {}),
         answerLink: askAnswerLink,
       })
     : undefined;
@@ -715,6 +751,7 @@ export const composeExecutionContext = async (
       })
     : undefined;
   const executeDepsBundle = composeExecuteDeps({
+    ...(app.isVaultUnlocked ? { isVaultUnlocked: app.isVaultUnlocked } : {}),
     // D-137 — the late-bound chat sink for a run that settles after its turn.
     // Read through the refs bag, so it resolves whenever chat published it.
     getRunSettledSink: () => lateBound.getRunSettledSink(),
@@ -744,6 +781,7 @@ export const composeExecutionContext = async (
     db: storage.db,
     enrichmentStore: app.enrichmentStoreRef,
     commitStore: storage.commitStore,
+    ...(storage.localMutations ? { localMutations: storage.localMutations } : {}),
     checkpointStore: storage.checkpointStore,
     mcpActionStore: storage.mcpActionStore,
     gatedActionStore: storage.gatedActionStore,
@@ -852,6 +890,7 @@ export const composeExecutionContext = async (
     // read live by the next dispatch. Absent (no db / daemon-lite) ⇒ no override
     // layer; the connection-keyed profile floor is authoritative.
     ...(app.contractStoreRef ? { contractStore: app.contractStoreRef } : {}),
+    ...(situationAccess ? { situationAccess } : {}),
     // D-196 — seller-customer admission is re-checked for held raw MCP ops at
     // approval resume time, after expiry/grace/status may have changed.
     ...(app.sellerStoreRef ? { sellerCustomerAdmissionStore: app.sellerStoreRef } : {}),
@@ -885,6 +924,9 @@ export const composeExecutionContext = async (
   // server was down is recorded only if the handler is already registered —
   // publishing registers it.
   if (executeDepsBundle.notificationBlock) {
+    collection.assetReminders?.bind(executeDepsBundle.notificationBlock, { publicBaseUrl: () => storage.publicAddress.baseUrl('root') });
+    collection.yours?.bind(executeDepsBundle.notificationBlock);
+    collection.episodeRuntime?.bindNotifier(executeDepsBundle.notificationBlock);
     app.publishExecutionCaseOfferNotifier?.(
       executeDepsBundle.notificationBlock,
     );
@@ -893,6 +935,7 @@ export const composeExecutionContext = async (
   return {
     executorConfig,
     executeDeps,
+    ...(situationAccess ? { situationAccess } : {}),
     notificationBlock: executeDepsBundle.notificationBlock,
     getBatch: executeDepsBundle.getBatch,
     reconcileOpenBatch: executeDepsBundle.reconcileOpenBatch,

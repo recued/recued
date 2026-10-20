@@ -36,7 +36,7 @@
  *  Spec: D-270. */
 
 import { PREFLIGHT_HANDLER_KIND } from '@recued/gateway';
-import type { ArgEditSchema, Checkpoint, ServerPendingAskDetail } from '@recued/contracts';
+import { approvalValueLabel, type ArgEditSchema, type Checkpoint, type ServerPendingAskDetail } from '@recued/contracts';
 import type { AuditEntry } from '@recued/storage';
 import type { PendingAsk } from '@recued/notification';
 
@@ -113,6 +113,27 @@ const nameFileRefs = (
     });
     // A long row is cut at the display cap; the count survives the cut.
     args[field.key] = names.length === 1 ? names[0] : `${names.length} files: ${names.join('; ')}`;
+    return { ...field, type: 'string' as const };
+  });
+  return { fields: named, args };
+};
+
+/** ⛔ A MAILBOX READS AS ITS ADDRESS, NOT ITS NAME. A held send's row read
+ *  `Sender mail instance: recueddev`, the name the call passes rather than what
+ *  the owner knows the mailbox by (live, 2026-10-19). The server recorded each
+ *  sending mailbox's address when it held the run (`value_labels`), and the ask
+ *  text's argument lines read the same record. Display only, like the file
+ *  names above. */
+const nameKnownValues = (
+  fields: readonly ArgEditSchema['fields'][number][],
+  shown: Record<string, unknown>,
+  labels: unknown,
+): { fields: ArgEditSchema['fields']; args: Record<string, unknown> } => {
+  const args: Record<string, unknown> = { ...shown };
+  const named = fields.map((field) => {
+    const label = approvalValueLabel(labels, field.key, readArgPath(shown, field.key));
+    if (label === undefined) return field;
+    args[field.key] = label;
     return { ...field, type: 'string' as const };
   });
   return { fields: named, args };
@@ -264,6 +285,12 @@ export const createAskCardDetailResolver = (
       const named = nameFileRefs(arg_schema.fields, shown, deps.describeFileRef);
       arg_schema = { ...arg_schema, fields: named.fields };
       shown = named.args;
+    }
+    const labels = checkpoint.preflight_context?.value_labels;
+    if (labels !== undefined) {
+      const known = nameKnownValues(arg_schema.fields, shown, labels);
+      arg_schema = { ...arg_schema, fields: known.fields };
+      shown = known.args;
     }
     const built = buildAskLandingDetails(
       { args: shown, arg_schema, proposed_action: '' },

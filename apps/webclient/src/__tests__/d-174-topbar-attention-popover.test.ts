@@ -2713,6 +2713,35 @@ describe('D-174 - approval attention top-bar adapter', () => {
     handle.dispose();
   });
 
+  it('keeps the ids line behind the disclosure: the owner\'s words stay in the open', async () => {
+    const { topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [
+        ask('gw-owner-words', {
+          title: 'Approve: Send a composed email',
+          text: [
+            '"Send a composed email" is waiting for your approval.',
+            'Write actions change data outside Recued, so Recued held it for you.',
+            'Technical: recipe send-composed-mail, step send, action mail-send.',
+            '',
+            '  to: sam.rivera@meridian-systems.example',
+            '',
+            'Approve?',
+          ].join('\n'),
+        }),
+      ],
+    });
+    await handle.whenLoaded();
+
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    const html = topbar.innerHTML;
+    const detailsAt = html.indexOf('attention-row-payload');
+    expect(html.indexOf('is waiting for your approval')).toBeLessThan(detailsAt);
+    expect(html.indexOf('Technical: recipe send-composed-mail')).toBeGreaterThan(detailsAt);
+    expect(html).toContain('<summary>Details (2)</summary>');
+    handle.dispose();
+  });
+
   it('collapses the argument payload behind a counted disclosure', async () => {
     // A real intake hold pushed the Approve button below a dozen lines of
     // identifiers. The question stays in the open; the payload is one
@@ -2750,6 +2779,53 @@ describe('D-174 - approval attention top-bar adapter', () => {
     // must not end up behind the disclosure with the payload.
     const detailsAt = html.indexOf('attention-row-payload');
     expect(html.indexOf('Approve?')).toBeLessThan(detailsAt);
+    handle.dispose();
+  });
+
+  it('leaves out the terms of "Allow this session": the #approvals card shows them', async () => {
+    // The owner, 2026-10-19: "for the popover … maybe not necessary because it
+    // takes too much attention away". The terms' lines start at the left
+    // margin, so without this they would sit in the open prose.
+    const { topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [
+        ask('gw-grant', {
+          title: 'Approve: Send a composed email',
+          text: [
+            'Recipe send-composed-mail wants to run mail-send (step send).',
+            'Write actions change data outside Recued, so Recued held it for you.',
+            '',
+            '  to: recued.dev@outlook.com',
+            '  subject: Grant check',
+            '',
+            "'Allow this session' lets mail-send run up to 5 more times within 1 hour without asking you, as long as these stay exactly as they are now:",
+            '- sender_mail_instance = recued.dev@gmail.com (Gmail)',
+            '- to = recued.dev@outlook.com',
+            '- these stay empty: attachments, bcc, cc',
+            'These may change from one run to the next: body, subject. A change to anything above asks you again.',
+            '',
+            'Approve?',
+          ].join('\n'),
+          options: [
+            { id: 'approve', label: 'Approve' },
+            { id: 'allow_session', label: 'Allow this session' },
+            { id: 'deny', label: 'Deny' },
+          ],
+        }),
+      ],
+    });
+    await handle.whenLoaded();
+
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    const html = topbar.innerHTML;
+
+    expect(html).toContain('wants to run mail-send (step send).');
+    expect(html).toContain('Approve?');
+    expect(html).not.toContain('lets mail-send run');
+    expect(html).not.toContain('these stay empty');
+    expect(html).not.toContain('These may change');
+    // The button is still there to press.
+    expect(html).toContain('Allow this session');
     handle.dispose();
   });
 

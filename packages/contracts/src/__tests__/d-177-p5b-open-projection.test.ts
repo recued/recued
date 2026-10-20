@@ -154,6 +154,30 @@ describe('computeOpenProjection origin classification', () => {
     ]);
   });
 
+  it('a config-fed value is one preview line: its source restates it', () => {
+    // `to ← config.x = "…"` under `to = "…"` said the same value twice, and the
+    // doubled lines pushed the ones that mattered past the old 12-line cut.
+    const result = expectProjection(compute({ mergedArgs: { to: '{{config.x}}' } }));
+    expect(result.preview.pinned).toEqual([{ label: 'to', value: '"config@example.test"' }]);
+  });
+
+  it('a value built from its source keeps the source line: it says something new', () => {
+    const result = expectProjection(compute({ mergedArgs: { to: 'Dear {{config.x}}' } }));
+    expect(result.preview.pinned).toEqual([
+      { label: 'to', value: '"Dear config@example.test"' },
+      { label: 'to ← config.x', value: '"config@example.test"' },
+    ]);
+  });
+
+  it('the preview is never cut: the renderer folds, caps and says what it left out', () => {
+    const paths = Array.from({ length: 14 }, (_, i) => `a${String(i).padStart(2, '0')}`);
+    const result = expectProjection(compute({
+      mergedArgs: Object.fromEntries(paths.map((path) => [path, '{{config.x}}'])),
+      authorityPaths: paths,
+    }));
+    expect(result.preview.pinned.map((line) => line.label)).toEqual(paths);
+  });
+
   it('classifies meta roots as pinned without derived_pinned', () => {
     const arg = expectProjection(compute({ mergedArgs: { to: '{{meta.to}}' } }))
       .projection.args[0]!;

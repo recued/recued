@@ -2,6 +2,7 @@
 import type { ManagedOAuthConnectionUse } from './managed-oauth.js';
 import { isOAuthAppSecretExpiryDate } from './foundational-oauth.js';
 import { isAuthenticationAccessVerification, type AuthenticationAccessVerification } from './authentication-access-verification.js';
+import { isAuthenticationAccessSummary, authenticationAccessSummaryMatchesTargets, type AuthenticationAccessSummary } from './authentication-access-summary.js';
 
 export type AuthenticationRepairIssueCode = 'credential_rejected' | 'access_unconfirmed' | 'source_check_failed'
   | 'binding_changed' | 'connection_missing' | 'app_missing' | 'secret_expiry';
@@ -20,6 +21,7 @@ export interface AuthenticationRepairIssue {
 }
 export interface AuthenticationRepairGroup {
   access_verification?: AuthenticationAccessVerification;
+  access_summary?: AuthenticationAccessSummary;
   id: string;
   kind: 'account' | 'app';
   label: string;
@@ -61,6 +63,9 @@ export const isAuthenticationRepairWorklist = (value: unknown): value is Authent
       && typeof g.usage_available === 'boolean' && Array.isArray(g.connection_names) && g.connection_names.length <= 512 && g.connection_names.every(text)
       && Array.isArray(g.issues) && g.issues.length <= 2048 && g.issues.every(issue)
       && Array.isArray(g.targets) && g.targets.length <= 2048 && g.targets.every(target)
+      && (g.access_summary === undefined || isAuthenticationAccessSummary(g.access_summary)
+        && g.access_summary.selection.kind === 'group' && g.access_summary.selection.id === g.id
+        && authenticationAccessSummaryMatchesTargets(g.access_summary, g.targets))
       && Array.isArray(g.uses) && g.uses.length <= 10000 && g.uses.every(u => record(u) && typeof u.kind === 'string'
         && ['pack', 'mail', 'calendar', 'file', 'recipe', 'dish', 'schedule'].includes(u.kind) && text(u.id) && text(u.label)));
 };

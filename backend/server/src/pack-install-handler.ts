@@ -35,6 +35,7 @@ import { join } from 'node:path';
 
 import {
   BULK_PACK_INSTALL_PERMISSION,
+  PACK_UPDATE_LIMITS,
   buildPackOperationIndex,
   installAccessOptions,
   installGrantableOps,
@@ -175,6 +176,10 @@ import {
   type ResolvedRecordsPackRecipe,
 } from './records/index.js';
 import type { RecordsUpdateReviewFence } from '@recued/contracts';
+import type { PackUpdateStore } from './storage/pack-update-store.js';
+import { assertPackUpdateGroup, type PreparedPackUpdate, type PreparedPackUpdateMember } from './pack-update-plan.js';
+import { recipeReleaseDigest as packUpdateDigest } from './storage/recipe-release-authority.js';
+export type { PreparedPackUpdate } from './pack-update-plan.js';
 
 interface RecipeTrustWriter {
   set(state: RecipeTrustState): void | Promise<void>;
@@ -196,6 +201,10 @@ export interface PackInstallBroadcastEmitter {
 }
 
 export interface PackInstallRpcDeps {
+  /** Late-bound durable reviewed-update gate, also used by dependency preflight. */
+  packUpdateStore?: PackUpdateStore;
+  /** Paired-client authority supplied by the RPC adapter, never the request. */
+  packUpdateClient?: { actor: string; check(): void };
   /** Read-only saved account metadata; never renews credentials or starts consent. */
   getVendorPermissionConnections?: () => Promise<readonly import('@recued/contracts').ConnectionView[]>;
   getVendorPermissionSourceId?(name: string): string | undefined;
@@ -332,6 +341,7 @@ export interface PackInstallRpcDeps {
    *  `saved_view` contents install nothing and the pack still succeeds: a view
    *  is a convenience surface, never a capability. */
   getSavedDataViewStore?: () => SavedDataViewStore | undefined;
+  getAssetClasses?: () => import('./situations/asset-classes.js').AssetClassStore | undefined;
   /** D-315 §5.2 — late-bound, like the saved views: the templates recipes
    *  bring. An install creates or re-applies each recipe's starter once its
    *  recipes are saved, and the preview lists them. Absent ⇒ none are made. */
@@ -388,6 +398,7 @@ export interface PackInstallRpcDeps {
 }
 
 type PacksInstallArgs = {
+  regression_review_id?: string;
   vendor_permission_consent?: import('@recued/contracts').PackVendorPermissionConsent;
   manifest: unknown;
   granted_permissions: ReadonlyArray<string>;
@@ -1306,6 +1317,30 @@ const preflightInstallContent = (
   return null;
 };
 
+/** Shared lowering and runtime flags for both staged tests and the install writer. */
+const lowerPackRecipes = (deps: PackInstallRpcDeps, manifest: BulkPackManifest, plan: PackInstallPlan,
+  resolved: BulkPackInstallRecipe[], composition: CompositionIngredient | undefined, canProvision: boolean) => {
+  const result = resolvePackOpStepRecipes(composition,plan.contents,manifest.slug,resolved.map(entry => entry.recipe!.recipe),
+    slug => deps.registry?.get(slug) ?? null,canProvision,undefined,installPackOpResolution(deps,manifest),`${manifest.publisher}.${manifest.slug}`);
+  if (!result.ok) return result;
+    for (const w of result.warnings) {
+      console.warn(`[d-170.a3] ${manifest.slug}: ${w.code} — ${w.message}`);
+    }
+    const unbound = new Set(result.unbound ?? []);
+    resolved.forEach((entry, i) => {
+      const def = result.recipes[i];
+      // Only rebuild the entry whose def actually changed (an op-step recipe got
+      // rewritten); untouched recipes keep their original object + content hash.
+      if (entry.recipe !== null && def !== entry.recipe.recipe) {
+        entry.recipe = { ...entry.recipe, recipe: def, recipe_hash: hashRecipe(def) };
+      }
+      if (entry.recipe !== null && unbound.has(entry.recipe.recipe_id)) {
+        entry.op_steps_resolved_at_run = true;
+      }
+    });
+  return result;
+};
+
 const installSinglePack = async (
   deps: PackInstallRpcDeps,
   requestArgs: PacksInstallArgs,
@@ -1588,57 +1623,8 @@ const installSinglePack = async (
     // recued-core.whisper) resolves its already-installed dependency packs' ops.
     // Empty unless BOTH the inventory store + registry are present (db-less boot);
     // INERT on the current corpus (no two-tier op ids until the Slice-4 rewrite).
-    const packOpResolution = installPackOpResolution(deps, manifest);
-    const resolvedDefs = resolvePackOpStepRecipes(
-      composition,
-      plan.contents,
-      manifest.slug,
-      recipeDefs,
-      // The live manifest registry's `get` — the bundled first-party catalog the
-      // gateway resolves through. Absent registry (db-less boot) → null → the
-      // first-party path fail-closes (never binds an unregistered catalog).
-      (slug) => deps.registry?.get(slug) ?? null,
-      canProvisionComposition,
-      undefined,
-      packOpResolution,
-      // D-182 Slice 4 — the self pack_ref, so a Tier-P self-ref op
-      // (`recued-core.<pack>.<op>` in a recipe that `depends_on` its own pack —
-      // the shipped hubspot / salesforce / exa packs) lowers at install against
-      // THIS pack's bundled catalog. `packOpResolution` excludes the self-pack
-      // (stale-row guard), so the resolver rebuilds the fresh self-binding from
-      // the bundled catalog. Same string as the `buildPackOpResolution` exclusion.
-      `${manifest.publisher}.${manifest.slug}`,
-    );
-    if (!resolvedDefs.ok) {
-      // ⚠ A pack the recipes call and the install neither finds nor brings in is
-      // refused before this, with the packs as data (`missingPacksRefusal`, in
-      // `handlePacksInstall`), before anything installs. Reaching here is the
-      // backstop: what that check could not tell, and every other refusal the
-      // lowering raises.
-      return {
-        result: {
-          ok: false,
-          installed: [],
-          rolled_back: [],
-          failure: { code: 'validator_rejected', message: `packs.install: ${resolvedDefs.message}` },
-        },
-      };
-    }
-    for (const w of resolvedDefs.warnings) {
-      console.warn(`[d-170.a3] ${manifest.slug}: ${w.code} — ${w.message}`);
-    }
-    const unbound = new Set(resolvedDefs.unbound ?? []);
-    resolved.forEach((entry, i) => {
-      const def = resolvedDefs.recipes[i];
-      // Only rebuild the entry whose def actually changed (an op-step recipe got
-      // rewritten); untouched recipes keep their original object + content hash.
-      if (entry.recipe !== null && def !== entry.recipe.recipe) {
-        entry.recipe = { ...entry.recipe, recipe: def, recipe_hash: hashRecipe(def) };
-      }
-      if (entry.recipe !== null && unbound.has(entry.recipe.recipe_id)) {
-        entry.op_steps_resolved_at_run = true;
-      }
-    });
+    const resolvedDefs = lowerPackRecipes(deps,manifest,plan,resolved,composition,canProvisionComposition);
+    if (!resolvedDefs.ok) return { result: dependencyPreflightFailure('validator_rejected',`packs.install: ${resolvedDefs.message}`) };
   }
 
   const input: BulkPackInstallInput = {
@@ -1778,7 +1764,8 @@ const installSinglePack = async (
       }
     }
   } else {
-    result = await installBulkPackOnServer(input, granted, {
+    const installRecipes = (packUpdatePermit?: object) => installBulkPackOnServer(input, granted, {
+      ...(packUpdatePermit ? { packUpdatePermit } : {}),
       recipeStore: deps.recipeStore,
       // ⛔ D-247 D15.1 — carry the owner's chosen ACCESS TIER into the grant
       // seed. Without this the store's mutation hook seeds on `chat_exposed`
@@ -1811,6 +1798,11 @@ const installSinglePack = async (
         : {}),
       now,
     });
+    if (deps.packUpdateStore?.managed(manifest.slug)) {
+      if (!deps.packUpdateClient) throw new RpcError('unauthorized','Review this update from a paired webclient.',403);
+      const authorize = await deps.packUpdateStore.authorize(manifest,resolved,args.regression_review_id,deps.packUpdateClient.actor,deps.packUpdateClient.check);
+      result = await authorize(permit => installRecipes(permit));
+    } else result = await installRecipes();
   }
   if (result.ok && deps.recipeTrustStore !== undefined) {
     const trustedAt = new Date(now).toISOString();
@@ -1917,6 +1909,7 @@ const installSinglePack = async (
         pack_slug: manifest.slug,
         publisher: manifest.publisher,
         pack_version: manifest.version,
+        dependencies: manifest.dependencies ?? [],
         contents: plan.contents,
         installed_at: now,
       });
@@ -1965,6 +1958,12 @@ const installSinglePack = async (
   // best-effort: a view is a convenience surface, not a capability, so a
   // failure here must not fail a pack whose recipes and grants all landed.
   // The sync is idempotent and in-place, so the next install repairs it.
+  let classesPersisted = false;
+  const classContents = plan.contents.filter((c): c is Extract<import('@recued/contracts').PackContentRef, { type: 'asset_class' }> => c.type === 'asset_class');
+  if (result.ok && deps.getAssetClasses?.()) {
+    try { deps.getAssetClasses()!.syncPack(manifest.publisher, manifest.slug, classContents.map(c => c.preset)); classesPersisted = true; }
+    catch (error) { console.warn('[assets] Class installation deferred', error); }
+  }
   const savedViewStore = deps.getSavedDataViewStore?.();
   if (result.ok && savedViewStore) {
     const declared = packSavedViewsFrom(plan.contents);
@@ -2159,6 +2158,7 @@ const installSinglePack = async (
   const provisionedKinds = new Set<string>([
     ...(compositionProvisioned ? ['composition'] : []),
     ...(templatesPersisted ? ['reception_template'] : []),
+    ...(classesPersisted ? ['asset_class'] : []),
   ]);
   // D-220 Slice B (audit) — a template the store did NOT take (the write threw,
   // or there is no store) is DISCLOSED, not just logged. The ordinary path's
@@ -2169,10 +2169,11 @@ const installSinglePack = async (
     ? templateContents.filter((t) => !(result.deferred_contents ?? []).some((c) =>
         c.type === 'reception_template' && c.template.template_ref === t.template.template_ref))
     : [];
-  if (result.ok && (provisionedKinds.size > 0 || undisclosedTemplates.length > 0)) {
+  if (result.ok && (provisionedKinds.size > 0 || undisclosedTemplates.length > 0 || classContents.length > 0)) {
     const remaining = [
       ...(result.deferred_contents ?? []).filter((c) => !provisionedKinds.has(c.type)),
       ...undisclosedTemplates,
+      ...(!classesPersisted ? classContents.filter(c => !(result.deferred_contents ?? []).some(existing => existing.type === 'asset_class' && existing.preset.id === c.preset.id)) : []),
     ];
     return {
       result: {
@@ -2393,7 +2394,7 @@ const currentWebhookBindings = (
  *  it will install — by the SAME walk the install's preflight runs, so what is
  *  asked about is exactly what the install will demand. `null` when the walk
  *  itself fails (the install reports that). */
-const installTouchedManifests = (
+export const installTouchedManifests = (
   deps: PackInstallRpcDeps,
   manifest: BulkPackManifest,
 ): BulkPackManifest[] | null => {
@@ -2718,6 +2719,13 @@ const webhookPlanFor = async (
   });
 };
 
+const checkProtectedPackReview = async (deps: PackInstallRpcDeps, manifest: BulkPackManifest,
+  reviewId: string | undefined): Promise<(() => void) | undefined> => {
+  if (!deps.packUpdateStore?.managed(manifest.slug)) return undefined;
+  if (!deps.packUpdateClient || !reviewId) throw new RpcError('pack_update_required','Stage this protected pack in Packs, run its saved tests and review Update.',409);
+  return deps.packUpdateStore.review(manifest,reviewId,deps.packUpdateClient.actor,deps.packUpdateClient.check);
+};
+
 export const handlePacksInstall = async (
   deps: PackInstallRpcDeps,
   requestArgs: PacksInstallArgs,
@@ -2727,6 +2735,7 @@ export const handlePacksInstall = async (
   },
 ): Promise<{ result: BulkPackInstallResultLike }> => {
   const { manifest } = parsePacksInstallArgs(requestArgs);
+  if (requestArgs.regression_review_id !== undefined && (typeof requestArgs.regression_review_id !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(requestArgs.regression_review_id))) throw new RpcError('bad_request','Invalid passing pack review identifier.',400);
   const args = carryOverWebhookBindings(deps, requestArgs, manifest);
   // Owner ruling 2026-09-07 — a core feature is installed by the server, never
   // by the owner. Checked on the SUBMITTED manifest because this rpc takes the
@@ -2739,6 +2748,23 @@ export const handlePacksInstall = async (
       `packs.install: ${JSON.stringify(manifest.slug)} is a core feature the server installs itself`,
     );
   }
+  const protectedPacks = (installTouchedManifests(deps,manifest) ?? [manifest]).filter(pack => deps.packUpdateStore?.managed(pack.slug));
+  if (protectedPacks.length && (protectedPacks.length !== 1 || protectedPacks[0]!.slug !== manifest.slug
+    || !args.regression_review_id || !deps.packUpdateClient)) {
+    throw new RpcError('pack_update_required','Stage this protected pack in its own update, run saved tests, then review Update in Packs.',409);
+  }
+  // Validate the complete review before dependency recursion or any pack writes.
+  // The final authorization below additionally checks the resolved recipe bodies.
+  const reviewedUpdate = await checkProtectedPackReview(deps,manifest,args.regression_review_id);
+  const checkReviewedUpdate = (): void => {
+    if (!reviewedUpdate) return;
+    reviewedUpdate();
+    const touched = installTouchedManifests(deps,manifest);
+    if (!touched || touched.length !== 1 || touched[0]!.slug !== manifest.slug) {
+      throw new RpcError('pack_update_conflict','This protected update needs dependency changes. Resolve them separately, then restage and test the update.',409);
+    }
+  };
+  checkReviewedUpdate();
   const plan = normalizeBulkPackInstallPlan(manifest);
   const isRecords = plan.contents.some((content) =>
     content.type === 'composition' && isRecordsComposition(content.composition));
@@ -2829,6 +2855,8 @@ export const handlePacksInstall = async (
       return { result: dependencyPreflightFailure('permission_denied', 'Review vendor permissions and choose whether to install and reconnect later.') };
     }
   }
+  // Preflight awaits may have changed dependency inventory or the saved proof.
+  checkReviewedUpdate();
   const { result } = await handlePacksInstallInternal(
     deps,
     args,
@@ -2892,6 +2920,7 @@ export const defaultMarketplaceFetch: typeof globalThis.fetch = async (input, in
 };
 
 type PacksInstallBySlugArgs = {
+  regression_review_id?: string;
   vendor_permission_consent?: PacksInstallArgs['vendor_permission_consent'];
   slug: string;
   granted_permissions: ReadonlyArray<string>;
@@ -3109,12 +3138,14 @@ export const fetchMarketplaceDependencies = async (
   root: BulkPackManifest,
   fetchFn: typeof globalThis.fetch,
   mode: 'install' | 'preview',
+  reviewLimits?: { packs: number; requirements: number },
 ): Promise<
   | { ok: true; manifests: ReadonlyMap<string, BulkPackManifest> }
   | { ok: false; failure: NonNullable<BulkPackInstallResultLike['failure']> }
 > => {
   const manifests = new Map<string, BulkPackManifest>();
   const seen = new Set<string>([root.slug]);
+  let changed = 1;
   let level = packDependenciesOf(root);
   while (level.length > 0) {
     const fresh = level.filter(({ dependency }) => {
@@ -3122,6 +3153,12 @@ export const fetchMarketplaceDependencies = async (
       seen.add(dependency.slug);
       return true;
     });
+    if (reviewLimits) {
+      changed += fresh.filter(({ dependency }) => !dependencyAlreadySatisfied(deps.contractStore,dependency)).length;
+      if (changed > reviewLimits.packs || seen.size - 1 > reviewLimits.requirements) {
+        throw new RpcError('pack_update_limit','The staged dependency review exceeds its pack limit.',409);
+      }
+    }
     const found = await mapBounded(fresh, MARKETPLACE_FETCH_CONCURRENCY, async ({ dependency, declaredBy }) => {
       const satisfied = dependencyAlreadySatisfied(deps.contractStore, dependency);
       const bundled = resolveBundledPackManifest(deps.packDir, dependency.slug);
@@ -3201,6 +3238,7 @@ const memoizeMarketplaceRecipes = (
 const marketplacePreviewDeps = async (
   deps: PackInstallRpcDeps,
   manifest: BulkPackManifest,
+  forUpdate = false,
 ): Promise<PackInstallRpcDeps> => {
   const fetchFn = deps.marketplaceFetch ?? defaultMarketplaceFetch;
   const recipes = memoizeMarketplaceRecipes(async (slug) => {
@@ -3208,7 +3246,9 @@ const marketplacePreviewDeps = async (
     // The install's slug-confusion guard: a row naming another recipe is not this one.
     return row !== null && row.recipe_id === slug && row.recipe.recipe_id === slug ? row : null;
   });
-  const dependencies = await fetchMarketplaceDependencies(deps, manifest, fetchFn, 'preview');
+  const dependencies = await fetchMarketplaceDependencies(deps, manifest, fetchFn, 'preview',
+    forUpdate ? { packs: PACK_UPDATE_LIMITS.packs,requirements: 64 } : undefined);
+  if (forUpdate && !dependencies.ok) throw new RpcError('pack_update_unsupported',dependencies.failure.message,409);
   const previewDeps: PackInstallRpcDeps = {
     ...deps,
     resolveMarketplaceRecipe: recipes.resolve,
@@ -3216,7 +3256,8 @@ const marketplacePreviewDeps = async (
       ? { resolveDependencyManifest: (slug: string) => dependencies.manifests.get(slug) ?? null }
       : {}),
   };
-  await recipes.warm(installTouchedManifests(previewDeps, manifest) ?? [manifest]);
+  // Staging checks the complete bounded graph before resolving recipe bodies.
+  if (!forUpdate) await recipes.warm(installTouchedManifests(previewDeps, manifest) ?? [manifest]);
   return previewDeps;
 };
 
@@ -3227,6 +3268,114 @@ const marketplacePreviewDeps = async (
  *  `pack_installed` broadcast, runnability / PII disclosures) is reused verbatim.
  *  The resolver is built here from `deps.marketplaceFetch` so it is present ONLY
  *  on this path; the by-value `packs.install` stays bundled-only. */
+/** Exact server-owned candidate. No counters, grants, recipe writes or provider calls. */
+export const preparePackUpdate = async (deps: PackInstallRpcDeps, slug: string,
+  source: 'bundled' | 'marketplace', expectedHash: string, options: { includeDependencies?: boolean } = {}): Promise<PreparedPackUpdate> => {
+  const manifest = source === 'bundled' ? resolveBundledPackManifest(deps.packDir,slug)
+    : await fetchBulkPackBySlug(slug,deps.marketplaceFetch ?? defaultMarketplaceFetch,{ install: false });
+  if (!manifest || manifest.slug !== slug || marketplaceManifestReviewHash(manifest) !== expectedHash) {
+    throw new RpcError('pack_update_conflict','The pack candidate changed. Refresh the update review.',409);
+  }
+  const installed = deps.contractStore ? getInstalledPack(deps.contractStore,slug) : null;
+  if (!installed || installed.publisher !== manifest.publisher || installed.version === undefined || installed.version >= manifest.version) {
+    throw new RpcError('pack_update_unsupported','Choose a newer version of a pack already installed from this publisher.',409);
+  }
+  const prepared = source === 'marketplace' ? await marketplacePreviewDeps(deps,manifest,true) : deps;
+  const resolve = dependencyManifestResolver(prepared), visiting = new Set<string>(), visited = new Set<string>();
+  const ordered: BulkPackManifest[] = [], requirements = new Map<string,string>();
+  const walk = (pack: BulkPackManifest): void => {
+    if (visiting.has(pack.slug)) throw new RpcError('pack_update_unsupported','Cyclic pack dependencies cannot be staged.',409);
+    if (visited.has(pack.slug)) return;
+    if (visited.size + visiting.size >= PACK_UPDATE_LIMITS.packs) throw new RpcError('pack_update_limit','Stage at most eight changed packs together.',409);
+    visiting.add(pack.slug);
+    for (const dependency of pack.dependencies ?? []) {
+      if (dependency.type !== 'pack') continue;
+      if (requirements.size >= 64 && !requirements.has(dependency.slug)) throw new RpcError('pack_update_limit','The dependency review exceeds 64 packs.',409);
+      requirements.set(dependency.slug,packUpdateDigest(deps.contractStore?.get('installed_pack',[dependency.slug]) ?? null));
+      const next = resolve(dependency.slug);
+      if (!next || next.slug !== dependency.slug || dependency.min_version !== undefined && next.version < dependency.min_version) {
+        throw new RpcError('pack_update_unsupported','A required dependency could not resolve at the required version.',409);
+      }
+      if (visiting.has(dependency.slug)) throw new RpcError('pack_update_unsupported','Cyclic pack dependencies cannot be staged.',409);
+      if (!dependencyAlreadySatisfied(deps.contractStore,dependency)) walk(next);
+    }
+    visiting.delete(pack.slug); visited.add(pack.slug); ordered.push(pack);
+  };
+  walk(manifest);
+  if (ordered.length > 1 && !options.includeDependencies) {
+    throw new RpcError('pack_update_unsupported','Update dependencies separately, or stage the complete plan with a webclient that supports dependency updates.',409);
+  }
+  if (ordered.reduce((total,pack) => total + normalizeBulkPackInstallPlan(pack).recipes.length,0) > PACK_UPDATE_LIMITS.recipes) {
+    throw new RpcError('pack_update_limit','Stage at most 20 recipes across the complete update.',409);
+  }
+  const contentRefusal = preflightInstallContent(prepared,manifest);
+  if (contentRefusal) throw new RpcError('pack_update_unsupported',contentRefusal.failure?.message ?? 'The complete update failed its content checks.',409);
+  const members: PreparedPackUpdateMember[] = [];
+  for (const pack of ordered) {
+    const plan = normalizeBulkPackInstallPlan(pack);
+    const validated = validatePack(pack,{ recipeValidator: validateRecipe });
+    if (!validated.valid || isCoreFeaturePack(pack) || pack.pre_install || plan.contents.some(content => content.type !== 'recipe')
+      || !plan.recipes.length || plan.recipes.length > PACK_UPDATE_LIMITS.recipes || (pack.webhook_requirements?.length ?? 0) > 0) {
+      throw new RpcError('pack_update_unsupported','Saved-test updates support recipe-only packs without webhooks, up to 20 recipes.',409);
+    }
+    const current = deps.contractStore ? getInstalledPack(deps.contractStore,pack.slug) : null;
+    if (!current || current.publisher !== pack.publisher || current.version === undefined || current.version >= pack.version) {
+      throw new RpcError('pack_update_unsupported','Install every dependency separately first; grouped updates require newer versions of installed packs from the same publishers.',409);
+    }
+    const recipes = await resolvePackRecipeBodies(plan,pack.publisher,prepared);
+    if (recipes.some(entry => !entry.recipe || entry.failure || hasNonEmptyWebhookDeclarations(entry.recipe.recipe))) {
+      throw new RpcError('pack_update_unsupported','Every recipe must resolve exactly and have no webhook declarations.',409);
+    }
+    const floor = recipeFloorRefusal(pack.name,recipes.map(entry => entry.recipe?.recipe));
+    if (floor) throw new RpcError('pack_update_unsupported',floor,409);
+    const lowered = lowerPackRecipes(prepared,pack,plan,recipes,undefined,false);
+    if (!lowered.ok) throw new RpcError('pack_update_unsupported',lowered.message,409);
+    for (const entry of recipes) {
+      const stored = deps.recipeStore.getStored(entry.slug);
+      if (stored && stored.pack_slug !== pack.slug) throw new RpcError('pack_update_unsupported','Forked or shared recipe ownership needs a separate update review.',409);
+    }
+    members.push({ source,manifest: pack,recipes });
+  }
+  if (members.reduce((total,member) => total + member.recipes.length,0) > PACK_UPDATE_LIMITS.recipes) throw new RpcError('pack_update_limit','Stage at most 20 recipes across the complete update.',409);
+  const ids = members.flatMap(member => member.recipes.map(recipe => recipe.slug));
+  if (new Set(ids).size !== ids.length) throw new RpcError('pack_update_unsupported','A grouped update cannot share recipe ownership.',409);
+  const root = members.pop()!, target: PreparedPackUpdate = members.length
+    ? { ...root,dependencies: members,requirements: [...requirements].map(([pack_slug,inventory_digest]) => ({ pack_slug,inventory_digest })) } : root;
+  if (target.dependencies?.length) assertPackUpdateGroup(target,deps);
+  return target;
+};
+
+/** Validate retained bodies against the current host without fetching a newer
+ * catalog artifact. Restore never adopts a different remote recipe or setup. */
+export const preparePackRestore = (deps: PackInstallRpcDeps, frozen: PreparedPackUpdate): PreparedPackUpdate => {
+  const target = structuredClone(frozen), members = [ ...target.dependencies ?? [],target ];
+  if (!target.dependencies?.length || members.length > PACK_UPDATE_LIMITS.packs
+    || members.reduce((count,pack) => count + pack.recipes.length,0) > PACK_UPDATE_LIMITS.recipes) {
+    throw new RpcError('pack_update_unsupported','Choose a retained reviewed dependency release.',409);
+  }
+  const floor = packFloorRefusal(target.manifest,members.map(pack => pack.manifest));
+  if (floor) throw new RpcError('pack_update_unsupported',floor,409);
+  const planned = new Map(members.map(pack => [pack.manifest.slug,pack.manifest.version]));
+  for (const pack of members) {
+    const plan = normalizeBulkPackInstallPlan(pack.manifest), validated = validatePack(pack.manifest,{ recipeValidator: validateRecipe });
+    if (!validated.valid || isCoreFeaturePack(pack.manifest) || pack.manifest.pre_install || !plan.recipes.length
+      || plan.contents.some(content => content.type !== 'recipe') || (pack.manifest.webhook_requirements?.length ?? 0)
+      || plan.recipes.length !== pack.recipes.length
+      || plan.recipes.some(ref => !pack.recipes.some(entry => entry.slug === ref.slug && entry.recipe?.version === ref.version))) {
+      throw new RpcError('pack_update_unsupported','The retained release needs separate install setup or no longer passes validation.',409);
+    }
+    for (const dependency of pack.manifest.dependencies ?? []) if (dependency.type === 'pack') {
+      const version = planned.get(dependency.slug) ?? (deps.contractStore ? getInstalledPack(deps.contractStore,dependency.slug)?.version : undefined);
+      if (version === undefined || version < (dependency.min_version ?? 1)) throw new RpcError('pack_update_conflict','A retained dependency no longer meets its required version.',409);
+    }
+    const refusal = recipeFloorRefusal(pack.manifest.name,pack.recipes.map(entry => entry.recipe?.recipe));
+    if (refusal) throw new RpcError('pack_update_unsupported',refusal,409);
+    const lowered = lowerPackRecipes(deps,pack.manifest,plan,pack.recipes,undefined,false);
+    if (!lowered.ok) throw new RpcError('pack_update_unsupported',lowered.message,409);
+  }
+  assertPackUpdateGroup(target,deps); return target;
+};
+
 export const installPackBySlug = async (
   deps: PackInstallRpcDeps,
   args: PacksInstallBySlugArgs,
@@ -3358,6 +3507,8 @@ export const installPackBySlug = async (
     return { result: staleManifestReviewResult(args.slug) };
   }
 
+  await checkProtectedPackReview(deps,manifest,args.regression_review_id);
+
   // D-311 — the packs it brings in: the server's bundled copy, else the
   // marketplace's, fetched now (marked, for each one this install will write).
   const dependencies = await fetchMarketplaceDependencies(deps, manifest, fetchFn, 'install');
@@ -3419,6 +3570,7 @@ export const installPackBySlug = async (
       },
       {
         manifest,
+        ...(args.regression_review_id ? { regression_review_id: args.regression_review_id } : {}),
         ...(args.vendor_permission_consent ? { vendor_permission_consent: args.vendor_permission_consent } : {}),
         granted_permissions: args.granted_permissions,
         ...(args.install_scope !== undefined ? { install_scope: args.install_scope } : {}),
@@ -3938,9 +4090,13 @@ type PackInstallMethods =
 
 export const makePackInstallHandlers = (
   deps: PackInstallRpcDeps | undefined,
+  updateClient?: (client: WsClient) => { actor: string; check(): void },
 ): HandlerSlice<ServerRpcRegistry, PackInstallMethods, WsClient> | undefined => {
   if (!deps) return undefined;
   const reconnectLater = createPackReconnectWorklist(deps);
+  const clientDeps = (client: WsClient): PackInstallRpcDeps => updateClient ? { ...deps,packUpdateClient: {
+    actor: JSON.stringify([client.client_token_id,client.token_instance_id ?? client.instance_id]),check: () => { updateClient(client).check(); },
+  } } : deps;
   return {
     methods: [
       'packs.reconnect_later',
@@ -3949,9 +4105,9 @@ export const makePackInstallHandlers = (
     ],
     handlers: {
       'packs.reconnect_later': async args => reconnectLater(args),
-      'packs.install': async (args) =>
+      'packs.install': async (args,client) =>
         handlePacksInstall(
-          deps,
+          clientDeps(client),
           args as Parameters<typeof handlePacksInstall>[1],
         ),
       // D-247 D15 — the disclosure the picker reads. Runs the install's OWN
@@ -4062,6 +4218,8 @@ export const makePackInstallHandlers = (
         return {
           resolved: preview.resolved,
           hidden_count: preview.hidden_count,
+          ...(deps.packUpdateStore && deps.contractStore && getInstalledPack(deps.contractStore,manifest.slug)
+            ? { update_tests: { managed: deps.packUpdateStore.managed(manifest.slug),manifest_hash: marketplaceManifestReviewHash(manifest) } } : {}),
           ...(vendorPermissions ? { vendor_permissions: vendorPermissions } : {}),
           ...(sharedConnections.length > 0 ? { shared_connections: sharedConnections } : {}),
           ...(webhookPlan !== undefined ? { webhook_plan: webhookPlan } : {}),
@@ -4089,8 +4247,8 @@ export const makePackInstallHandlers = (
       // `packInstallDeps` (recipeStore + marketplaceFetch). Both inherit the
       // already-forwarded `packInstallDeps` slice registration, so they are live
       // over the wire without a new `server.ts` forward.
-      'packs.installBySlug': async (args) =>
-        installPackBySlug(deps, args as Parameters<typeof installPackBySlug>[1]),
+      'packs.installBySlug': async (args,client) =>
+        installPackBySlug(clientDeps(client), args as Parameters<typeof installPackBySlug>[1]),
       // Add-a-pack (2026-07-01) — manifest-only preview for the install consent
       // dialog; reuses the same `marketplaceFetch` dep as installBySlug.
       'packs.resolveBySlug': async (args) =>

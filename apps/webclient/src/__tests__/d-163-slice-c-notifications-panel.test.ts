@@ -1166,3 +1166,54 @@ describe('mountNotificationsPanel', () => {
     expect(chip!.getAttribute('role')).toBe('alert');
   });
 });
+
+// ──────────────────────────────────────────────────────────────────
+// D-158 amendment 2026-10-19 — where plain notifications and approvals go
+// ──────────────────────────────────────────────────────────────────
+
+describe('mountNotificationsPanel — where plain notifications and approvals go', () => {
+  const homeMail = { name: 'home-mail', display_name: 'Home mail', enrolled_at: 1 };
+  const emailMail = { name: 'email', display_name: 'email', enrolled_at: 2 };
+  const familyBot = { name: 'family-bot', display_name: 'Family bot', enrolled_at: 5 };
+  const recuedBot = { name: 'telegram', display_name: 'Recued bot', enrolled_at: 6 };
+  /** The line under `row`'s connection choice, or null when there is none. */
+  const plainLine = async (row: NotificationChannelToggleView): Promise<string | null> => {
+    const host = makeFakeElement('div');
+    const panel = mountNotificationsPanel({
+      host: host as unknown as HTMLElement,
+      document: makeFakeDocument() as unknown as Document,
+      runDescribe: async () => ({ rows: fiveRows.map((r) => (r.channel === row.channel ? row : r)) }),
+      runSetChannel: async () => ({ ok: false, reason: 'ui_fixed' }),
+    });
+    await panel.whenLoaded();
+    return findByAttr(findRowByChannel(host, row.channel)!, 'data-notification-plain-connection')?.textContent ?? null;
+  };
+  const email = (over: Partial<NotificationChannelToggleView>): NotificationChannelToggleView =>
+    ({ ...emailNotReadyRow, ready: true, connections: [homeMail, emailMail], ...over });
+  const telegram = (over: Partial<NotificationChannelToggleView>): NotificationChannelToggleView =>
+    ({ ...telegramNotReadyRow, ready: true, connections: [familyBot, recuedBot], ...over });
+
+  it('says nothing when they go through the connection shown, or the server does not say', async () => {
+    expect(await plainLine(email({ connection: homeMail, plain_connection: { name: 'home-mail', display_name: 'Home mail' } }))).toBeNull();
+    // The only connection, not yet chosen, is the one shown.
+    expect(await plainLine(email({ connections: [homeMail], plain_connection: { name: 'home-mail', display_name: 'Home mail' } }))).toBeNull();
+    expect(await plainLine(email({ connection: homeMail }))).toBeNull();
+    // With nothing enrolled the row asks for a connection instead.
+    expect(await plainLine(email({ ready: false, connections: [], plain_connection: null }))).toBeNull();
+  });
+
+  it('names the other connection they go through, as the choice names it', async () => {
+    expect(await plainLine(telegram({ connection: familyBot, plain_connection: { name: 'telegram', display_name: 'Recued bot' } })))
+      .toBe('Recipe notifications and approvals go through Recued bot (telegram).');
+    // Several email connections and no choice yet: the one named `email`.
+    expect(await plainLine(email({ ready: false, plain_connection: { name: 'email', display_name: 'email' } })))
+      .toBe('Recipe notifications and approvals go through email.');
+  });
+
+  it('says when no connection can carry them, in the channel’s own terms', async () => {
+    expect(await plainLine(email({ ready: false, plain_connection: null })))
+      .toBe('Recipe notifications and approvals cannot go out by email until a connection is chosen.');
+    expect(await plainLine(telegram({ connections: [familyBot], connection: familyBot, plain_connection: null })))
+      .toBe('Recipe notifications and approvals cannot go out by Telegram until a connection is chosen.');
+  });
+});

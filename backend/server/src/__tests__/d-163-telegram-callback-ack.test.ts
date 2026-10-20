@@ -124,6 +124,18 @@ describe('D-163 polish — composeTelegramCallbackAck', () => {
     });
   });
 
+  it('D-325 §5.1 — carries a notice for the presser as the callback text', async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ ok: true }), { status: 200 }),
+    ) as unknown as typeof fetch;
+    const ack = composeTelegramCallbackAck({ connectionStore: stubConnectionStore(stubConnectionRow()), fetchImpl });
+    await ack(callbackQueryPayload('cb-late'), 'telegram', 'This reminder is already closed.');
+    const [, init] = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(JSON.parse(init.body as string)).toEqual({
+      callback_query_id: 'cb-late', text: 'This reminder is already closed.',
+    });
+  });
+
   it('no-ops silently for a payload with no callback_query', async () => {
     const fetchImpl = vi.fn() as unknown as typeof fetch;
     const connectionStore = stubConnectionStore(stubConnectionRow());

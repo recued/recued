@@ -19,6 +19,20 @@
 
 import type { Channel } from './channel.js';
 import type { AskOption, NotificationMessage } from '../types.js';
+import type { NotificationSettings } from '../types.js';
+import type { AskDeliveryDestination, AskDeliveryEnvelope, AskDeliveryOutcome, AskDeliveryReceipt } from '../ask-delivery-store.js';
+
+export interface BridgeReminderPort {
+  ready(): Promise<boolean>;
+  destinations(settings: NotificationSettings): Promise<AskDeliveryDestination[]>;
+  deliver(envelope: AskDeliveryEnvelope): Promise<AskDeliveryOutcome>;
+  withdraw(receipt: AskDeliveryReceipt, closed_ask_ids: readonly string[]): Promise<boolean>;
+}
+export interface BridgeChannel extends Channel {
+  bindReminderPort(port: BridgeReminderPort): void;
+  reminderReady(): Promise<boolean>;
+  reminderDestinations(settings: NotificationSettings): Promise<AskDeliveryDestination[]>;
+}
 
 /** Sink the host injects to dispatch an OS notification through a paired
  *  Browser Bridge. The host signs a `BridgeCommand` from the message
@@ -38,8 +52,15 @@ export interface BridgeChannelDeps {
  *  bug reaches this adapter anyway: rather than silently dropping the
  *  ask, the adapter fires a passive notify so the user at least learns
  *  approval is required. */
-export const createBridgeChannel = (deps: BridgeChannelDeps): Channel => {
+export const createBridgeChannel = (deps: BridgeChannelDeps): BridgeChannel => {
+  let reminders: BridgeReminderPort | undefined;
   return {
+    bindReminderPort(port) { reminders = port; },
+    reminderReady: () => reminders?.ready() ?? Promise.resolve(false),
+    reminderDestinations: settings => reminders?.destinations(settings) ?? Promise.resolve([]),
+    deliverAskDelivery: envelope => reminders?.deliver(envelope) ?? Promise.resolve({ outcome: 'not_delivered', error: 'No live OS notification adapter' }),
+    withdrawAskDelivery: (receipt, closed) => reminders?.withdraw(receipt, closed) ?? Promise.resolve(false),
+    restoreAskDelivery: () => {},
     name: 'bridge',
     capability: 'notify-only',
     // D-163 amendment / D-167 § "Channel ownership signal" — the OS

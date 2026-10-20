@@ -7,7 +7,7 @@
  *  restart, so they do not depend on when the OS delivers a watch event; one
  *  case attaches a live watch. */
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, renameSync, rmSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -19,6 +19,13 @@ import { composeFileStack, type FileStack } from '../collections/file/compose.js
 import { handleFileDelete, handleFileEnroll } from '../collections/file/enroll.js';
 import { handleFileRead } from '../collections/file/file-read-handler.js';
 import { isInboundFileRecordId } from '../collections/file/inbound-file-collection.js';
+import {
+  __setSharedWatchHost,
+  __stopSharedWatchHost,
+  createWatchHost,
+  HostedWatch,
+  type WatchHost,
+} from '../collections/file/watch-host.js';
 import {
   isWatchedFolderCollection,
   parseWatchedFileRecordId,
@@ -104,13 +111,20 @@ const makeWorld = (): World => {
   return world;
 };
 
+// ⚠ 120 s for a test with a live watch: under load its events can run late (the
+// tests poll up to 45 s). Its close runs in the watch process (`watch-host.ts`), slowly
+// under load, and the hook lets that process go after each test, so one test's
+// closes never hold up the next one's watch.
+const LIVE_WATCH_MS = 120_000;
+
 afterEach(async () => {
   for (const w of worlds.splice(0)) {
     await w.stack.disposeAll().catch(() => {});
     w.db.close();
     rmSync(w.base, { recursive: true, force: true });
   }
-});
+  __stopSharedWatchHost();
+}, LIVE_WATCH_MS);
 
 const byPath = (c: WatchedFolderCollection) =>
   new Map(c.list({ platform: 'file', slug: SLUG, limit: 100 }).map((r) => [r.hot_fields.path as string, r]));
@@ -286,7 +300,7 @@ describe('a watched folder’s files become records', () => {
     expect(byPath(w.collection()).get('arrived.txt')!.body_inline).toBe('hello');
     expect(eventsFor(w.events, 'created').map((e) => e.record_id))
       .toContain(watchedFileRecordId(SLUG, 'arrived.txt'));
-  }, 60_000);
+  }, LIVE_WATCH_MS);
 
   it('health: current while a live watch is attached, as of the last walk without one', async () => {
     const once = makeWorld();
@@ -301,7 +315,7 @@ describe('a watched folder’s files become records', () => {
     const before = live.collection().health().last_indexed_at;
     await new Promise((r) => setTimeout(r, 15));
     expect(live.collection().health().last_indexed_at).toBeGreaterThan(before);
-  });
+  }, LIVE_WATCH_MS);
 });
 
 describe('what a watched folder records, and when it stops', () => {
@@ -354,7 +368,7 @@ describe('what a watched folder records, and when it stops', () => {
     expect(byPath(w.collection()).has('goner.txt')).toBe(false);
     expect(eventsFor(w.events, 'updated').map((e) => e.record_id)).toContain(watchedFileRecordId(SLUG, 'a.txt'));
     expect(eventsFor(w.events, 'deleted').map((e) => e.record_id)).toContain(watchedFileRecordId(SLUG, 'goner.txt'));
-  }, 60_000);
+  }, LIVE_WATCH_MS);
 
   it('once its adapter stops, a later file lands nothing and health says disconnected', async () => {
     const w = makeWorld();
@@ -368,7 +382,7 @@ describe('what a watched folder records, and when it stops', () => {
     await new Promise((r) => setTimeout(r, 1_200));
     expect([...byPath(collection).keys()]).toEqual(['a.txt']);
     expect(collection.health().state).toBe('disconnected');
-  });
+  }, LIVE_WATCH_MS);
 
   it('is never pruned by retention: the files are the owner’s, on her disk', async () => {
     const w = makeWorld();
@@ -444,5 +458,212 @@ describe('reading a watched file by id', () => {
     writeFileSync(join(w.folder, 'notes.md'), 'back');
     await w.stack.disposeAll();
     await expect(handleFileRead(deps, { record_id: id })).rejects.toMatchObject({ code: 'file_local_unavailable' });
+  });
+});
+
+// ⛔ On macOS a folder's watch shares one FSEvents stream with the others in the
+// watch process, rebuilt whenever one is added or removed, and what changes
+// meanwhile is lost without a word. The folder walks again when that happens.
+describe('a watched folder catches up after its watch may have missed changes', () => {
+  /** A watch process that watches nothing: when a watch is added or closed it
+   *  tells the others to walk again, as the real one does. */
+  const SCRIPTED_RESCANS = `
+const live = new Set();
+process.on('message', (msg) => {
+  if (msg.op === 'watch') {
+    for (const id of live) process.send({ id, kind: 'rescan' });
+    live.add(msg.id);
+    process.send({ id: msg.id, kind: 'attached' });
+  } else if (msg.op === 'close') {
+    live.delete(msg.id);
+    for (const id of live) process.send({ id, kind: 'rescan' });
+  }
+});
+process.on('disconnect', () => process.exit(0));
+`;
+
+  it.runIf(process.platform === 'darwin')('walks again when another folder comes and goes: what changed lands, what went is taken out', async () => {
+    __setSharedWatchHost(createWatchHost({ source: SCRIPTED_RESCANS }));
+    try {
+      const w = makeWorld();
+      writeFileSync(join(w.folder, 'a.txt'), 'a');
+      writeFileSync(join(w.folder, 'gone.txt'), 'x');
+      await w.enroll('realtime');
+      expect([...byPath(w.collection()).keys()].sort()).toEqual(['a.txt', 'gone.txt']);
+      // Past the folder's own settle walk (1 s after attaching), which would
+      // catch these changes too: from here only a walk on `rescan` can.
+      await new Promise((r) => setTimeout(r, 2_000));
+      // Changes no event reports: the scripted process delivers none.
+      writeFileSync(join(w.folder, 'a.txt'), 'a, edited');
+      unlinkSync(join(w.folder, 'gone.txt'));
+      writeFileSync(join(w.folder, 'new.txt'), 'new');
+
+      const other = makeWorld();
+      await other.enroll('realtime');
+      await until(() => byPath(w.collection()).has('new.txt') && !byPath(w.collection()).has('gone.txt'));
+      expect([...byPath(w.collection()).keys()].sort()).toEqual(['a.txt', 'new.txt']);
+      expect(byPath(w.collection()).get('a.txt')!.body_inline).toBe('a, edited');
+
+      writeFileSync(join(w.folder, 'later.txt'), 'later');
+      await handleFileDelete(other.stack.enrollDeps, { slug: SLUG });
+      await until(() => byPath(w.collection()).has('later.txt'));
+      expect(byPath(w.collection()).has('later.txt')).toBe(true);
+    } finally {
+      __setSharedWatchHost(undefined);
+    }
+  }, LIVE_WATCH_MS);
+
+  // ⚠ Opt-in (`RECUED_FS_WATCH_CHURN=1`): real FSEvents rebuilds take minutes on a
+  // loaded machine (240 s for this one in a parallel run, 6-26 s alone), and the
+  // suite must not wait on them; the scripted case above runs in it instead.
+  it.runIf(process.platform === 'darwin' && process.env.RECUED_FS_WATCH_CHURN === '1')('with live watches, every file lands though another folder comes and goes meanwhile', async () => {
+    const w = makeWorld();
+    await w.enroll('realtime');
+    const other = makeWorld();
+    // Another folder connected and removed over and over: each rebuilds the
+    // stream both watches ride on. Measured 2026-10-19 with no walk after it,
+    // 146-148 of 148 files written at this rate were never reported.
+    let churning = true;
+    const churn = (async () => {
+      while (churning) {
+        await other.enroll('realtime');
+        await new Promise((r) => setTimeout(r, 200));
+        await handleFileDelete(other.stack.enrollDeps, { slug: SLUG });
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    })();
+    const written: string[] = [];
+    for (let i = 0; i < 40; i++) {
+      const name = `f${String(i).padStart(2, '0')}.txt`;
+      writeFileSync(join(w.folder, name), name);
+      written.push(name);
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    churning = false;
+    await churn;
+    await until(() => written.every((name) => byPath(w.collection()).has(name)), 60_000);
+    expect(written.filter((name) => !byPath(w.collection()).has(name))).toEqual([]);
+  }, LIVE_WATCH_MS);
+});
+
+/** A watch process that reports only what a test tells it to, through `report`. */
+const scriptedWatches = () => {
+  const report: Array<(eventType: string, filename: string | null) => void> = [];
+  const host: WatchHost = {
+    watch(_root, listener) {
+      report.push(listener);
+      const watch = new HostedWatch(report.length, listener, () => {}, () => {});
+      watch.receive({ id: report.length, kind: 'attached' });
+      return watch;
+    },
+    stop() {},
+  };
+  return { host, report };
+};
+
+// ⛔ A folder moved in or out can be reported as the folder alone: macOS and Windows do
+// both ways, Linux for one moved out (measured 2026-10-20).
+describe('a folder moved into or out of a watched folder', () => {
+  const projects = (w: World): string => {
+    const dir = join(w.base, 'Projects');
+    mkdirSync(join(dir, 'sub'), { recursive: true });
+    writeFileSync(join(dir, 'a.txt'), 'a');
+    writeFileSync(join(dir, 'sub', 'b.txt'), 'b');
+    return dir;
+  };
+  const deletedPaths = (w: World) =>
+    eventsFor(w.events, 'deleted').map((e) => parseWatchedFileRecordId(e.record_id)!.path).sort();
+
+  it('a removal naming a folder takes out the files under it, and only those', async () => {
+    const w = makeWorld();
+    renameSync(projects(w), join(w.folder, 'Projects'));
+    // Names that start like the folder's without being inside it: '-' and '.' sort
+    // before '/', '0' just after it, '2' later.
+    for (const name of ['Projects-old/c.txt', 'Projects.txt', 'Projects0', 'Projects2/d.txt']) {
+      mkdirSync(join(w.folder, name, '..'), { recursive: true });
+      writeFileSync(join(w.folder, name), name);
+    }
+    await w.enroll();
+    w.events.length = 0;
+    rmSync(join(w.folder, 'Projects'), { recursive: true });
+
+    expect(await w.collection().ingest({ type: 'remove', path: join(w.folder, 'Projects') }))
+      .toEqual({ outcome: 'removed' });
+
+    expect([...byPath(w.collection()).keys()].sort())
+      .toEqual(['Projects-old/c.txt', 'Projects.txt', 'Projects0', 'Projects2/d.txt']);
+    expect(deletedPaths(w)).toEqual(['Projects/a.txt', 'Projects/sub/b.txt']);
+    // Nothing stored there: nothing to take out.
+    expect(await w.collection().ingest({ type: 'remove', path: join(w.folder, 'Projects') }))
+      .toEqual({ outcome: 'unchanged_absent' });
+  });
+
+  it.runIf(process.platform === 'darwin')('its files land when it comes in and go when it leaves, the watch naming only the folder', async () => {
+    const watches = scriptedWatches();
+    __setSharedWatchHost(watches.host);
+    try {
+      const w = makeWorld();
+      writeFileSync(join(w.folder, 'kept.txt'), 'kept');
+      await w.enroll('realtime');
+      // Past the folder's settle walk (1 s after attaching), which would find the
+      // folder too: from here only the watch's report of it can.
+      await new Promise((r) => setTimeout(r, 2_000));
+      const away = projects(w);
+      renameSync(away, join(w.folder, 'Projects'));
+      watches.report[0]!('rename', 'Projects');
+      await until(() => byPath(w.collection()).has('Projects/sub/b.txt'));
+      expect([...byPath(w.collection()).keys()].sort()).toEqual(['Projects/a.txt', 'Projects/sub/b.txt', 'kept.txt']);
+
+      renameSync(join(w.folder, 'Projects'), away);
+      watches.report[0]!('rename', 'Projects');
+      await until(() => !byPath(w.collection()).has('Projects/a.txt'));
+      expect([...byPath(w.collection()).keys()]).toEqual(['kept.txt']);
+      expect(deletedPaths(w)).toEqual(['Projects/a.txt', 'Projects/sub/b.txt']);
+    } finally {
+      __setSharedWatchHost(undefined);
+    }
+  }, LIVE_WATCH_MS);
+});
+
+// The housekeeping walk (`watched-folder-walk`) walks each folder with a live watch
+// again now and then, for the changes no event reported.
+describe('walking a watched folder again for the housekeeping walk', () => {
+  // On macOS the scripted watch process reports nothing; elsewhere the folder's own
+  // watch is in this process and its events come 500 ms after a change, later than
+  // anything below looks.
+  afterEach(() => { __setSharedWatchHost(undefined); });
+
+  it('lists each folder with a live watch and when its last walk ended; a walk again lands what no event reported', async () => {
+    __setSharedWatchHost(scriptedWatches().host);
+    const w = makeWorld();
+    writeFileSync(join(w.folder, 'a.txt'), 'a');
+    writeFileSync(join(w.folder, 'gone.txt'), 'x');
+    const before = Date.now();
+    await w.enroll('realtime');
+    const [listed] = w.stack.watchedFolderWalks();
+    expect(listed).toEqual({ slug: SLUG, last_walk_at: expect.any(Number) });
+    expect(listed!.last_walk_at).toBeGreaterThanOrEqual(before);
+
+    await new Promise((r) => setTimeout(r, 5));
+    writeFileSync(join(w.folder, 'new.txt'), 'new');
+    unlinkSync(join(w.folder, 'gone.txt'));
+    await w.stack.walkFolderAgain(SLUG);
+
+    expect([...byPath(w.collection()).keys()].sort()).toEqual(['a.txt', 'new.txt']);
+    expect(w.stack.watchedFolderWalks()[0]!.last_walk_at).toBeGreaterThan(listed!.last_walk_at);
+  });
+
+  it('leaves out a folder without a live watch, and one whose adapter stopped', async () => {
+    __setSharedWatchHost(scriptedWatches().host);
+    const once = makeWorld();
+    await once.enroll('none');
+    expect(once.stack.watchedFolderWalks()).toEqual([]);
+
+    const live = makeWorld();
+    await live.enroll('realtime');
+    expect(live.stack.watchedFolderWalks()).toHaveLength(1);
+    await live.stack.disposeAll();
+    expect(live.stack.watchedFolderWalks()).toEqual([]);
+    await live.stack.walkFolderAgain(SLUG);   // and asking for one then walks nothing, quietly
   });
 });

@@ -249,7 +249,8 @@ describe('createArchiveUpload', () => {
   // reply after the server already staged the archive. The driver re-calls
   // finalize (the server is idempotent), recovering staged_name without a
   // re-upload.
-  it('retries finalize on a transport drop and recovers the staged name', async () => {
+  it.each(['timeout', 'connection_lost', 'server_offline', 'server_unresponsive'])(
+    'retries idempotent finalize after %s and recovers the staged name without resending chunks', async code => {
     const file = makeFile([1, 2, 3, 4, 5]);
     const fake = makeFakeSocket(file.size);
     let calls = 0;
@@ -258,7 +259,7 @@ describe('createArchiveUpload', () => {
         calls += 1;
         // The first two responses are "lost" (transport drop); the third (the
         // idempotent server recovery) returns the staged name.
-        if (calls < 3) throw rpcError('timeout', 'finalize ack lost');
+        if (calls < 3) throw rpcError(code, 'finalize ack lost');
         return { status: 'finalized', staged_name: STAGED, size_bytes: 5 };
       },
     });

@@ -46,6 +46,7 @@ import {
   handleWorkEntityGet,
   handleWorkEntityList,
   handleWorkEntityTaskMarkDone,
+  handleWorkEntityCommitmentClose,
   handleWorkEntityUpsert,
   makeWorkEntityCrudHandlers,
   type WorkEntityCrudRpcDeps,
@@ -744,6 +745,8 @@ describe('D-174 makeWorkEntityCrudHandlers slice', () => {
       'work_entity.get',
       'work_entity.upsert',
       'work_entity.task.mark_done',
+      'work_entity.commitment.fulfill',
+      'work_entity.commitment.cancel',
       'work_entity.delete',
     ]);
   });
@@ -784,5 +787,39 @@ describe('work_entity.list vs a read_through Source', () => {
 
     expect(listed.entities.map((entity) => entity.source_id)).not.toContain(PEER_SOURCE);
     expect(listed.total).toBe(listed.entities.length);
+  });
+});
+
+
+describe('D-325 — the owner can close a commitment', () => {
+  const create = async (expiry_policy: 'strict_expire' | 'escalate_overdue' = 'escalate_overdue') =>
+    (await handleWorkEntityUpsert(deps, { kind: 'commitment', direction: 'internal', statement: 'Renew passport', derivation: 'user_declared', expiry_policy })).entity.id;
+
+  it('fulfills through the semantic dispatcher and retains the time on concurrent retries', async () => {
+    const id = await create();
+    writeTime += 5000;
+    const replies = await Promise.all([handleWorkEntityCommitmentClose(deps, { id }, 'fulfilled'), handleWorkEntityCommitmentClose(deps, { id }, 'fulfilled')]);
+    expect(replies[0]).toEqual(replies[1]);
+    expect(replies[0]!.entity).toMatchObject({ _kind: 'commitment', lifecycle_state: 'fulfilled', lifecycle_changed_at: writeTime });
+    expect(eventsFor('commitment', 'state_changed')).toHaveLength(1);
+    writeTime += 5000;
+    expect((await handleWorkEntityCommitmentClose(deps, { id }, 'fulfilled')).entity.lifecycle_changed_at).toBe(writeTime - 5000);
+  });
+
+  it('cancels this occurrence, rejects a conflicting close and refuses client timestamps', async () => {
+    const id = await create();
+    expect((await handleWorkEntityCommitmentClose(deps, { id }, 'cancelled')).entity.lifecycle_state).toBe('cancelled');
+    await expect(handleWorkEntityCommitmentClose(deps, { id }, 'fulfilled')).rejects.toBeInstanceOf(RpcError);
+    await expect(handleWorkEntityCommitmentClose(deps, { id, fulfilled_at: 1 } as never, 'fulfilled')).rejects.toMatchObject({ code: 'bad_request' });
+  });
+
+  it('requires the paired webclient at the RPC boundary', async () => {
+    const id = await create();
+    const slice = makeWorkEntityCrudHandlers(deps)!;
+    for (const client of [{}, { instance_id: 'bridge', client_kind: 'bridge' }]) {
+      await expect(slice.handlers['work_entity.commitment.fulfill']({ id }, client as WsClient)).rejects.toMatchObject({ code: 'unauthorized' });
+    }
+    const out = await slice.handlers['work_entity.commitment.fulfill']({ id }, { instance_id: 'owner', client_kind: 'webclient' } as WsClient);
+    expect(out.entity.lifecycle_state).toBe('fulfilled');
   });
 });

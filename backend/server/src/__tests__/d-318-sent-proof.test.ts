@@ -1477,3 +1477,199 @@ describe('D-318 step 8 — proof (b): an address Recued does not read, enrolled 
     expect(h.proof.get(CHAT, ID)).toMatchObject({ state: 'proven', proof: 'sent_record', proven_by: OWNER });
   });
 });
+
+describe('§8.18 one mailbox — the owner writes to the chat mailbox from itself', () => {
+  const MINE = 'mine';
+  const MY_ADDRESS = 'me@owner.example';
+  const SELF_ID = 'self-1@owner.example';
+  const ASK = '[#ask-7b0c2d1e-1111-4222-8333-944445555666]';
+  const foundToMyself = async (): Promise<MailSentByMessageIdResult> => ({
+    status: 'found', matches: [{ to: [MY_ADDRESS], subject: 'ask: what is on today?', sent_at: clock - 1_000 }],
+  });
+
+  /** The chat mailbox is the owner's own (`owner_mailboxes` names it), or —
+   *  `two: true` — the same mailbox used for chat alone. */
+  const oneMailbox = (opts: { lookup?: Lookup; two?: boolean; conversations?: MailChatConversations } = {}) => {
+    const db = new Database(':memory:');
+    dbs.push(db);
+    const door = createMailChatDoorStore(db);
+    door.setOwnerMailboxes(opts.two === true ? [] : [MINE]);
+    door.setChatMailbox(MINE, MY_ADDRESS);
+    const lookup = vi.fn<Lookup>(opts.lookup ?? foundToMyself);
+    const mailboxes: MailChatProofMailbox[] = [
+      { platform: 'mail', slug: MINE, accountEmail: `Me <${MY_ADDRESS}>`, lookupSentByMessageId: lookup },
+    ];
+    const notify = vi.fn(async () => undefined);
+    const admit = vi.fn<MailChatAdmit>(async () => ({ outcome: 'admitted' }));
+    const log = vi.fn<(level: 'info' | 'warn', msg: string, data?: Record<string, unknown>) => void>();
+    const notProven = vi.fn<(chat_slug: string, record_id: string) => void>();
+    const proof = createMailChatSentProof({
+      db, door, mailboxes: () => mailboxes, now: () => clock, log, onNotProven: notProven,
+      ...(opts.conversations ? { conversations: opts.conversations } : {}),
+    });
+    open.push(proof);
+    proof.bindNotify(notify);
+    proof.bindAdmit(admit);
+    return { db, door, proof, lookup, notify, admit, log, notProven };
+  };
+  /** As Gmail keeps an email to oneself: one message, labelled SENT and INBOX. */
+  const toMyself = (over: Partial<CanonicalMessage> = {}): CanonicalMessage => request({
+    source_id: 'self-1', rfc_message_id: `<${SELF_ID}>`, from: `Me <${MY_ADDRESS}>`, to: [MY_ADDRESS],
+    direction: 'outbound', labels: ['SENT', 'INBOX'], ...over,
+  });
+  const at = (over: Partial<MailStoredContext> = {}): MailStoredContext =>
+    stored({ slug: MINE, record_id: 'mail:self-1', provider_kind: 'gmail', account_email: MY_ADDRESS, ...over });
+  const settle = async (proof: MailChatSentProof, id = SELF_ID) => {
+    const until = clock + 2 * MAIL_CHAT_PROOF_WAIT_MS;
+    await proof.tick();
+    while (proof.get(MINE, id)?.state === 'pending' && clock < until) {
+      clock += 15_000;
+      await proof.tick();
+    }
+    return proof.get(MINE, id);
+  };
+
+  it('⛔ Gmail: the email to oneself, filed as sent, is the request — proven by its own Sent record', async () => {
+    const h = oneMailbox();
+    land(h, toMyself(), at());
+    await expect(settle(h.proof)).resolves.toMatchObject({
+      state: 'proven', proof: 'sent_record', proven_by: MINE, from_address: MY_ADDRESS, record_id: 'mail:self-1',
+    });
+    expect(h.lookup).toHaveBeenCalledWith({ rfc_message_id: SELF_ID });
+    expect(h.admit).toHaveBeenCalledTimes(1);
+    expect(h.notify).not.toHaveBeenCalled();
+  });
+
+  it('⛔ used for chat alone, the chat mailbox’s own outbound mail is still never a request', async () => {
+    const h = oneMailbox({ two: true });
+    land(h, toMyself(), at());
+    await h.proof.tick();
+    expect(h.proof.get(MINE, SELF_ID)).toBeNull();
+    expect(h.lookup).not.toHaveBeenCalled();
+  });
+
+  it('the owner’s own mail is set aside without a word, the notification channel’s included', async () => {
+    const h = oneMailbox();
+    const own: Array<[Partial<CanonicalMessage>, string]> = [
+      [{ subject: 'Buy milk' }, 'a note to self'],
+      [{ subject: 'Fwd: Your passport renewal' }, 'a renewal forwarded to oneself'],
+      [{ subject: `${ASK} Passport renewal`, reconciliation_id: 'owner-notification:1f2e', direction: 'inbound' },
+        'Recued’s notification to the mailbox it sends from (D-158)'],
+      [{ subject: `Re: ${ASK} Passport renewal` }, 'the owner’s answer to it'],
+      [{ to: [MY_ADDRESS, 'bob@x.example'] }, 'to oneself and someone else'],
+      [{ cc: ['bob@x.example'] }, 'copied to someone'],
+      [{ from: 'news@shop.example', direction: 'inbound', headers: { 'list-id': '<deals.shop.example>' } }, 'a newsletter'],
+      [{ from: 'bob@x.example', direction: 'inbound', subject: 'lunch?' }, 'a friend’s email'],
+      [{ to: ['bob@x.example'], subject: 'ask: lunch?' }, 'mail the owner sent to someone else'],
+    ];
+    own.forEach(([over, why], n) => {
+      land(h, toMyself({ source_id: `own-${n}`, rfc_message_id: `<own-${n}@owner.example>`, ...over }),
+        at({ record_id: `mail:own-${n}` }));
+      expect(h.proof.get(MINE, `own-${n}@owner.example`), why).toBeNull();
+    });
+    await h.proof.tick();
+    expect(h.lookup).not.toHaveBeenCalled();
+    expect(h.proof.recent(MINE, 20)).toEqual([]);
+    // ⛔ The log names none of them: the mailbox holds all the owner's mail.
+    expect(h.log.mock.calls.filter(([, msg]) => msg.includes('ignored'))).toEqual([]);
+  });
+
+  it('a stranger’s email with the prefix is recorded and set aside at its check, as with two mailboxes', async () => {
+    const h = oneMailbox();
+    land(h, toMyself({ from: 'eve@else.example', direction: 'inbound' }), at());
+    await expect(settle(h.proof)).resolves.toMatchObject({ state: 'ignored', reason: 'not_owner' });
+    expect(h.lookup).not.toHaveBeenCalled();
+    expect(h.admit).not.toHaveBeenCalled();
+  });
+
+  it('a reply in a conversation needs no prefix', async () => {
+    const conversations = createMailChatConversations(new Database(':memory:'));
+    conversations.record(MINE, 'answer-1@owner.example', 'conversation-1', 'answer', clock);
+    const h = oneMailbox({ conversations });
+    const reply = toMyself({ subject: 'and tomorrow?', headers: { 'in-reply-to': '<answer-1@owner.example>' } });
+    land(h, reply, at());
+    await expect(settle(h.proof)).resolves.toMatchObject({ state: 'proven', references: ['answer-1@owner.example'] });
+    expect(h.proof.continuesConversation(MINE, ['answer-1@owner.example'])).toBe(true);
+    expect(h.proof.continuesConversation(MINE, ['elsewhere@owner.example'])).toBe(false);
+    // A request still on its way is a conversation too.
+    expect(h.proof.continuesConversation(MINE, [SELF_ID])).toBe(true);
+    expect(h.proof.continuesConversation('another-chat', [SELF_ID])).toBe(false);
+  });
+
+  it('an email it does not prove is given back to the owner’s mail, once — and reads as refuted', async () => {
+    // Outlook's inbox copy, with no Sent record behind it: someone else wrote it.
+    const h = oneMailbox({ lookup: notFound });
+    land(h, toMyself({ direction: 'inbound' }), at({ provider_kind: 'graph' }));
+    expect(h.proof.refuted(MINE, SELF_ID)).toBe(false);
+    await expect(settle(h.proof)).resolves.toMatchObject({ state: 'not_proven', reason: 'not_in_sent' });
+    expect(h.notProven.mock.calls).toEqual([[MINE, 'mail:self-1']]);
+    expect(h.proof.refuted(MINE, SELF_ID)).toBe(true);
+    expect(h.proof.refuted(MINE, 'never-seen@owner.example')).toBe(false);
+    // A stranger's, set aside, is refuted too.
+    land(h, toMyself({ source_id: 'eve-1', rfc_message_id: '<eve-1@else.example>', from: 'eve@else.example',
+      direction: 'inbound' }), at({ record_id: 'mail:eve-1', provider_kind: 'graph' }));
+    await settle(h.proof, 'eve-1@else.example');
+    expect(h.proof.refuted(MINE, 'eve-1@else.example')).toBe(true);
+    expect(h.notProven.mock.calls.at(-1)).toEqual([MINE, 'mail:eve-1']);
+  });
+
+  it('⛔ a proven request is never given back, and one that throws while given back still settles', async () => {
+    const h = oneMailbox();
+    h.notProven.mockImplementation(() => { throw new Error('row locked'); });
+    land(h, toMyself(), at());
+    await expect(settle(h.proof)).resolves.toMatchObject({ state: 'proven' });
+    expect(h.notProven).not.toHaveBeenCalled();
+    expect(h.proof.refuted(MINE, SELF_ID)).toBe(false);
+    const g = oneMailbox({ lookup: notFound });
+    g.notProven.mockImplementation(() => { throw new Error('row locked'); });
+    land(g, toMyself({ direction: 'inbound' }), at({ provider_kind: 'graph' }));
+    await expect(settle(g.proof)).resolves.toMatchObject({ state: 'not_proven' });
+    expect(g.notProven).toHaveBeenCalledTimes(1);
+  });
+
+  it('the ask: filter cannot be switched off: a note to self stays the owner’s', async () => {
+    const h = oneMailbox();
+    h.door.setAskPrefix(null);
+    land(h, toMyself({ subject: 'Buy milk' }), at());
+    expect(h.proof.get(MINE, SELF_ID)).toBeNull();
+  });
+
+  describe('⛔ Outlook and IMAP file the Sent copy apart: the owner’s record, never a request, never a second copy', () => {
+    for (const provider_kind of ['graph', 'imap'] as const) {
+      const inbox = toMyself({ source_id: 'inbox-1', direction: 'inbound', labels: [] });
+      const sentCopy = toMyself({ source_id: 'sent-1', labels: [] });
+
+      it(`${provider_kind}: the Sent copy first, then the inbox copy — the inbox copy is the request`, async () => {
+        const h = oneMailbox();
+        land(h, sentCopy, at({ record_id: 'mail:sent-1', provider_kind }));
+        expect(h.proof.get(MINE, SELF_ID)).toBeNull();
+        land(h, inbox, at({ record_id: 'mail:inbox-1', provider_kind }));
+        await expect(settle(h.proof)).resolves.toMatchObject({ state: 'proven', record_id: 'mail:inbox-1' });
+      });
+
+      it(`${provider_kind}: the inbox copy first, its Sent copy before the check — not a duplicate`, async () => {
+        const h = oneMailbox();
+        land(h, inbox, at({ record_id: 'mail:inbox-1', provider_kind }));
+        land(h, sentCopy, at({ record_id: 'mail:sent-1', provider_kind }));
+        await expect(settle(h.proof)).resolves.toMatchObject({ state: 'proven', record_id: 'mail:inbox-1' });
+      });
+
+      it(`${provider_kind}: ⛔ a second copy DELIVERED under the same Message-ID still refuses both`, async () => {
+        const h = oneMailbox();
+        land(h, inbox, at({ record_id: 'mail:inbox-1', provider_kind }));
+        land(h, sentCopy, at({ record_id: 'mail:sent-1', provider_kind }));
+        land(h, toMyself({ source_id: 'forged-1', direction: 'inbound' }), at({ record_id: 'mail:forged-1', provider_kind }));
+        await expect(settle(h.proof)).resolves.toMatchObject({ state: 'not_proven', reason: 'duplicate' });
+        expect(h.admit).not.toHaveBeenCalled();
+      });
+    }
+
+    it('⛔ a provider not named reads as Gmail: its outbound copy is the request, and a second copy refuses it aloud', async () => {
+      const h = oneMailbox();
+      land(h, toMyself({ source_id: 'sent-1' }), at({ record_id: 'mail:sent-1', provider_kind: undefined }));
+      land(h, toMyself({ source_id: 'inbox-1', direction: 'inbound' }), at({ record_id: 'mail:inbox-1', provider_kind: undefined }));
+      await expect(settle(h.proof)).resolves.toMatchObject({ state: 'not_proven', reason: 'duplicate' });
+      expect(h.notify).toHaveBeenCalledTimes(1);
+    });
+  });
+});

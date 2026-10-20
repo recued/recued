@@ -17,9 +17,8 @@
  *      a wired adapter never report `ready` even when a
  *      `connection.notification.<vendor>` credential is enrolled, so the
  *      block never enables a fan-out target it can't deliver to.
- *    - The Bridge probe path is pair-presence-backed via the lifted
- *      `clientTokens` store (D-163 N.5 / I-5): zero `client_kind:
- *      'bridge'` rows ⇒ `not_ready`; one or more ⇒ `ready`.
+ *    - D-325: pair presence alone is not OS readiness. A live bridge
+ *      must confirm notifications are permitted through its receipt port.
  *    - The `bridgeSink` slot is optional — absent ⇒ Bridge's
  *      `deliverNotify` is a silent no-op (the block can still raise
  *      asks; the passive notify to Bridge on ask raise just no-ops). */
@@ -232,6 +231,7 @@ describe('D-163 Slice B — composeNotificationBlock channel wiring', () => {
       clientTokens: stubClientTokens(1),
       bridgeSink,
     });
+    block.bindBridgeReminders({ ready: async () => true, destinations: async () => [], deliver: async () => ({ outcome: 'not_delivered' }), withdraw: async () => true });
 
     const toggleResult = await block.setNotificationChannelMode('bridge', { notification: true });
     expect(toggleResult.ok).toBe(true);
@@ -264,11 +264,13 @@ describe('D-163 Slice B — ChannelReadinessProbe wiring (I-5)', () => {
     expect(bridgeRow!.ready).toBe(false);
   });
 
-  it('reports bridge ready when at least one client_kind=bridge row exists', async () => {
+  it('keeps a paired bridge not_ready until its live OS adapter confirms readiness', async () => {
     const { block } = composeHarness({ clientTokens: stubClientTokens(1) });
     const rows = await block.describeNotificationChannels();
     const bridgeRow = rows.find((r) => r.channel === 'bridge');
-    expect(bridgeRow!.ready).toBe(true);
+    expect(bridgeRow!.ready).toBe(false);
+    block.bindBridgeReminders({ ready: async () => true, destinations: async () => [], deliver: async () => ({ outcome: 'not_delivered' }), withdraw: async () => true });
+    expect((await block.describeNotificationChannels()).find(row => row.channel === 'bridge')!.ready).toBe(true);
   });
 
   it('reports bridge not_ready when clientTokens is absent entirely (fail-closed)', async () => {
@@ -311,8 +313,9 @@ describe('D-163 Slice B — ChannelReadinessProbe wiring (I-5)', () => {
     }
   });
 
-  it('accepts setChannel(bridge, true) once a Bridge is paired', async () => {
+  it('accepts setChannel(bridge, true) once a paired bridge confirms its OS notification adapter', async () => {
     const { block } = composeHarness({ clientTokens: stubClientTokens(2) });
+    block.bindBridgeReminders({ ready: async () => true, destinations: async () => [], deliver: async () => ({ outcome: 'not_delivered' }), withdraw: async () => true });
 
     const result = await block.setNotificationChannelMode('bridge', { notification: true });
     expect(result.ok).toBe(true);

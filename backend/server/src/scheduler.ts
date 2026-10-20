@@ -20,15 +20,14 @@ import {
 import { cronZoneFor } from '@recued/contracts';
 import type { Schedule } from '@recued/scheduler';
 import {
-  cronMatchesAt,
   nextCronMatch,
   countMissedCycles,
-  resolveMissedAction,
   buildMissedRunReport,
   buildBackfillMetadata,
   type BackfillMetadata,
   type MissedRunReport,
 } from '@recued/scheduler';
+import { selectRecurringScheduleTick } from './automation-start-decisions.js';
 import { handleExecute, type ExecuteHandlerDeps } from './execute-handler.js';
 import type { ScheduleStore } from './schedule-store.js';
 import { retireSchedule } from './schedule-retire.js';
@@ -546,7 +545,8 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
       // fires.
       if (firingNow.has(schedule.schedule_id)) continue;
 
-      const matchesNow = cronMatchesAt(parts, new Date(tickMinute));
+      const selection = selectRecurringScheduleTick(schedule, nowMs, config.serverTimeZone?.());
+      const matchesNow = selection === 'regular';
 
       if (matchesNow) {
         if (config.store.wasPreapprovalOccurrenceConsumed?.(schedule.schedule_id, `due:${tickMinute}`)) continue;
@@ -574,7 +574,7 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
       // staleness (`countMissedCycles`). No recipe lookup: the policy
       // rides the SCHEDULE, because the owner who wrote it is the one
       // who knows whether a late run is worth having.
-      const missedAction = resolveMissedAction(schedule, nowMs);
+      const missedAction = selection;
       if (missedAction === 'none') continue;
 
       // D-266 `Ask me` — decide NOTHING. The row is left exactly as it

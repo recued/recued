@@ -127,10 +127,15 @@ describe('OWNER-default-only sensitive surfaces (D-187 slice 3b)', () => {
       // D-198 Slice 4 — collective-memory write/read: owner-on, door-off default.
       'core.memory.read',
       'core.memory.write',
+      'core.situation.prefetch',
+      'core.situation.read',
       'core.webhook.event.get',
       // Continuing a customer-accepted workflow resolves a task or commitment,
       // or starts a saved recipe; the owner reviews each one, never by default.
       'core.work-entity.approval-workflow.continue',
+      'core.work-entity.asset.create',
+      'core.work-entity.asset.delete',
+      'core.work-entity.asset.update',
       // Slice 1 — the Tier-1 `work.create` writes. Same posture as the READ
       // below and `core.memory.write` above: owner-on, door-off. Per KIND, so
       // granting a door "may add notes" never also grants "may commit me".
@@ -154,8 +159,13 @@ describe('OWNER-default-only sensitive surfaces (D-187 slice 3b)', () => {
       'core.work-entity.task.create',
       'core.work-entity.task.mark-done',
       'core.work-entity.task.update',
+      // D-325 P17 — episodes and occasions are the owner's only: granting the
+      // situation tool does not also hand a contract the owner's history.
+      'data.episode',
       'data.form_response',
+      'data.occasion',
       'data.webhook',
+      'primitive.situation.query',
     ]);
   });
 

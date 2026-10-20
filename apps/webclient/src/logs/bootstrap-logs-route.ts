@@ -1,3 +1,4 @@
+import { localUpdateUndoControl, type LocalUpdateUndoCallers } from '../approvals/local-update-undo.js';
 /** D-174 P5 - top-level Logs/Audit route.
  *
  *  Consumes the local-UI `execution.list` + `execution.get` RPC seam.
@@ -91,6 +92,7 @@ import {
   type SourceRecordDataTab,
 } from '../shell/route.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
+import { runPageObject, type RunPageContext } from '../shell/run-page-context.js';
 
 export const LOGS_ROUTE_STYLES_MARKER = 'data-recued-logs-route-styles';
 export const LOGS_ROUTE_HOST_ATTR = 'data-recued-logs-route';
@@ -220,6 +222,7 @@ export interface BootstrapLogsRouteOptions {
   document?: Document;
   listCaller?: RunsListCaller;
   getCaller?: RunsGetCaller;
+  localUndo?: LocalUpdateUndoCallers;
   /** D-181 slice 5b — the live Active section. Wired together: when
    *  `activeCaller` is present the section renders and the three mutators
    *  drive its kill / cancel / promote buttons (absent mutators leave the
@@ -342,6 +345,7 @@ export interface RunAffectedItem {
 }
 
 export interface RunsRoute {
+  getRunPageContext(): RunPageContext | null;
   getRuns(): ReadonlyArray<RunFeedRow>;
   getNextCursor(): ExecutionListCursor | null;
   getFilters(): RunsFilters;
@@ -1948,6 +1952,11 @@ const affectedItemTarget = (
     };
   }
 
+  // Assets are owned by Yours; Data has no asset tab to verify one in.
+  if (collection === 'asset') {
+    return { title: 'Asset', resolution: 'exact', href: `#yours/asset/${encodeURIComponent(recordId)}` };
+  }
+
   if (isCrmCollection(collection)) {
     return {
       title: `CRM ${humanizeCollection(collection).toLowerCase()}`,
@@ -2623,6 +2632,7 @@ const renderGatewayTraceRow = (trace: RunGatewayCallTraceEntry): string => `
       ${trace.duration_ms !== undefined ? `<span>${e(formatDuration(trace.duration_ms))}</span>` : ''}
       ${trace.cached === true ? '<span>cached</span>' : ''}
     </div>
+    ${trace.local_receipt ? `<div data-local-mutation-receipt="${e(trace.local_receipt.receipt_id)}">${trace.local_receipt.kind === 'records' ? 'Records' : 'Calendar'} change confirmed</div>` : ''}
   </li>
 `;
 
@@ -3247,6 +3257,15 @@ export const bootstrapLogsRoute = (
       </div>
     `;
     // (Re-)attach the Recipe combobox to the freshly-painted shell.
+    if (opts.localUndo && selectedRun) {
+      for (const trace of selectedRun.gateway.per_call_trace) {
+        const receipt = trace.local_receipt;
+        if (!receipt) continue;
+        const slot = Array.from(routeRoot.querySelectorAll<HTMLElement>('[data-local-mutation-receipt]'))
+          .find(node => node.getAttribute('data-local-mutation-receipt') === receipt.receipt_id);
+        slot?.appendChild(localUpdateUndoControl(doc, opts.localUndo, receipt.receipt_id));
+      }
+    }
     mountRecipePicker();
     if (focusedFilterKind !== null) {
       const replacement = routeRoot.querySelector?.(
@@ -3884,6 +3903,12 @@ export const bootstrapLogsRoute = (
     getNextCursor: () => nextCursor,
     getFilters: () => filters,
     getSelectedRun: () => selectedRun,
+    getRunPageContext: () => {
+      if (disposed || loadingDetail || errors.detail || !selectedRun
+        || selectedRun.audit.run_id !== selectedRunId) return null;
+      const object = runPageObject('run', selectedRun.audit.run_id, { ...selectedRun.audit });
+      return { label: object.label, objects: [object] };
+    },
     getLoadErrors: () => errors,
     getActiveEntries: () => activeEntries,
     getLanes: () => lanes,

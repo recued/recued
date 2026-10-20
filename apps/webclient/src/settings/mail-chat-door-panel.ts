@@ -28,11 +28,17 @@
  *  address confirmed, with its checker, or why not. ⚠ Naming none of the
  *  owner's mailboxes is allowed: such a door is for added addresses only.
  *
- *  Spec: D-318 §4.10, §4.12, §8 steps 7 and 8. */
+ *  One mailbox (§8.18) — the chat mailbox may be ticked among the owner's own
+ *  too: they write to themselves. Its mail then stays theirs, and the `ask:`
+ *  prefix cannot be switched off (the server refuses it): the panel says so,
+ *  and offers no way to.
+ *
+ *  Spec: D-318 §4.10, §4.12, §8 steps 7 and 8, §8.18. */
 
 import {
   isMailChatAskPrefix,
   isMailChatEnrollableAddress,
+  isMailChatOneMailbox,
   isMailChatStaleAfterMinutes,
   mailChatCheckerOrg,
   MAIL_CHAT_ASK_PREFIX_DEFAULT,
@@ -440,14 +446,14 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
     select.value = pickChat;
     select.addEventListener('change', () => {
       pickChat = select.value;
-      pickOwners.delete(pickChat);
       checks = null;
       render();
     });
     chatLabel.appendChild(select);
     into.appendChild(chatLabel);
-    into.appendChild(hint('Recued answers from this mailbox, so it must be one it can send from. Use a mailbox '
-      + 'only for this: its mail stops being treated as yours.'));
+    into.appendChild(hint('Recued answers from this mailbox, so it must be one it can send from. It can be one of '
+      + 'your own: tick it under Your mailboxes too, and you write to yourself. Otherwise use a mailbox only for '
+      + 'this: its mail stops being treated as yours.'));
     if (mailboxes.length === 0) {
       into.appendChild(hint('No mailbox is connected yet. Connect the chat mailbox and your own first.'));
     }
@@ -456,7 +462,6 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
     const owners = el('fieldset');
     owners.appendChild(el('legend', 'Your mailboxes'));
     for (const row of mailboxes) {
-      if (row.slug === pickChat) continue;
       const box = doc.createElement('input');
       box.type = 'checkbox';
       box.checked = pickOwners.has(row.slug);
@@ -471,11 +476,18 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
       const label = el('label');
       label.className = 'rx-checkbox-row';
       label.appendChild(box);
-      label.appendChild(el('span', ` ${row.account_email ?? row.slug}`));
+      label.appendChild(el('span', ` ${row.account_email ?? row.slug}${row.slug === pickChat
+        ? ' (the chat mailbox: you write to yourself)' : ''}`));
       owners.appendChild(label);
     }
     owners.appendChild(hint('The ones you write from. Recued knows an email to the chat mailbox is yours by '
       + 'finding it in one of these Sent folders.'));
+    // §8.18 — one mailbox: what writing to yourself means.
+    if (pickChat !== '' && pickOwners.has(pickChat)) {
+      owners.appendChild(hint(`You write to yourself at ${addressOf(pickChat)}. Only an email to that address alone `
+        + 'whose subject begins with the prefix (ask: unless you change it) starts a conversation, and the prefix '
+        + 'cannot be turned off. Your other mail there stays yours: only the conversation is kept out of it.'));
+    }
     if (pickOwners.size === 0) {
       owners.appendChild(hint('None picked: once email chat is on, you can add an address Recued does not read '
         + 'instead.'));
@@ -638,15 +650,19 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
 
   const renderOn = (into: HTMLElement, current: MailChatDoorSettings): void => {
     const chat = current.chat_address ?? current.chat_mailbox ?? '';
+    // §8.18 — the chat mailbox is one of the owner's own: they write to themselves.
+    const oneMailbox = isMailChatOneMailbox(current);
     // Whoever can write to it: the owner's mailboxes, and the addresses added.
     const owners = [
-      ...current.owner_mailboxes.map(addressOf),
+      ...current.owner_mailboxes.map((slug) => (slug === current.chat_mailbox ? 'itself' : addressOf(slug))),
       ...current.enrolled_senders.filter((sender) => sender.state === 'confirmed').map((sender) => sender.address),
     ];
-    into.appendChild(el('p', owners.length > 0
-      ? `Email chat is on. Write to ${chat} from ${owners.join(' or ')}.`
-      : `Email chat is on, from ${chat}, but no address can write to it yet: add one below, or turn it off and on `
-        + 'again to name one of your mailboxes.'));
+    into.appendChild(el('p', oneMailbox && owners.length === 1
+      ? `Email chat is on. Write to yourself at ${chat}.`
+      : owners.length > 0
+        ? `Email chat is on. Write to ${chat} from ${owners.join(' or ')}.`
+        : `Email chat is on, from ${chat}, but no address can write to it yet: add one below, or turn it off and on `
+          + 'again to name one of your mailboxes.'));
 
     if (current.paused_at !== null) {
       const paused = el('div');
@@ -662,8 +678,10 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
     // The settings.
     const prefixOn = doc.createElement('input');
     prefixOn.type = 'checkbox';
-    prefixOn.checked = current.ask_prefix !== null;
-    prefixOn.disabled = busy;
+    prefixOn.checked = current.ask_prefix !== null || oneMailbox;
+    // One mailbox: always on, or every email the owner writes to themselves
+    // would start a conversation (the server refuses it off).
+    prefixOn.disabled = busy || oneMailbox;
     prefixOn.setAttribute(MAIL_CHAT_DOOR_PREFIX_ON_ATTR, '');
     const prefix = doc.createElement('input');
     prefix.type = 'text';
@@ -678,8 +696,11 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
     prefixLabel.appendChild(el('span', ' Start a conversation only with a subject that begins with '));
     prefixLabel.appendChild(prefix);
     into.appendChild(prefixLabel);
-    into.appendChild(hint('A reply in a conversation needs no prefix. Without one, any email you send the chat '
-      + 'mailbox starts a conversation, a forwarding rule’s too.'));
+    into.appendChild(hint(oneMailbox
+      ? 'A reply in a conversation needs no prefix. You write to yourself, so the prefix stays on: without it, '
+        + 'every email you send yourself would start a conversation.'
+      : 'A reply in a conversation needs no prefix. Without one, any email you send the chat mailbox starts a '
+        + 'conversation, a forwarding rule’s too.'));
 
     const stale = doc.createElement('input');
     stale.type = 'number';
@@ -706,12 +727,13 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
         return;
       }
       const text = prefix.value.trim();
-      if (prefixOn.checked && !isMailChatAskPrefix(text)) {
+      const withPrefix = prefixOn.checked || oneMailbox;
+      if (withPrefix && !isMailChatAskPrefix(text)) {
         error = 'Enter a prefix of 1 to 32 characters, such as ask:';
         render();
         return;
       }
-      void save({ ask_prefix: prefixOn.checked ? text : null, stale_after_minutes: minutes });
+      void save({ ask_prefix: withPrefix ? text : null, stale_after_minutes: minutes });
     });
     into.appendChild(saveButton);
     renderError(into);
@@ -724,8 +746,9 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
     section.appendChild(el('h4', 'Test it'));
     const subject = current.ask_prefix === null ? 'ping' : `${current.ask_prefix} ping`;
     const instruction = el('p');
-    instruction.appendChild(el('span', `From ${owners.length > 0 ? owners.join(' or ') : 'your address'}, send an `
-      + `email to ${chat} with the subject `));
+    instruction.appendChild(el('span', oneMailbox && owners.length === 1
+      ? `Send an email to yourself, ${chat}, with the subject `
+      : `From ${owners.length > 0 ? owners.join(' or ') : 'your address'}, send an email to ${chat} with the subject `));
     const subjectText = el('strong', subject);
     subjectText.className = 'mcd-nowrap';
     instruction.appendChild(subjectText);
@@ -772,9 +795,11 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
         render();
       }));
     } else {
-      into.appendChild(el('p', `Turn off email chat? Recued stops answering ${chat}, and its mail is treated as `
-        + 'yours again. To change the mailboxes, turn it off and on again: the addresses you added stay added for '
-        + 'this chat mailbox.'));
+      into.appendChild(el('p', (oneMailbox
+        ? `Turn off email chat? Recued stops answering the emails you write to yourself at ${chat}. `
+        : `Turn off email chat? Recued stops answering ${chat}, and its mail is treated as yours again. `)
+        + 'To change the mailboxes, turn it off and on again: the addresses you added stay added for this chat '
+        + 'mailbox.'));
       into.appendChild(button('Turn off', MAIL_CHAT_DOOR_TURN_OFF_CONFIRM_ATTR, () => {
         void save({ chat_mailbox: null }).then((saved) => {
           if (!saved || disposed) return;

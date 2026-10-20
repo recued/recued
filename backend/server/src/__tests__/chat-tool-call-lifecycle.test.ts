@@ -47,7 +47,8 @@ const startInput = (id: string) => ({
 
 const orchestrator = (store: ReturnType<typeof createChatStore>,
   dispatch: (ctx: ChatDispatchContext) => Promise<ChatDispatchResult>,
-  synthesize: () => Promise<void> = async () => {}, callCount = 1) => {
+  synthesize: () => Promise<void> = async () => {}, callCount = 1,
+  extra: { now?: () => number } = {}) => {
   const entry: ToolEntry = { name: 'mail.search', tier: 1, description: 'Fixture',
     arg_schema: { type: 'object' }, topic_tags: ['mail'], classification: 'read', concurrency_safe: true };
   const registry: InternalToolRegistry = {
@@ -66,6 +67,7 @@ const orchestrator = (store: ReturnType<typeof createChatStore>,
       await synthesize();
       return { body: { response: 'Finished.', events: [], tool_calls: [] } };
     },
+    ...extra,
   });
 };
 const turnInput = { session_id: 'session', message: 'Search mail', picker_state: { current: 'self' as const } };
@@ -90,7 +92,9 @@ describe('durable chat calls through the orchestrator', () => {
       live.completeRun('run-real');
       return { ok: true, run_id: 'run-real', result: { private_result: 'saved before synthesis' } };
     }, async () => { synthesizing.resolve(); await finish.promise; });
-    const turn = app.runTurn(turnInput);
+    // As the D-265 queue runs every chat turn, with its live-turn check. The
+    // order no longer depends on it: the next test runs a turn without it.
+    const turn = app.runTurn({ ...turnInput, assert_active: () => {} });
     try {
       await Promise.race([entered.promise, turn.then(() => { throw new Error('Dispatch was not reached'); })]);
       const [record] = store.toolCalls!.list();
@@ -118,6 +122,24 @@ describe('durable chat calls through the orchestrator', () => {
       expect(db.prepare('SELECT DISTINCT pair_id FROM chat_messages WHERE role = ?').all('tool'))
         .toEqual([{ pair_id: 'run-real' }]);
     } finally { release.resolve(); finish.resolve(); await turn; }
+  });
+
+  it('lists the answer after the tool rows when the whole turn lands in one millisecond, without the queue', async () => {
+    // A caller that skips the D-265 queue passes no `assert_active`. The clock
+    // never moves, so the user row, the call, its result and the answer all
+    // share one `ts`; on that tie the answer's bare id would sort before
+    // `tool:<id>`. The store has to list the turn's rows as the turn wrote them.
+    const { store } = storage();
+    const app = orchestrator(store, async () => ({ ok: true, result: { answer: 'found it' } }),
+      async () => {}, 1, { now: () => 5_000 });
+    await app.runTurn(turnInput);
+    const rows = await store.listMessages('session');
+    expect(rows.map(row => row.role)).toEqual(['user', 'tool', 'tool', 'assistant']);
+    expect(rows[1]?.tool_call?.state).toBe('succeeded');
+    expect(rows[2]?.id).toBe(`${rows[1]!.id}:result`);
+    expect(rows[3]?.content).toBe('Finished.');
+    // Each row moves 1 ms past the one before it, and no further.
+    expect(rows.map(row => row.ts)).toEqual([5_000, 5_001, 5_002, 5_003]);
   });
 
   it('never dispatches when the early durable write fails', async () => {

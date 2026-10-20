@@ -67,6 +67,8 @@
  *  channel, independent of all of the above. */
 
 import type {
+  Asset,
+  AssetAnchor,
   ChatDispatchContext,
   ChatDispatchResult,
   IngredientManifest,
@@ -135,6 +137,7 @@ import {
 // ────────────────────────────────────────────────────────────────
 
 export interface WorkEntityReadToolsDeps {
+  getReadScope?: (ctx: ChatDispatchContext) => ReturnType<typeof import('./situations/read-scope.js').createReadScope> | undefined;
   /** D-205 #3 — the `data.<collection>` READ FENCE for the work-entity kind being read
    *  (`task` / `note` / `commitment` / `project` are all `READABLE_COLLECTIONS`, and the
    *  tool's own `kind` arg IS the collection — so the fence is exactly `kind`).
@@ -288,11 +291,11 @@ const relatedFor = (
 ):
   | { related: WorkEntityRelatedItem[] }
   | { related_unavailable: WorkEntityRelatedUnavailable } => {
-  if (!isWorkEntitySourceDeclarableKind(kind)) {
+  if (kind === 'booking') {
     return {
       related_unavailable: {
         reason:
-          `'${kind}' has no relationship model — only task / note / project own related links. `
+          `'${kind}' has no relationship model. `
           + 'This is not "no relationships found"; do not report it as one.',
       },
     };
@@ -391,12 +394,19 @@ const CONTRACTED_ESCALATION_UNEVALUABLE =
 
 /** Approval-class verdicts cannot HOLD on this serve-only read spine
  *  (no recipe/run to checkpoint) — surface the honest non-retryable
- *  refusal instead of a silent fail or a dangling ask. */
-const escalationRequiresApproval = (detail: string): string =>
-  `the vendor read requires approval under the active contract policy (${detail}) `
-  + 'and this read path cannot hold for approval — the local mirror row is '
-  + 'served (see source_freshness). Ask the owner to raise this door\'s trust '
-  + 'or grant the operation; do not retry.';
+ *  refusal instead of a silent fail or a dangling ask.
+ *
+ *  ⛔ THE VERDICT'S `detail` IS NOT QUOTED HERE. It is the owner's sentence for an
+ *  approval's Reason line ("… can only read without asking you"), and in a tool
+ *  result "you" is the model. It also named no remedy that works: this said "ask
+ *  the owner to raise this door's trust or grant the operation", but no setting
+ *  raises a door's ceiling (`resolveTrustCeiling`, the D-209 #1 amendment), and an
+ *  operation that reaches this refusal is already granted: an ungranted one is
+ *  refused as `op_not_granted` rather than held (`admitCatalogOpForSource`). */
+const ESCALATION_REQUIRES_APPROVAL =
+  'the vendor read needs the owner\'s approval, and this read path cannot hold for '
+  + 'approval — the local mirror row is served (see source_freshness). Server '
+  + 'policy, not a transient failure; do not retry.';
 
 /** A structural admission deny — name the code + detail + the owner
  *  control so the model relays a fixable fact instead of retrying. */
@@ -471,7 +481,7 @@ const admitEscalation = (
     case 'server_paused':
       return { admitted: false, reason: SERVER_PAUSED_ESCALATION };
     case 'requires_approval':
-      return { admitted: false, reason: escalationRequiresApproval(refusal.detail) };
+      return { admitted: false, reason: ESCALATION_REQUIRES_APPROVAL };
     case 'denied':
       return {
         admitted: false,
@@ -490,7 +500,12 @@ const admitEscalation = (
  *  `long_text.fidelity` rides VERBATIM from the fidelity-honoring
  *  accessor: 'preview' text is a bounded excerpt, never the complete
  *  body. */
-export interface WorkEntityToolItem {
+export interface WorkEntityToolItem extends Partial<Pick<Asset, 'name' | 'class_id' | 'status' | 'holder_contact' | 'belongs_to'
+  | 'document_number' | 'serial_number' | 'exact_address' | 'audience' | 'sphere' | 'sphere_override'
+  | 'dates' | 'readings' | 'observations' | 'values' | 'attributes' | 'settings' | 'rules' | 'retirement' | 'field_sources'>> {
+  __entity?: 'asset';
+  /** Each anchor carries its own privacy marker, so its tags hold at any index. */
+  anchors?: Array<AssetAnchor & { __entity?: 'asset_anchor' }>;
   /** Versioned Source-qualified id. Pass it unchanged to `work.read` or the
    *  matching provider operation. A generic `data.<kind>` mutation can also
    *  consume it when a local mirrored row exists; read-through rows have no
@@ -659,7 +674,7 @@ const clampLimit = (v: unknown): number => {
 
 const projectItem = (
   entity: WorkEntity,
-  opts: { clampLongText: number | false },
+  opts: { clampLongText: number | false; assetDetail?: boolean },
 ): WorkEntityToolItem => {
   const item: WorkEntityToolItem = {
     id: entity.id,
@@ -668,6 +683,18 @@ const projectItem = (
     updated_at: entity.updated_at,
   };
   switch (entity._kind) {
+    case 'asset': {
+      item.__entity = 'asset'; item.name = entity.name; item.title = entity.name;
+      item.status = entity.status;
+      if (entity.class_id) item.class_id = entity.class_id;
+      if (opts.assetDetail) {
+        const fields = ['holder_contact', 'belongs_to', 'document_number', 'serial_number', 'exact_address', 'audience', 'sphere', 'sphere_override',
+          'dates', 'readings', 'observations', 'values', 'anchors', 'attributes', 'settings', 'rules', 'retirement', 'field_sources'] as const;
+        Object.assign(item, Object.fromEntries(fields.filter(key => entity[key] !== undefined).map(key => [key, entity[key]])));
+        if (item.anchors) item.anchors = item.anchors.map(anchor => ({ ...anchor, __entity: 'asset_anchor' as const }));
+      }
+      break;
+    }
     case 'task':
       item.title = entity.title;
       item.done = entity.done;
@@ -1306,6 +1333,7 @@ export const runWorkEntitySearchTool = async (
     return invalidArgs(`kind must be one of: ${WORK_ENTITY_KINDS.join(', ')}`);
   }
   const kind = args.kind;
+  const scope = deps.getReadScope?.(ctx);
   // The `core.work-entity.read` VERB-OP fence — FIRST, because it is the coarser
   // axis: it decides whether this caller may use the tool AT ALL, independent of
   // which kind was asked for. Ordering it before the per-kind fence keeps the
@@ -1405,12 +1433,16 @@ export const runWorkEntitySearchTool = async (
       .filter((source) => source.sync_posture === 'read_through')
       .map((source) => source.id),
   );
-  rows = rows.filter((row) => !readThroughIds.has(row.source_id));
+  const scannedToLimit = rows.length >= DISCOVERY_SCAN_CAP;
+  if (scope?.limited && scannedToLimit) return { ok: true, result: { refused: true,
+    hint: 'This reader could not complete the scoped query. Narrow to a source or use situation.query. No records or counts were released.' } };
+  rows = rows.filter((row) => !readThroughIds.has(row.source_id) && (!scope?.limited || scope.allows({ collection: kind, id: row.id })))
+    .map(row => scope?.limited ? scope.cleanWork(row) : row);
 
   // No silent caps: a scan that filled the store ceiling MAY have more
   // rows beyond it — `total` is then a floor, and the result says so
   // (the D-190 `truncated` honesty precedent).
-  let scan_truncated = rows.length >= DISCOVERY_SCAN_CAP;
+  let scan_truncated = scope?.limited ? false : scannedToLimit;
   if (done !== undefined) {
     rows = rows.filter((r) => r._kind === 'task' && r.done === done);
   }
@@ -1431,7 +1463,7 @@ export const runWorkEntitySearchTool = async (
   // matched none" when the truth might be "the query matched, and `done`
   // excluded it" — a confident wrong explanation, which is strictly worse than
   // the bare zero this whole mechanism exists to replace.
-  let queryCandidatePool = query === undefined || done !== undefined
+  let queryCandidatePool = scope?.limited || query === undefined || done !== undefined
     ? 0
     : resolver.countByKind(kind, source_id);
 
@@ -1442,6 +1474,7 @@ export const runWorkEntitySearchTool = async (
   const readThroughSources = registrations.filter((source) =>
     source.sync_posture === 'read_through'
     && (source_id === undefined || source.id === source_id)
+    && !scope?.limited
   );
   let readThroughItems: WorkEntityToolItem[] = [];
   if (readThroughSources.length > 0) {
@@ -1487,6 +1520,7 @@ export const runWorkEntitySearchTool = async (
   if (done !== undefined) {
     readThroughItems = readThroughItems.filter((item) => item.done === done);
   }
+  if (scope?.limited) readThroughItems = readThroughItems.filter(item => scope.allows({ collection: kind, id: item.id }));
   // Read-through items are the other half of `total`, so they are the other half
   // of the pool — counting only local rows would call a live-Source-only miss an
   // empty collection, which is the exact confusion the hint exists to prevent.
@@ -1530,7 +1564,7 @@ export const runWorkEntitySearchTool = async (
     ...(source_id !== undefined ? { source_id } : {}),
   });
 
-  if ((needs.detail || needs.current) && freshness !== null && page.length > 0) {
+  if (!scope?.limited && (needs.detail || needs.current) && freshness !== null && page.length > 0) {
     const verdictBySource = new Map(freshness.map((f) => [f.source_id, f]));
     // One wild-query input per Source the PAGE actually draws from —
     // escalating rows the answer will not include would waste the cap.
@@ -1667,7 +1701,8 @@ export const runWorkEntitySearchTool = async (
           }
         : {}),
       ...(scan_truncated ? { scan_truncated } : {}),
-      ...(freshness !== null ? { source_freshness: freshness } : {}),
+      ...(freshness !== null ? { source_freshness: scope?.limited ? freshness.filter(row => page.some(item => item.source_id === row.source_id)) : freshness } : {}),
+      ...(scope?.limited ? { hint: 'Only locally verified records in this contract\'s spheres are included. Live-only sources and related records without a verified sphere are withheld.' } : {}),
       ...(limitations.length > 0 ? { limitations } : {}),
       ...(narrow !== undefined ? { narrow } : {}),
       ...(escalatedReads.length > 0
@@ -1704,6 +1739,7 @@ export const runWorkEntityReadTool = async (
     return invalidArgs(`kind must be one of: ${WORK_ENTITY_KINDS.join(', ')}`);
   }
   const kind = args.kind;
+  const scope = deps.getReadScope?.(ctx);
   // D-205 #3 — the `data.<kind>` read fence, BEFORE the resolver is touched.
   //
   // ⚠ This tool's not-found shape is `{ entity: null, found: false }`, so a refusal that
@@ -1764,6 +1800,7 @@ export const runWorkEntityReadTool = async (
         .listSources(kind)
         .find((source) => source.id === qualified.source_id);
       if (registration?.sync_posture === 'read_through') {
+        if (scope?.limited) return { ok: true, result: { refused: true, hint: 'This live-only record has no locally verified sphere. Ask the owner to place it before using this contract to read it.' } };
         const now = (deps.now ?? Date.now)();
         const freshness = classifyWorkEntitySourceFreshness(registration, null, now);
         const targeted = deps.getTargetedReadDeps();
@@ -1868,7 +1905,8 @@ export const runWorkEntityReadTool = async (
   if (entity === null) {
     return { ok: true, result: { entity: null, found: false } };
   }
-  const row = entity;
+  if (scope?.limited && !scope.allows({ collection: kind, id: entity.id })) return { ok: true, result: { refused: true, hint: 'This record is outside the contract spheres or is unsorted. This is a permission refusal, not evidence that it does not exist. Do not retry.' } };
+  const row = scope?.limited ? scope.cleanWork(entity) : entity;
   // ⛔ THE LAST PER-CHANNEL SPECIAL-CASE IN THIS MODULE IS GONE (D-187 Sources
   // half). This block re-checked `mcp_exposed`, then (after that flag died)
   // `enabled`, on the by-id path because it bypasses the store's polymorphic
@@ -1899,7 +1937,7 @@ export const runWorkEntityReadTool = async (
     has_read_op: described.has_read_op,
   });
 
-  const item = qualifyItem(row, projectItem(row, { clampLongText: false }));
+  const item = qualifyItem(row, projectItem(row, { clampLongText: false, assetDetail: true }));
   const base = {
     entity: item,
     found: true as const,
@@ -1909,9 +1947,9 @@ export const runWorkEntityReadTool = async (
     // remote-plan return (including each `degrade`, which spreads `base`).
     // Edges are local rows: a vendor escalation failing has no bearing on
     // whether the relationships could be read, so they must not vanish with it.
-    ...(includeRelated ? relatedFor(deps, kind, row.id) : {}),
+    ...(includeRelated ? scope?.limited ? { related: [], related_unavailable: { reason: 'Related records need their own verified sphere before this contract can read them.' } } : relatedFor(deps, kind, row.id) : {}),
   };
-  if (plan.action === 'local') {
+  if (plan.action === 'local' || scope?.limited) {
     return { ok: true, result: base };
   }
 

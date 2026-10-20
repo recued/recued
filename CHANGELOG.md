@@ -7,6 +7,288 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.10.20 — 2026-10-20
+
+Recued now looks after the things you own and the dates that come round. Yours
+keeps passports, policies, vehicles, devices and more, with their dates and
+readings, and reminds you when one needs attention, by Telegram, Slack or
+email as well as in the app. Today shows what is coming up on the day it
+concerns, and a weekly overview and day-of notes bring it to you. Your
+contacts' birthdays and anniversaries become yearly occasions, and the new
+Travel documents pack checks passports against your trips. Connection history
+can be searched, exported and compared. Approvals check what you reviewed and
+read in your words, and a local change can be undone. A pack's update can wait
+for its saved tests, removing a pack shows what depends on it, email chat
+works with one mailbox, and backups can go to Amazon S3.
+
+### Before you update
+
+- **The overview and day-of notes start on their own.** Once your server runs
+  past 08:00 in your time zone, outside quiet hours, it sends an overview of
+  the next seven days to every notification channel you have set up, within
+  minutes and whatever the weekday, and a day-of note if today has something
+  new. After that the overview goes every Monday at 08:00, and a day-of note
+  on a day with something new. Neither is sent when nothing changed. The first
+  overview lists up to five groups and counts the rest. Settings → Approval &
+  notifications → Coming up changes the day and time, turns day-of notes off,
+  or turns the overview off.
+- **Update Recued before you update these packs.** The new versions of
+  Agreement Watch, Home Assistant, Personal CRM, Photo Attribution and Quote
+  Pipeline in the marketplace need this release, as do the new Travel
+  documents and Paperless-ngx evidence packs, and the recipes Draft
+  introduction mail, Import the roster (CSV) and One quote. A server on
+  26.10.17 or older refuses them and installs nothing.
+
+### Added
+
+- **Yours.** A new page, after Today in the menu, keeps what you own or look
+  after: a passport, an insurance policy, a car, a boiler, a smoke alarm. An
+  asset has its dates, readings, conditions, files and parts, and each fact
+  says where it came from and what outranks it. Built-in classes start each
+  kind with its rules, such as reminders to renew a passport six, three and
+  one month before it expires. When a rule falls due, Recued opens a task, or
+  sends a reminder when there is nothing to close. Cards show what is due and
+  which facts are missing, with a filter for each, and Ask about this asset
+  opens a chat draft about it and its documents. You can place an asset in
+  Personal or Work, which decides which AI agreements can read it. Document
+  numbers and similar fields are optional, and each says that AI apps you
+  connect can read it as you typed it.
+- **Today shows what is coming up.** Items are grouped on the day they
+  concern: a trip with its travel document check, a bill or a delivery read
+  from your mail, a birthday. A new Coming up group holds later items whose
+  reminders have started. Each item says why it is in its group and how Recued
+  knows it, and names people as your contacts do. On anything Recued worked
+  out or guessed, you can answer Not now, Not this one, Never this kind or
+  That's wrong, each with Undo, and Yours → Proposals lists what you hid.
+  Opening a bill or a delivery from Today, or setting it aside, teaches Recued
+  how to rank its kind: it suggests a change, and nothing changes until you
+  accept.
+- **Reminders that reach your phone.** An asset's or an occasion's reminder
+  comes with buttons: Done, Later, Not needed and Stop reminding. It goes to
+  the notification channels you have set up, such as Telegram, Slack or email,
+  as well as to the app, and you can answer a reminder email by replying. If
+  the app is the only place they can reach, Recued asks you to choose a
+  messenger or email connection, and Today and Yours say so. An email
+  connection with no recipient now sends your notifications to the mailbox it
+  sends from, and you answer from there. In Settings → Approval &
+  notifications, household items such as a boiler can go to a household
+  Telegram group or appear in a Home Assistant to-do list. Answering a
+  reminder that has already closed says so.
+- **A weekly overview and day-of notes.** The overview lists what changed in
+  the week ahead and counts the rest as Still open; a day-of note covers what
+  is new today. Both open Today, and when background AI has a model, each
+  group gets a one-line summary. An asset's or an occasion's reminder keeps
+  its own schedule, so a reminder alone sends no day-of note.
+  Settings → Approval & notifications → Coming up sets the day and time, can
+  make the overview daily, shows what it last sent, and has Send now.
+- **Birthdays and anniversaries.** Your contacts' birthdays and anniversaries
+  become yearly occasions with their own reminders. Google Contacts sync
+  brings both, Outlook sync brings birthdays, and an imported vCard or Google
+  Contacts CSV brings both, including Apple's labelled anniversaries. Yearly
+  events in your calendars count too. A contact's edit dialog has both dates,
+  and emptying one clears it and its reminder. The import preview names any
+  date it could not use, such as 4/2/1980, which reads two ways, instead of
+  guessing. Yours → Occasions lists them, and an occasion's page shows its
+  history and the suggestions that would change it.
+- **Travel documents.** The new Travel documents pack keeps passports, ID
+  cards, visas and driving licences in Yours, and checks each named
+  traveller's passport dates against your booked trips, using dated Schengen
+  guidance. A hotel or transport reservation becomes a trip, and Recued asks
+  once who is travelling. A traveller with no passport on file is asked about
+  too.
+- **Close a renewal by forwarding the proof.** Forward the confirmation of a
+  renewal or a service to your own +done address, and Recued proposes closing
+  it, with the new expiry or service date when the email states one clearly.
+  Nothing closes until you accept. An asset's page shows the address to use.
+  It works with Gmail, and with an IMAP mailbox whose Sent folder Recued
+  reads; it does not work with Outlook.
+- **"Last time" and your episodes.** Recued can piece together what you did,
+  from your records, plans that happened and other traces, and offer to repeat
+  something you did last time. These offers stay off until Recued has measured
+  them in private and you allow them once. Settings → Privacy → Learning has
+  the switch, and people, places and dates you exclude are never brought up.
+  You can correct or hide an episode where it appears, and an offer leaves
+  once its date has passed.
+- **Assets from your packs.** Agreement Watch keeps service contracts and
+  insurance policies as assets, with the notice deadline worked out from the
+  renewal date. Home Assistant keeps devices as household assets and reports
+  conditions such as a light that keeps flickering; "That's expected" quiets
+  one that does it on purpose. The new Paperless-ngx pack reads your Paperless
+  documents and brings a changed date to the asset you choose, for you to
+  confirm against its source document.
+- **Check access again, for one account or many.** A finished access check
+  offers to recheck the reads that failed or could not be confirmed, and
+  Verify multiple accounts in Authentication repairs checks several saved
+  accounts, one at a time. Authentication repairs shows the latest result for
+  each account and resource. Review authentication beside a failed read opens
+  its repair, and Return to saved access check brings you back afterwards.
+  Compare with original check sets a recheck beside the check it repeats, and
+  a saved check or comparison has a link that survives a reload.
+- **Search, export and compare connection history.** Connection history can be
+  searched, and filtered by event type, outcome and date. An export is
+  previewed before you download it, and by default replaces account names, IDs
+  and fingerprints with aliases that mean nothing outside the file. In a
+  preview you can search, open any field, copy or download one record, or an
+  incident with its linked repairs and checks, and copy a readable support
+  timeline. Choose history JSON, or paste it, to open a saved export, and
+  Compare saved snapshots shows what changed between two of them, field by
+  field. Back and Forward step through linked records. Saved history opens and
+  compares in your browser: nothing is imported and no provider is contacted.
+- **Approvals check what you reviewed.** An approval to change an existing
+  calendar event or Records row carries the version you saw, with the values
+  before and after. If the event or row changes before the write, the old
+  approval no longer applies, and the change needs a new review. This covers
+  Recued's own calendar, Google Calendar and CalDAV, one occurrence at a time,
+  and Records updates, deletions, upserts and batches, a batch being one
+  review of every row it touches. Approvals given ahead of time for a later
+  run work the same way.
+- **Finish a run that stopped part-way.** For an approved run of calendar,
+  Records or mail changes that stopped before it finished, Prepare
+  continuation review in Approvals lists what completed and shows the current
+  values for the rest, for a new run you approve on its own. When Recued
+  cannot tell whether such a run's email went out, Verify mail outcome checks
+  your provider's records for that exact send, and never sends it again. A
+  local change saved just before the server stopped shows as confirmed and is
+  not repeated.
+- **Undo a local change.** A confirmed change to a Records row or to an event
+  in Recued's own calendar offers Review undo, in Chat, Approvals or Runs, and
+  Approve undo applies the reverse as a new decision. Undo is offered for up
+  to 30 days, and a later edit blocks it. For a pending run that only updates
+  such rows and events, Review as one atomic change set shows every change it
+  would make, and Approve changes together applies all of them or none; they
+  can be undone together too.
+- **Pack updates checked by saved tests.** In a pack's Update dialog,
+  Saved-test update protection stages the new version without installing it,
+  runs each recipe's saved tests against it, and applies it only once they
+  pass and you have reviewed the changes. A pack's required dependency updates
+  can go with it as one change, for up to eight packs. Release history lists
+  the versions applied this way, and one can be restored after its tests pass.
+- **Remove a pack knowing what depends on it.** Delete on an installed pack
+  first shows the packs that depend on it, and the recipes, schedules,
+  automations and settings that go with it. Packs it depends on stay
+  installed, and Records data is kept. A pack that provides something an
+  installed pack still needs cannot be removed until that pack is.
+  Packs → Installation health and repair finds what earlier installs and
+  removals left behind, and cleans it up after you approve.
+- **Email chat with one mailbox.** The chat mailbox can now be your own
+  mailbox: write to yourself with a subject that starts with "ask:", and
+  Recued answers in the same thread. With one mailbox, the "ask:" prefix
+  cannot be turned off, and the rest of your mail, notes to yourself included,
+  stays yours. Two mailboxes remain the recommendation, since the conversation
+  is easier to read. To switch, turn email chat off and on again. A new guide,
+  Chat by email, covers setting it up.
+- **Backups to Amazon S3.** Settings → Backup & Recovery can send an encrypted
+  backup to an Amazon S3 bucket through a saved connection. Recued reads each
+  copy back to check it, keeps as many copies as you choose, from 1 to 30, and
+  can prepare a restore from a checked copy. Your recovery words are used for
+  that backup only and are not saved. A backup to S3 starts only when you
+  start it.
+- **Run a recipe on what you are looking at.** Run a Recipe fills a recipe's
+  empty arguments from the item open on the page, such as a contact's email or
+  a file, says where each value came from, and puts the recipes it can fill
+  most first. Every value stays editable. A value from a connected service
+  fills in only when Recued knows which account it came from, and that account
+  is then used for the run. For recipe authors: a variable's `page_binding`
+  names the page field that fills it.
+- **Saved tests and reviewed releases in Kitchen.** Saved recipe tests keep
+  named cases with sample inputs and pretend step results, and compare a saved
+  version of a recipe with the one you are editing. Capture a run as a saved
+  test turns one real run of an installed recipe into a case you review before
+  it is saved. Reviewed releases keep a local recipe's draft apart from the
+  version that runs until its tests pass and you review the change, and can
+  bring back an earlier release as a draft.
+- **Rehearse permission and automation changes.** In Contracts, Permission
+  tests and reviewed grants checks a grant change for an AI app's agreement
+  against examples you expect to be allowed, to ask for approval or to be
+  denied, and applies it after you review it. In Automation, Rehearsal and
+  reviewed activation compares a change to a trigger, a schedule or a timer
+  with the current setup on example events and times, and applies it after you
+  review it. Testing either one runs nothing.
+- **Move packs to another account.** Connections → Apps & APIs → Reviewed
+  connection replacement moves the packs and saved recipe choices you select
+  from one API connection to another, after a review of everything affected,
+  and can roll the move back. It copies no credentials and does not contact
+  the service.
+
+### Changed
+
+- **Approvals in your words.** An approval now opens with the recipe's title
+  ("Send a composed email" is waiting for your approval) and is titled
+  "Approve: Send a composed email". The card names the action ("Send mail")
+  and the mailbox it sends from by its address, writes field names as people
+  do ("CC", "URL", "Contact IDs"), and gives its reason in plain words, such
+  as "You set this action to ask you every time." A destructive action says it
+  cannot be undone. Internal names move to a Technical line. The notice
+  Reception sends when it is set to notify you, instead of asking, reads the
+  same way.
+- **"Allow this session" says what it allows.** It names the recipe, lists
+  every input the next runs must keep, the sender and recipients first, and
+  says what may change, such as the subject and text. The Approvals page shows
+  this above its buttons. It used to stop after 12 lines without saying so,
+  which made an email's sender and recipients look as if they could change.
+  They never could.
+- **Chat says where to approve, and knows your mailboxes.** When an action
+  waits for your approval, Chat names each place you can answer it. After you
+  approve a request you sent by email, the follow-up names the action by its
+  title. Asked to send "from my Gmail", Chat picks that mailbox, and Send from
+  takes a mailbox's address. Calendar search names each calendar's provider
+  and account.
+- **AI apps are told who can approve.** An AI app you connect whose direct
+  tool call needs approval is now told that the owner of this Recued server
+  can approve it in Recued, and not to retry. It used to be told to raise a
+  trust setting that does not exist. A held action's reason no longer reads as
+  if it were addressed to the AI app.
+- **Stopping a run stops what it started.** When you stop a run, or it runs
+  out of time, the stop reaches the recipes it called and waits for programs
+  they started to clean up. A stopped run starts no new call to a service,
+  browser action or local write, while work already under way finishes. A step
+  it cut off says "The run was stopped before this step finished." instead of
+  reporting a network error.
+- **Cached reads follow the account.** Reads cached for a connection are kept
+  apart by account: signing in as another account, or changing its
+  permissions, no longer reuses reads cached under the old one. A write
+  through a connection clears that account's cached reads, so the next read
+  sees the change.
+- **Database versions.** Recued now records its database's version and
+  upgrades it step by step when the server starts. A server refuses a database
+  from a newer Recued instead of opening it, and restoring an older backup
+  upgrades it before it replaces your data.
+- **A restore says whether it finished.** After you restore a backup, Last
+  restore check in Backup & Recovery asks the server whether the restore
+  completed, even if its reply was lost, and never starts the restore again by
+  itself.
+- **Watched folders are walked again now and then.** Each watched folder is
+  checked again on the housekeeping schedule, at most every 15 minutes, hourly
+  on the light preset and never when housekeeping is off, so a change its
+  watch missed still lands.
+
+### Fixed
+
+- **Notifications go through the connection you chose.** A recipe's
+  notification or approval by email, Slack or Telegram now uses the connection
+  chosen for that channel in Settings → Approval & notifications, else the
+  only one, else the one named after the channel, and takes an answer only
+  from it. Before, it went only through a connection named email, slack or
+  telegram.
+- **Watched folders.** A folder moved into a watched folder has its files
+  recorded, and one moved out takes its files' records with it. On macOS, a
+  watched folder no longer misses files written while another folder is
+  connected or removed, and closing a folder watch no longer freezes the
+  server for seconds.
+- **Restoring a backup.** Restoring onto a fresh server is no longer blocked
+  by a setting the server writes for itself when it first starts. If the reply
+  to a restore is lost during first-start setup, Recued says it cannot confirm
+  the result instead of reporting success.
+- **Chat.** The message box keeps its focus and what you type when a read
+  finishes after Chat opens. A chat cannot be deleted while it is still
+  sending or answering, Send waits while a chat is being deleted, and a voice
+  note does not send itself while you confirm deleting its chat.
+- **Mail facts.** A template whose patterns are plain text, such as a
+  separator, no longer times out when the server is busy and loses an email's
+  facts.
+- **Fresh installs** no longer leave their download in your temporary folder.
+- **Quiet hours.** The time fields are wide enough to show AM and PM.
+
 ## 26.10.17 — 2026-10-17
 
 Recued now tells you when a connection's sign-in stops working, before a recipe

@@ -29,7 +29,7 @@
 import { GENERATED_PACK_PUBLISHER } from './ingredient.js';
 import { OWNER_CONTRACT_ID } from './contract-definition.js';
 import { isPackOp } from './op-model.js';
-import { isRecipeGrantEntry } from './grant-entry.js';
+import { COLLECTION_GRANT_PREFIX, isRecipeGrantEntry } from './grant-entry.js';
 
 /** The three-state grant rule. `explicit` is the contract's stored value for the
  *  entry — `true` (grant) / `false` (explicit revoke) / `undefined` (no row). A
@@ -83,6 +83,13 @@ export const isGrantedReadAdmissible = (
  *
  *  Entry-key form (the value the grant store + the gates key on): an op grant entry is
  *  the bare `operation_id`; a collection grant entry is `data.<collection>`. */
+/** D-325 P17 — the owner's episodes and occasions. They are read only through the
+ *  situation query, so they are no warehouse collection (not in
+ *  `READABLE_COLLECTIONS`), yet each has a grant a contract can be given. */
+export const SITUATION_HISTORY_COLLECTIONS = ['episode', 'occasion'] as const;
+export const situationHistoryGrantEntry = (collection: typeof SITUATION_HISTORY_COLLECTIONS[number]): string =>
+  `${COLLECTION_GRANT_PREFIX}${collection}`;
+
 export const OWNER_DEFAULT_ONLY_GRANT_ENTRIES: ReadonlySet<string> = new Set([
   // The cross-pack adapter defaults to the owner and still holds every release
   // for its own decision. Customer response links confer no execution grant.
@@ -146,6 +153,12 @@ export const OWNER_DEFAULT_ONLY_GRANT_ENTRIES: ReadonlySet<string> = new Set([
   // owner-default-only. The two compose AND, so the spine stays open and the
   // door still needs the verb.
   'core.work-entity.read',
+  'core.situation.read',
+  'core.situation.prefetch',
+  'primitive.situation.query',
+  'core.work-entity.asset.create',
+  'core.work-entity.asset.update',
+  'core.work-entity.asset.delete',
   'core.webhook.event.get',
   'core.data.form-response.get',
   // D-210 A.8 slice 2 — the lifecycle WRITE. A read of visitor answers is
@@ -154,6 +167,10 @@ export const OWNER_DEFAULT_ONLY_GRANT_ENTRIES: ReadonlySet<string> = new Set([
   'core.data.form-response.set-state',
   'data.webhook',
   'data.form_response',
+  // D-325 P17 — episodes, occasions and the history traces behind them are the
+  // owner's only by default. Their situation source is gated by the tool grant
+  // itself, so without these a door granted the tool read them all.
+  ...SITUATION_HISTORY_COLLECTIONS.map(situationHistoryGrantEntry),
 ]);
 
 /** True iff `entryKey` is an OWNER-default-only sensitive surface

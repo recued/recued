@@ -206,6 +206,7 @@ export interface CalendarRecordStat {
  *  variant — the mutation may or may not have landed on the provider
  *  and the warehouse is never written on this code. */
 export type CalendarAdapterErrorCode =
+  | 'version_conflict'
   | 'event_not_found'
   | 'calendar_not_found'
   | 'permission_denied'

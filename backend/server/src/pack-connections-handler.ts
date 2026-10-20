@@ -1,3 +1,4 @@
+import { connectionIdentity, connectionRevision } from './connection-revision.js';
 /** D-320 slice 2b — `packs.connections.*`: a pack's connections per slot, behind
  *  the Access page's Connections block (D-320 §4).
  *
@@ -65,7 +66,7 @@ export interface PackConnectionsDeps {
   /** D-322 §24 — isolated diagnostics on this pack's actual connection list. */
   access?: (args: unknown) => Promise<import('@recued/contracts').PackAccessResponse>;
   contractStore: ContractStore;
-  connectionStore: Pick<ConnectionStoreSqlite, 'list'>;
+  connectionStore: Pick<ConnectionStoreSqlite, 'list' | 'getAuthSourceId'>;
   /** Catalog manifests, from the live registry. */
   getManifest: (slug: string) => IngredientManifest | null | undefined;
   /** The pack's own manifest: its connection requirement (which connections could
@@ -776,7 +777,11 @@ export const recipeConnectionsView = (
       ...(deps.resolvePackManifest !== undefined ? { packManifestOf: deps.resolvePackManifest } : {}),
       profiles: deps.operationProfiles,
       localManifestStore: deps.localManifestStore,
-    })(recipe),
+    })(recipe).map(slot => ({ ...slot, connections: slot.connections.map(connection => {
+      const revision = connectionRevision(connectionIdentity(rows.find(row => row.kind === 'api' && row.name === connection.connection_name),
+        deps.connectionStore.getAuthSourceId?.('api', connection.connection_name)));
+      return { ...connection, ...(revision ? { connection_revision: revision } : {}) };
+    }) })),
   };
 };
 

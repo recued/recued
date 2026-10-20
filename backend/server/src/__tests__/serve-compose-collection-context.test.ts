@@ -179,6 +179,28 @@ describe('composeCollectionContext', () => {
         .toBe(false);
       expect(context.mailChatConversationMail!.isConversationMail({ mail_chat: true })).toBe(true);
       expect(context.mailChatConversationMail!.isConversationMail({ to: ['me@owner.example'] })).toBe(false);
+      // §8.18 — one mailbox: named as the owner's too, the chat mailbox is their
+      // mail. Every reader lists its table again, without the conversation's rows.
+      context.mailChatDoor!.setOwnerMailboxes(['work', 'recued-chat']);
+      expect(context.mailChatDoor!.isChatMailbox('recued-chat')).toBe(true);
+      expect(context.mailChatDoor!.isChatOnlyMailbox('recued-chat')).toBe(false);
+      chatRows.upsert(row('mail:note', { subject: 'Buy milk' }));
+      chatRows.upsert(row('mail:request', { subject: 'ask: lunch', mail_chat: true }));
+      const shared = listCollectionDataTables(db, 'mail');
+      expect(shared).toHaveLength(2);
+      expect(shared.flatMap((name) => db.prepare(`SELECT record_id FROM "${name}"`).all() as Array<{ record_id: string }>)
+        .map((entry) => entry.record_id).sort()).toEqual(['mail:mine', 'mail:note', 'mail:reply']);
+      // ...and an email to it alone is the conversation only when it asks, or
+      // continues a conversation the composed proof holds (the reply above,
+      // still being checked).
+      const toItself = { to: ['recued@chat.example'], direction: 'outbound' };
+      expect(context.mailChatConversationMail!.isConversationMessage({ ...toItself, subject: 'Buy milk' })).toBe(false);
+      expect(context.mailChatConversationMail!.isConversationMessage({ ...toItself, subject: 'ask: lunch?' })).toBe(true);
+      expect(context.mailChatConversationMail!.isConversationMessage({
+        ...toItself, subject: 'and Friday?', headers: { 'in-reply-to': '<reply@owner.example>' },
+      })).toBe(true);
+      context.mailChatDoor!.setOwnerMailboxes(['work']);
+      expect(listCollectionDataTables(db, 'mail')).toHaveLength(1);
       // A mailbox deleted is forgotten by the door, as chat mailbox and as the
       // owner's; step 8 — and the addresses enrolled through it go with it.
       context.mailChatDoor!.enrollSender('me@personal.example');

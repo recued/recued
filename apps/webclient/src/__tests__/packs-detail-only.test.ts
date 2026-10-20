@@ -578,9 +578,10 @@ describe('packs panel — detail (marketplace resolve + install/uninstall)', () 
     await m.whenLoaded();
     await tick();
 
-    // Installed-at-any-version is not installed-at-the-incoming-version.
+    // Installed-at-any-version is not installed-at-the-incoming-version, so it
+    // offers the update; it is still installed, so it can also be removed.
     expect(findByAttrValue(host, PACKS_ROW_INSTALL_BTN_ATTR, 'mkt-pack')).not.toBeNull();
-    expect(findByAttrValue(host, PACKS_ROW_DELETE_BTN_ATTR, 'mkt-pack')).toBeNull();
+    expect(findByAttrValue(host, PACKS_ROW_DELETE_BTN_ATTR, 'mkt-pack')).not.toBeNull();
     m.clickInstall('mkt-pack');
     await tick();
     expect(findByAttr(host, PACKS_DIALOG_OWNER_OPERATION_REVIEW_ATTR)).not.toBeNull();

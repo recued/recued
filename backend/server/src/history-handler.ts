@@ -86,6 +86,9 @@ export interface HistoryDeps {
    *  handler never distinguishes those nulls, because the owner ruling is that
    *  an unresolvable case is just an ordinary card. */
   resolveAskDetails?: (ask: PendingAsk) => Promise<readonly ServerPendingAskDetail[] | null>;
+  /** The held action's name as the owner knows it ("Send mail"), or null
+   *  (`ask-card-action-name.ts`). Absent ⇒ no ask carries `action_name`. */
+  nameAskAction?: (ask: PendingAsk) => string | null;
   /** D-158 ask-store read — backs `notification.pending_asks`. Injected
    *  as a thunk over `NotificationBlock.listOpenAsks` so the handler
    *  never holds the ask store directly. Absent → returns `[]`. */
@@ -225,7 +228,7 @@ export const handlePendingAsks = async (
   deps: HistoryDeps,
 ): Promise<{ asks: ServerPendingAsk[] }> => {
   if (!deps.listOpenAsks) return { asks: [] };
-  const open = await deps.listOpenAsks();
+  const open = (await deps.listOpenAsks()).filter(ask => !ask.delivery_group_id);
   const sorted = [...open].sort((a, b) => b.created_at - a.created_at);
   // D-270 — resolve the detail rows alongside the list.
   //
@@ -269,6 +272,7 @@ export const handlePendingAsks = async (
       // a `'required'` ask would no-op every answer it sent.
       ...(p.note_prompt !== undefined ? { note_prompt: p.note_prompt } : {}),
       ...(p.body !== undefined ? { body: p.body } : {}),
+      ...(p.resource_review ? { resource_review: p.resource_review } : {}),
       // D-270 — and the detail rows, named here for the same reason as the two
       // fields above: THIS LITERAL IS THE FILTER, so a field it does not name is
       // dropped however well the server resolved it.
@@ -278,8 +282,22 @@ export const handlePendingAsks = async (
       // resolver returns null for that case; this guard is at the boundary that
       // states the rule, so a future resolver cannot break it quietly.
       ...(details?.[i]?.length ? { details: details[i] } : {}),
+      // And the action's name, for the same reason again.
+      ...actionNameOf(deps, p),
     })),
   };
+};
+
+/** `{ action_name }` for an ask whose held action has a name, else nothing. A
+ *  namer that throws names nothing rather than costing the owner the list. */
+const actionNameOf = (deps: HistoryDeps, ask: PendingAsk): { action_name?: string } => {
+  let name: string | null = null;
+  try {
+    name = deps.nameAskAction?.(ask) ?? null;
+  } catch {
+    name = null;
+  }
+  return name !== null && name.trim() !== '' ? { action_name: name } : {};
 };
 
 /** D-169 P2 Slice 3 — submit an answer to an open ask (N.5 #4 interactive

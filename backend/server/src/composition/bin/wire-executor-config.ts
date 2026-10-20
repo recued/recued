@@ -1,3 +1,5 @@
+import { assertKernelReadScope } from '../../situations/read-scope.js';
+import { createResourceReviewHooks } from '../../resource-review.js';
 import { isCustomerAccountPaymentReminderReference } from '@recued/contracts';
 /** Round 5 / executorConfig surgical extraction — boot composer for
  *  the `ServerExecutorConfig` object literal.
@@ -70,6 +72,7 @@ import type {
   ContactBusinessContextCrmSource,
 } from '../../contact-business-context.js';
 import type { GatedReadGrantResolver } from '../../read-grant-checker.js';
+import { assetKernelReadGates } from '../../asset-kernel-read-gates.js';
 import type { CollectionRegistry } from '../../collections/registry.js';
 import type { MailCollection } from '../../collections/mail/mail-collection.js';
 import type { FileStack } from '../../collections/file/compose.js';
@@ -341,6 +344,8 @@ export interface ComposeExecutorConfigDeps {
     | undefined;
   housekeepingState: HousekeepingStateStore | undefined;
   engagementRateControlStore: EngagementRateControlStore | undefined;
+  situationQuery?: NonNullable<KernelDispatchers['situationQuery']>;
+  situationAccess?: import('../../situations/access.js').SituationAccess;
   workEntityDispatchers: WorkEntityDispatchers | undefined;
   /** D-324 — the `core.reminder.*` dispatchers, over the reminders store.
    *  Absent (dbless harness) ⇒ the ops answer SERVER_NOT_REACHABLE. */
@@ -664,6 +669,13 @@ export const composeExecutorConfig = async (
     : undefined;
   return {
     manifests: deps.manifests,
+    ...(deps.calendarStack ? { prepareLocalCalendarUpdate: (input: Parameters<NonNullable<ServerExecutorConfig['prepareLocalCalendarUpdate']>>[0]) =>
+      deps.calendarStack!.prepareLocalUpdate(input as Parameters<typeof deps.calendarStack.prepareLocalUpdate>[0]) } : {}),
+    resourceReview: createResourceReviewHooks({
+      manifest: slug => deps.manifests.get(slug) ?? undefined,
+      ...(deps.calendarStack ? { calendar: deps.calendarStack.reviewMutation } : {}),
+      ...(deps.recordsStore ? { records: deps.recordsStore } : {}),
+    }),
     vault: deps.baseVault,
     llmConfig: deps.llmConfig,
     resolveLlmConfig: deps.resolveLlmConfig,
@@ -2247,7 +2259,10 @@ export const composeExecutorConfig = async (
       // behaviour. PA3 ships no vendor write hooks (HubSpot / Salesforce
       // task adapters land in PA4+); connection-Source writes surface
       // `SOURCE_NOT_WRITE_CAPABLE` until then.
+      ...(deps.situationQuery ? { situationQuery: deps.situationQuery } : {}),
+      ...(deps.situationAccess ? { assertReadScope: (slug, source) => assertKernelReadScope(deps.situationAccess!, slug, source) } : {}),
       ...(deps.workEntityDispatchers ?? {}),
+      ...assetKernelReadGates(deps.workEntityDispatchers ?? {}, readGrantResolver, deps.situationAccess),
       ...(deps.reminderDispatchers ?? {}),
     } satisfies KernelDispatchers,
   };

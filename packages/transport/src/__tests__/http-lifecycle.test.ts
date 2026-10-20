@@ -1,6 +1,24 @@
+import dns from 'node:dns';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createServer, type Server } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import { getJson, postJson } from '../http.js';
+import { sendTelegramAttachment } from '../attachments.js';
+import {
+  createDiscordTransport, createSlackTransport, createTeamsTransport, createTelegramTransport,
+  createWhatsAppTransport, type Transport,
+} from '../index.js';
+
+const listen = (server: Server) => new Promise<number>(done =>
+  server.listen(0, '127.0.0.1', () => done((server.address() as { port: number }).port)));
+const close = (server: Server) => new Promise<void>(done => server.close(() => done()));
+/** A real refused connection: a port that was just free. */
+const refusedPort = async () => { const server = createServer(); const port = await listen(server); await close(server); return port; };
+/** Every vendor URL goes to the local port instead, through the real fetch. */
+const localFetch = (port: number): typeof fetch => (_input, init) => fetch(`http://127.0.0.1:${port}/`, init);
 
 describe('transport JSON HTTP lifecycle', () => {
   it('requires native fetch to refuse redirects on credential-bearing control calls', async () => {
@@ -165,5 +183,56 @@ describe('transport JSON HTTP lifecycle', () => {
       detail: 'response body limit must be a positive safe integer',
     });
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('marks a connection that never opened as not sent, and a connection dropped mid-request as maybe sent', async () => {
+    const options = { headers: {}, body: '{}', timeoutMs: 5_000 };
+    await expect(postJson('https://api.telegram.org/botSECRET/sendMessage', { ...options, fetchImpl: localFetch(await refusedPort()) }))
+      .resolves.toMatchObject({ ok: false, kind: 'network', not_sent: true });
+
+    const dropping = createServer(socket => socket.once('data', () => socket.destroy()));
+    const port = await listen(dropping);
+    try {
+      const outcome = await postJson('https://api.telegram.org/botSECRET/sendMessage', { ...options, fetchImpl: localFetch(port) });
+      expect(outcome).toMatchObject({ ok: false, kind: 'network' });
+      expect(outcome).not.toHaveProperty('not_sent');
+    } finally { await close(dropping); }
+  });
+
+  it('marks a name that does not resolve as not sent, through the real fetch', async () => {
+    // This machine's resolver answers every name, so the lookup is made to fail. A
+    // reserved `.invalid` host keeps a lookup that slipped through from reaching anyone.
+    const lookup = vi.spyOn(dns, 'lookup').mockImplementation(((host: string, options: unknown, callback?: (error: Error) => void) => {
+      const done = typeof options === 'function' ? options as (error: Error) => void : callback!;
+      process.nextTick(() => done(Object.assign(new Error(`getaddrinfo ENOTFOUND ${host}`), { code: 'ENOTFOUND', syscall: 'getaddrinfo', hostname: host })));
+    }) as unknown as typeof dns.lookup);
+    try {
+      await expect(postJson('https://name-check.invalid/send', { headers: {}, body: '{}', timeoutMs: 5_000, fetchImpl: fetch }))
+        .resolves.toMatchObject({ ok: false, kind: 'network', not_sent: true });
+      expect(lookup).toHaveBeenCalled();
+    } finally { lookup.mockRestore(); }
+  });
+
+  it.each([
+    { name: 'Slack', send: (fetchImpl: typeof fetch): Transport => createSlackTransport({ fetchImpl }) },
+    { name: 'Telegram', send: (fetchImpl: typeof fetch): Transport => createTelegramTransport({ fetchImpl }) },
+    { name: 'Discord', send: (fetchImpl: typeof fetch): Transport => createDiscordTransport({ fetchImpl }), recipient: '987654321098765432' },
+    { name: 'Teams', send: (fetchImpl: typeof fetch): Transport => createTeamsTransport({ fetchImpl }), recipient: '19:abc@thread.v2' },
+    { name: 'WhatsApp', send: (fetchImpl: typeof fetch): Transport => createWhatsAppTransport({ fetchImpl }), recipient: '123456789012345/16505551234' },
+  ])('$name reports a refused connection as not sent', async ({ send, recipient }) => {
+    const transport = send(localFetch(await refusedPort()));
+    await expect(transport.send({ recipient: recipient ?? 'dest', token: 'token', text: 'hello' }))
+      .resolves.toMatchObject({ ok: false, error: { kind: 'network', not_sent: true } });
+  });
+
+  it('reports a refused attachment upload as not sent', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'not-sent-'));
+    const path = join(dir, 'note.txt');
+    await writeFile(path, 'hello');
+    try {
+      await expect(sendTelegramAttachment({ recipient: '42', token: 'token', path, size: 5, mime_type: 'text/plain', filename: 'note.txt' },
+        { fetchImpl: localFetch(await refusedPort()), timeoutMs: 5_000 }))
+        .resolves.toMatchObject({ ok: false, error: { kind: 'network', not_sent: true } });
+    } finally { await rm(dir, { recursive: true, force: true }); }
   });
 });

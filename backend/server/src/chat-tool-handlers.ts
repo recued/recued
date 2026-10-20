@@ -1,3 +1,5 @@
+import { createReadScope, SPHERE_READ_REFUSAL } from './situations/read-scope.js';
+import { calendarChatUpdateInput } from './collections/calendar/chat-update-input.js';
 /** D-137 Trio #A — Chat tool handler wiring.
  *
  *  Bridges the `InternalToolRegistry` to the server's live warehouse
@@ -126,6 +128,8 @@ import {
 import { RUN_INGREDIENT_RECIPE } from './run-ingredient-recipe.js';
 import { createMailReadHandler } from './mail-read-tool.js';
 import { mailEvidenceMetadata } from './mail-evidence.js';
+import { mailboxAddressOf } from './mail-senders.js';
+import { resolveRecipeId } from './recipe-tool-name.js';
 import { createDocumentReadHandler } from './document-read-tool.js';
 import type { MailAttachmentReader } from './mail-attachment-evidence.js';
 
@@ -201,6 +205,7 @@ import { buildPackOpResolution, type InstalledPackScan } from './pack-inventory.
 import { missingPacksOfRefusal } from './install-offers/needed-packs.js';
 import type { InstalledRecipeScheduler } from './schedule-installed-recipe.js';
 import { formatIsoWithOffset } from './collections/calendar/iso-offset.js';
+import { calendarAddressOf } from './collections/calendar/provider.js';
 import { parseInstantWithOffset } from '@recued/transforms';
 
 /** Executor closure shape. `chat-tool-handlers` calls this rather than
@@ -232,6 +237,7 @@ export interface ChatToolHandlerDeps {
    *  site. Present so a test can pin an age rather than infer one from wall
    *  clock, which is how a staleness assertion becomes a flake. */
   now?: () => number;
+  getSituationAccess?: () => import('./situations/access.js').SituationAccess | undefined;
   getContactStore: () => ContactStore | undefined;
   getCollectionRegistry: () => CollectionRegistry | undefined;
   /** The unified local+remote file view. ⛔ WITHOUT IT `file.search` SEES ONE
@@ -1222,6 +1228,16 @@ const createContactSearchHandler =
  *  the failure being fixed. */
 const filledQuota = (returned: number, quota: number): boolean => returned >= quota;
 
+/** Each mailbox a `mail.search` result covers, by the `collection_slug` its
+ *  matches carry, with the address it signed in as and its provider.
+ *
+ *  ⛔ A slug is whatever the mailbox was connected under, and the owner says "my
+ *  Outlook" or an address: with slugs alone the model can only guess which
+ *  mailbox they mean (owner, 2026-10-18: the model should see the address too,
+ *  because the name does not always match how the owner refers to a mailbox). */
+const mailboxAddresses = (collections: readonly Collection[]) =>
+  collections.map((c) => ({ collection_slug: c.slug, ...mailboxAddressOf(c) }));
+
 const createMailSearchHandler =
   (deps: ChatToolHandlerDeps): Tier1Handler =>
   async (raw, ctx) => {
@@ -1264,6 +1280,7 @@ const createMailSearchHandler =
           matches: [],
           more_matches: false,
           collections: enrolled.map((c) => c.slug),
+          mailbox_addresses: mailboxAddresses(enrolled),
           mailbox_not_found: slug,
           note: `No enrolled mailbox has slug ${JSON.stringify(slug)}. Use a collection_slug returned by an earlier search.`,
           source_freshness: collectionSourceFreshnessFanOut(enrolled, (deps.now ?? Date.now)()),
@@ -1318,6 +1335,7 @@ const createMailSearchHandler =
               matches: [],
               more_matches: false,
               collections: collections.map((c) => c.slug),
+              mailbox_addresses: mailboxAddresses(collections),
               anchor_not_found: nearId,
               note:
                 `No message with record_id ${JSON.stringify(nearId)} exists in `
@@ -1340,6 +1358,7 @@ const createMailSearchHandler =
               matches: [],
               more_matches: false,
               collections: collections.map((c) => c.slug),
+              mailbox_addresses: mailboxAddresses(collections),
               anchor_ambiguous: nearId,
               mailboxes: anchored.map((c) => c.slug),
               note:
@@ -1388,6 +1407,7 @@ const createMailSearchHandler =
             matches: aggregated.slice(0, limit),
             more_matches: moreAvailable || aggregated.length > limit,
             collections: collections.map((c) => c.slug),
+            mailbox_addresses: mailboxAddresses(collections),
             source_freshness: collectionSourceFreshnessFanOut(
               collections, (deps.now ?? Date.now)(),
             ),
@@ -1487,6 +1507,7 @@ const createMailSearchHandler =
           matches: truncated,
           more_matches: moreAvailable,
           collections: collections.map((c) => c.slug),
+          mailbox_addresses: mailboxAddresses(collections),
           source_freshness: collectionSourceFreshnessFanOut(
             collections,
             (deps.now ?? Date.now)(),
@@ -1609,6 +1630,10 @@ const createCalendarSearchHandler =
           matches: truncated,
           more_matches: moreAvailable,
           collections: collections.map((c) => c.slug),
+          // Which account each calendar is, by the `collection_slug` its matches
+          // carry: the owner says "my Google calendar" or an address, never the
+          // slug it was connected under.
+          calendar_addresses: collections.map((c) => ({ collection_slug: c.slug, ...calendarAddressOf(c) })),
           source_freshness: collectionSourceFreshnessFanOut(
             collections,
             (deps.now ?? Date.now)(),
@@ -3350,26 +3375,6 @@ const buildExecuteRequest = (
   };
 };
 
-/** Codex review P2 fold (2026-05-12) — resolve publisher-qualified
- *  recipe ids. The `recipe.run` descriptor (§ A.13) tells the model to
- *  invoke recipes by `<publisher>/<slug>`, but `RecipeStore.get()` is
- *  keyed by the bare recipe_id (publisher lives in a separate
- *  `StoredRecipe.publisher_id` column). The lookup tries the literal
- *  string first (works when a recipe_id happens to contain `/`); on
- *  miss + presence of a `/`, retries with the substring after the
- *  first slash. Returns the resolved id or the original on miss
- *  (handleExecute then surfaces `recipe_not_found` verbatim). */
-const resolveRecipeId = (
-  raw: string,
-  recipeStore: RecipeStore,
-): string => {
-  if (recipeStore.get(raw)) return raw;
-  const slash = raw.indexOf('/');
-  if (slash <= 0 || slash === raw.length - 1) return raw;
-  const stripped = raw.slice(slash + 1);
-  return recipeStore.get(stripped) ? stripped : raw;
-};
-
 const createRecipeRunHandler =
   (deps: ChatToolHandlerDeps): Tier1Handler =>
   async (raw, ctx) => {
@@ -3869,41 +3874,10 @@ const createCalendarUpdateHandler =
     const args = asObject(raw);
     if (!args) return invalidArgs('args must be an object');
 
-    const sourceId = typeof args.source_id === 'string' ? args.source_id.trim() : '';
-    if (sourceId.length === 0) {
-      return invalidArgs('calendar.update requires the source_id of the event to change');
-    }
-
-    const patch: Record<string, unknown> = {};
-    if (typeof args.summary === 'string' && args.summary.trim().length > 0) {
-      patch.summary = args.summary.trim();
-    }
-    if (typeof args.description === 'string') patch.description = args.description;
-    if (typeof args.start_at === 'number' && Number.isFinite(args.start_at)) {
-      patch.start_at = args.start_at;
-    }
-    if (typeof args.end_at === 'number' && Number.isFinite(args.end_at)) {
-      patch.end_at = args.end_at;
-    }
-    if (typeof args.timezone === 'string' && args.timezone.trim().length > 0) {
-      patch.timezone = args.timezone.trim();
-    }
-    if (args.status === 'confirmed' || args.status === 'cancelled') patch.status = args.status;
-
-    // ⛔ AN EMPTY PATCH IS A MISTAKE, NOT A NO-OP. Dispatching it would burn the
-    // owner's approval card on a write that changes nothing, and report success.
-    if (Object.keys(patch).length === 0) {
-      return invalidArgs(
-        'calendar.update: send at least one field to change (summary / start_at / end_at / timezone / status)',
-      );
-    }
-    if (
-      typeof patch.start_at === 'number'
-      && typeof patch.end_at === 'number'
-      && (patch.end_at as number) <= (patch.start_at as number)
-    ) {
-      return invalidArgs('calendar.update: end_at must be after start_at');
-    }
+    let normalized: ReturnType<typeof calendarChatUpdateInput>;
+    try { normalized = calendarChatUpdateInput(args); }
+    catch (error) { return invalidArgs(error instanceof Error ? error.message : String(error)); }
+    const { slug, source_id: sourceId, patch } = normalized;
 
     if (!admitWriteOp(deps.getOpAdmissionGate?.(), ctx.execution_source, CALENDAR_UPDATE_OP_ID)) {
       return {
@@ -3913,9 +3887,6 @@ const createCalendarUpdateHandler =
       };
     }
 
-    const slug = typeof args.calendar_id === 'string' && args.calendar_id.trim().length > 0
-      ? args.calendar_id.trim()
-      : DEFAULT_LOCAL_CALENDAR_SLUG;
     try {
       const { source_id } = await cal.calendarUpdate({ slug, source_id: sourceId, patch });
       return {
@@ -4097,6 +4068,9 @@ const createWorkCreateHandler =
 /** The work-entity read tools' deps, from the chat tools' own (exported for the wiring pin,
  *  `escalation-contract-overlay-wiring.test.ts`). */
 export const workEntityReadToolsDeps = (deps: ChatToolHandlerDeps): WorkEntityReadToolsDeps => ({
+  ...(deps.getSituationAccess ? { getReadScope: (ctx: ChatDispatchContext) => {
+    const access = deps.getSituationAccess!(); return access ? createReadScope(access, ctx.execution_source) : undefined;
+  } } : {}),
   // D-205 #3 — inject the PREDICATE, not the resolver: the gate logic stays in one place
   // and `work-entity-read-tools.ts` grows no grant-store dependency. `kind` IS the
   // collection (`task`/`note`/`commitment`/`project` are all `READABLE_COLLECTIONS`).
@@ -4606,7 +4580,7 @@ const createRecipeScheduleHandler =
 
 export const buildChatTier1Handlers = (
   deps: ChatToolHandlerDeps,
-): Record<string, Tier1Handler> => wrapCollectionFence(wrapEmptyResults({
+): Record<string, Tier1Handler> => wrapSphereFence(wrapCollectionFence(wrapEmptyResults({
   'contact.search': createContactSearchHandler(deps),
   'mail.search': createMailSearchHandler(deps),
   'mail.read': createMailReadHandler(deps),
@@ -4617,6 +4591,18 @@ export const buildChatTier1Handlers = (
   'enrichment.search': createEnrichmentSearchHandler(deps),
   'deal.search': createDealSearchHandler(deps),
   'account.search': createAccountSearchHandler(deps),
+  'situation.query': async (raw, ctx) => {
+    const access = deps.getSituationAccess?.();
+    if (!access) return executionError('Situation query unavailable');
+    try {
+      const { situationModelProjection } = await import('./situations/model-projection.js');
+      return { ok: true, result: situationModelProjection(await access.read(raw, ctx.execution_source)) };
+    } catch (error) {
+      const { SituationAccessError } = await import('./situations/access.js');
+      if (error instanceof SituationAccessError) return { ok: true, result: { refused: true, hint: error.message } };
+      return invalidArgs(error instanceof Error ? error.message : 'Invalid situation query');
+    }
+  },
   'work.search': createWorkSearchHandler(deps),
   'work.read': createWorkReadHandler(deps),
   'work.create': createWorkCreateHandler(deps),
@@ -4627,7 +4613,38 @@ export const buildChatTier1Handlers = (
   'recipe.run': createRecipeRunHandler(deps),
   'recipe.stop': createRecipeStopHandler(deps),
   'recipe.schedule': createRecipeScheduleHandler(deps),
-}), deps);
+}), deps), deps);
+
+/** No source-specific native reader can silently ignore an item boundary.
+ * Work reads filter before counting; situation reads have their own adapter. */
+const wrapSphereFence = (handlers: Record<string, Tier1Handler>, deps: ChatToolHandlerDeps): Record<string, Tier1Handler> =>
+  Object.fromEntries(Object.entries(handlers).map(([tool, handler]) => [tool, (async (raw, ctx) => {
+    const access = deps.getSituationAccess?.();
+    const signature = (): string | undefined => {
+      if (!access) return undefined;
+      const scope = createReadScope(access, ctx.execution_source);
+      return JSON.stringify([scope.context.owner, scope.context.all_spheres, scope.context.spheres,
+        scope.context.grants.isVerbOpGranted('core.work-entity.read'),
+        ['asset', 'task', 'note', 'commitment', 'project', 'booking'].map(kind => scope.context.grants.isCollectionReadGranted(kind))]);
+    };
+    let before: string | undefined;
+    if (tool === 'work.search' || tool === 'work.read') {
+      try { before = signature(); }
+      catch (error) { return { ok: true, result: { refused: true, hint: error instanceof Error ? error.message : 'This contract cannot read these records' } }; }
+    }
+    if (['contact.search', 'mail.search', 'mail.read', 'document.read', 'calendar.search', 'memory.search', 'enrichment.search', 'deal.search', 'account.search', 'file.search'].includes(tool)) {
+      if (access) {
+        try { if (createReadScope(access, ctx.execution_source).limited) return { ok: true, result: { refused: true, hint: SPHERE_READ_REFUSAL } }; }
+        catch (error) { return { ok: true, result: { refused: true, hint: error instanceof Error ? error.message : 'This contract cannot read these records' } }; }
+      }
+    }
+    const result = await handler(raw, ctx);
+    if (before !== undefined) {
+      try { if (before !== signature()) return { ok: true, result: { refused: true, hint: 'Permissions changed during this read. Refresh before relying on it.' } }; }
+      catch { return { ok: true, result: { refused: true, hint: 'This contract no longer permits this read.' } }; }
+    }
+    return result;
+  }) satisfies Tier1Handler]));
 
 /** ⛔ Applied at the TABLE, not inside each handler. Eight readers each
  *  remembering to describe their own empty is eight chances to drift, and the

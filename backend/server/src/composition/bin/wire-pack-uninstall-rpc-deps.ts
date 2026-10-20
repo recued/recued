@@ -40,6 +40,7 @@ export interface ComposePackUninstallRpcDepsInput {
   /** D-289 — late-bound saved-view store; see `PackInstallRpcDeps`. Absent ⇒
    *  a manifest's `saved_view` contents install nothing. */
   getSavedDataViewStore?: () => SavedDataViewStore | undefined;
+  getAssetClasses?: () => import('../../situations/asset-classes.js').AssetClassStore | undefined;
   /** D-304 — the stores a recipe's own state lives in, for the uninstall preview. */
   getRecipeOwnedState?: () => import('../../recipe-owned-state.js').RecipeOwnedStateDeps | undefined;
   /** D-196 customer grant-snapshot cleanup on uninstall. */
@@ -88,6 +89,7 @@ export const composePackUninstallRpcDeps = (
     mcpBodyVisibilityStore,
     contractStore,
     getSavedDataViewStore,
+    getAssetClasses,
     getRecipeOwnedState,
     sellerStore,
     inboundTokenStore,
@@ -107,6 +109,7 @@ export const composePackUninstallRpcDeps = (
     ...(mcpBodyVisibilityStore ? { mcpBodyVisibilityStore } : {}),
     ...(contractStore ? { contractStore } : {}),
     ...(getSavedDataViewStore ? { getSavedDataViewStore } : {}),
+    ...(getAssetClasses ? { getAssetClasses } : {}),
     ...(getRecipeOwnedState ? { getRecipeOwnedState } : {}),
     ...(sellerStore ? { sellerStore } : {}),
     ...(inboundTokenStore ? { inboundTokenStore } : {}),

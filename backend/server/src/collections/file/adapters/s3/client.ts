@@ -145,6 +145,9 @@ const objectUrl = (cfg: S3ClientConfig, key: unknown): URL => {
   return buildUrl(cfg, key);
 };
 
+/** Shared URL/key checks for streaming archive delivery. */
+export const s3ObjectUrl = objectUrl;
+
 const sha256Buf = (buf: Uint8Array): string =>
   createHash('sha256').update(buf).digest('hex');
 

@@ -94,6 +94,9 @@ export interface CollectionTable {
    *  range + pagination. Results ordered by `received_at DESC` so
    *  the most-recent records surface first. */
   list(query: CollectionListQuery): CollectionRecord[];
+  /** Host evidence adapters use a fixed FTS expression and a stable keyset.
+   * Unlike relevance search this can exhaust candidates before retention. */
+  bodyEvidencePage?(input: { expression: string; after?: string; limit?: number }): CollectionRecord[];
   /** FTS5 body search. CAS-stored records are not indexed and never
    *  appear here (documented limit — matches `shared_store`). */
   search(query: CollectionSearchQuery): CollectionSearchMatch[];
@@ -1714,6 +1717,12 @@ const search = (query: CollectionSearchQuery): CollectionSearchMatch[] => {
     delete: del,
     get,
     list,
+    bodyEvidencePage(input) {
+      if (!input.expression || input.expression.length > 500) throw new CollectionTableError('Invalid evidence expression');
+      return (db.prepare(`SELECT t.* FROM ${tableName} t WHERE t.record_id>? AND t.record_id IN
+        (SELECT key FROM ${ftsName} WHERE ${ftsName} MATCH ?) ORDER BY t.record_id LIMIT ?`)
+        .all(input.after ?? '', input.expression, Math.max(1, Math.min(500, input.limit ?? 200))) as Row[]).map(rowToRecord);
+    },
     search,
     countByAddress,
     neighbours,

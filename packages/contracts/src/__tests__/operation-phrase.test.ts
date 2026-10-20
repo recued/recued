@@ -9,7 +9,7 @@ const phrase = (operation_key: string, catalog_slug?: string): string =>
 describe('describeCatalogOperation', () => {
   it('composes verb + vendor + entity from the identifier alone', () => {
     expect(phrase('opportunity.delete', 'salesforce-catalog')).toBe('Delete opportunity · Salesforce');
-    expect(phrase('deal.create', 'hubspot-catalog')).toBe('Create deal · Hubspot');
+    expect(phrase('deal.create', 'hubspot-catalog')).toBe('Create deal · HubSpot');
   });
 
   it('reads a snake_case action as the English phrase it already is', () => {
@@ -21,6 +21,21 @@ describe('describeCatalogOperation', () => {
   it('drops the entity when the action already names its object', () => {
     expect(phrase('webhooks.delete_webhook', 'stripe-catalog')).toBe('Delete webhook · Stripe');
     expect(phrase('webhook.create_webhook', 'stripe-catalog')).toBe('Create webhook · Stripe');
+  });
+
+  /** Capitalising the first letter wrote "Hubspot" into owner approvals. */
+  it('writes a brand or an abbreviation the way its pack does', () => {
+    expect(phrase('invoice.create', 'quickbooks-accounting')).toBe('Create invoice · QuickBooks Accounting');
+    expect(phrase('issue.create', 'github-rest-repositories-1'))
+      .toBe('Create issue · GitHub REST Repositories 1');
+    expect(phrase('order.create', 'paypal-checkout-orders'))
+      .toBe('Create order · PayPal Checkout Orders');
+  });
+
+  /** ⛔ The list is a plain object: a slug word that names one of its inherited
+   *  members must read as itself, not as that member. */
+  it('reads a slug word that names an object member as a word', () => {
+    expect(phrase('record.create', 'constructor-catalog')).toBe('Create record · Constructor');
   });
 
   it('keeps a multi-word vendor readable and drops the packaging suffix', () => {

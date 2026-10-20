@@ -21,6 +21,7 @@ import type {
   RecipeDefinition,
   ServerExecuteResponse,
   ServerRecipeListEntry,
+  ServerRecipeFullEntry,
 } from '@recued/contracts';
 
 import {
@@ -255,6 +256,9 @@ const recipeEntry = (
 });
 
 const MANUAL = recipeEntry('manual-1', 'Daily brief');
+const fullRecipe = (entry: ServerRecipeListEntry, steps: RecipeDefinition['steps'] = []): ServerRecipeFullEntry => ({
+  ...entry, recipe: { ...entry.recipe, steps, prefetch_steps: [] },
+});
 const AUTORUN = recipeEntry('autorun-1', 'Watch pipeline', {
   auto_run: { interval_ms: 60_000 },
 } as unknown as Partial<RecipeDefinition>);
@@ -346,6 +350,43 @@ const mount = (
 };
 
 describe('run-palette wire', () => {
+  it('loads connection choices once before prefilling an API record and selects its source account', async () => {
+    const entry = recipeEntry('manual-1', 'API follow-up', { variables: {
+      person: { label: 'Contact', type: 'text', page_binding: { kind: 'contact', field: 'id', platform: 'hubspot' } },
+    } });
+    const recipeConnections = vi.fn(async () => ({ slots: [{ slot: 'crm', variables: [], connections: [
+      { connection_name: 'sales', connection_revision: 'a'.repeat(64), display_name: 'Sales', is_default: false },
+      { connection_name: 'personal', display_name: 'Personal', is_default: true },
+    ] }] }));
+    const execute = vi.fn(async () => executeResponse());
+    const { doc, handle } = mount({ recipeList: async () => ({ recipes: [entry] }), recipeConnections, execute,
+      pageContext: () => ({ label: 'Ana', objects: [{ kind: 'contact', id: '42', label: 'Ana', values: {},
+        origin: 'api', apiSource: { kind: 'api', platform: 'hubspot', connection_name: 'sales', connection_revision: 'a'.repeat(64), entity: 'contact' } }] }) });
+    await tick(); handle.selectRecipe('manual-1');
+    collectByAttr(doc.body, RUN_PALETTE_ACTION_ATTR).find(action => action.textContent === 'Run')!.click();
+    await tick();
+    const modal = doc.body.children.find(child => child.className === 'run-modal-overlay-root')!;
+    expect(modal.innerHTML).toContain('value="42"');
+    expect(modal.innerHTML).toContain('<option value="sales" selected>');
+    expect(recipeConnections).toHaveBeenCalledTimes(1);
+    expect(execute).not.toHaveBeenCalled();
+    handle.destroy();
+  });
+
+  it('does not open a stale API form after its connection read finishes', async () => {
+    let resolve!: (value: { slots: [] }) => void;
+    const recipeConnections = vi.fn(() => new Promise<{ slots: [] }>(done => { resolve = done; }));
+    const { doc, handle } = mount({ recipeConnections,
+      pageContext: () => ({ label: 'Ana', objects: [{ kind: 'contact', id: '42', label: 'Ana', values: {},
+        apiSource: { kind: 'api', platform: 'hubspot', connection_name: 'sales', entity: 'contact' } }] }) });
+    await tick(); handle.selectRecipe('manual-1');
+    collectByAttr(doc.body, RUN_PALETTE_ACTION_ATTR).find(action => action.textContent === 'Run')!.click();
+    await tick(); handle.selectRecipe('autorun-1');
+    resolve({ slots: [] }); await tick();
+    expect(doc.body.children.filter(child => child.className === 'run-modal-overlay-root')).toHaveLength(0);
+    handle.destroy();
+  });
+
   it('injects contained mobile chrome with usable picker and action targets', () => {
     const { doc, handle } = mount();
     const styles = doc.styles[0]?.textContent ?? '';
@@ -432,6 +473,106 @@ describe('run-palette wire', () => {
     );
     expect(runModalRoots).toHaveLength(1);
     expect(runModalRoots[0]!.innerHTML).toContain('Daily brief');
+    handle.destroy();
+  });
+
+  it('captures the opener record, prefills its arguments, and still waits for Run', async () => {
+    const values = { name: '<Alice>', email: 'alice@example.test' };
+    const entry = recipeEntry('manual-1', 'Customer follow-up', {
+      variables: { customer_id: null, customer_email: { label: 'Email', type: 'text' } },
+    });
+    const execute = vi.fn(async () => executeResponse());
+    const pageContext = vi.fn(() => ({ label: 'Customer', objects: [
+      { kind: 'customer', id: 'customer-1', label: '<Alice>', values },
+    ] }));
+    const { doc, handle } = mount({ recipeList: async () => ({ recipes: [entry] }), pageContext, execute });
+    values.email = 'changed@example.test';
+    await tick();
+    handle.selectRecipe('manual-1');
+    collectByAttr(doc.body, RUN_PALETTE_ACTION_ATTR).find(action => action.textContent === 'Run')!.click();
+    const modal = doc.body.children.find(child => child.className === 'run-modal-overlay-root')!;
+    expect(modal.innerHTML).toContain('customer-1');
+    expect(modal.innerHTML).toContain('alice@example.test');
+    expect(modal.innerHTML).not.toContain('changed@example.test');
+    expect(modal.innerHTML).toContain('Prefilled from &lt;Alice&gt;');
+    expect(execute).not.toHaveBeenCalled();
+    expect(pageContext).toHaveBeenCalledTimes(1);
+    handle.destroy();
+  });
+
+  it('does not carry the current record into a Schedule form', async () => {
+    const entry = recipeEntry('manual-1', 'Customer follow-up', { variables: { customer_id: null } });
+    const { doc, handle } = mount({
+      recipeList: async () => ({ recipes: [entry] }),
+      pageContext: () => ({ label: 'Alice', objects: [{ kind: 'customer', id: 'customer-1', label: 'Alice', values: {} }] }),
+      schedulesList: async () => ({ schedules: [] }),
+    });
+    await tick();
+    handle.selectRecipe('manual-1');
+    collectByAttr(doc.body, RUN_PALETTE_ACTION_ATTR).find(action => action.textContent === 'Schedule')!.click();
+    const modal = doc.body.children.find(child => child.className === 'run-modal-overlay-root')!;
+    expect(modal.innerHTML).not.toContain('data-recued-run-prefill-source');
+    expect(modal.innerHTML).not.toContain('customer-1');
+    handle.destroy();
+  });
+
+  it('loads the selected body before deriving targets referenced only by its steps', async () => {
+    const recipeGet = vi.fn(async () => ({ recipe: fullRecipe(MANUAL, [
+      { id: 'read', type: 'transform', transform: 'identity', input: '{{context.customer_id}}' },
+    ]) }));
+    const execute = vi.fn(async () => executeResponse());
+    const { doc, handle } = mount({ recipeGet, execute,
+      pageContext: () => ({ label: 'Alice', objects: [{ kind: 'customer', id: 'customer-1', label: 'Alice', values: {} }] }),
+    });
+    await tick();
+    handle.selectRecipe('manual-1');
+    expect(recipeGet).not.toHaveBeenCalled();
+    collectByAttr(doc.body, RUN_PALETTE_ACTION_ATTR).find(action => action.textContent === 'Run')!.click();
+    await tick();
+    const modal = doc.body.children.find(child => child.className === 'run-modal-overlay-root')!;
+    expect(recipeGet).toHaveBeenCalledWith({ recipe_id: 'manual-1' });
+    expect(modal.innerHTML).toContain('data-recued-run-modal-target="customer_id"');
+    expect(modal.innerHTML).toContain('value="customer-1"');
+    expect(execute).not.toHaveBeenCalled();
+    handle.destroy();
+  });
+
+  it('reports a failed body read and permits retry without executing', async () => {
+    const recipeGet = vi.fn().mockRejectedValueOnce(new Error('Recipe temporarily unavailable'))
+      .mockResolvedValue({ recipe: fullRecipe(MANUAL) });
+    const { doc, handle } = mount({ recipeGet });
+    await tick(); handle.selectRecipe('manual-1');
+    const pressRun = () => collectByAttr(doc.body, RUN_PALETTE_ACTION_ATTR).find(action => action.textContent === 'Run')!.click();
+    pressRun(); await tick();
+    expect(allText(collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)[0]!)).toContain('Recipe temporarily unavailable');
+    expect(doc.body.children.filter(child => child.className === 'run-modal-overlay-root')).toHaveLength(0);
+    pressRun(); await tick();
+    expect(recipeGet).toHaveBeenCalledTimes(2);
+    expect(doc.body.children.filter(child => child.className === 'run-modal-overlay-root')).toHaveLength(1);
+    handle.destroy();
+  });
+
+  it.each(['closed', 'selection changed'] as const)('ignores a late body read when the palette is %s', async (reason) => {
+    let resolve!: (response: { recipe: ServerRecipeFullEntry }) => void;
+    const recipeGet = vi.fn(() => new Promise<{ recipe: ServerRecipeFullEntry }>(done => { resolve = done; }));
+    const { doc, handle } = mount({ recipeGet });
+    await tick(); handle.selectRecipe('manual-1');
+    collectByAttr(doc.body, RUN_PALETTE_ACTION_ATTR).find(action => action.textContent === 'Run')!.click();
+    if (reason === 'closed') handle.destroy();
+    else handle.selectRecipe('autorun-1');
+    resolve({ recipe: fullRecipe(MANUAL) }); await tick();
+    expect(doc.body.children.filter(child => child.className === 'run-modal-overlay-root')).toHaveLength(0);
+    handle.destroy();
+  });
+
+  it('refuses a recipe that changed between inventory and the body read', async () => {
+    const changed = { ...fullRecipe(MANUAL), recipe_hash: 'changed-hash' };
+    const { doc, handle } = mount({ recipeGet: async () => ({ recipe: changed }) });
+    await tick(); handle.selectRecipe('manual-1');
+    collectByAttr(doc.body, RUN_PALETTE_ACTION_ATTR).find(action => action.textContent === 'Run')!.click();
+    await tick();
+    expect(allText(collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)[0]!)).toContain('changed or is no longer available');
+    expect(doc.body.children.filter(child => child.className === 'run-modal-overlay-root')).toHaveLength(0);
     handle.destroy();
   });
 

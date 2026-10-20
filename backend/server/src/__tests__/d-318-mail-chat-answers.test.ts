@@ -66,6 +66,8 @@ import { createBlobStore } from '../storage/blob-store.js';
 import { createChatStore, ensureChatSchema } from '../storage/chat-store.js';
 import { createMailChatDoorStore } from '../storage/mail-chat-door-store.js';
 import { createMailSendClaimStore } from '../storage/mail-send-claim-store.js';
+import { createRecipeStore } from '../recipe-store.js';
+import { recipeToolTitle } from '../recipe-tool-name.js';
 
 const CHAT = 'recued-chat';
 const CHAT_ADDRESS = 'recued@chat.example';
@@ -96,6 +98,18 @@ interface SentCopy {
 
 /** `held`: the answers are not told when a turn ends, so an answer owed stays
  *  pending until the test asks for a round. */
+/** The recipe behind the tests' `recued-core/send-email` tool, in a real recipe
+ *  store, read by the title lookup the server composes. */
+const sendEmailTitle = (() => {
+  const store = createRecipeStore('/nonexistent');
+  store.register({
+    recipe_id: 'send-email', version: 1, ttl: 60,
+    metadata: { name: 'Send an email', description: 'One email.', author: 'test', supported_platforms: [] },
+    variables: {}, prefetch_steps: [], steps: [], output: { render: [] },
+  } as never);
+  return (tool_name: string) => recipeToolTitle(store, tool_name);
+})();
+
 const harness = (options: {
   held?: boolean;
   rfcIds?: boolean;
@@ -104,7 +118,14 @@ const harness = (options: {
   /** Part 2 — the tools and the model, when a test scripts them. */
   registry?: InternalToolRegistry;
   executeAiCall?: ExecuteChatAiCall;
+  /** §8.18 — the chat mailbox is the owner's own: they write to it from itself,
+   *  and its provider keeps their Sent record. */
+  oneMailbox?: boolean;
+  /** The follow-up's title lookup, as the server composes it over its recipe
+   *  store (`recipeToolTitle`); `null` composes none. */
+  toolTitle?: ((tool_name: string) => string | undefined) | null;
 } = {}) => {
+  const chatAddress = options.oneMailbox ? OWNER_ADDRESS : CHAT_ADDRESS;
   const dir = mkdtempSync(join(tmpdir(), 'd318-answers-'));
   const db = new Database(join(dir, 'server.sqlite'));
   cleanup.push(() => { if (db.open) db.close(); rmSync(dir, { recursive: true, force: true }); });
@@ -132,10 +153,18 @@ const harness = (options: {
   let showSentRecord = true;
   let canSend = true;
   const lookups: MailSentReconciliationQuery[] = [];
+  const sentByOwner = new Set<string>();
   const provider = {
     kind: options.kind ?? 'gmail',
     get sendCapable() { return canSend; },
-    accountEmail: CHAT_ADDRESS,
+    accountEmail: chatAddress,
+    // One mailbox: the chat mailbox's own Sent record is the owner's.
+    ...(options.oneMailbox ? {
+      lookupSentByMessageId: async ({ rfc_message_id }: { rfc_message_id: string }): Promise<MailSentByMessageIdResult> =>
+        sentByOwner.has(rfc_message_id)
+          ? { status: 'found', matches: [{ to: [OWNER_ADDRESS], subject: 's', sent_at: Date.now() - 2_000 }] }
+          : { status: 'not_found' },
+    } : {}),
     send: async (msg: OutgoingMessage) => {
       sends.push(msg);
       const outcome = outcomes.shift() ?? 'ok';
@@ -182,7 +211,6 @@ const harness = (options: {
     provider: provider as never,
     config: () => ({ backfill_days: 30, retention_days: 365, quota_bytes: 1024 * 1024 }) as never,
   });
-  const sentByOwner = new Set<string>();
   const ownerMailbox = {
     platform: 'mail', slug: OWNER, accountEmail: OWNER_ADDRESS,
     get: () => null,
@@ -191,11 +219,11 @@ const harness = (options: {
         ? { status: 'found', matches: [{ to: [CHAT_ADDRESS], subject: 's', sent_at: Date.now() - 2_000 }] }
         : { status: 'not_found' },
   } as unknown as MailChatProofMailbox;
-  const mailboxes = [chatMailbox, ownerMailbox] as never[];
+  const mailboxes = (options.oneMailbox ? [chatMailbox] : [chatMailbox, ownerMailbox]) as never[];
 
   const door = createMailChatDoorStore(db);
-  door.setChatMailbox(CHAT);
-  door.setOwnerMailboxes([OWNER]);
+  door.setChatMailbox(CHAT, chatAddress);
+  door.setOwnerMailboxes([options.oneMailbox ? CHAT : OWNER]);
   const conversations = createMailChatConversations(db);
   let answers: MailChatAnswers | undefined;
   const turns = composeMailChatTurns({
@@ -220,6 +248,7 @@ const harness = (options: {
     closeOwnerQuestion,
     publicBaseUrl: () => null,
     auditLog: { logActivity: async (entry) => { historyRows.push(entry.activity_id); } },
+    ...(options.toolTitle === null ? {} : { toolTitle: options.toolTitle ?? sendEmailTitle }),
     now: () => Date.now() + skew,
   })!;
   answers.bindNotify(async (message) => { notices.push(message); });
@@ -234,27 +263,33 @@ const harness = (options: {
   }): Promise<void> => {
     sentByOwner.add(email.id);
     const record_id = `mail:${email.id}`;
+    // One mailbox: Gmail keeps an email to oneself as one message, filed as sent.
+    const direction = options.oneMailbox ? 'outbound' : 'inbound';
     chatMailbox.upsert({
       record_id, platform: 'mail', slug: CHAT, received_at: Date.now(), modified_at: Date.now(),
       size_bytes: email.body.length, source_id: email.id, body_inline: email.body,
       hot_fields: {
-        subject: email.subject, from: OWNER_ADDRESS, to: [CHAT_ADDRESS], cc: [],
-        thread_id: email.thread ?? `thread-${email.id}`, direction: 'inbound', rfc_message_id: email.id,
+        subject: email.subject, from: OWNER_ADDRESS, to: [chatAddress], cc: [],
+        thread_id: email.thread ?? `thread-${email.id}`, direction, rfc_message_id: email.id,
       },
     } as unknown as CollectionRecord);
     const msg: CanonicalMessage = {
-      source_id: email.id, rfc_message_id: `<${email.id}>`, from: OWNER_ADDRESS, to: [CHAT_ADDRESS], cc: [],
+      source_id: email.id, rfc_message_id: `<${email.id}>`, from: OWNER_ADDRESS, to: [chatAddress], cc: [],
       subject: email.subject, thread_id: email.thread ?? `thread-${email.id}`, folder_or_label: 'INBOX',
-      direction: 'inbound', is_read: false, is_flagged: false, has_attachments: false,
+      direction, is_read: false, is_flagged: false, has_attachments: false,
+      ...(options.oneMailbox ? { labels: ['SENT', 'INBOX'] } : {}),
       received_at: Date.now(), provider_received_at: email.receivedAt ?? Date.now(), body_text: email.body,
       headers: {
         ...(email.inReplyTo ? { 'in-reply-to': email.inReplyTo } : {}),
         ...(email.references ? { references: email.references } : {}),
       },
     };
-    const ctx: MailStoredContext = { slug: CHAT, record_id, backfill_complete: true, backfill_days: 30 };
+    const ctx: MailStoredContext = {
+      slug: CHAT, record_id, backfill_complete: true, backfill_days: 30,
+      ...(options.oneMailbox ? { provider_kind: 'gmail' as const, account_email: OWNER_ADDRESS } : {}),
+    };
     proof.onMessageStored(msg, ctx);
-    proof.onMessageUpserted(msg, { ...ctx, account_email: CHAT_ADDRESS, first_seen: true, attachments: [] });
+    proof.onMessageUpserted(msg, { ...ctx, account_email: chatAddress, first_seen: true, attachments: [] });
     await proof.tick();
   };
 
@@ -791,7 +826,7 @@ describe('D-318 step 5, part 2 — the result after an approval follows in the t
     h.answers.onRunSettled(settled('run-held-1'));
     await eventually(() => expect(h.sends).toHaveLength(2));
     const followUp = h.sends[1]!;
-    expect(followUp.body_text).toBe('The action that waited for your approval (recued-core/send-email) is done.');
+    expect(followUp.body_text).toBe('The action that waited for your approval, "Send an email", is done.');
     expect(followUp.to).toEqual([OWNER_ADDRESS]);
     expect(followUp.subject).toBe('Re: ask: email Bob');
     expect(followUp.in_reply_to).toBe('<req-1@owner.example>');
@@ -811,6 +846,19 @@ describe('D-318 step 5, part 2 — the result after an approval follows in the t
     expect(h.sends).toHaveLength(2);
   });
 
+  it('⛔ never by the tool\'s id: a run whose recipe has no title is named by what it was', async () => {
+    // Live, 2026-10-18: "The action that waited for your approval
+    // (recued-core/send-composed-mail) is done." reached the owner by email.
+    const h = harness({ ...heldTurn('run-held-untitled'), toolTitle: null });
+    await h.send({ id: 'req-1@owner.example', subject: 'ask: email Bob', body: 'Tell Bob I am late.' });
+    const answer = await h.answerOf('req-1@owner.example');
+    await eventually(() => expect(h.answers.get(answer)?.state).toBe('sent'));
+    h.answers.onRunSettled(settled('run-held-untitled'));
+    await eventually(() => expect(h.sends).toHaveLength(2));
+    expect(h.sends[1]!.body_text).toBe('The action that waited for your approval is done.');
+    expect(h.sends[1]!.body_text).not.toContain('recued-core');
+  });
+
   it('an owner who approves before the answer is read still gets the result, after the answer', async () => {
     const h = harness({ ...heldTurn('run-held-2'), held: true });
     await h.send({ id: 'req-1@owner.example', subject: 'ask: email Bob', body: 'Tell Bob I am late.' });
@@ -819,7 +867,7 @@ describe('D-318 step 5, part 2 — the result after an approval follows in the t
     await h.answers.tick();
     expect(h.sends.map((sent) => sent.body_text)).toEqual([
       'The email to Bob is waiting for your approval in Recued.',
-      'The action that waited for your approval (recued-core/send-email) was declined, so it was not done.',
+      'The action that waited for your approval, "Send an email", was declined, so it was not done.',
     ]);
   });
 
@@ -840,7 +888,7 @@ describe('D-318 step 5, part 2 — the result after an approval follows in the t
     }));
     await eventually(() => expect(h.sends).toHaveLength(2));
     expect(h.sends[1]!.body_text)
-      .toBe('The action that waited for your approval (recued-core/send-email) did not complete: Bob’s address bounced.');
+      .toBe('The action that waited for your approval, "Send an email", did not complete: Bob’s address bounced.');
   });
 });
 
@@ -872,7 +920,7 @@ describe('the D-318 audit — follow-ups', () => {
     execution_source: { channel: 'messenger', actor: 'user_self', vendor: 'email', from: OWNER_ADDRESS },
     run_id, tool_name: sendTool.name, result: { ok: true, result: {} }, state: 'succeeded', ts: Date.now(),
   });
-  const DONE = 'The action that waited for your approval (recued-core/send-email) is done.';
+  const DONE = 'The action that waited for your approval, "Send an email", is done.';
 
   it('never reaches the owner before the answer that says it waits: not while that answer may not have gone', async () => {
     const h = harness(heldTurn('run-a'));
@@ -933,10 +981,69 @@ describe('a settled run’s outcome, in words', () => {
     expect(mailChatRunOutcome({ ...base, result: { detail: 'x'.repeat(400) }, state: 'failed' }).detail).toHaveLength(300);
   });
 
-  it('says what became of the action', () => {
-    expect(mailChatFollowUpText('interrupted', 'core.mail.send'))
-      .toBe('The action that waited for your approval (core.mail.send) was interrupted. Open Recued to see how far it got.');
-    expect(mailChatFollowUpText('failed', 'core.mail.send'))
-      .toBe('The action that waited for your approval (core.mail.send) did not complete. Open Recued to see why.');
+  it('says what became of the action, by its title, never by a tool name', () => {
+    expect(mailChatFollowUpText('interrupted', 'Send an email'))
+      .toBe('The action that waited for your approval, "Send an email", was interrupted. Open Recued to see how far it got.');
+    expect(mailChatFollowUpText('failed'))
+      .toBe('The action that waited for your approval did not complete. Open Recued to see why.');
+    expect(mailChatFollowUpText('succeeded')).toBe('The action that waited for your approval is done.');
+  });
+});
+
+describe('§8.18 one mailbox — the answer to an email the owner wrote to themselves', () => {
+  it('goes back to the mailbox it is sent from, past the self-loop guard, in the thread, marked Recued’s', async () => {
+    const h = harness({ oneMailbox: true });
+    await h.send({ id: 'self-1@owner.example', subject: 'ask: lunch?', body: 'Book a table for 7.', thread: 'thread-9' });
+    const answer = await h.answerOf('self-1@owner.example');
+    await eventually(() => expect(h.answers.get(answer)?.state).toBe('sent'));
+    // ⛔ D-127's guard refuses mail from a mailbox to itself; the real
+    // collection sent this one, so the answer lifted it.
+    expect(h.sends).toHaveLength(1);
+    expect(h.sends[0]).toMatchObject({
+      to: [OWNER_ADDRESS], subject: 'Re: ask: lunch?', in_reply_to: '<self-1@owner.example>', thread_id: 'thread-9',
+      automatic: true, reconciliation_id: expect.stringMatching(new RegExp(`^${MAIL_CHAT_ANSWER_RECONCILIATION_PREFIX}`)),
+    });
+    expect(h.sends[0]!.cc ?? []).toEqual([]);
+    expect(h.sends[0]!.bcc ?? []).toEqual([]);
+  });
+
+  it('⛔ the answer landing back in that mailbox is never a request, and a reply to it continues the conversation', async () => {
+    const h = harness({ oneMailbox: true });
+    await h.send({ id: 'self-1@owner.example', subject: 'ask: lunch?', body: 'Book a table for 7.', thread: 'thread-9' });
+    const answer = await h.answerOf('self-1@owner.example');
+    await eventually(() => expect(h.answers.get(answer)?.state).toBe('sent'));
+    // Gmail delivers it to the same mailbox: one message, filed as sent, with
+    // the answer's reconciliation id.
+    const copy = h.sentRecord[0]!;
+    const landed: CanonicalMessage = {
+      source_id: copy.gmail_id, rfc_message_id: `<${copy.message_id}>`, from: OWNER_ADDRESS, to: [OWNER_ADDRESS], cc: [],
+      subject: copy.msg.subject, thread_id: 'thread-9', folder_or_label: 'INBOX', direction: 'outbound',
+      labels: ['SENT', 'INBOX'], is_read: false, is_flagged: false, has_attachments: false,
+      received_at: Date.now(), provider_received_at: Date.now(), body_text: copy.msg.body_text,
+      reconciliation_id: copy.msg.reconciliation_id!,
+      headers: { 'in-reply-to': '<self-1@owner.example>', 'auto-submitted': 'auto-replied' },
+    };
+    h.chatMailbox.upsert({
+      record_id: `mail:${copy.gmail_id}`, platform: 'mail', slug: CHAT, received_at: Date.now(), modified_at: Date.now(),
+      size_bytes: 1, source_id: copy.gmail_id, body_inline: copy.msg.body_text,
+      hot_fields: { subject: copy.msg.subject, from: OWNER_ADDRESS, to: [OWNER_ADDRESS], rfc_message_id: copy.message_id },
+    } as unknown as CollectionRecord);
+    h.proof.onMessageStored(landed, {
+      slug: CHAT, record_id: `mail:${copy.gmail_id}`, backfill_complete: true, backfill_days: 30,
+      provider_kind: 'gmail', account_email: OWNER_ADDRESS,
+    });
+    await h.proof.tick();
+    expect(h.proof.recent(CHAT, 10).map((request) => request.rfc_message_id)).toEqual(['self-1@owner.example']);
+
+    // The owner replies to it, from the same mailbox, without the prefix.
+    await eventually(() => expect(h.conversations.conversationOf(CHAT, copy.message_id)).not.toBeNull());
+    h.setAnswer('Moved to 8.');
+    await h.send({
+      id: 'self-2@owner.example', subject: 'Re: lunch? make it 8', body: 'Make it 8.', thread: 'thread-9',
+      inReplyTo: `<${copy.message_id}>`, references: `<self-1@owner.example> <${copy.message_id}>`,
+    });
+    await eventually(() => expect(h.sends).toHaveLength(2));
+    expect(h.sessionOf('self-2@owner.example')).toBe(h.sessionOf('self-1@owner.example'));
+    expect(h.sends[1]).toMatchObject({ to: [OWNER_ADDRESS], body_text: 'Moved to 8.' });
   });
 });

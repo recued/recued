@@ -16,6 +16,9 @@ import type { AuditLogStore } from '@recued/storage';
 import { generateRecoveryKey } from '@recued/crypto';
 import { makeArchiveHandlers, type ArchiveRuntime } from '../archive/archive-handler.js';
 import { SCHEMA_VERSION } from '../archive/archive-format.js';
+import { randomUUID } from 'node:crypto';
+import { createArchiveImportReceipts } from '../archive/archive-import-receipts.js';
+import { ArchiveRestoreCleanupError } from '../archive/archive-restore.js';
 
 const manifest: ArchiveManifest = {
   format_version: 1,
@@ -658,7 +661,56 @@ describe('archive rpc', () => {
     const activities = await auditLog.listActivities(10);
     const actions = activities.map((a) => a.action);
     expect(actions).toContain('archive_import_start');
-    expect(actions).toContain('archive_import_complete');
+    expect(actions).toContain('archive_import_accepted');
+    expect(actions).not.toContain('archive_import_complete');
+  });
+
+  it('reserves the exact caller identifier before asynchronous realm validation and refuses its replay', async () => {
+    const path = join(dir, 'stub.recued.archive'); await writeFile(path, 'stub');
+    const id = randomUUID(), receipts = createArchiveImportReceipts(join(dir, 'target.db'));
+    let finish!: (value: { realm: 'same'; authorized: true }) => void;
+    const run = vi.fn(async () => ({ manifest, restored_at: 123 }));
+    const { slice } = makeArchiveHandlers({ dataPath: dir, runtime: {
+      ...okRuntime(), reserveImportOperation: receipts.reserve, refuseImportOperation: receipts.refused,
+      importOperationStatus: receipts.status, runImport: run,
+      verifyRestoreRealm: () => new Promise(resolve => { finish = resolve; }),
+    } });
+    const pending = slice!.handlers['server.archive.import']!({ path, recoveryKey: KEY, operation_id: id }, {} as never);
+    await vi.waitFor(() => expect(receipts.status(id)).toEqual({ status: 'preparing' }));
+    expect(await slice!.handlers['server.archive.import_status']!({ operation_id: id }, {} as never)).toEqual({ status: 'preparing' });
+    expect(run).not.toHaveBeenCalled(); finish({ realm: 'same', authorized: true });
+    expect(await pending).toMatchObject({ operation_id: id });
+    expect(run).toHaveBeenCalledTimes(1);
+    await expect(slice!.handlers['server.archive.import']!({ path, recoveryKey: KEY, operation_id: id }, {} as never))
+      .rejects.toMatchObject({ code: 'invalid_args' });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects malformed import identifiers and never claims a result for an unknown one', async () => {
+    const { slice } = makeArchiveHandlers({ dataPath: dir, runtime: okRuntime() });
+    await expect(slice!.handlers['server.archive.import_status']!({ operation_id: '../other' }, {} as never))
+      .rejects.toMatchObject({ code: 'invalid_args' });
+    expect(await slice!.handlers['server.archive.import_status']!({ operation_id: randomUUID() }, {} as never)).toEqual({ status: 'unknown' });
+  });
+
+  it.each([undefined, null])('rejects an absent status payload (%s) as invalid arguments', async args => {
+    const { slice } = makeArchiveHandlers({ dataPath: dir, runtime: okRuntime() });
+    await expect(slice!.handlers['server.archive.import_status']!(args as never, {} as never))
+      .rejects.toMatchObject({ code: 'invalid_args' });
+  });
+
+  it('keeps imports closed and avoids a negative verdict when staging cleanup needs recovery', async () => {
+    const path = join(dir, 'stub.recued.archive'); await writeFile(path, 'stub');
+    const refused = vi.fn(), run = vi.fn(async () => { throw new ArchiveRestoreCleanupError(new Error('fixture cleanup failure')); });
+    const { slice } = makeArchiveHandlers({ dataPath: dir, runtime: {
+      ...okRuntime(), refuseImportOperation: refused, runImport: run,
+    } });
+    await expect(slice!.handlers['server.archive.import']!({ path, recoveryKey: KEY }, {} as never))
+      .rejects.toThrow('ARCHIVE_RESTORE_RECOVERY_REQUIRED');
+    expect(refused).not.toHaveBeenCalled();
+    await expect(slice!.handlers['server.archive.import']!({ path, recoveryKey: KEY }, {} as never))
+      .rejects.toMatchObject({ code: 'archive_import_in_progress' });
+    expect(run).toHaveBeenCalledTimes(1);
   });
 
   it('import rejects concurrent calls with archive_import_in_progress', async () => {
@@ -806,15 +858,20 @@ describe('archive rpc', () => {
     expect(runExport).not.toHaveBeenCalled();
   });
 
-  it('slice declares all 3 method names', () => {
+  it('slice declares export, import and their separate status methods', () => {
     const { slice } = makeArchiveHandlers({
       runtime: okRuntime(),
       auditLog,
       dataPath: dir,
     });
     expect(slice?.methods.slice().sort()).toEqual([
+      'server.archive.backup.check',
+      'server.archive.backup.retrieve',
+      'server.archive.backups',
+      'server.archive.destinations',
       'server.archive.export',
       'server.archive.import',
+      'server.archive.import_status',
       'server.archive.status',
     ]);
   });

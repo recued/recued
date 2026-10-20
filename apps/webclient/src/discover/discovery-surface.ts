@@ -11,6 +11,8 @@
  *  route each free to render however they already do.
  */
 
+import type { RunPageContextProvider } from '../shell/run-page-context.js';
+
 export type DiscoveryTab = 'installed' | 'discover';
 
 export const DISCOVERY_SURFACE_HOST_ATTR = 'data-recued-discovery-surface';
@@ -42,7 +44,7 @@ export interface MountDiscoverySurfaceOptions {
   onReactivate?: (tab: DiscoveryTab) => void;
 }
 
-export interface DiscoverySurfaceChildMount {
+export interface DiscoverySurfaceChildMount extends RunPageContextProvider {
   dispose(): void;
   /** Optional ownership seams forwarded through this composition shell. */
   hasInFlightWork?: () => boolean;
@@ -51,7 +53,7 @@ export interface DiscoverySurfaceChildMount {
   unsavedChangesPrompt?: () => string | null;
 }
 
-export interface DiscoverySurfaceMount {
+export interface DiscoverySurfaceMount extends RunPageContextProvider {
   activeTab(): DiscoveryTab;
   showTab(tab: DiscoveryTab): void;
   hasInFlightWork(): boolean;
@@ -183,6 +185,8 @@ export const mountDiscoverySurface = (
   let disposed = false;
   return {
     activeTab: () => active,
+    getRunPageContext: () => !disposed && active === 'installed'
+      ? installedMount.getRunPageContext?.() ?? null : null,
     showTab,
     hasInFlightWork: () =>
       installedMount.hasInFlightWork?.() === true

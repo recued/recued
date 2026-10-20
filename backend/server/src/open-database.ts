@@ -26,6 +26,7 @@ import {
 import { resolveServerBundleSwapMarkerPath } from './archive/server-bundle-swap.js';
 import { manualRollbackJournalPathForDb } from './update/manual-rollback-journal.js';
 import { runningAsPackagedBinary } from './packaged-binary.js';
+import { DATABASE_SCHEMA_VERSION, readDatabaseSchema, readStoredDatabaseSchemaVersion } from './database-schema.js';
 
 type CipherDatabaseHandle = Database.Database & {
   key(key: Buffer): number;
@@ -33,6 +34,9 @@ type CipherDatabaseHandle = Database.Database & {
 };
 
 export interface OpenDatabaseOptions extends Database.Options {
+  /** Read-only archive compatibility inspection may open a newer schema.
+   * Writable callers can never bypass the schema gate. */
+  allowNewerSchema?: boolean;
   /** Explicit key for recovery/staging paths. `null` explicitly selects a
    * keyless open; omission resolves the canonical sidecar + keyfile. */
   databaseKey?: Uint8Array | null;
@@ -531,14 +535,20 @@ export const openDatabase = (
   filename: string | Buffer,
   options: OpenDatabaseOptions = {},
 ): Promise<Database.Database> => {
+  const inspectNewerSchema = options.allowNewerSchema === true;
+  let enrollmentToFinish: string | undefined;
   return (async () => {
     const {
       databaseKey: suppliedDatabaseKey,
       keyEnvironment,
       restoreJournalReconciled,
       writeLockWarning,
+      allowNewerSchema,
       ...driverOptions
     } = options;
+    if (allowNewerSchema && !driverOptions.readonly) {
+      throw new Error('DATABASE_SCHEMA_INSPECTION_REFUSED: newer-schema inspection requires readonly');
+    }
     const holdWarning = writeLockWarning === false
       ? undefined
       : writeLockWarning ?? (writeLockWarningByDefault()
@@ -594,7 +604,7 @@ export const openDatabase = (
         }
         assertReadable(keyed);
         if (dbPath && databaseEnrollmentInProgress(dbPath)) {
-          finishDatabaseEnrollment(dbPath);
+          enrollmentToFinish = dbPath;
         }
         return keyed;
       } catch (keyedError) {
@@ -625,8 +635,11 @@ export const openDatabase = (
           );
         }
         try {
+          // Refuse a future/corrupt plaintext schema before enrollment rekey
+          // changes the file; crypto recovery is not a schema downgrade path.
+          readDatabaseSchema(plaintext);
           rekeyDatabase(plaintext, databaseKey);
-          finishDatabaseEnrollment(dbPath);
+          enrollmentToFinish = dbPath;
           return plaintext;
         } catch (err) {
           try { plaintext.close(); } catch { /* best effort */ }
@@ -640,7 +653,21 @@ export const openDatabase = (
       // them into the connection.
       if (!hasSuppliedKey) databaseKey?.fill(0);
     }
-  })();
+  })().then(database => {
+    try {
+      // Key validation has finished. Schema failures must not enter the
+      // plaintext-enrollment recovery branch or be mistaken for a bad key.
+      if (!database.readonly || !inspectNewerSchema
+        || readStoredDatabaseSchemaVersion(database) <= DATABASE_SCHEMA_VERSION) {
+        readDatabaseSchema(database);
+      }
+      if (enrollmentToFinish && !database.readonly) finishDatabaseEnrollment(enrollmentToFinish);
+      return database;
+    } catch (error) {
+      database.close();
+      throw error;
+    }
+  });
 };
 
 /** Consistent logical copy that preserves the source connection's cipher.

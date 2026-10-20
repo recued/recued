@@ -492,6 +492,28 @@ const targetedHarness = (
   };
 };
 
+/** `targetedHarness` over another catalog manifest: the one escalation admission judges. */
+const targetedHarnessOver = (
+  manifest: IngredientManifest,
+  declarations: Readonly<Record<string, KernelWorkEntitySourceDeclaration | null | undefined>>,
+  ...outcomes: GatedCatalogOperationOutcome[]
+): TargetedHarness => {
+  const harness = targetedHarness(declarations, ...outcomes);
+  const fetchDeps = harness.deps.fetchDeps as unknown as Record<string, unknown>;
+  return {
+    ...harness,
+    deps: {
+      ...harness.deps,
+      fetchDeps: {
+        ...fetchDeps,
+        executorConfig: {
+          manifests: { get: (slug: string) => (slug === CATALOG ? manifest : null) },
+        },
+      } as unknown as SourceMirrorFetchDeps,
+    },
+  };
+};
+
 const targetedHarnessWithResolver = (
   resolveDeclaration: WorkEntityTargetedReadDeps['resolveDeclaration'],
   ...outcomes: GatedCatalogOperationOutcome[]
@@ -1284,6 +1306,68 @@ describe('work.search', () => {
     expect(out.escalation_errors?.[0]?.reason).toContain('tool_not_in_contract');
     expect(out.escalation_errors?.[0]?.reason).toContain('do not retry');
     expect(targeted.invocations).toHaveLength(0);
+  });
+
+  // D-157 follow-up (2026-10-20). A write-tier catalog under a door's read-only ceiling
+  // asks, and this spine cannot hold. The refusal quoted the ask's `detail`, which is
+  // now the owner's Reason sentence ("… can only read without asking you"), and told
+  // the agent to have the owner "raise this door's trust or grant the operation":
+  // no setting raises a door's ceiling, and an operation that gets this far is granted.
+  it('REFUSES an mcp_wire escalation that needs approval in its own words, not the owner\'s', async () => {
+    const source = 'hubspot.search-external-asks.task';
+    registerSource(source, 'task', 'connection');
+    seedSyncState(source, { last_success_at: NOW - 2_000, stale_after_ms: 1_000 });
+    seedTask({
+      id: 'search-external-asks-row',
+      source_id: source,
+      source_record_id: 'remote-external-asks',
+      title: 'local asks title',
+    });
+    const ctx: ChatDispatchContext = {
+      channel: 'mcp_wire',
+      mcp_token_id: 't1',
+      execution_source: {
+        channel: 'mcp',
+        actor: 'contracted_user',
+        agent_id: 'agent-1',
+        tool_call_id: 'call-ask',
+        mcp_token_id: 't1',
+        contract_id: 'contract-door-1',
+      },
+      contract_snapshot: {
+        contract_id: 'contract-door-1',
+        contract_version: 'v1',
+        allowed_tools: [CATALOG],
+        approval_required: [],
+        scope_restrictions: [],
+        resolved_at: NOW,
+      },
+    };
+    const targeted = targetedHarnessOver(
+      { ...manifestFake, risk_tier: 'write' } as IngredientManifest,
+      { [source]: taskDeclaration() },
+      opOk(vendorTask('remote-external-asks', { title: 'vendor asks title', state: 'V', body: 'vb' })),
+    );
+
+    const out = okResult<SearchResult>(
+      await runWorkEntitySearchTool(
+        readToolsDeps({ targeted: targeted.deps, gate: admissionGate() }),
+        { kind: 'task', current: true, limit: 10 },
+        ctx,
+      ),
+    );
+
+    expect(targeted.invocations).toHaveLength(0);
+    expect(entityById(out, 'search-external-asks-row').title).toBe('local asks title');
+    expect(out.escalation_errors).toHaveLength(1);
+    expect(out.escalation_errors?.[0]?.kind).toBe('policy');
+    const reason = out.escalation_errors?.[0]?.reason ?? '';
+    expect(reason).toBe(
+      'the vendor read needs the owner\'s approval, and this read path cannot hold for '
+        + 'approval — the local mirror row is served (see source_freshness). Server '
+        + 'policy, not a transient failure; do not retry.',
+    );
+    expect(reason).not.toMatch(/without asking you|raise this door|grant the operation|preflight/);
   });
 
   it('DENIES an mcp_wire escalation whose door scope fence excludes connection.api', async () => {

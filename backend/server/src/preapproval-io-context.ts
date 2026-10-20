@@ -10,6 +10,8 @@ import type { LLMProviderInvocation, PinnedSlot } from '@recued/llm';
 import type { DispatchRequest, ReviewedBridgeDispatch } from './bridges/dispatcher.js';
 
 export interface PreapprovalIoContext {
+  beforeCalendarProvider?(review: import('@recued/contracts').ResourceReview, external: boolean): Promise<void>;
+  afterCalendarProvider?(): void;
   prepareDomCommand(call: ResolvedCall, request: DispatchRequest, index: number): Promise<ReviewedBridgeDispatch>;
   aiSlot(): PinnedSlot;
   coversAiFileAsk(input: Record<string, unknown>, recordId: string): boolean;
@@ -25,6 +27,7 @@ export interface PreapprovalIoContext {
   validateMail(instance: string, input: MailSendInput): void;
   readMailAttachment(recordId: string, index: number, deps: FileReadDeps): Promise<FileReadResponse>;
   fileAccess(recordId: string): object;
+  mailReconciliationId?(instance: string, input: MailSendInput): string | undefined;
   beforeMailProvider(instance: string, input: MailSendInput): Promise<void>;
 }
 const scopes = new AsyncLocalStorage<PreapprovalIoContext | undefined>();

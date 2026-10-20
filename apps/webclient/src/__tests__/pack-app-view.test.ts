@@ -503,6 +503,22 @@ describe('pack app shared JSON results', () => {
 });
 
 describe('pack app shared record-field results', () => {
+  it('exposes only a loaded current record as Run palette context', async () => {
+    const { view } = mount(vi.fn(async () => recordFieldsResult()));
+    expect(view.getRunPageContext()).toBeNull();
+    await settle();
+    expect(view.getRunPageContext()?.objects[0]).toMatchObject({
+      kind: 'job', id: 'job_1', label: 'Replace the circulation pump',
+      values: { id: 'job_1', title: 'Replace the circulation pump' },
+    });
+    view.dispose();
+    expect(view.getRunPageContext()).toBeNull();
+    const table = mount(vi.fn(async () => tableResult()));
+    await settle();
+    expect(table.view.getRunPageContext()).toBeNull();
+    table.view.dispose();
+  });
+
   it('ships the field grid, bounded values, and phone stacking with the panel', () => {
     expect(RECIPE_RESULT_PANEL_STYLES).toMatch(
       /\.summary-row\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(100px, 180px\) minmax\(0, 1fr\);/s,

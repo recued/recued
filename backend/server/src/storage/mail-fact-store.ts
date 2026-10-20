@@ -87,6 +87,7 @@ export interface MailFactThingListQuery {
   /** Things updated on or after this time. */
   readonly since?: number;
   readonly limit?: number;
+  readonly cursor_before?: { updated_at: number; thing_id: string };
 }
 
 /** A recipe run a thing's event started (§6.4), against the email whose facts
@@ -173,6 +174,8 @@ export interface MailFactPageQuery {
   readonly unpaired?: boolean;
   readonly has_run?: boolean;
   readonly email?: MailFactEmailRef;
+  /** One thing's facts, across the emails that told of it. */
+  readonly thing_id?: string;
   readonly before?: MailFactRowsCursor;
   /** Emails per page. */
   readonly limit: number;
@@ -761,6 +764,10 @@ const pageFilters = (query: MailFactPageQuery): { where: string[]; params: unkno
     where.push('f.type = ?');
     params.push(query.type);
   }
+  if (query.thing_id !== undefined) {
+    where.push('f.thing_id = ?');
+    params.push(query.thing_id);
+  }
   if (query.state !== undefined) {
     // What the row shows: the thing's state, or an unpaired fact's own.
     where.push("COALESCE(json_extract(t.variables_blob, '$.state'), json_extract(f.variables_blob, '$.state')) = ?");
@@ -1344,6 +1351,11 @@ export const createMailFactStore = (
       if (query.since !== undefined) {
         where.push('updated_at >= ?');
         params.push(query.since);
+      }
+      if (query.cursor_before !== undefined) {
+        if (!Number.isSafeInteger(query.cursor_before.updated_at) || !query.cursor_before.thing_id) throw new Error('Invalid mail-fact thing cursor');
+        where.push('(updated_at < ? OR (updated_at = ? AND thing_id < ?))');
+        params.push(query.cursor_before.updated_at, query.cursor_before.updated_at, query.cursor_before.thing_id);
       }
       const sql = `SELECT * FROM mail_fact_thing ${where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''}
                    ORDER BY updated_at DESC, thing_id DESC LIMIT ?`;

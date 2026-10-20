@@ -393,6 +393,18 @@ describe('D-174 execution.list', () => {
 });
 
 describe('D-174 execution.get', () => {
+  it('projects only the content-free local confirmation on each gateway row', async () => {
+    await append('local-proof-run', 500);
+    await writeCommit('local-proof-run', { commit_id: 'local-proof', dispatched_at: 501, completed_at: 510, status: 'succeeded' });
+    const commit = await commitStore.get('local-proof');
+    if (!commit) throw new Error('Missing fixture Commit');
+    const receipt = { receipt_id: 'lmr_77777777-7777-4777-8777-777777777777', kind: 'records' as const,
+      committed_at: 505, private_preimage: 'never project this field' };
+    deps.commitStore = { ...commitStore, listByRun: async () => [{ ...commit, local_receipt: receipt }] };
+    const out = await handleExecutionGet(deps, { run_id: 'local-proof-run' });
+    expect(out.run.gateway.per_call_trace[0]!.local_receipt).toEqual({ receipt_id: receipt.receipt_id, kind: receipt.kind, committed_at: 505 });
+    expect(JSON.stringify(out)).not.toContain('never project this field');
+  });
   it('joins audit summary, redacted checkpoint approvals, errors, links, real gateway trace, stored verdict, and degraded markers', async () => {
     const errors: RecipeError[] = [
       {

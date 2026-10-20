@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RpcError, isAuthenticationAccessPreview, isAuthenticationAccessVerification, type AuthenticationAccessPreview,
@@ -47,7 +47,210 @@ const fixture = () => {
     time: (v: number) => { clock = v; }, revision: (v: string) => { revision = v; }, locked: (v: boolean) => { blocked = v; } };
 };
 
+describe('fresh file authentication navigation', () => {
+  const files = async () => {
+    const f = fixture(); f.inventory.groups[0]!.targets = [{ kind: 'file_source', source_id: 'opaque-source' }];
+    const normal = f.prepare.getMockImplementation()!;
+    f.prepare.mockImplementation(async target => {
+      const prepared = await normal(target);
+      return { ...prepared, descriptor: { ...prepared.descriptor, file_connection: { name: 'drive-work', updated_at: 7 } } };
+    });
+    f.run.mockResolvedValue([{ kind: 'file_metadata', status: 'failed', reason: 'access_rejected' }]);
+    const p = await f.preview(); const first = await f.service.handle({ action: 'authentication_access_run', review_id: p.id, fingerprint: p.fingerprint, attempt_id: nonce(), choices: [] });
+    if (first.action !== 'authentication_access_run') throw Error('run');
+    const done = await f.finished(first.verification.id); return { ...f, done };
+  };
+  it('computes the exact file connection from local status without changing the receipt or running another provider check', async () => {
+    const f = await files(); const raw = f.db.prepare('SELECT data FROM authentication_access_verifications WHERE id = ?').get(f.done.id);
+    expect(JSON.stringify(raw)).not.toContain('file_connection'); f.run.mockClear();
+    const fresh = await f.status(f.done.id);
+    expect(fresh.results[0]).toMatchObject({ current: 'yes', file_connection: { name: 'drive-work', updated_at: 7 } });
+    expect(isAuthenticationAccessVerification(fresh)).toBe(true); expect(f.run).not.toHaveBeenCalled();
+    expect(f.db.prepare('SELECT data FROM authentication_access_verifications WHERE id = ?').get(f.done.id)).toEqual(raw);
+  });
+  it('replaces retained navigation fields with the freshly resolved mapping', async () => {
+    const f = await files(); const stored = structuredClone(f.done); stored.results[0]!.file_connection = { name: 'wrong-account', updated_at: 1 };
+    f.db.prepare('UPDATE authentication_access_verifications SET data = ? WHERE id = ?').run(JSON.stringify(stored), stored.id);
+    expect((await f.status(stored.id)).results[0]!.file_connection).toEqual({ name: 'drive-work', updated_at: 7 });
+  });
+  it.each(['revision', 'locked', 'unsupported', 'missing'] as const)('does not retain a file destination when comparison is %s', async cause => {
+    const f = await files(); const stored = structuredClone(f.done); stored.results[0]!.file_connection = { name: 'wrong-account', updated_at: 1 };
+    f.db.prepare('UPDATE authentication_access_verifications SET data = ? WHERE id = ?').run(JSON.stringify(stored), stored.id);
+    if (cause === 'revision') f.revision('c'.repeat(64));
+    if (cause === 'locked') f.locked(true);
+    if (cause === 'missing') f.prepare.mockResolvedValue(undefined as unknown as PreparedAuthenticationAccess);
+    if (cause === 'unsupported') {
+      const normal = f.prepare.getMockImplementation()!;
+      f.prepare.mockImplementation(async target => { const p = await normal(target); return { ...p, descriptor: { ...p.descriptor, check: 'unsupported' } }; });
+    }
+    const fresh = await f.status(stored.id); expect(fresh.results[0]!.file_connection).toBeUndefined();
+    expect(isAuthenticationAccessVerification(fresh)).toBe(true);
+  });
+});
+
+describe('targeted access rechecks', () => {
+  const source = async (f: ReturnType<typeof fixture>) => {
+    f.inventory.groups[0]!.targets.push({ kind: 'collection', platform: 'mail', slug: 'work' }, { kind: 'file_source', source_id: 'work.files' });
+    f.run.mockResolvedValueOnce([{ kind: 'api_read', status: 'passed' }, { kind: 'write_permissions', status: 'unconfirmed', reason: 'not_executed' }])
+      .mockResolvedValueOnce([{ kind: 'collection_read', status: 'failed', reason: 'access_rejected' }])
+      .mockResolvedValueOnce([{ kind: 'file_metadata', status: 'passed' }, { kind: 'file_download', status: 'unconfirmed', reason: 'resource_required' }]);
+    const first = await f.start(await f.preview()); const done = await f.finished(first.verification.id);
+    return { done, selection: { kind: 'verification' as const, id: done.id } };
+  };
+  const start = async (f: ReturnType<typeof fixture>, p: AuthenticationAccessPreview, ids = p.targets.map(t => t.id)) => {
+    const request = { action: 'authentication_access_run' as const, review_id: p.id, fingerprint: p.fingerprint, attempt_id: nonce(),
+      target_ids: ids, choices: p.targets.filter(t => ids.includes(t.id)).map(t => ({ target_id: t.id, ...(t.check === 'file_metadata' ? { file_id: 'chosen' } : {}) })) };
+    const reply = await f.service.handle(request); if (reply.action !== request.action) throw Error('run'); return { request, verification: reply.verification };
+  };
+  it('saves sequential bulk rechecks under their own sources while retaining passed resources and original receipt bytes', async () => {
+    const f = fixture(); const first = await source(f);
+    const other = { ...structuredClone(f.inventory.groups[0]!), id: 'd'.repeat(64), label: 'Other account', targets: [{ kind: 'connection' as const, name: 'other' }], connection_names: ['other'] };
+    f.inventory.groups.push(other); f.run.mockResolvedValueOnce([{ kind: 'api_read', status: 'unconfirmed', reason: 'resource_required' }]);
+    const secondStart = await f.start(await f.preview({ kind: 'group', id: other.id })); const second = await f.finished(secondStart.verification.id);
+    const original = [first.done.id, second.id].map(id => f.db.prepare('SELECT data FROM authentication_access_verifications WHERE id = ?').get(id));
+    const previews = [await f.preview(first.selection), await f.preview({ kind: 'verification', id: second.id })];
+    expect(f.run).toHaveBeenCalledTimes(4); expect(previews[0]!.targets.map(t => t.target.kind)).toEqual(['collection', 'file_source']);
+    f.run.mockResolvedValueOnce([{ kind: 'collection_read', status: 'failed', reason: 'access_rejected' }])
+      .mockResolvedValueOnce([{ kind: 'file_metadata', status: 'passed' }, { kind: 'file_download', status: 'passed' }]);
+    const left = await start(f, previews[0]!); await f.finished(left.verification.id);
+    f.run.mockResolvedValueOnce([{ kind: 'api_read', status: 'passed' }]);
+    const p = previews[1]!; const request = { action: 'authentication_access_run' as const, review_id: p.id, fingerprint: p.fingerprint, attempt_id: nonce(), target_ids: p.targets.map(t => t.id), choices: [{ target_id: p.targets[0]!.id, url: 'https://vendor.test/v1/fresh' }] };
+    const right = await f.service.handle(request); if (right.action !== 'authentication_access_run') throw Error('run'); await f.finished(right.verification.id);
+    expect(await f.service.handle(left.request)).toMatchObject({ verification: { id: left.verification.id } });
+    expect(await f.service.handle(request)).toMatchObject({ verification: { id: right.verification.id } }); expect(f.run).toHaveBeenCalledTimes(7);
+    expect([first.done.id, second.id].map(id => f.db.prepare('SELECT data FROM authentication_access_verifications WHERE id = ?').get(id))).toEqual(original);
+    const latest = await f.service.worklist(f.inventory);
+    expect(latest.groups[0]!.access_summary!.targets.map(t => t.latest!.id)).toEqual([first.done.id, left.verification.id, left.verification.id]);
+    expect(latest.groups[1]!.access_summary!.targets[0]!.latest!.id).toBe(right.verification.id);
+    expect(f.db.prepare('SELECT count(*) AS n FROM authentication_access_verifications').get()).toEqual({ n: 4 });
+  });
+  it('keeps repair incident group links across rechecks after the older source receipts are evicted', async () => {
+    const f = fixture(); const history = createAuthenticationIncidentStore(f.db); const repairs = createAuthenticationRepairActionStore(f.db);
+    history.record({ id: '12345678-1234-4123-8123-123456789abc', group_id: f.selection.id, status: 'open', first_seen_at: 800, last_seen_at: 800,
+      problem_since_at: 800, present: true, issues: [], group: f.inventory.groups[0]!, announced: false }, 800);
+    repairs.begin('connection_credentials', 'repaired', { action: 'reauthorize', targets: [f.target] }, 900);
+    repairs.finish('connection_credentials', 'repaired', { status: 'applied' }, 950);
+    const repair = history.history({ scope: { kind: 'all' } }, 1000).repairs![0]!;
+    f.run.mockResolvedValue([{ kind: 'api_read', status: 'unconfirmed', reason: 'resource_required' }]);
+    const first = await f.start(await f.preview({ kind: 'repair', id: repair.id })); await f.finished(first.verification.id);
+    const incident = history.history({ scope: f.selection }, 1000).incidents[0];
+    const retry = await start(f, await f.preview({ kind: 'verification', id: first.verification.id })); await f.finished(retry.verification.id);
+    const groupHistory = history.history({ scope: f.selection }, 1000);
+    expect.soft(groupHistory.verifications!.map(v => v.id)).toContain(retry.verification.id);
+    expect.soft(groupHistory.incidents[0]).toEqual(incident); expect.soft(groupHistory.repairs![0]!.recovery_confirmed_at).toBeUndefined();
+    f.db.prepare('DELETE FROM authentication_incident_history WHERE id IN (?, ?)').run(first.verification.id, repair.id); history.prune(1000);
+    const next = await start(f, await f.preview({ kind: 'verification', id: retry.verification.id })); await f.finished(next.verification.id);
+    expect(history.history({ scope: f.selection }, 1000).verifications!.map(v => v.id)).toContain(next.verification.id);
+  });
+  it.each(['target_ids', 'choices'] as const)('rejects sparse %s before reserving any recheck', async field => {
+    const f = fixture(); const s = await source(f); const p = await f.preview(s.selection);
+    const request = { action: 'authentication_access_run' as const, review_id: p.id, fingerprint: p.fingerprint, attempt_id: nonce(), choices: [], target_ids: [p.targets[0]!.id] };
+    await expect(f.service.handle({ ...request, [field]: Array(1) })).rejects.toMatchObject({ code: 'bad_request' });
+    expect(f.db.prepare('SELECT count(*) AS n FROM authentication_access_verifications').get()).toEqual({ n: 1 }); expect(f.run).toHaveBeenCalledTimes(3);
+  });
+  it('reviews only non-passing reads locally and saves a selected subset without overwriting earlier passes', async () => {
+    const f = fixture(); const s = await source(f); const original = f.db.prepare('SELECT data FROM authentication_access_verifications WHERE id = ?').get(s.done.id);
+    f.inventory.groups[0]!.targets.push({ kind: 'connection', name: 'unrelated' });
+    const p = await f.preview(s.selection); expect(f.run).toHaveBeenCalledTimes(3);
+    expect(p.targets.map(t => t.target.kind)).toEqual(['collection', 'file_source']);
+    f.run.mockResolvedValueOnce([{ kind: 'file_metadata', status: 'passed' }, { kind: 'file_download', status: 'passed' }]);
+    const first = await start(f, p, [p.targets[1]!.id]); const done = await f.finished(first.verification.id);
+    expect(done.selection).toEqual(s.selection); expect(done.results.map(r => r.target)).toEqual([{ kind: 'file_source', source_id: 'work.files' }]);
+    expect(f.run).toHaveBeenCalledTimes(4); expect(f.run.mock.calls[3]![0]).toEqual({ target_id: p.targets[1]!.id, file_id: 'chosen' });
+    expect(done.results[0]!.checks).toContainEqual({ kind: 'file_download', status: 'passed' });
+    expect(f.db.prepare('SELECT data FROM authentication_access_verifications WHERE id = ?').get(s.done.id)).toEqual(original);
+    const group = (await f.service.worklist(f.inventory)).groups[0]!;
+    expect(group.access_summary!.targets.find(t => t.target.kind === 'file_source')!.latest!.id).toBe(done.id);
+    expect(group.access_summary!.targets.find(t => t.target.kind === 'connection' && t.target.name === 'work')!.latest!.id).toBe(s.done.id);
+    expect(group.access_summary!.targets.find(t => t.target.kind === 'connection' && t.target.name === 'unrelated')!.state).toBe('not_checked');
+    const history = createAuthenticationIncidentStore(f.db).history({ scope: { kind: 'all' } }, 1000);
+    expect(history.order).toEqual([done.id, s.done.id]); expect(history.verifications).toHaveLength(2);
+    expect(JSON.stringify(f.db.prepare('SELECT * FROM authentication_access_verifications').all())).not.toContain('chosen');
+  });
+  it('retains app and group context but indexes only the newly checked resource targets', async () => {
+    const f = fixture(); const s = await source(f); const appGroup = 'e'.repeat(64);
+    f.db.prepare('INSERT INTO authentication_history_groups (entry_id, group_id) VALUES (?, ?)').run(s.done.id, appGroup);
+    f.db.prepare('INSERT INTO authentication_incident_targets (incident_id, scope_key) VALUES (?, ?)').run(s.done.id, JSON.stringify({ kind: 'oauth_apps' }));
+    const p = await f.preview(s.selection); const first = await start(f, p, [p.targets[1]!.id]); await f.finished(first.verification.id);
+    const history = createAuthenticationIncidentStore(f.db);
+    for (const scope of [{ kind: 'group' as const, id: appGroup }, { kind: 'group' as const, id: f.selection.id }, { kind: 'oauth_apps' as const }, { kind: 'file_source' as const, source_id: 'work.files' }]) {
+      expect(history.history({ scope }, 1000).verifications!.map(v => v.id)).toContain(first.verification.id);
+    }
+    for (const scope of [f.target, { kind: 'collection' as const, platform: 'mail' as const, slug: 'work' }]) {
+      expect(history.history({ scope }, 1000).verifications!.map(v => v.id)).not.toContain(first.verification.id);
+    }
+  });
+  it.each(['expired', 'malformed', 'missing'] as const)('refuses a %s source before preparing any target', async cause => {
+    const f = fixture(); const s = await source(f); f.prepare.mockClear();
+    if (cause === 'expired') f.time(91 * 86_400_000);
+    if (cause === 'malformed') f.db.prepare('UPDATE authentication_incident_history SET data = ? WHERE id = ?').run(JSON.stringify({ ...s.done, results: [] }), s.done.id);
+    if (cause === 'missing') f.db.prepare('DELETE FROM authentication_incident_history WHERE id = ?').run(s.done.id);
+    await expect(f.preview(s.selection)).rejects.toMatchObject({ code: cause === 'malformed' ? 'bad_request' : 'not_found' });
+    expect(f.prepare).not.toHaveBeenCalled(); expect(f.run).toHaveBeenCalledTimes(3);
+  });
+  it('does not retry deliberately unperformed writes or a source that is still running', async () => {
+    const f = fixture(); const first = await f.start(await f.preview()); const done = await f.finished(first.verification.id);
+    await expect(f.preview({ kind: 'verification', id: done.id })).rejects.toMatchObject({ code: 'bad_request' });
+    f.db.prepare("UPDATE authentication_incident_history SET ended_at = NULL WHERE id = ?").run(done.id);
+    await expect(f.preview({ kind: 'verification', id: done.id })).rejects.toMatchObject({ code: 'not_found' });
+    expect(f.run).toHaveBeenCalledTimes(1);
+  });
+  it('rejects empty, implicit, passed, unrelated or deselected target resources before vendor work', async () => {
+    const f = fixture(); const s = await source(f); const p = await f.preview(s.selection);
+    const request = { action: 'authentication_access_run' as const, review_id: p.id, fingerprint: p.fingerprint, attempt_id: nonce(), choices: [] };
+    for (const target_ids of [undefined, [], [s.done.results[0]!.id], ['f'.repeat(64)]]) {
+      await expect(f.service.handle({ ...request, ...(target_ids === undefined ? {} : { target_ids }) })).rejects.toMatchObject({ code: 'bad_request' });
+    }
+    await expect(f.service.handle({ ...request, target_ids: [p.targets[0]!.id], choices: [{ target_id: p.targets[1]!.id, file_id: 'chosen' }] })).rejects.toMatchObject({ code: 'bad_request' });
+    expect(f.run).toHaveBeenCalledTimes(3); expect(f.db.prepare('SELECT count(*) AS n FROM authentication_access_verifications').get()).toEqual({ n: 1 });
+  });
+  it.each(['revision', 'uses', 'source', 'expiry'] as const)('requires a fresh review when %s changes', async change => {
+    const f = fixture(); const s = await source(f); const p = await f.preview(s.selection);
+    if (change === 'revision') f.revision('c'.repeat(64));
+    if (change === 'uses') f.inventory.groups[0]!.uses.push({ kind: 'recipe', id: 'new', label: 'New use' });
+    if (change === 'source') f.db.prepare('DELETE FROM authentication_incident_history WHERE id = ?').run(s.done.id);
+    if (change === 'expiry') f.time(p.expires_at);
+    await expect(start(f, p)).rejects.toMatchObject({ code: change === 'source' ? 'not_found' : 'conflict' }); expect(f.run).toHaveBeenCalledTimes(3);
+  });
+  it('rechecks source retention after asynchronous credential reads before reserving a job', async () => {
+    const f = fixture(); const s = await source(f); const p = await f.preview(s.selection); const normal = f.prepare.getMockImplementation()!;
+    f.prepare.mockImplementationOnce(async target => { const prepared = await normal(target); f.db.prepare('DELETE FROM authentication_incident_history WHERE id = ?').run(s.done.id); return prepared; });
+    await expect(start(f, p)).rejects.toMatchObject({ code: 'not_found' }); expect(f.run).toHaveBeenCalledTimes(3);
+  });
+  it('deduplicates lost replies, fences changed selections and resumes an active job without fresh preparation', async () => {
+    const f = fixture(); const s = await source(f); const p = await f.preview(s.selection); let release!: () => void;
+    f.run.mockImplementationOnce(async () => { await new Promise<void>(resolve => { release = resolve; }); return [{ kind: 'collection_read', status: 'passed' }]; });
+    const first = await start(f, p, [p.targets[0]!.id]); await vi.waitFor(() => expect(release).toBeDefined());
+    const replay = await f.service.handle(first.request); expect('verification' in replay && replay.verification.id).toBe(first.verification.id);
+    await expect(f.service.handle({ ...first.request, target_ids: [p.targets[1]!.id], choices: [] })).rejects.toMatchObject({ code: 'conflict' });
+    f.locked(true); f.inventoryRead.mockRejectedValue(new Error('offline')); f.db.prepare('DELETE FROM authentication_incident_history WHERE id = ?').run(s.done.id);
+    const resumed = await f.preview(s.selection); expect(resumed.running?.id).toBe(first.verification.id); expect(resumed.running?.results[0]!.current).toBe('unknown');
+    await expect(start(f, resumed)).rejects.toMatchObject({ code: 'conflict' });
+    f.locked(false); release(); await f.finished(first.verification.id); expect(f.run).toHaveBeenCalledTimes(4);
+  });
+  it('keeps reviewed selection and resource inputs stable across caller mutation during final validation', async () => {
+    const f = fixture(); const s = await source(f); const p = await f.preview(s.selection); const normal = f.prepare.getMockImplementation()!;
+    let entered!: () => void; let release!: () => void; const entering = new Promise<void>(resolve => { entered = resolve; }); const gate = new Promise<void>(resolve => { release = resolve; });
+    f.prepare.mockImplementationOnce(async target => { entered(); await gate; return normal(target); });
+    const ids = [p.targets[1]!.id]; const starting = start(f, p, ids); await entering; ids[0] = p.targets[0]!.id; release();
+    const first = await starting; const done = await f.finished(first.verification.id);
+    expect(done.results.map(r => r.target.kind)).toEqual(['file_source']); expect(f.run.mock.calls[3]![0]?.file_id).toBe('chosen');
+  });
+});
+
 describe('explicit saved-authentication access jobs', () => {
+  it('finishes an invalid sparse provider result as unconfirmed instead of saving unreadable evidence', async () => {
+    const f = fixture(); f.run.mockResolvedValueOnce(Array(1));
+    const first = await f.start(await f.preview()); const done = await f.finished(first.verification.id);
+    expect(done.results[0]!.checks).toEqual([{ kind: 'api_read', status: 'unconfirmed', reason: 'unavailable' }]);
+  });
+  it('can read a lost-reply receipt created before target subsets, with the original resource object ordering', async () => {
+    const f = fixture(); const p = await f.preview(); const first = await f.start(p); await f.finished(first.verification.id);
+    const request = { ...first.request, choices: [{ url: first.request.choices[0]!.url, target_id: first.request.choices[0]!.target_id }] };
+    const originalHash = createHash('sha256').update(JSON.stringify([request.review_id, request.fingerprint, request.choices])).digest('hex');
+    f.db.prepare('UPDATE authentication_access_verifications SET request_hash = ? WHERE id = ?').run(originalHash, first.verification.id);
+    const retry = await f.service.handle(request); expect('verification' in retry && retry.verification.id).toBe(first.verification.id); expect(f.run).toHaveBeenCalledTimes(1);
+  });
   it('releases closed reviews without cancelling a reserved job or breaking a lost-reply retry', async () => {
     const f = fixture();
     for (let i = 0; i < 70; i++) {
@@ -85,6 +288,60 @@ describe('explicit saved-authentication access jobs', () => {
     const decorated = await f.service.worklist(f.inventory); expect(decorated.groups[0]!.access_verification?.id).toBe(done.id);
     expect(f.inventory.groups[0]!.access_verification).toBeUndefined();
     await f.status(done.id); await f.service.worklist(f.inventory); expect(f.run).toHaveBeenCalledTimes(1);
+  });
+  it.each(['group', 'repair'] as const)('keeps %s summaries available when the newest legacy source is unreadable', async kind => {
+    const f = fixture(); const history = createAuthenticationIncidentStore(f.db); let selection: AuthenticationAccessSelection = f.selection;
+    if (kind === 'repair') {
+      const actions = createAuthenticationRepairActionStore(f.db);
+      actions.begin('connection_credentials', 'audit', { action: 'reauthorize', targets: [f.target] }, 900);
+      actions.finish('connection_credentials', 'audit', { status: 'applied' }, 950);
+      selection = { kind: 'repair', id: history.history({ scope: { kind: 'all' } }, 1000).repairs![0]!.id };
+    }
+    const first = await f.start(await f.preview(selection)); await f.finished(first.verification.id);
+    const worklist = await f.service.worklist(f.inventory); const page = await f.service.history(history.history({ scope: { kind: 'all' } }, 1000));
+    const beforeRuns = f.run.mock.calls.length;
+    for (const invalid of ['private-invalid-json', '{}', JSON.stringify({ ...(await f.status(first.verification.id)), id: 'verify-92345678-1234-4123-8123-123456789abc' })]) {
+      f.db.prepare('UPDATE authentication_access_verifications SET data = ? WHERE id = ?').run(invalid, first.verification.id);
+      const row = kind === 'group' ? (await f.service.worklist(worklist)).groups[0]! : (await f.service.history(page)).repairs![0]!;
+      expect(row.access_summary!.targets[0]!.state).toBe('unavailable'); expect(row.access_verification).toBeUndefined();
+      expect(JSON.stringify(row)).not.toContain('private-invalid-json');
+      await expect(f.status(first.verification.id)).rejects.toMatchObject({ code: 'not_configured' });
+    }
+    expect(f.run).toHaveBeenCalledTimes(beforeRuns);
+  });
+  it('shares one bounded current-authentication comparison across summaries and legacy worklist results', async () => {
+    const f = fixture(); const inventory: AuthenticationRepairWorklist = { observed_at: 1000, unavailable: [], groups: [] };
+    for (let n = 0; n < 17; n++) {
+      const group = { ...structuredClone(f.inventory.groups[0]!), id: n.toString(16).padStart(64, '0'),
+        targets: Array.from({ length: 32 }, (_, i): AuthenticationRepairTarget => ({ kind: 'connection', name: 'work-' + n + '-' + i })) };
+      inventory.groups.push(group);
+      const value: AuthenticationAccessVerification = { id: 'verify-' + n.toString(16).padStart(8, '0') + '-1234-4123-8123-123456789abc',
+        selection: { kind: 'group', id: group.id }, status: 'completed', started_at: 900, finished_at: 950, targets_truncated: false, uses: [], usage_available: true,
+        results: group.targets.map(target => ({ id: createHash('sha256').update(JSON.stringify(JSON.stringify(target))).digest('hex'), target,
+          label: 'Work', authentication_revision: 'b'.repeat(64), current: 'yes', checks: [{ kind: 'api_read', status: 'passed' }] })) };
+      f.db.prepare('INSERT INTO authentication_access_verifications (id, attempt_id, selection_key, request_hash, data, finished_at) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(value.id, 'attempt-' + n, JSON.stringify(['group', group.id]), 'test', JSON.stringify(value), value.finished_at);
+    }
+    const service = f.create(); f.prepare.mockClear(); const result = await service.worklist(inventory);
+    expect(f.prepare).toHaveBeenCalledTimes(512); expect(result.groups.at(-1)!.access_summary!.lookup_incomplete).toBe(true);
+    expect(result.groups.at(-1)!.access_verification!.results.every(r => r.current === 'unknown')).toBe(true); expect(f.run).not.toHaveBeenCalled();
+  });
+  it('accepts disjoint bulk group subsets, keeps separate receipts and does not recheck shared resources', async () => {
+    const f = fixture(); const file: AuthenticationRepairTarget = { kind: 'file_source', source_id: 'work.files' };
+    const other = { ...structuredClone(f.inventory.groups[0]!), id: 'd'.repeat(64), label: 'Other OAuth account', targets: [f.target, file] };
+    f.inventory.groups.push(other);
+    const first = await f.preview(); const second = await f.preview({ kind: 'group', id: other.id });
+    f.run.mockResolvedValueOnce([{ kind: 'api_read', status: 'failed', reason: 'access_rejected' }])
+      .mockResolvedValueOnce([{ kind: 'file_metadata', status: 'passed' }, { kind: 'file_download', status: 'unconfirmed', reason: 'resource_required' }]);
+    const left = await f.service.handle({ action: 'authentication_access_run', review_id: first.id, fingerprint: first.fingerprint, attempt_id: nonce(), choices: [], target_ids: [first.targets[0]!.id] });
+    if (left.action !== 'authentication_access_run') throw Error('run'); await f.finished(left.verification.id);
+    const fileId = second.targets.find(t => t.target.kind === 'file_source')!.id;
+    const request = { action: 'authentication_access_run' as const, review_id: second.id, fingerprint: second.fingerprint, attempt_id: nonce(), choices: [], target_ids: [fileId] };
+    const right = await f.service.handle(request); if (right.action !== 'authentication_access_run') throw Error('run'); await f.finished(right.verification.id);
+    const replay = await f.service.handle(request); expect(replay).toMatchObject({ verification: { id: right.verification.id } }); expect(f.run).toHaveBeenCalledTimes(2);
+    const worklist = await f.service.worklist(f.inventory); expect(worklist.groups[1]!.access_summary!.targets.map(t => t.latest!.id)).toEqual([left.verification.id, right.verification.id]);
+    expect(worklist.groups[1]!.access_verification!.results.map(r => r.target)).toEqual([file]);
+    expect(f.db.prepare('SELECT count(*) AS n FROM authentication_access_targets').get()).toEqual({ n: 2 });
   });
   it('returns a checking receipt before a slow vendor finishes and deduplicates a lost start reply', async () => {
     const f = fixture(); let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
@@ -151,6 +408,7 @@ describe('explicit saved-authentication access jobs', () => {
     f.db.exec("CREATE TRIGGER deny_verification BEFORE INSERT ON authentication_incident_history WHEN NEW.kind = 'verification' BEGIN SELECT RAISE(ABORT, 'receipt failure'); END");
     await expect(f.start(plan)).rejects.toThrow('receipt failure'); expect(f.run).not.toHaveBeenCalled();
     expect(f.db.prepare('SELECT count(*) AS n FROM authentication_access_verifications').get()).toEqual({ n: 0 });
+    expect(f.db.prepare('SELECT count(*) AS n FROM authentication_access_targets').get()).toEqual({ n: 0 });
   });
   it('bounds an ignored vendor abort and prevents late success from changing the saved outcome', async () => {
     vi.useFakeTimers(); const f = fixture(); let release!: () => void; let signal: AbortSignal | undefined;
@@ -167,7 +425,8 @@ describe('explicit saved-authentication access jobs', () => {
     const action = history.history({ scope: { kind: 'all' } }, 1000).repairs![0]!;
     const reply = await f.service.handle({ action: 'authentication_access_preview', selection: { kind: 'repair', id: action.id } });
     if (reply.action !== 'authentication_access_preview') throw new Error('preview'); const start = await f.start(reply.preview); await f.finished(start.verification.id);
-    const decorated = await f.service.history(history.history({ scope: { kind: 'all' } }, 1000));
+    f.prepare.mockClear(); const decorated = await f.service.history(history.history({ scope: { kind: 'all' } }, 1000));
+    expect(f.prepare).toHaveBeenCalledTimes(1);
     expect(decorated.repairs![0]).toMatchObject({ status: 'applied', access_verification: { status: 'completed' } });
     expect(decorated.repairs![0]!.recovery_confirmed_at).toBeUndefined(); expect(decorated.incidents).toEqual([]);
   });

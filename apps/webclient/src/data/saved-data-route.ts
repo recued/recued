@@ -58,7 +58,7 @@ const settingsSummary = (definition: SavedDataViewDefinition): string => {
   const labels: Record<SavedDataViewDefinition['tab'], string> = {
     today: 'Today',
     search: 'Search', contact: 'Contacts', task: 'Tasks', note: 'Notes', commitment: 'Commitments',
-    project: 'Projects', booking: 'Bookings', mail: 'Mail', calendar: 'Calendar', files: 'Files',
+    project: 'Projects', booking: 'Bookings', asset: 'Assets', mail: 'Mail', calendar: 'Calendar', files: 'Files',
     webhook: 'Webhook deliveries', memory: 'Memory', records: 'Records', form_response: 'Form responses',
     annotation: 'Annotations', link: 'Links', shared: 'Shared',
   };
@@ -696,6 +696,7 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
   pending = Promise.all([loadView(), refreshViews()]).then(() => {});
   return {
     whenLoaded: async () => { await pending; await child?.whenLoaded(); },
+    getRunPageContext: () => child?.getRunPageContext() ?? null,
     getRecoveryContextFreshness: (): 'current' | 'unavailable' =>
       disposed || child === null || loadError !== null || listError !== null
         ? 'unavailable' : child.getRecoveryContextFreshness(),

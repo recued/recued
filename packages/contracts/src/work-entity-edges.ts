@@ -43,8 +43,8 @@
 
 import type {
   WorkEntityRelationshipTarget,
-  WorkEntitySourceDeclarableKind,
 } from './work-entity-sources.js';
+import type { WorkEntityKind } from './work-entities.js';
 
 /** One stored edge row. `target_local_id` is populated ONLY after
  *  resolution succeeds (spec: never a raw vendor id in a canonical
@@ -55,7 +55,7 @@ export interface WorkEntityEdge {
   /** Owning row's vendor-native record id. */
   source_record_id: string;
   /** Owner entity kind — which canonical table `owner_local_id` lives in. */
-  owner_kind: WorkEntitySourceDeclarableKind;
+  owner_kind: WorkEntityKind;
   /** The owner's local canonical row id (`data_task.id` / `data_project.id`). */
   owner_local_id: string;
   /** The declared relationship's `local_field` — the edge kind. */

@@ -92,6 +92,7 @@ export const factControlId = (control: string): string => `run-modal-fact-${cont
 
 /** What's wired — drives the "not available" degradations. */
 export interface RunModalCaps {
+  prefillSource?: string;
   canExecute: boolean;
   canSchedule: boolean;
   canPreapprove?: boolean;
@@ -129,14 +130,23 @@ const renderVariableRows = (
   return varKeys
     .map((key) => {
       const def = variables[key];
-      return def === undefined
-        ? ''
-        : renderVariableWidget(asMailboxWidget(toWidgetShape(key, def, overrides[key]), recipe.mailbox_settings), {
-            fileRefPicker: caps.canPickFiles === true,
-            recordRefPicker: caps.canPickRecords === true,
-            mailboxPicker: caps.canPickMailboxes === true,
-            idPrefix: 'run-modal-var',
-          });
+      if (def === undefined) return '';
+      const widget = asMailboxWidget(toWidgetShape(key, def, overrides[key]), recipe.mailbox_settings);
+      const declaredType = def !== null && typeof def === 'object' && !Array.isArray(def)
+        ? (def as { type?: unknown }).type : undefined;
+      // JSON/object hints normally fall back to text. The existing JSON
+      // editor preserves objects and scalar JSON types through edits.
+      if (declaredType === 'object' || declaredType === 'json'
+        || (widget.type === 'text' && widget.list === undefined
+          && widget.value !== undefined && widget.value !== null && typeof widget.value !== 'string')) {
+        return `<p class="run-modal-meta">${e(widget.label)}: Edit <code>${e(key)}</code> in Config JSON below.</p>`;
+      }
+      return renderVariableWidget(widget, {
+        fileRefPicker: caps.canPickFiles === true,
+        recordRefPicker: caps.canPickRecords === true,
+        mailboxPicker: caps.canPickMailboxes === true,
+        idPrefix: 'run-modal-var',
+      });
     })
     .join('');
 };
@@ -744,6 +754,9 @@ export const renderRunModal = (
               ? ' aria-disabled="true"'
               : ''}>Close</button>
         </header>
+        ${state.tab === 'run' && caps.prefillSource
+          ? `<p class="run-modal-copy" data-recued-run-prefill-source>${state.prefill_cleared ? 'Unedited page values were cleared after changing accounts.' : `Prefilled from ${e(caps.prefillSource)}.`} Review the arguments before running.</p>`
+          : ''}
         <div class="run-modal-tabs" role="tablist">
           ${tabButton('run', 'Run')}
           ${

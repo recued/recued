@@ -286,7 +286,10 @@ describe('§ 1 — an unattended fire raises a real, owner-visible ask', () => {
       // projection `notification.pending_asks` serves the approvals panel.
       expect(open, name).toHaveLength(1);
       expect(panel.asks, name).toHaveLength(1);
-      expect(panel.asks[0]!.title, name).toContain('shared-write');
+      // Titled by the recipe, as the owner knows it (2026-10-19); the body
+      // still names the operation it holds.
+      expect(panel.asks[0]!.title, name).toBe(`Approve: seed-drive-${name}`);
+      expect(panel.asks[0]!.text, name).toContain('shared-write');
       expect(panel.asks[0]!.created_at, name).toBeGreaterThan(0);
     },
   );

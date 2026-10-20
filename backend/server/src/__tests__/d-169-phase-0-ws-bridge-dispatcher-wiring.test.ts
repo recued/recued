@@ -12,8 +12,10 @@ import type {
   BridgeResult,
 } from '@recued/contracts';
 import type { AuditLogStore } from '@recued/storage';
+import { DEFAULT_NOTIFICATION_SETTINGS, type AskDeliveryEnvelope } from '@recued/notification';
 
 import { createServerHandlerSet } from '../server.js';
+import { withRunAbortContext } from '../execution/run-abort-context.js';
 import {
   createClientTokenStore,
   type ClientKind,
@@ -425,6 +427,89 @@ describe('D-169 P0 follow-on - WS bridge dispatcher production wiring', () => {
       bridge_client_token_id: token_id,
       attempts: 1,
     });
+  });
+
+  it('sends no command when history preparation outlives its run', async () => {
+    const { ws, token_id } = await connectStructured('bridge', 'Stopped bridge');
+    await seedBridgeEligibility(token_id);
+    const entered = createDeferred<void>(); const held = createDeferred<void>();
+    lastSuccessfulBridgeDispatch = async () => { entered.resolve(); await held.promise; return null; };
+    const frames: BridgeWireEnvelope[] = [];
+    ws.on('message', raw => frames.push(JSON.parse(raw.toString()) as BridgeWireEnvelope));
+    const controller = new AbortController();
+    const execution = withRunAbortContext({ signal: controller.signal }, () => dispatcher().dispatch(buildRequest()))
+      .then(result => ({ result }), error => ({ error }));
+    try {
+      await entered.promise; controller.abort(); held.resolve();
+      expect(await execution).toMatchObject({ error: { code: 'run_killed' } });
+      expect(frames.filter(frame => frame.kind === 'command')).toEqual([]);
+    } finally { held.resolve(); await execution; }
+  });
+
+  it('keeps an admitted wire result and explicit cancel routable after its run stops', async () => {
+    const { ws, token_id } = await connectStructured('bridge', 'Draining bridge');
+    await seedBridgeEligibility(token_id);
+    const frames: BridgeWireEnvelope[] = [];
+    ws.on('message', raw => frames.push(JSON.parse(raw.toString()) as BridgeWireEnvelope));
+    const controller = new AbortController(); let settled = false;
+    const command = waitForBridgeCommand(ws);
+    const execution = withRunAbortContext({ signal: controller.signal }, () => dispatcher().dispatch(buildRequest()))
+      .then(result => { settled = true; return result; });
+    const envelope = await command; const command_id = envelope.command.command_id;
+    controller.abort();
+    expect(settled).toBe(false); expect(dispatcher().canResolve(command_id, token_id)).toBe(true);
+    expect(frames.filter(frame => frame.kind === 'cancel')).toEqual([]);
+    const cancelled = waitForMessage(ws, frame => frame.kind === 'cancel');
+    await expect(withRunAbortContext({ signal: controller.signal }, () => dispatcher().cancel(command_id, 'owner stop')))
+      .resolves.toEqual({ ok: true });
+    expect(await cancelled).toEqual({ kind: 'cancel', cancel: { command_id, reason: 'owner stop' } });
+    const result = okResult(command_id, { text: 'late wire receipt' }); sendBridgeResult(ws, result);
+    await expect(execution).resolves.toMatchObject({ kind: 'completed', result });
+    expect(dispatcher().canResolve(command_id, token_id)).toBe(false);
+    expect(frames.filter(frame => frame.kind === 'cancel')).toHaveLength(1);
+
+    const nextCommand = waitForBridgeCommand(ws);
+    const independent = dispatcher().dispatch(buildRequest({ recipe_run_id: 'independent-run', idempotency_key: 'independent-key' }));
+    sendBridgeResult(ws, okResult((await nextCommand).command.command_id));
+    await expect(independent).resolves.toMatchObject({ kind: 'completed' });
+  });
+
+  it('does not retry a wire queue-full result after its run stops', async () => {
+    const { ws, token_id } = await connectStructured('bridge', 'Full bridge');
+    await seedBridgeEligibility(token_id);
+    const frames: BridgeWireEnvelope[] = [];
+    ws.on('message', raw => frames.push(JSON.parse(raw.toString()) as BridgeWireEnvelope));
+    const controller = new AbortController(); const command = waitForBridgeCommand(ws);
+    const execution = withRunAbortContext({ signal: controller.signal }, () => dispatcher().dispatch(buildRequest()))
+      .then(result => ({ result }), error => ({ error }));
+    const envelope = await command; const command_id = envelope.command.command_id;
+    controller.abort(); sendBridgeResult(ws, { ...okResult(command_id), status: 'rejected',
+      error: { code: 'queue_full', message: 'Fixture queue full' } });
+    expect(await execution).toMatchObject({ error: { code: 'run_killed' } });
+    expect(dispatcher().canResolve(command_id, token_id)).toBe(false);
+    expect(frames.filter(frame => frame.kind === 'command')).toHaveLength(1);
+    expect(frames.filter(frame => frame.kind === 'cancel')).toEqual([]);
+  });
+
+  it('delivers and withdraws a reminder through the authenticated production WebSocket receipt port', async () => {
+    const { ws, token_id } = await connectStructured('bridge', 'Reminder laptop'); await waitForRegistrySize(1);
+    const port = currentHandlerSet().wsHandle.bridgeReminders; if (!port) throw new Error('Bridge reminders were not composed');
+    const frames: BridgeWireEnvelope[] = [];
+    ws.on('message', raw => { const frame = JSON.parse(raw.toString()) as BridgeWireEnvelope; frames.push(frame);
+      if (frame.kind === 'notification.probe') ws.send(JSON.stringify({ kind: 'notification_receipt', receipt: { request_id: frame.request_id, outcome: 'ready' } }));
+      if (frame.kind === 'notification') ws.send(JSON.stringify({ kind: 'notification_receipt', receipt: {
+        request_id: frame.receipt_request_id, outcome: 'displayed', notification_id: frame.notification.notification_id } }));
+      if (frame.kind === 'notification.clear') ws.send(JSON.stringify({ kind: 'notification_receipt', receipt: { request_id: frame.request_id, outcome: 'cleared', notification_id: frame.notification_id } }));
+    });
+    const destination = (await port.destinations(structuredClone(DEFAULT_NOTIFICATION_SETTINGS))).find(row => row.connection_name === token_id)!;
+    const envelope: AskDeliveryEnvelope = { destination, group_id: 'canonical-clock', attempt_id: 'attempt-one', repeat: false, asks: [
+      { ask_id: 'canonical-ask', message: { text: 'Private insurance policy 12345' }, options: [{ id: 'done', label: 'Done' }], handler_kind: 'clock', handler_payload: {},
+        fanout_channels: ['ui', 'bridge'], created_at: Date.now() },
+    ] };
+    const delivered = await port.deliver(envelope); expect(delivered.outcome).toBe('delivered');
+    expect(JSON.stringify(frames.filter(frame => frame.kind === 'notification'))).not.toContain('insurance');
+    expect(await port.withdraw({ ...envelope, ...(delivered.outcome === 'delivered' ? { provider_message_id: delivered.provider_message_id } : {}) }, ['canonical-ask'])).toBe(true);
+    expect(frames.some(frame => frame.kind === 'notification.clear')).toBe(true);
   });
 
   it('ignores a non-bridge client result frame even when it carries a real command_id', async () => {

@@ -41,6 +41,7 @@ export type ApprovalResumeAuthorityDenyReason =
   | 'bearer_binding_changed'
   | 'bearer_grant_revoked'
   | 'contract_grant_revoked'
+  | 'contract_read_scope_changed'
   | 'contract_unavailable'
   | 'door_type_denied'
   | 'seller_access_denied'
@@ -51,6 +52,8 @@ export type ApprovalResumeAuthorityDenyReason =
 
 export interface ApprovalResumeAuthorityInput {
   readonly execution_source: ExecutionSource;
+  /** Final local write check for an authenticated owner's in-flight action. */
+  readonly require_live_owner_credential?: boolean;
   /** One-of grant names that must still authorize the approved top-level call.
    * Raw-op resume passes exactly `recued_op_<op-id>`; recipe resume passes the
    * surface's current recipe grant name(s). Omission or an empty list denies
@@ -89,6 +92,7 @@ export interface ApprovalResumeAuthorityResolverDeps {
     | 'permitsDoorType'
     | 'resolveBoundContractKind'
     | 'resolveContractScopeRestrictions'
+    | 'resolveContractReadSpheres'
   >;
   readonly sellerStore?: SellerCustomerAccessAdmissionStore;
   readonly opAdmissionGate?: Pick<OpAdmissionGate, 'isOpGranted'>;
@@ -198,6 +202,7 @@ const snapshot = (
     allowed_tools: allowedTools,
     approval_required: [],
     scope_restrictions: scopeRestrictions,
+    ...(deps.contractOverlay?.resolveContractReadSpheres ? { read_spheres: deps.contractOverlay.resolveContractReadSpheres(source) } : {}),
     resolved_at: now,
   });
 };
@@ -424,6 +429,12 @@ export const createApprovalResumeAuthorityResolver = (
           );
         }
         return admitBoundInboundToken(deps, input, inbound, 'llm_gateway', now);
+      }
+
+      if (source.channel === 'user' && input.require_live_owner_credential) {
+        const client = deps.clientTokens?.get(source.client_token_id) ?? null;
+        if (!client) return deny('bearer_missing', 'The original owner credential no longer exists.');
+        if (client.revoked_at !== null) return deny('bearer_inactive', 'The original owner credential is revoked.');
       }
 
       if (executionSourceContractId(source) !== undefined) {

@@ -138,6 +138,7 @@ describe('classifyDomReadOutcome — transient `unavailable` (off the error cap)
     'capacity_gap_tab_unavailable',
     'capacity_gap_permission_missing',
     'mv3_lifecycle_killed',
+    'delivery_uncertain',
   ])('an error result coded %s → unavailable', (code) => {
     const out = classifyDomReadOutcome(
       completed(bridgeResult('error', { error: { code, message: 'm' } })),

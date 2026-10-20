@@ -172,7 +172,7 @@ describe('createMailSourceWalker', () => {
     const registry = createCollectionRegistry();
     registry.register(makeStubMailCollection('recued-chat', [fakeRecord('chat-1')]));
     registry.register(makeStubMailCollection('work', [fakeRecord('work-1')]));
-    const walker = createMailSourceWalker(registry, { isChatMailbox: (slug) => slug === 'recued-chat' });
+    const walker = createMailSourceWalker(registry, { isChatOnlyMailbox: (slug) => slug === 'recued-chat' });
 
     expect(Array.from(walker.walkAfter('', 10)).map((r) => r.target_id)).toEqual(['work-1']);
     expect(walker.fetchOne('chat-1')).toBeNull();
@@ -222,7 +222,7 @@ describe('createSourceWalkerRegistry', () => {
     const registry = createCollectionRegistry();
     registry.register(makeStubMailCollection('recued-chat', [fakeRecord('chat-1')]));
     registry.register(makeStubMailCollection('work', [fakeRecord('work-1')]));
-    const sw = createSourceWalkerRegistry({ collections: registry, isChatMailbox: (slug) => slug === 'recued-chat' });
+    const sw = createSourceWalkerRegistry({ collections: registry, isChatOnlyMailbox: (slug) => slug === 'recued-chat' });
     expect(Array.from(sw.get('mail')!.walkAfter('', 10)).map((r) => r.target_id)).toEqual(['work-1']);
   });
 

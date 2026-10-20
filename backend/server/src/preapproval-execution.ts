@@ -17,6 +17,7 @@ import type { ExecuteResponse } from './types.js';
 import type { PreparedFutureExecution, PreparedRecipeSnapshot, PreparedInvocation, PreapprovalExecutionBinding, PreapprovalPollBinding, PreapprovalMemberClaim } from './preapproval-model.js';
 import { preapprovalEffectHash, preapprovalHash, preapprovalPathKey } from './preapproval-invocations.js';
 import { readReviewedFileSnapshot } from './preapproval-mail.js';
+import { preapprovalMailAttemptId, supportsPreapprovalMailProof } from './preapproval-mail-attempt.js';
 import { createReviewedFileAccess } from './collections/file/file-snapshot.js';
 import type { FileReadResponse } from './collections/file/file-read-handler.js';
 import { withPreapprovalIo, withPreapprovalOrdinaryGuard, type PreapprovalIoContext } from './preapproval-io-context.js';
@@ -24,6 +25,7 @@ import { withContractDispatchReservation } from './contract-dispatch-reservation
 import type { ContractOverlayResolver } from './policy-contract-overlay.js';
 import { describeAiProviderRequest, readReviewedAiSnapshot } from './preapproval-ai-description.js';
 import { triggerEventContext } from './triggers/event-context.js';
+import { withLocalMutationScope } from './local-mutation-context.js';
 import { describeDomCommand, readReviewedDomSnapshot } from './preapproval-dom.js';
 
 type Hooks = NonNullable<ExecutionContext['reviewedExecution']>;
@@ -44,7 +46,8 @@ type ExecutionHost = { run_id: string; recipe: RecipeDefinition; source: Executi
 interface Frame {
   run: Run; call: EngineCall; member: PreparedInvocation; claim: PreapprovalMemberClaim;
   provider_input_hash: string;
-  progress: { delegates: number; provider_entered: boolean; file_access?: boolean; use_reservation?: object; dom_commands?: number };
+  progress: { delegates: number; provider_entered: boolean; file_access?: boolean; use_reservation?: object; dom_commands?: number;
+    calendar_provider?: 'local' | 'entered' | 'returned'; records_returned?: boolean };
   transport?: { key: string; resolved: boolean };
   gateway_resolved: boolean;
 }
@@ -64,6 +67,7 @@ export const createPreapprovalExecutionRuntime = (deps: {
   const notifications = new Map<string, () => Promise<void>>();
   const nestedWaits = new WeakMap<object, { run: Run; path: PreparedInvocation['invocation_path'] }>();
   const repository = deps.storage.repository;
+  let localReceiptCursor = '';
   const validateClaim = (frame: Frame, children = false) => withContractDispatchReservation(frame.progress.use_reservation,
     () => repository.validateClaim(frame.claim, children));
   const get = (handle: object): Run => runs.get(handle) ?? refuse('The execution binding was not issued by this server runtime.');
@@ -124,7 +128,11 @@ export const createPreapprovalExecutionRuntime = (deps: {
   };
 
   return {
-    maintain: flushNotifications,
+    async maintain() {
+      const local = await repository.reconcileLocalMutationReceipts(25, localReceiptCursor);
+      localReceiptCursor = local.checked < 25 ? '' : local.last_attempt_id;
+      await flushNotifications();
+    },
     async autoRunCandidate(futureRef: string) {
       if (!deps.storage.isReady()) throw new RpcError('preapproval_unsupported', 'Pre-approval recovery is incomplete.', 503);
       return bindCandidate(await repository.beginAutoRunPoll(futureRef, deps.storage.workers.worker_id));
@@ -306,6 +314,16 @@ export const createPreapprovalExecutionRuntime = (deps: {
       return result;
     },
 
+    /** Only a private claimed successor can substitute its host-compiled
+     * subset. Public inline recipes and locators never reach this seam. */
+    continuationRecipe(handle: object, recipeId: string): RecipeDefinition | null {
+      const run = get(handle);
+      if (!run.plan.continuation) return null;
+      if (recipeId !== run.snapshot.recipe_id || run.binding.run_id !== run.binding.root_run_id) {
+        return refuse('The continuation does not belong to this recipe run.');
+      }
+      return structuredClone(run.snapshot.definition);
+    },
     /** Install after the host resolves the actual recipe/config/source. */
     forExecution(handle: object, host: ExecutionHost): {
       reviewedExecution: Hooks;
@@ -350,6 +368,14 @@ export const createPreapprovalExecutionRuntime = (deps: {
         const frame = frames.getStore();
         return frame?.run === run ? frame : undefined;
       };
+      const catalogFrame = (call: Parameters<Hooks['catalogApproved']>[0]): Frame | undefined => {
+        const frame = current();
+        if (frame && (!frame.call.catalog || frame.member.ingredient_slug !== call.slug || frame.member.op_id !== call.operation_id
+          || frame.call.connection_name !== call.connection_name || path(call.stepMeta) !== path(frame.call.stepMeta))) {
+          return refuse('A different catalog operation cannot use this approval.');
+        }
+        return frame;
+      };
       const ioFor = (frame: Frame): PreapprovalIoContext => {
         const readChild = async (recordId: string, slot: string, index: number): Promise<FileReadResponse> => {
           if (current() !== frame) return refuse('This file read has no private reviewed parent.');
@@ -376,6 +402,25 @@ export const createPreapprovalExecutionRuntime = (deps: {
           }
         };
         const io: PreapprovalIoContext = {
+          async beforeCalendarProvider(review, external) {
+            const saved = frame.member.resource_review;
+            if (current() !== frame || !saved || saved.resources.length !== 1
+              || saved.resources[0]!.kind !== 'calendar'
+              || !['calendar-update', 'calendar-delete'].includes(frame.member.ingredient_slug)
+              || preapprovalHash(review) !== preapprovalHash(saved)
+              || external === (saved.resources[0]!.precondition.kind === 'local_version')) {
+              return refuse('The calendar mutation has no matching private resource review.');
+            }
+            await validateClaim(frame, true);
+            frame.progress.calendar_provider = external ? 'entered' : 'local';
+            // Local dispatch also leads to a write; a kill may arrive after
+            // its CAS commits, before the gateway returns the result.
+            frame.progress.provider_entered = true;
+          },
+          afterCalendarProvider() {
+            if (current() !== frame || !frame.progress.calendar_provider) return refuse('The calendar has no reviewed provider handoff.');
+            if (frame.progress.calendar_provider === 'entered') frame.progress.calendar_provider = 'returned';
+          },
           async prepareDomCommand(call, request, index) {
             await io.validateProvider('dom', call);
             const snapshot = readReviewedDomSnapshot(frame.member.dispatch_snapshot);
@@ -482,6 +527,10 @@ export const createPreapprovalExecutionRuntime = (deps: {
               frame.progress.provider_entered = true;
             });
           },
+          mailReconciliationId(instance, input) {
+            mailMatches(instance, input as unknown as Record<string, unknown>);
+            return supportsPreapprovalMailProof(frame.member.input) ? preapprovalMailAttemptId(frame.claim) : undefined;
+          },
           async beforeMailProvider(instance, input) {
             mailMatches(instance, input as unknown as Record<string, unknown>);
             await validateClaim(frame, true);
@@ -516,18 +565,20 @@ export const createPreapprovalExecutionRuntime = (deps: {
                 && preapprovalHash(actual.slice(0, prefix.length)) === preapprovalHash(prefix);
             });
             if (!explicitlyUncovered) refuse('An unexpected operation cannot inherit this execution approval.');
-            return ordinaryFrames.run({ run, call }, () => frames.run(undefined, () => withPreapprovalIo(undefined,
-              () => withPreapprovalOrdinaryGuard(() => repository.assertRunActive(run.binding), dispatch))));
+            return ordinaryFrames.run({ run, call }, () => frames.run(undefined, () => withLocalMutationScope(undefined,
+              () => withPreapprovalIo(undefined, () => withPreapprovalOrdinaryGuard(() => repository.assertRunActive(run.binding), dispatch)))));
           }
           const actual = describeActual(call, expected);
           const parent = current();
           const claim = await repository.claimMember(run.binding, actual,
             expected.parent_member_id === null ? null : parent?.claim.attempt_id ?? run.parent_attempt_id);
+          const localMutation = actual.resource_review ? await repository.localMutationScope(claim) : undefined;
           const frame: Frame = { run, call, member: actual, claim, provider_input_hash: preapprovalHash(resolveActualInput(call)),
             progress: { delegates: 0, provider_entered: false }, gateway_resolved: false };
           let result: unknown;
           try {
-            result = await withPreapprovalOrdinaryGuard(undefined, () => frames.run(frame, () => withPreapprovalIo(ioFor(frame), dispatch)));
+            result = await withLocalMutationScope(localMutation, () => withPreapprovalOrdinaryGuard(undefined,
+              () => frames.run(frame, () => withPreapprovalIo(ioFor(frame), dispatch))));
             if (actual.family === 'dom' && (!frame.progress.provider_entered
               || frame.progress.dom_commands !== readReviewedDomSnapshot(actual.dispatch_snapshot)?.commands.length)) {
               return refuse('The browser did not dispatch every reviewed command.');
@@ -540,7 +591,14 @@ export const createPreapprovalExecutionRuntime = (deps: {
               || (actual.family === 'cli' && actual.risk !== 'read' && frame.progress.provider_entered)
               || (actual.family === 'ai' && frame.progress.provider_entered);
             const domUncertain = actual.family === 'dom' && frame.progress.provider_entered;
-            await repository.settleMember(claim, { status: uncertain || domUncertain ? 'in_doubt' : 'failed', result: null,
+            // A transport error can carry its own string or numeric code
+            // (ECONNRESET, AbortError). Only a classified provider refusal
+            // establishes that an entered Calendar mutation did not apply.
+            const calendarRefused = error instanceof RpcError
+              && ['resource_conflict', 'not_found', 'forbidden', 'quota_exceeded', 'bad_request', 'unauthorized'].includes(error.code);
+            const calendarUncertain = frame.progress.calendar_provider === 'returned'
+              || (frame.progress.calendar_provider === 'entered' && !calendarRefused);
+            await repository.settleMember(claim, { status: uncertain || domUncertain || calendarUncertain || frame.progress.records_returned ? 'in_doubt' : 'failed', result: null,
               message: error instanceof Error ? error.message : 'The reviewed operation failed.' });
             throw error;
           }
@@ -555,14 +613,21 @@ export const createPreapprovalExecutionRuntime = (deps: {
           return result;
         },
         async catalogApproved(call) {
-          const frame = current();
+          const frame = catalogFrame(call);
           if (!frame) return false;
-          if (!frame.call.catalog || frame.member.ingredient_slug !== call.slug || frame.member.op_id !== call.operation_id
-            || frame.call.connection_name !== call.connection_name || path(call.stepMeta) !== path(frame.call.stepMeta)) {
-            return refuse('A different catalog operation cannot use this approval.');
-          }
           await validateClaim(frame);
           return true;
+        },
+        catalogResourceReview(call) {
+          const review = catalogFrame(call)?.member.resource_review;
+          return review ? structuredClone(review) : undefined;
+        },
+        recordsMutationReturned(call) {
+          const frame = catalogFrame(call);
+          if (!frame?.member.resource_review?.resources.every(resource => resource.kind === 'records')) {
+            return refuse('The Records write has no matching private resource review.');
+          }
+          frame.progress.records_returned = true;
         },
         async delegate(call, dispatch) {
           const frame = current();
@@ -605,9 +670,11 @@ export const createPreapprovalExecutionRuntime = (deps: {
             await validateClaim(frame);
             if (!frame.claim.commit_id) return refuse('The reviewed dispatch has no durable Commit.');
             return { commit_id: frame.claim.commit_id, action_ref: frame.claim.action_ref, idempotency_key: frame.claim.idempotency_key,
+              ...(frame.member.resource_review ? { resource_review: structuredClone(frame.member.resource_review) } : {}),
               async validate() {
                 await validateClaim(frame, frame.call.catalog && !['http', 'graphql'].includes(frame.member.family));
                 if (frame.member.ingredient_slug !== 'mail-send' && frame.member.ingredient_slug !== 'data-file-read'
+                  && !frame.member.resource_review?.resources.some(resource => resource.kind === 'calendar')
                   && !['mcp', 'http', 'graphql', 'ai', 'dom'].includes(frame.member.family)) {
                   frame.progress.provider_entered = true;
                 }

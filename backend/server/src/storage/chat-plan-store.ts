@@ -1,3 +1,8 @@
+import { isResourceReview } from '@recued/contracts';
+import { isLocalMutationReceiptSummary } from '@recued/contracts';
+import { withLocalMutationScope } from '../local-mutation-context.js';
+import { createOrdinaryLocalMutationReceipts, reviewedLocalMutationKind } from './ordinary-local-mutation-receipts.js';
+import { localMutationSummary } from '../ordinary-local-mutations.js';
 /** Durable approval + execution-receipt store.
  *
  * Production uses this SQLite-backed implementation in place of the gateway's
@@ -43,6 +48,7 @@ interface ChatPlanRow {
   tier: number;
   classification: string;
   args_encrypted: string;
+  resource_review_encrypted: string | null;
   args_hash: string;
   target_instance: string | null;
   status: string;
@@ -54,6 +60,14 @@ interface ChatPlanRow {
   execution_blob_encrypted: string | null;
   execution_updated_at: number | null;
 }
+
+const chatMutationIdentity = (row: ChatPlanRow): unknown => ({
+  plan_id: row.plan_id, session_id: row.session_id, turn_id: row.turn_id,
+  retry_of_plan_id: row.retry_of_plan_id, tool: row.tool, tier: row.tier, classification: row.classification,
+  args_encrypted: row.args_encrypted, resource_review_encrypted: row.resource_review_encrypted,
+  args_hash: row.args_hash, target_instance: row.target_instance, created_at: row.created_at,
+  resolved_at: row.resolved_at, consumed_at: row.consumed_at, execution_turn_id: row.execution_turn_id,
+});
 
 const isToolTier = (value: number): value is ToolTier =>
   value === 1 || value === 2 || value === 3;
@@ -87,14 +101,14 @@ interface PlanPayloadIdentity {
 }
 
 const aadForPlanPayload = (
-  kind: 'args' | 'execution',
+  kind: 'args' | 'execution' | 'resource_review',
   identity: PlanPayloadIdentity,
 ): Uint8Array =>
   new TextEncoder().encode(
     JSON.stringify(
-      kind === 'args'
+      kind === 'args' || kind === 'resource_review'
         ? [
-            'recued/v1/chat/plan/args',
+            'recued/v1/chat/plan/' + kind,
             identity.session_id,
             identity.plan_id,
             identity.turn_id,
@@ -128,7 +142,7 @@ const requireKey = (
 
 const encodePayload = async (
   value: unknown,
-  kind: 'args' | 'execution',
+  kind: 'args' | 'execution' | 'resource_review',
   identity: PlanPayloadIdentity,
   getKey?: ChatKeyProvider,
 ): Promise<string> => {
@@ -145,7 +159,7 @@ const encodePayload = async (
 
 const decodePayload = async (
   blob: string,
-  kind: 'args' | 'execution',
+  kind: 'args' | 'execution' | 'resource_review',
   identity: PlanPayloadIdentity,
   getKey?: ChatKeyProvider,
 ): Promise<unknown> => {
@@ -205,7 +219,11 @@ const decodePlan = async (
     if (planApproval.computePlanArgsHash(args) !== row.args_hash) {
       return undefined;
     }
-    return planShellFromRow(row, args);
+    const review = row.resource_review_encrypted == null ? undefined
+      : await decodePayload(row.resource_review_encrypted, 'resource_review', row, getKey);
+    if (review !== undefined && !isResourceReview(review)) return undefined;
+    const plan = planShellFromRow(row, args);
+    return plan && { ...plan, ...(review ? { resource_review: review } : {}) };
   } catch (error) {
     if (error instanceof ChatVaultLockedError) throw error;
     return undefined;
@@ -235,6 +253,9 @@ const validateExecution = (
           status: 'completed',
           turn_id: expectedTurnId,
           result_ref: candidate.result_ref,
+          ...(isLocalMutationReceiptSummary(candidate.local_receipt) ? { local_receipt: candidate.local_receipt } : {}),
+          ...(['running', 'failed', 'unknown'].includes(String(candidate.recovered_from))
+            ? { recovered_from: candidate.recovered_from as 'running' | 'failed' | 'unknown' } : {}),
           ...runAddress,
         }
       : undefined;
@@ -313,6 +334,24 @@ export const createSqliteChatPlanStore = (
   getKey?: ChatKeyProvider,
   now: () => number = Date.now,
 ): planApproval.PlanApprovalStore => {
+  const localMutations = createOrdinaryLocalMutationReceipts(db, now);
+  const withLocalProof = (row: ChatPlanRow, execution: ChatPlanExecutionReceipt | undefined): ChatPlanExecutionReceipt | undefined => {
+    const proof = localMutations.proof('chat_plan', row.plan_id, chatMutationIdentity(row));
+    if (!proof) {
+      if (execution?.status !== 'completed') return execution;
+      const { local_receipt: _savedSummary, recovered_from: _savedRecovery, ...history } = execution;
+      return history;
+    }
+    const receipt = localMutationSummary(proof);
+    return { status: 'completed', turn_id: row.execution_turn_id ?? row.turn_id,
+      result_ref: execution?.status === 'completed' ? execution.result_ref : 'local-mutation:' + receipt.receipt_id,
+      local_receipt: receipt,
+      ...(execution?.status === 'running' || execution?.status === 'failed' || execution?.status === 'unknown'
+        ? { recovered_from: execution.status }
+        : execution?.status === 'completed' && execution.recovered_from ? { recovered_from: execution.recovered_from } : {}),
+      ...(execution && 'run_id' in execution && execution.run_id ? { run_id: execution.run_id } : {}) };
+  };
+  const readExecution = async (row: ChatPlanRow) => withLocalProof(row, await decodeExecution(row, getKey));
   db.prepare(`
     UPDATE chat_plans
        SET execution_status = 'unknown',
@@ -372,13 +411,13 @@ export const createSqliteChatPlanStore = (
     INSERT INTO chat_plans (
       plan_id, session_id, turn_id, retry_of_plan_id, message_id,
       tool, tier, classification,
-      args_encrypted, args_hash, target_instance, status, created_at,
+      args_encrypted, resource_review_encrypted, args_hash, target_instance, status, created_at,
       resolved_at, consumed_at, execution_status, execution_turn_id,
       execution_blob_encrypted, execution_updated_at
     ) VALUES (
       @plan_id, @session_id, @turn_id, @retry_of_plan_id, NULL,
       @tool, @tier, @classification,
-      @args_encrypted, @args_hash, @target_instance, @status, @created_at,
+      @args_encrypted, @resource_review_encrypted, @args_hash, @target_instance, @status, @created_at,
       @resolved_at, @consumed_at, NULL, NULL, NULL, NULL
     )
     ON CONFLICT(plan_id) DO NOTHING
@@ -506,6 +545,7 @@ export const createSqliteChatPlanStore = (
         || origin.session_id !== plan.session_id
         || origin.status !== 'approved'
         || origin.consumed_at === null
+        || localMutations.proof('chat_plan', origin.plan_id, chatMutationIdentity(origin)) !== null
         || (
           origin.execution_status !== 'unknown'
           && origin.execution_status !== 'failed'
@@ -541,6 +581,8 @@ export const createSqliteChatPlanStore = (
     insertPlan.run({
       ...plan,
       args_encrypted,
+      resource_review_encrypted: plan.resource_review
+        ? await encodePayload(plan.resource_review, 'resource_review', plan, getKey) : null,
       retry_of_plan_id: plan.retry_of_plan_id ?? null,
       target_instance: plan.target_instance ?? null,
       resolved_at: plan.resolved_at ?? null,
@@ -646,7 +688,7 @@ export const createSqliteChatPlanStore = (
           status: 'cancelled' as ChatPlanStatus,
           created_at: row.created_at,
         };
-      const execution = await decodeExecution(row, getKey);
+      const execution = await readExecution(row);
       return {
         plan,
         ...(row.message_id !== null ? { message_id: row.message_id } : {}),
@@ -718,7 +760,13 @@ export const createSqliteChatPlanStore = (
       before.execution_status !== null
       && before.execution_status !== 'running'
     ) {
-      return decodeExecution(before, getKey);
+      return readExecution(before);
+    }
+    execution = withLocalProof(before, execution) ?? execution;
+    // Facts can close a running claim even if the vault locked after the data
+    // commit. Persist only uncertainty metadata; inspection adds the proof.
+    if (execution.status === 'completed' && execution.local_receipt && getKey && getKey() === null) {
+      execution = { status: 'unknown', turn_id: execution.turn_id };
     }
     const blob =
       execution.status === 'running' || execution.status === 'unknown'
@@ -733,12 +781,34 @@ export const createSqliteChatPlanStore = (
     });
     if (result.changes !== 1) {
       const current = rowFor(plan_id);
-      return current === undefined ? undefined : decodeExecution(current, getKey);
+      return current === undefined ? undefined : readExecution(current);
     }
-    return execution;
+    return withLocalProof(before, execution);
   };
 
   return {
+    async runLocalMutation(plan_id, turn_id, source, validate, dispatch) {
+      const before = rowFor(plan_id);
+      if (!before || before.status !== 'approved' || before.consumed_at === null
+        || before.execution_status !== 'running' || before.execution_turn_id !== turn_id) {
+        throw new Error('The local Chat action does not own a consumed dispatch.');
+      }
+      const plan = await decodePlan(before, getKey);
+      if (!plan) throw new Error('The original reviewed Chat action is unavailable.');
+      if (!plan.resource_review || !reviewedLocalMutationKind(plan.resource_review)) return withLocalMutationScope(undefined, dispatch);
+      const current = () => {
+        if (getKey) requireKey(getKey, 'commit reviewed Chat mutation');
+        const row = rowFor(plan_id);
+        if (!row || row.status !== 'approved' || row.execution_status !== 'running') {
+          throw new Error('The reviewed Chat mutation is no longer owned by this dispatch.');
+        }
+        return chatMutationIdentity(row);
+      };
+      validate();
+      const scope = localMutations.begin({ owner: 'chat_plan', ref: plan_id,
+        identity: chatMutationIdentity(before), source, review: plan.resource_review, current, validate });
+      return withLocalMutationScope(scope, dispatch);
+    },
     get,
     listPending,
     findLatest,

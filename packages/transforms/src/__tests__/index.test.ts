@@ -9,7 +9,8 @@ describe('TRANSFORMS registry', () => {
   // `date_from_text` (the time an English phrase names — see `time-phrase.ts`).
   // The count is a deliberate ratchet: an addition must be a decision, not a
   // drift, and this is where it gets noticed.
-  it('has 96 transforms', () => expect(TRANSFORMS.size).toBe(96));
+  // D-325 P39 adds held, transitions, window_change and within_distance.
+  it('has 100 transforms', () => expect(TRANSFORMS.size).toBe(100));
 
   it('all values are functions', () => {
     for (const [name, fn] of TRANSFORMS) {

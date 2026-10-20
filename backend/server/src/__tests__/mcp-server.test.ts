@@ -2170,6 +2170,15 @@ describe('D-187: direct-return native tools are op-risk gated — the retired po
       ...(contractScan !== undefined ? { contractScan } : {}),
     }) as unknown as Parameters<typeof _testing.handleToolCall>[1];
   const isError = (res: unknown): boolean => (res as { isError?: boolean }).isError === true;
+  const errorText = (res: unknown): string =>
+    (res as { content: Array<{ text: string }> }).content[0]!.text;
+  // The refusal says who can approve and that a retry changes nothing. It told the
+  // agent to "raise the door's trust", which no setting does (the D-209 #1 amendment),
+  // and which is no reason at all when the owner's own "Always" refused the call.
+  const needsOwner = (tool: string): string =>
+    `Tool '${tool}' needs approval from the owner of this Recued server, and a direct `
+    + 'tool call cannot wait for approval, so it did not run. Server policy, not a '
+    + 'transient failure; do not retry. The owner can do this in Recued instead.';
 
   it('D-187: overlay denied_ingredient_ids no longer refuses a native read — ACCESS is gate A (per-token grant)', async () => {
     // The matrix overlay's `denied_ingredient_ids` is no longer consulted by
@@ -2228,7 +2237,7 @@ describe('D-187: direct-return native tools are op-risk gated — the retired po
       depsWith(overlay, 'tok-inbound-door'),
     );
     expect(isError(res)).toBe(true);
-    expect(JSON.stringify(res)).toContain('approval');
+    expect(errorText(res)).toBe(needsOwner('recued_saveRecipe'));
     expect(recordUse).not.toHaveBeenCalled();
   });
 
@@ -2249,7 +2258,7 @@ describe('D-187: direct-return native tools are op-risk gated — the retired po
       depsWith(owner.overlay, undefined, scan),
     );
     expect(isError(ownerResult)).toBe(true);
-    expect(JSON.stringify(ownerResult)).toContain('approval');
+    expect(errorText(ownerResult)).toBe(needsOwner('recued_listRecipes'));
     expect(owner.recordUse).not.toHaveBeenCalled();
 
     const delegated = overlayWithCell(null);
@@ -2258,7 +2267,7 @@ describe('D-187: direct-return native tools are op-risk gated — the retired po
       depsWith(delegated.overlay, 'tok-inbound-door', scan),
     );
     expect(isError(delegatedResult)).toBe(true);
-    expect(JSON.stringify(delegatedResult)).toContain('approval');
+    expect(errorText(delegatedResult)).toBe(needsOwner('recued_listRecipes'));
     expect(delegated.recordUse).not.toHaveBeenCalled();
   });
 

@@ -1290,7 +1290,7 @@ export const createCalDavProvider = (
   const fetchEventIcs = async (
     calendarHref: string,
     eventHref: string,
-  ): Promise<{ body: string }> => {
+  ): Promise<{ body: string; etag: string | null }> => {
     const res = await fetcher(absolute(calendarHref, eventHref), {
       method: 'GET',
       headers: { Authorization: authHeader, Accept: 'text/calendar' },
@@ -1300,7 +1300,7 @@ export const createCalDavProvider = (
       throw toCalDavError(res.status, text, 'GET event');
     }
     const body = await res.text();
-    return { body };
+    return { body, etag: res.headers?.get('etag') ?? null };
   };
 
   /** The owner's zone, read per use: the owner can change it. */
@@ -1940,20 +1940,25 @@ export const createCalDavProvider = (
     body: string,
     operation: string,
     create = false,
-  ): Promise<void> => {
+    expected_etag?: string,
+  ): Promise<string | undefined> => {
     const res = await fetcher(absolute(cal.href, href), {
       method: 'PUT',
       headers: {
         Authorization: authHeader,
         'Content-Type': 'text/calendar; charset=utf-8',
         ...(create ? { 'If-None-Match': '*' } : {}),
+        ...(expected_etag ? { 'If-Match': expected_etag } : {}),
       },
       body,
     });
     if (!res.ok) {
       const text = await res.text().catch(() => '');
+      if (expected_etag && res.status === 412) throw new CalendarAdapterError('version_conflict',
+        'The event changed after review. No change was applied. Refresh the calendar and request a new review.');
       throw toCalDavError(res.status, text, operation);
     }
+    return res.headers?.get('etag') ?? undefined;
   };
 
   /** The payload of what was written, read back as a sync would read it: the
@@ -2077,6 +2082,12 @@ export const createCalDavProvider = (
   return {
     kind: 'caldav',
     slug: opts.slug,
+    // A CalDAV username is sometimes the account's address (iCloud, Fastmail),
+    // sometimes a short name: only the first names the account.
+    get accountEmail() {
+      const username = typeof opts.config.username === 'string' ? opts.config.username.trim() : '';
+      return username.includes('@') ? username : '';
+    },
 
     async connect() {
       // A narrow PROPFIND on the calendar-home confirms credentials.
@@ -2159,6 +2170,9 @@ export const createCalDavProvider = (
       const key = occurrenceSuffix(parts, input.source_id, 'update') ?? null;
       const href = `${cal.href.replace(/\/$/, '')}/${uid}.ics`;
       const existing = await fetchEventIcs(cal.href, href);
+      if (input.expected_etag && existing.etag !== input.expected_etag) {
+        throw new CalendarAdapterError('version_conflict', 'The event changed after review. Refresh the calendar and request a new review.');
+      }
       const object = readObject(existing.body);
       if (object === null) {
         throw new CalendarAdapterError(
@@ -2195,8 +2209,8 @@ export const createCalDavProvider = (
         written = k;
       }
       const ics = ctx.editor.render();
-      await putEvent(cal, href, ics, 'PUT (update)');
-      return payloadAfterWrite(ics, written, cal, 'PUT (update)');
+      const etag = await putEvent(cal, href, ics, 'PUT (update)', false, input.expected_etag);
+      return { ...payloadAfterWrite(ics, written, cal, 'PUT (update)'), ...(etag ? { etag } : {}) };
     },
 
     async deleteEvent(input: DeleteEventInput) {
@@ -2216,6 +2230,9 @@ export const createCalDavProvider = (
         // Whether this removes the file or one occurrence in it depends on
         // what the file holds.
         const existing = await fetchEventIcs(cal.href, href);
+        if (input.expected_etag && existing.etag !== input.expected_etag) {
+          throw new CalendarAdapterError('version_conflict', 'The event changed after review. Refresh the calendar and request a new review.');
+        }
         const object = readObject(existing.body);
         if (object === null) {
           throw new CalendarAdapterError(
@@ -2232,7 +2249,7 @@ export const createCalDavProvider = (
           if (object.overrides.length > 1) {
             const ctx = newContext(object);
             ctx.editor.deleteComponent(override.component);
-            await putEvent(cal, href, ctx.editor.render(), 'PUT (delete occurrence)');
+            await putEvent(cal, href, ctx.editor.render(), 'PUT (delete occurrence)', false, input.expected_etag);
             return;
           }
           // Its last occurrence: the file goes.
@@ -2243,7 +2260,7 @@ export const createCalDavProvider = (
             if (key !== null && key > master.startWall) {
               const ctx = newContext(object);
               truncateSeries(ctx, object, master, key);
-              await putEvent(cal, href, ctx.editor.render(), 'PUT (this_and_future truncate)');
+              await putEvent(cal, href, ctx.editor.render(), 'PUT (this_and_future truncate)', false, input.expected_etag);
               return;
             }
           } else {
@@ -2256,17 +2273,19 @@ export const createCalDavProvider = (
               if (overrideKey(object, o) === k) ctx.editor.deleteComponent(o.component);
             }
             touch(ctx, master.component, master.sequence, true);
-            await putEvent(cal, href, ctx.editor.render(), 'PUT (delete occurrence)');
+            await putEvent(cal, href, ctx.editor.render(), 'PUT (delete occurrence)', false, input.expected_etag);
             return;
           }
         }
       }
       const res = await fetcher(absolute(cal.href, href), {
         method: 'DELETE',
-        headers: { Authorization: authHeader },
+        headers: { Authorization: authHeader, ...(input.expected_etag ? { 'If-Match': input.expected_etag } : {}) },
       });
       if (!res.ok && res.status !== 404) {
         const text = await res.text().catch(() => '');
+        if (input.expected_etag && res.status === 412) throw new CalendarAdapterError('version_conflict',
+          'The event changed after review. No change was applied. Refresh the calendar and request a new review.');
         throw toCalDavError(res.status, text, 'DELETE');
       }
       if (res.status === 404) {

@@ -390,7 +390,7 @@ const listRecipeAuditEntries = (
  *  The model invokes an installed recipe by its QUALIFIED name — the
  *  `recipe.run` descriptor (§ A.13) says so — but `RecipeStore` is keyed by the
  *  BARE recipe_id with the publisher in a separate column, and
- *  `resolveRecipeId` (`chat-tool-handlers.ts`) strips the prefix before
+ *  `resolveRecipeId` (`recipe-tool-name.ts`) strips the prefix before
  *  execution. So the audit row records `send-email` while the chat activity
  *  records `bench/send-email`, and a name-equality match can never bridge them.
  *

@@ -567,6 +567,23 @@ describe('Conditional seller-access reconciler (D-196 §6.3 s2b)', () => {
   });
 });
 
+describe('Conditional watched-folder walk', () => {
+  beforeEach(resetForTest);
+
+  const registeredIds = () => housekeepingMocks.registerHousekeepingTask.mock.calls
+    .map(([task]) => (task as { meta?: { id?: string } }).meta?.id);
+
+  it('registers the walk over the watched folders it is given', async () => {
+    await composeWithDeps({ watchedFolders: { watchedFolderWalks: () => [], walkFolderAgain: async () => {} } });
+    expect(registeredIds()).toContain('watched-folder-walk');
+  });
+
+  it('registers nothing without them (a db-less boot)', async () => {
+    await composeWithDeps();
+    expect(registeredIds()).not.toContain('watched-folder-walk');
+  });
+});
+
 describe('Per-record producer registration', () => {
   beforeEach(resetForTest);
 

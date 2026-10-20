@@ -52,6 +52,7 @@ export const createPrivateAiCall = (deps: PrivateAiCallDeps): ExecuteChatAiCall 
     );
     let called = false;
     const real: ExecuteChatAiCall = (m, i, o) => {
+      opts?.before_provider_call?.();
       called = true;
       return deps.execute(m, i, o);
     };

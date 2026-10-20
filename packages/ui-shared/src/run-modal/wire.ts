@@ -11,6 +11,7 @@
 
 import {
   buildTargetRequiredMessage,
+  canonicalJSONStringify,
   CRON_PRESETS,
   DEFAULT_MISSED_SCHEDULE_POLICY,
   isMissedSchedulePolicy,
@@ -142,6 +143,7 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
   injectStyles(doc);
 
   const caps: RunModalCaps = {
+    ...(opts.prefillSource === undefined ? {} : { prefillSource: opts.prefillSource }),
     canExecute: opts.execute !== undefined,
     canSchedule: opts.schedulesList !== undefined,
     canPreapprove: opts.preapprovalPrepare !== undefined,
@@ -159,6 +161,21 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     firstPreset,
     initialDishId(opts.dishes, opts.dish_id),
   );
+  type TabArguments = Pick<RunModalState, 'config_text' | 'target_values' | 'context_values' | 'connection_choice'>;
+  const tabArguments = (): TabArguments => ({ config_text: state.config_text,
+    target_values: state.target_values, context_values: state.context_values, connection_choice: state.connection_choice });
+  // Snapshot both values and their account dependencies before the first paint.
+  const pagePrefill: WireRunModalOptions['pagePrefill'] = opts.pagePrefill
+    ? JSON.parse(JSON.stringify(opts.pagePrefill)) : undefined;
+  const pageRevisions = { ...pagePrefill?.connectionRevisions };
+  let runArguments: TabArguments = {
+    config_text: JSON.stringify(pagePrefill?.config ?? {}, null, 2),
+    target_values: Object.fromEntries(Object.entries(pagePrefill?.context ?? {})
+      .filter((entry): entry is [string, string] => typeof entry[1] === 'string')),
+    context_values: {}, connection_choice: { ...pagePrefill?.connections },
+  };
+  if (state.tab === 'run' && pagePrefill) state = { ...state, ...runArguments };
+  let setupArguments: TabArguments = { config_text: '{}', target_values: {}, context_values: {}, connection_choice: {} };
   /** D-319 — the config the Run tab shows and checks: the chosen dish's
    *  settings, what the owner changed on top. Only the changes are sent. */
   const shownConfigText = (): string => configTextAsDish(
@@ -387,6 +404,44 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
       paint(runFocus);
       return;
     }
+    const sourceSlots = Object.keys(pageRevisions).filter(slot =>
+      state.connection_choice[slot] === pagePrefill?.connections?.[slot]);
+    if (sourceSlots.length > 0) {
+      const before = canonicalJSONStringify([tabArguments(), state.dish_id, state.tab]);
+      state = { ...state, executing: true, run_error: null };
+      paint(runFocus);
+      try {
+        if (!opts.connectionSlots) throw new Error('Accounts could not be checked. Try again before running.');
+        const { slots } = await opts.connectionSlots();
+        if (destroyed) return;
+        state = { ...state, executing: false, connection_slots: slots };
+        if (before !== canonicalJSONStringify([tabArguments(), state.dish_id, state.tab])) {
+          state = { ...state, run_error: 'Arguments changed while checking accounts. Review them before running.' };
+          paint(captureFocusIdentity());
+          return;
+        }
+        const stale = sourceSlots.filter(slot => !slots.find(candidate => candidate.slot === slot)
+          ?.connections.some(connection => connection.connection_name === pagePrefill!.connections![slot]
+            && connection.connection_revision === pageRevisions[slot]));
+        if (stale.length > 0) {
+          let next = tabArguments();
+          // Parse before changing any state so an unfinished JSON edit stays intact.
+          parseRunConfig(next.config_text);
+          for (const slot of stale) {
+            next = clearPageAccount(next, slot);
+            delete pageRevisions[slot];
+          }
+          state = { ...state, ...next, run_error: 'An account used by the page changed. Review the arguments before running.' };
+          paint(captureFocusIdentity());
+          return;
+        }
+      } catch (err) {
+        if (destroyed) return;
+        state = { ...state, executing: false, run_error: errMessage(err) };
+        paint(captureFocusIdentity());
+        return;
+      }
+    }
     let config: Record<string, unknown>;
     try {
       config = parseRunConfig(state.config_text);
@@ -428,6 +483,14 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     }
     // D-320 — the Connection lines this run moved; this run only.
     const connections = runChoiceFromLines(runConnectionLines(state, opts.dishes), state.connection_choice);
+    // Page arguments belong to their source account. Keep an explicit choice
+    // even when it is the default, or the slot has only one account to show.
+    if (opts.prefillSource !== undefined) {
+      for (const [slot, name] of Object.entries(state.connection_choice)) {
+        if (state.connection_slots?.some(candidate => candidate.slot === slot
+          && candidate.connections.some(connection => connection.connection_name === name))) connections[slot] = name;
+      }
+    }
     state = { ...state, executing: true, run_error: null, result: null };
     paint(runFocus);
     try {
@@ -438,6 +501,8 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
         // D-319 — as the chosen dish; `config` is what changed for this run.
         ...(state.dish_id !== null ? { dish_id: state.dish_id } : {}),
         ...(Object.keys(connections).length > 0 ? { connections } : {}),
+        ...(sourceSlots.length > 0 ? { connection_revisions: Object.fromEntries(sourceSlots
+          .map(slot => [pagePrefill!.connections![slot]!, pageRevisions[slot]!])) } : {}),
       });
       if (destroyed) return;
       const completionFocus = captureFocusIdentity();
@@ -1108,6 +1173,15 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
   // dispatching DOM events).
   function setTab(tab: RunModalTab, focus = false): void {
     if (state.tab === tab) return;
+    if (opts.prefillSource !== undefined) {
+      if (state.tab === 'run' && tab !== 'run') {
+        runArguments = tabArguments();
+        state = { ...state, ...setupArguments };
+      } else if (state.tab !== 'run' && tab === 'run') {
+        setupArguments = tabArguments();
+        state = { ...state, ...runArguments };
+      }
+    }
     state = { ...state, tab };
     paint(focus ? { kind: 'action', value: `tab:${tab}` } : null);
     if (tab === 'schedule' && state.schedules === null && caps.canSchedule) {
@@ -1125,19 +1199,67 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     state = { ...state, config_text: text };
     paint();
   };
+  // Only the untouched values inferred from the changed account are removed.
+  // An edited value is the owner's explicit choice, and unrelated page values
+  // retain their own source. Parsing before mutation preserves raw JSON edits.
+  const clearPageAccount = (args: TabArguments, slot: string): TabArguments => {
+    const fields = pagePrefill?.connectionFields?.[slot];
+    if (!fields) return args;
+    const config = { ...parseRunConfig(args.config_text) };
+    const targets = { ...args.target_values };
+    const context = { ...args.context_values };
+    let cleared = false;
+    const clear = (values: Record<string, unknown>, initial: Readonly<Record<string, unknown>>, keys: readonly string[]) => {
+      for (const key of keys) {
+        if (Object.hasOwn(values, key) && Object.hasOwn(initial, key)
+          && canonicalJSONStringify(values[key]) === canonicalJSONStringify(initial[key])) {
+          delete values[key];
+          cleared = true;
+        }
+      }
+    };
+    clear(config, pagePrefill!.config, fields.config);
+    clear(targets, pagePrefill!.context, fields.context);
+    clear(context, pagePrefill!.context, fields.context);
+    if (!cleared) return args;
+    state = { ...state, prefill_cleared: true };
+    return { ...args, config_text: JSON.stringify(config, null, 2), target_values: targets, context_values: context };
+  };
+  const resetDishArguments = (args: TabArguments): TabArguments => {
+    let next = { ...args, config_text: '{}', connection_choice: {} };
+    for (const slot of Object.keys(pagePrefill?.connectionFields ?? {})) next = clearPageAccount(next, slot);
+    return next;
+  };
   /** D-319 — changes typed for one run are that run's alone: another dish
    *  starts from its own settings. */
   function setDish(dish_id: string | null): void {
     if (state.executing || state.dish_id === dish_id) return;
     if (dish_id !== null && !(opts.dishes ?? []).some((dish) => dish.dish_id === dish_id)) return;
     // D-320 — and its Connection lines start where that dish stands.
-    state = { ...state, dish_id, config_text: '{}', connection_choice: {}, run_error: null };
+    const next = resetDishArguments(tabArguments());
+    for (const slot of Object.keys(pageRevisions)) delete pageRevisions[slot];
+    state = { ...state, ...next, dish_id, run_error: null };
+    if (opts.prefillSource !== undefined) {
+      runArguments = resetDishArguments(runArguments);
+      setupArguments = resetDishArguments(setupArguments);
+    }
     paint({ kind: 'id', value: 'run-modal-dish', selectionStart: null, selectionEnd: null });
   }
   /** D-320 — move one Connection line; this run only. */
   function setConnection(slot: string, connection_name: string): void {
     if (state.executing) return;
-    state = { ...state, connection_choice: { ...state.connection_choice, [slot]: connection_name } };
+    let next = tabArguments();
+    if (state.tab === 'run' && pagePrefill?.connections?.[slot] !== undefined
+      && connection_name !== pagePrefill.connections[slot]) {
+      try { next = clearPageAccount(next, slot); }
+      catch {
+        state = { ...state, run_error: 'Fix Config JSON before changing accounts.' };
+        paint(captureFocusIdentity());
+        return;
+      }
+      delete pageRevisions[slot];
+    }
+    state = { ...state, ...next, connection_choice: { ...next.connection_choice, [slot]: connection_name }, run_error: null };
     paint(captureFocusIdentity());
   }
   const setTargetValue = (key: string, value: string): void => {

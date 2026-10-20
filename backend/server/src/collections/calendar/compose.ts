@@ -1,3 +1,4 @@
+import { captureCalendarResource } from './resource-review.js';
 /** D-117 Phase 9 — calendar-adapter composition helper.
  *
  *  Parallel to `composeFileStack`: assembles the adapter registry,
@@ -66,6 +67,7 @@ import {
   handleCalendarSearch,
   handleCalendarStat,
   handleCalendarUpdate,
+  prepareLocalCalendarUpdate,
   type CalendarDispatcherDeps,
 } from './calendar-dispatcher.js';
 import type {
@@ -126,6 +128,9 @@ export interface ComposeCalendarStackOptions {
 }
 
 export interface CalendarStack {
+  prepareLocalUpdate(input: Parameters<typeof prepareLocalCalendarUpdate>[1]): ReturnType<typeof prepareLocalCalendarUpdate>;
+  reviewMutation(operation: 'calendar-update' | 'calendar-delete',
+    input: Record<string, unknown>): import('@recued/contracts').ReviewedResource;
   instances: CollectionInstanceStore;
   adapters: CalendarAdapterRegistry;
   /** Read-only snapshot of every live calendar collection — used by
@@ -482,6 +487,8 @@ export const composeCalendarStack = (
   return {
     instances,
     adapters,
+    reviewMutation: (operation, input) => captureCalendarResource(dispatchDeps, operation, input),
+    prepareLocalUpdate: input => prepareLocalCalendarUpdate(dispatchDeps, input),
     listLive: () => [...live.values()],
     kernelDispatchers,
     enrollDeps,

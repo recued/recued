@@ -31,6 +31,56 @@ test('Today merges all kinds, exposes source freshness, and renders within a mob
 const mutations = (page: Page): Promise<unknown[]> => page.evaluate(() =>
   JSON.parse(sessionStorage.getItem('recued-test-today-mutations') ?? '[]') as unknown[]);
 
+for (const [button, method, outcome] of [
+  ['Done: Deliver the draft to Maya', 'work_entity.commitment.fulfill', 'Done'],
+  ['Cancel: Deliver the draft to Maya', 'work_entity.commitment.cancel', 'Cancelled'],
+] as const) {
+  test(`D-325: ${outcome} closes the original commitment in Today and survives reopening`, async ({ page }) => {
+    await boot(page);
+    await page.getByRole('button', { name: button, exact: true }).click();
+    await expect(page.locator('[data-today-task-notice]')).toHaveText(`${outcome} “Deliver the draft to Maya”.`);
+    await expect(page.locator('[data-today-task-notice]')).toBeFocused();
+    await expect(page.getByRole('link', { name: 'Deliver the draft to Maya', exact: true })).toHaveCount(0);
+    expect(await mutations(page)).toEqual([{ method, args: { id: 'promise' } }]);
+    await page.reload();
+    await expect(page.locator('[data-today-view]')).toHaveAttribute('aria-busy', 'false');
+    await expect(page.getByRole('link', { name: 'Deliver the draft to Maya', exact: true })).toHaveCount(0);
+  });
+}
+
+test('D-325: a failed close leaves the commitment open and retryable', async ({ page }) => {
+  await boot(page);
+  await page.evaluate(() => { document.documentElement.dataset.todayWriteFailure = '1'; });
+  await page.getByRole('button', { name: 'Done: Deliver the draft to Maya', exact: true }).click();
+  await expect(page.locator('[data-today-task-error]')).toContainText('Commitment close failed');
+  await expect(page.getByRole('link', { name: 'Deliver the draft to Maya', exact: true })).toBeVisible();
+  await page.evaluate(() => { delete document.documentElement.dataset.todayWriteFailure; });
+  await page.getByRole('button', { name: 'Done: Deliver the draft to Maya', exact: true }).click();
+  await expect(page.locator('[data-today-task-notice]')).toHaveText('Done “Deliver the draft to Maya”.');
+});
+
+for (const [button, method, state] of [
+  ['Done', 'work_entity.commitment.fulfill', 'fulfilled'],
+  ['Cancel commitment', 'work_entity.commitment.cancel', 'cancelled'],
+] as const) {
+  test(`D-325: the commitment dialog closes as ${state}, with no dead lifecycle field`, async ({ page }) => {
+    await boot(page);
+    await page.getByRole('link', { name: 'Deliver the draft to Maya', exact: true }).click();
+    const dialog = page.locator('.work-entity-dialog');
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByLabel('Lifecycle state', { exact: true })).toHaveCount(0);
+    await expect(dialog.getByRole('button', { name: 'Done', exact: true })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Cancel commitment', exact: true })).toBeVisible();
+    await dialog.getByRole('button', { name: button, exact: true }).click();
+    await expect(dialog.locator('[data-commitment-status]')).toHaveText(state);
+    expect(await mutations(page)).toEqual([{ method, args: { id: 'promise' } }]);
+    await dialog.locator('.work-entity-dialog-close').click();
+    await page.evaluate(() => { location.hash = '#today'; });
+    await expect(page.locator('[data-today-view]')).toHaveAttribute('aria-busy', 'false');
+    await expect(page.getByRole('link', { name: 'Deliver the draft to Maya', exact: true })).toHaveCount(0);
+  });
+}
+
 test('completes the original task in Today and keeps the confirmed result through refresh and reopening', async ({ page }) => {
   await boot(page);
   await page.getByRole('button', { name: 'Complete Send the proposal', exact: true }).click();

@@ -28,6 +28,14 @@ import type { CanonicalRecord } from './canonical-record.js';
 import type { ContactIdentityStatus, NetworkDomain } from './contact-identity.js';
 import type { OriginSurface } from './origin-provenance.js';
 import type { PersonalRecipeEntry } from './personal-recipes.js';
+import { isAssetDate } from './assets.js';
+
+export type ContactRelationship = 'family' | 'friend' | 'colleague' | 'client';
+export type ContactPrivacyMark = 'hidden' | 'deceased' | 'former_partner';
+export const isContactAnnualDate = (value: unknown): value is string => typeof value === 'string'
+  && ((/^--\d{2}-\d{2}$/u.test(value) && isAssetDate(`2000-${value.slice(2)}`)) || isAssetDate(value));
+export const contactExcludedFromProactive = (contact: Pick<ContactRecord, 'privacy_marks'>): boolean =>
+  contact.privacy_marks?.some(mark => ['hidden', 'deceased', 'former_partner'].includes(mark)) === true;
 
 /** Canonical contact record. Adapters preserve the system pair via
  *  `stampCanonicalFields` at the dispatch boundary so transforms see
@@ -143,6 +151,10 @@ export interface ContactRecord extends CanonicalRecord {
    *  unknown" is a real thing a contact book says and a Unix-ms field cannot
    *  hold it. */
   birthday?: string;
+  anniversary?: string;
+  relationship?: ContactRelationship;
+  /** Owner controls; these are never inferred from a person's messages. */
+  privacy_marks?: ContactPrivacyMark[];
   /** D-192 C-2 — WHERE each projected field's value came from. Lets a surface
    *  render "org: Acme *(from HubSpot)*" without re-reading the contribution
    *  stores. Keyed by projected field name; a field absent from the map has no

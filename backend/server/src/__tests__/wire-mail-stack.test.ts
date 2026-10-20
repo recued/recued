@@ -551,9 +551,9 @@ describe('composeMailBoot — mail facts (D-315)', () => {
     vi.mocked(deriveContactsFromMail).mockReturnValue([
       { email: 'pkginfo@ups.com', source: 'email_from', event_at: 1_700_000_000_000 },
     ] as ReturnType<typeof deriveContactsFromMail>);
-    const isChatMailbox = (slug: string): boolean => slug === 'recued-chat';
+    const isChatOnlyMailbox = (slug: string): boolean => slug === 'recued-chat';
     composeMailBoot(buildDeps({
-      mailFactWriter: writerOver(mailFactStore, bus), warehouseBus: bus, contactStore, isChatMailbox,
+      mailFactWriter: writerOver(mailFactStore, bus), warehouseBus: bus, contactStore, isChatOnlyMailbox,
     }));
     const [, storage] = lastComposeCall();
     const markNews = vi.spyOn(mailFactStore, 'markEmailNews');

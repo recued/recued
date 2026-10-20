@@ -32,6 +32,7 @@ import type { MetaFieldType } from './entity-schema.js';
 import type { EntityFieldPrivacy } from './pii-alias.js';
 import type { AcctAlias, CrmAlias, DateGranularity, FieldDerivation } from './connection-vendors.js';
 import type { WorkEntitySourceDeclaration } from './work-entity-sources.js';
+import { validateAssetClassPreset, type AssetClassPreset } from './assets.js';
 import {
   SAVED_DATA_VIEW_NAME_LIMIT, parseSavedDataViewDefinition,
   type SavedDataViewDefinition,
@@ -460,10 +461,10 @@ export type PackContentKind =
   // D-220 Slice B — a pack-shipped `intake_form` template (by value).
   | 'reception_template'
   // D-289 — a pack-shipped saved Data view (by value).
-  | 'saved_view';
+  | 'saved_view' | 'asset_class';
 export const PACK_CONTENT_KINDS: readonly PackContentKind[] = [
   'recipe', 'ingredient', 'operation_group', 'channel_binding', 'policy',
-  'composition', 'reception_template', 'saved_view',
+  'composition', 'reception_template', 'saved_view', 'asset_class',
 ];
 
 /** Role an ingredient content ref plays in the pack (spec § contents). */
@@ -946,7 +947,8 @@ export type PackContentRef =
   | PackPolicyContentRef
   | PackCompositionContentRef
   | PackReceptionTemplateContentRef
-  | PackSavedViewContentRef;
+  | PackSavedViewContentRef
+  | { type: 'asset_class'; preset: AssetClassPreset };
 
 export type PackDependencyKind = 'ingredient' | 'pack';
 export const PACK_DEPENDENCY_KINDS: readonly PackDependencyKind[] = ['ingredient', 'pack'];
@@ -1642,6 +1644,16 @@ const validatePackContentRef = (
     return;
   }
   switch (c.type) {
+    case 'asset_class': {
+      try { validateAssetClassPreset(c.preset as AssetClassPreset); }
+      catch (error) { add('error', 'pack_content_asset_class_invalid', `${path}.preset`, error instanceof Error ? error.message : String(error)); }
+      const preset = c.preset as AssetClassPreset | undefined;
+      if (owner && preset?.origin !== `pack:${owner.publisher}/${owner.slug}`) add('error', 'pack_content_asset_class_owner', `${path}.preset.origin`, 'The class origin must name this shipping pack');
+      const key = `asset_class:${preset?.id}`;
+      if (savedViewNameSeen.has(key)) add('error', 'pack_content_asset_class_duplicate', `${path}.preset.id`, 'Class is declared more than once');
+      savedViewNameSeen.add(key);
+      break;
+    }
     case 'recipe':
       validatePackRecipeRef(c, path, recipeSeen, add);
       if (c.visible !== undefined && typeof c.visible !== 'boolean') {

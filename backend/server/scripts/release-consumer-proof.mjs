@@ -9,7 +9,7 @@
  * the live manifest, leave the native addon or the web app out, or record the
  * wrong sequence floor, and a feed every byte of which is right can still be one
  * an installed server will not update to. Those were proven by hand after each
- * publish, from internal design notes step 7, which is the step a long release day
+ * publish, as a step of its own in internal design notes, which is the step a long release day
  * skips. So the publish ends here, in two legs:
  *
  *   1. INSTALL. The live `install.sh` installs into a throwaway prefix, with

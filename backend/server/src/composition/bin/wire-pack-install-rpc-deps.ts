@@ -47,6 +47,7 @@ export interface ComposePackInstallRpcDepsInput {
   /** D-289 — late-bound saved-view store; see `PackInstallRpcDeps`. Absent ⇒
    *  a manifest's `saved_view` contents install nothing. */
   getSavedDataViewStore?: () => SavedDataViewStore | undefined;
+  getAssetClasses?: () => import('../../situations/asset-classes.js').AssetClassStore | undefined;
   /** D-296 — late-bound trigger preview; see `PackInstallRpcDeps`. */
   getTriggerPreview?: PackInstallRpcDeps['getTriggerPreview'];
   /** D-315 §5.2 — the templates recipes bring, late-bound like the views. */
@@ -117,6 +118,7 @@ export const composePackInstallRpcDeps = (
     mcpBodyVisibilityStore,
     contractStore,
     getSavedDataViewStore,
+    getAssetClasses,
     getTriggerPreview,
     getRecipeMailTemplates,
     getReceptionPairs,
@@ -143,6 +145,7 @@ export const composePackInstallRpcDeps = (
     ...(mcpBodyVisibilityStore ? { mcpBodyVisibilityStore } : {}),
     ...(contractStore ? { contractStore } : {}),
     ...(getSavedDataViewStore ? { getSavedDataViewStore } : {}),
+    ...(getAssetClasses ? { getAssetClasses } : {}),
     ...(getTriggerPreview ? { getTriggerPreview } : {}),
     ...(getRecipeMailTemplates ? { getRecipeMailTemplates } : {}),
     ...(getReceptionPairs ? { getReceptionPairs } : {}),

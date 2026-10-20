@@ -10,6 +10,7 @@ import { hashForeachCheckpointSource } from '@recued/contracts';
 import Database from 'better-sqlite3';
 import { canonicalRecipeDefinition, hashRecipe } from '@recued/recipes';
 import { buildAuditEntry, type AuditEntry } from '@recued/storage';
+import { RpcError } from '@recued/contracts';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ExecuteHandlerDeps } from '../execute-handler.js';
@@ -193,6 +194,18 @@ beforeEach(() => {
 });
 
 describe('resumePeerHold durable binding', () => {
+  it('fails a claimed peer continuation before dispatch if a page account changed', async () => {
+    const f = await journalSetup({ pausedAnchor: anchor({ connection_revisions: { sales: 'a'.repeat(64) } }) });
+    try {
+      handleExecuteMock.mockRejectedValueOnce(new RpcError('connection_changed', 'The source account changed.', 409));
+      await resumePeerHold({ run_id: 'run-1', gated_step_id: 'peer-step', exchange_ref: 'exchange-1' }, f.deps);
+      expect(f.getAnchor()).toMatchObject({ commit_status: 'failed',
+        errors: [expect.objectContaining({ details: { reason: 'connection_changed' }, retryable: false })] });
+      expect(f.getAnchor()?.connection_revisions).toBeUndefined();
+      await resumePeerHold({ run_id: 'run-1', gated_step_id: 'peer-step', exchange_ref: 'exchange-1' }, f.deps);
+      expect(handleExecuteMock).toHaveBeenCalledOnce();
+    } finally { f.db.close(); }
+  });
   it('resumes only the anchor-pointed peer checkpoint, not the newest row', async () => {
     const matching = checkpoint();
     const newerApproval = checkpoint({
@@ -201,7 +214,7 @@ describe('resumePeerHold durable binding', () => {
       step_state: { wrong: true },
       created_at: NOW + 1,
     });
-    const deps = setup(anchor(), [newerApproval, matching]);
+    const deps = setup(anchor({ connection_revisions: { sales: 'a'.repeat(64) } }), [newerApproval, matching]);
 
     await expect(resumePeerHold(
       { run_id: 'run-1', gated_step_id: 'peer-step' },
@@ -214,6 +227,7 @@ describe('resumePeerHold durable binding', () => {
       recipe_id: 'recipe-1',
       config: { tenant: 'original' },
       context: { case_id: 'case-1' },
+      connection_revisions: { sales: 'a'.repeat(64) },
     });
     expect(handleExecuteMock.mock.calls[0]![2]).toMatchObject({
       run_id: 'run-1',

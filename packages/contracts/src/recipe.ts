@@ -728,6 +728,9 @@ export type ResolvedOutputSection = {
   label?: string;
   filter?: ResolvedFilterDescriptor;
   record_fields?: ResolvedRecordFieldsDescriptor;
+  /** The host's successful API call and installed entity schema establish
+   * this source. Absent when the record's provenance is unavailable. */
+  record_source?: import('./record-output-source.js').RecordOutputSource;
   /** Present only on a `table` that named an entity — the index signature
    *  below would have accepted it untyped, which is how a consumer ends up
    *  reading a field nothing declares. */

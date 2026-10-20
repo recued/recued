@@ -24,7 +24,8 @@ import {
   toFtsMatch,
 } from '@recued/fts';
 import type Database from 'better-sqlite3';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { canonicalJsonString, canonicalRecipeDefinition } from '@recued/recipes';
 
 import {
   WORK_ENTITY_LONG_TEXT_FIELD,
@@ -34,6 +35,8 @@ import {
   workEntitySearchableText,
 } from '../work-entity-searchable-text.js';
 import {
+  ASSET_SOURCE_RANKS, AssetValidationError, validateAsset, canonicalJSONStringify,
+  type Asset, type AssetPatch, type AssetWriteSource, type AssetCondition, type AssetReading,
   CONFLICT_POLICIES,
   COMMITMENT_AMOUNT_REGEX,
   COMMITMENT_CURRENCY_REGEX,
@@ -112,6 +115,7 @@ export const NOTE_TABLE = 'data_note';
 export const COMMITMENT_TABLE = 'data_commitment';
 export const PROJECT_TABLE = 'data_project';
 export const BOOKING_TABLE = 'data_booking';
+export const ASSET_TABLE = 'data_asset';
 export const NOTE_ACCESS_LEDGER_TABLE = 'note_access_ledger';
 export const NOTE_FTS_TABLE = 'data_note_fts';
 /** D-145 — the searchable index behind `work.search`, across ALL FIVE kinds.
@@ -154,6 +158,7 @@ const WORK_ENTITY_FTS_SOURCES: ReadonlyArray<readonly [WorkEntityKind, string]> 
   ['commitment', COMMITMENT_TABLE],
   ['project', PROJECT_TABLE],
   ['booking', BOOKING_TABLE],
+  ['asset', ASSET_TABLE],
 ];
 /** D-145 PA2 — per-kind default-Source memory. Server-global (per
  *  the single-user-warehouse invariant); one row per kind. The
@@ -172,6 +177,7 @@ const TABLE_FOR_KIND: Record<WorkEntityKind, string> = {
   commitment: COMMITMENT_TABLE,
   project: PROJECT_TABLE,
   booking: BOOKING_TABLE,
+  asset: ASSET_TABLE,
 };
 
 // ────────────────────────────────────────────────────────────────
@@ -617,6 +623,38 @@ export const ensureWorkEntitySchema = (db: Database.Database): void => {
     ${sourceRowIdentityIndexes('booking', BOOKING_TABLE)}
   `);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ${ASSET_TABLE} (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', class_id TEXT,
+      status TEXT NOT NULL DEFAULT 'active', holder_contact TEXT, belongs_to TEXT,
+      document_number TEXT, serial_number TEXT, exact_address TEXT,
+      audience TEXT, sphere TEXT, sphere_override TEXT,
+      retirement TEXT NOT NULL DEFAULT 'part', data_blob TEXT NOT NULL DEFAULT '{}',
+      created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0,
+      ${SOURCE_ROW_IDENTITY_DDL}
+    );
+    ${sourceRowIdentityIndexes('asset', ASSET_TABLE)}
+    CREATE INDEX IF NOT EXISTS idx_asset_parent ON ${ASSET_TABLE}(belongs_to);
+    CREATE INDEX IF NOT EXISTS idx_asset_holder ON ${ASSET_TABLE}(holder_contact, status);
+    CREATE TABLE IF NOT EXISTS asset_observation_binding (
+      id TEXT PRIMARY KEY, asset_id TEXT NOT NULL, actor_ref TEXT NOT NULL,
+      source_ref TEXT NOT NULL, fields TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+      UNIQUE(asset_id, actor_ref, source_ref)
+    );
+    CREATE TABLE IF NOT EXISTS asset_reading_history (
+      asset_id TEXT NOT NULL, field TEXT NOT NULL, as_of INTEGER NOT NULL,
+      value TEXT NOT NULL, PRIMARY KEY(asset_id, field, as_of)
+    );
+    CREATE TABLE IF NOT EXISTS asset_observation_handoff (
+      id TEXT PRIMARY KEY, asset_id TEXT NOT NULL, path TEXT NOT NULL,
+      at INTEGER NOT NULL, receipt TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_asset_observation_handoff ON asset_observation_handoff(asset_id, at DESC);
+    CREATE TABLE IF NOT EXISTS asset_retirement_job (
+      asset_id TEXT PRIMARY KEY, status TEXT NOT NULL, created_at INTEGER NOT NULL
+    );
+  `);
+
   // D-192 P4 — `source_version_token` (conditional-write precondition,
   // vendor version value VERBATIM) + `pending_write_blob` (dirty-write
   // state JSON) on every kind table that pre-dates them. Same
@@ -920,7 +958,7 @@ const reindexWorkEntityFts = (db: Database.Database): void => {
     const title = WORK_ENTITY_TITLE_FIELD[kind];
     const cols = [
       'id',
-      title === null ? "'' AS title" : title,
+      title === null ? "'' AS title" : `${title} AS title`,
       ...(long === null ? [] : [`${long} AS long_text`]),
       'source_extension_blob',
     ].join(', ');
@@ -942,6 +980,7 @@ const reindexWorkEntityFts = (db: Database.Database): void => {
           workEntityFtsKey(kind, row.id),
           workEntitySearchableText(kind, {
             title: row.title,
+            ...(title !== null ? { [title]: row.title } : {}),
             source_extension_blob: row.source_extension_blob ?? null,
             ...(long !== null ? { [long]: row.long_text ?? null } : {}),
           }),
@@ -1176,6 +1215,18 @@ export interface BookingWriteInput extends WorkEntitySourceIdentityInput {
   state_changed_at?: number;
 }
 
+/** D-325 — an explicit, ranked PATCH, not a full-row upsert. */
+export type AssetWriteInput = AssetPatch & WorkEntitySourceIdentityInput & {
+  id?: string; source: AssetWriteSource;
+  /** Host-only accepted preset baseline. Public dispatchers whitelist
+   * AssetPatch fields and never forward this authority from an op/RPC. */
+  preset_application?: boolean;
+};
+export interface AssetObservationBinding {
+  id: string; asset_id: string; actor_ref: string; source_ref: string; fields: string[]; enabled: boolean;
+  recipe_hash?: string;
+}
+
 export interface ProjectWriteInput extends WorkEntitySourceIdentityInput {
   id?: string;
   title: string;
@@ -1215,6 +1266,9 @@ export interface WorkEntityListQuery {
   excluded_source_ids?: readonly string[];
   /** Booking-only business lifecycle filter. */
   booking_lifecycle_states?: readonly BookingLifecycleState[];
+  /** Commitment-only lifecycle filter, so a reader of open obligations never
+   *  pages through every closed one. */
+  commitment_lifecycle_states?: readonly CommitmentLifecycleState[];
 }
 
 export interface WorkEntityRelationshipCounts {
@@ -1270,6 +1324,12 @@ const normalizeListQuery = (q?: WorkEntityListQuery, searchLimit = 200): Normali
       );
     }
   }
+  const commitment_lifecycle_states = [...new Set(q?.commitment_lifecycle_states ?? [])];
+  for (const state of commitment_lifecycle_states) {
+    if (!COMMITMENT_LIFECYCLE_STATE_SET.has(state)) {
+      throw new WorkEntityValidationError(`unknown commitment lifecycle_state '${String(state)}'`, 'commitment_lifecycle_states');
+    }
+  }
   return {
     sync_states,
     source_id: q?.source_id ?? '',
@@ -1279,6 +1339,7 @@ const normalizeListQuery = (q?: WorkEntityListQuery, searchLimit = 200): Normali
     offset,
     search,
     booking_lifecycle_states,
+    commitment_lifecycle_states,
     task_filter,
     time_zone: q?.time_zone,
     excluded_source_ids: q?.excluded_source_ids ?? [],
@@ -1292,9 +1353,17 @@ const buildListWhere = (
   bookingFilters = false,
   parentProjectFilter = false,
   taskFilters = false,
+  commitmentFilters = false,
 ): { sql: string; params: unknown[] } => {
   const clauses: string[] = [];
   const params: unknown[] = [];
+  if (q.commitment_lifecycle_states.length > 0) {
+    if (!commitmentFilters) {
+      throw new WorkEntityValidationError('commitment_lifecycle_states requires commitments', 'commitment_lifecycle_states');
+    }
+    clauses.push(`lifecycle_state IN (${q.commitment_lifecycle_states.map(() => '?').join(', ')})`);
+    params.push(...q.commitment_lifecycle_states);
+  }
   const placeholders = q.sync_states.map(() => '?').join(', ');
   clauses.push(`sync_state IN (${placeholders})`);
   params.push(...q.sync_states);
@@ -1440,6 +1509,29 @@ const projectSourceRowIdentity = (
   if (pw) out.pending_write = pw as unknown as WorkEntityPendingWrite;
   return out;
 };
+
+type AssetData = Pick<Asset, 'dates' | 'readings' | 'observations' | 'values' | 'anchors' | 'attributes' | 'settings' | 'rules' | 'field_sources' | 'automatic_updates'>;
+interface AssetRow extends SourceRowIdentityRow {
+  id: string; name: string; class_id: string | null; status: Asset['status']; holder_contact: string | null;
+  belongs_to: string | null; audience: Asset['audience'] | null; sphere: Asset['sphere'] | null;
+  sphere_override: Asset['sphere_override'] | null; retirement: Asset['retirement'];
+  document_number: string | null; serial_number: string | null; exact_address: string | null;
+  data_blob: string; created_at: number; updated_at: number;
+}
+const rowToAsset = (row: AssetRow): Asset => ({
+  ...JSON.parse(row.data_blob) as AssetData,
+  ...projectSourceRowIdentity(row), id: row.id, name: row.name, status: row.status,
+  retirement: row.retirement, created_at: row.created_at, updated_at: row.updated_at,
+  ...(row.class_id !== null ? { class_id: row.class_id } : {}),
+  ...(row.holder_contact !== null ? { holder_contact: row.holder_contact } : {}),
+  ...(row.belongs_to !== null ? { belongs_to: row.belongs_to } : {}),
+  ...(row.audience != null ? { audience: row.audience } : {}),
+  ...(row.sphere != null ? { sphere: row.sphere } : {}),
+  ...(row.sphere_override != null ? { sphere_override: row.sphere_override } : {}),
+  ...(row.document_number !== null ? { document_number: row.document_number } : {}),
+  ...(row.serial_number !== null ? { serial_number: row.serial_number } : {}),
+  ...(row.exact_address !== null ? { exact_address: row.exact_address } : {}),
+});
 
 interface TaskRow extends SourceRowIdentityRow {
   id: string;
@@ -2144,6 +2236,40 @@ interface WorkEntityStoreInternal {
 }
 
 export interface WorkEntityStore {
+  writeAsset(input: AssetWriteInput, now?: number): Asset;
+  ensureAsset(input: AssetWriteInput & { id: string }, now?: number): { asset: Asset; created: boolean };
+  readAsset(id: string): Asset | null;
+  readAssetEffective(id: string, canReadParent?: (parent: Asset) => boolean): Asset | null;
+  /** Bulk owner projection, equivalent to readAssetEffective with default parent
+   * access. Scoped readers must keep supplying their parent predicate above. */
+  readAssetsEffective(ids: readonly string[]): Map<string, Asset>;
+  listAssets(query?: WorkEntityListQuery): Asset[];
+  listAssetChildren(id: string): Asset[];
+  countAssets(query?: WorkEntityListQuery): number;
+  deleteAsset(id: string, opts?: { tombstone?: boolean; now?: number }): boolean;
+  walkByAssetId(after_id: string, batch_size: number): Asset[];
+  bindAssetObservations(binding: AssetObservationBinding): void;
+  /** P33 merge — the duplicate's observation bindings and reading history move to
+   * the kept asset (whose own binding for the same feed wins). Not a reassignment
+   * a caller may make: the merge has already retired the duplicate. */
+  moveAssetObservations(from_id: string, to_id: string): void;
+  /** Stable actor/source order also determines the first matching binding. */
+  listAssetObservationBindings(asset_id: string): AssetObservationBinding[];
+  /** Bounded equivalent of the individual binding reads, including empty lists.
+   * Callers must discard prefetched bindings when yielding to an owner edit. */
+  listAssetObservationBindingsForAssets(asset_ids: readonly string[]): Map<string, AssetObservationBinding[]>;
+  allowAssetAutomaticUpdates(input: { id: string; path: string;
+    expected: { value: AssetReading | AssetCondition | null; source: Asset['field_sources'][string] } }, now?: number): Asset;
+  assetObservationHandoffs(asset_id: string, limit?: number): Array<{ id: string; path: string; at: number;
+    value: AssetReading | AssetCondition | null; source: Asset['field_sources'][string] }>;
+  writeAssetObservations(input: { binding_id: string; actor_ref: string; recipe_hash?: string;
+    readings?: Record<string, AssetReading>; observations?: Record<string, Omit<AssetCondition, 'source'>> }, now?: number): { asset: Asset; changed_fields: string[]; prior?: Asset };
+  assetReadingHistory(asset_id: string, field: string, limit?: number): AssetReading[];
+  /** Latest actual sample known at an owner action, independent of retention
+   * windows used by trend queries. Never substitutes a later reading. */
+  assetReadingAt(asset_id: string, field: string, at: number): AssetReading | null;
+  pendingAssetRetirements(): Array<{ asset_id: string; status: Asset['status']; created_at: number }>;
+  acknowledgeAssetRetirement(asset_id: string): void;
   /** Metadata-only relationship aggregate for one resolved contact. The caller
    * supplies the stable contact id when resolved plus the complete merge/alias address set;
    * storage matches both key spaces because legacy/native task rows use email,
@@ -2502,7 +2628,8 @@ export const createWorkEntityStore = (
     // the registry delete commit atomically.
     const tx = db.transaction((sourceId: string): boolean => {
       const now = Date.now();
-      for (const table of [TASK_TABLE, NOTE_TABLE, COMMITMENT_TABLE, PROJECT_TABLE]) {
+      for (const kind of WORK_ENTITY_KINDS) {
+        const table = TABLE_FOR_KIND[kind];
         // Skip rows already tombstoned — those carry their own
         // deleted_at + sync_state that the orphan flip should not
         // overwrite. Live + stale_unreachable rows flip to orphaned.
@@ -2617,6 +2744,375 @@ export const createWorkEntityStore = (
       workEntitySearchableText(kind, entity as Record<string, unknown>),
     );
   };
+
+  // ── assets: ranked patches, source-bound observations and one parent ─────
+  const readAsset: WorkEntityStore['readAsset'] = id => {
+    const row = db.prepare(`SELECT * FROM ${ASSET_TABLE} WHERE id = ?`).get(id) as AssetRow | undefined;
+    return row ? rowToAsset(row) : null;
+  };
+  const persistAsset = (asset: Asset, identity: WorkEntitySourceIdentityInput, now: number): Asset => {
+    const sri = resolveSourceIdentity(identity, now, internal, 'asset');
+    const data: AssetData = { dates: asset.dates, readings: asset.readings, observations: asset.observations,
+      values: asset.values, anchors: asset.anchors, attributes: asset.attributes, settings: asset.settings,
+      rules: asset.rules, field_sources: asset.field_sources,
+      ...(asset.automatic_updates && Object.keys(asset.automatic_updates).length ? { automatic_updates: asset.automatic_updates } : {}) };
+    const params = { id: asset.id, name: asset.name, class_id: asset.class_id ?? null,
+      status: asset.status, holder_contact: asset.holder_contact ?? null, belongs_to: asset.belongs_to ?? null,
+      document_number: asset.document_number ?? null, serial_number: asset.serial_number ?? null, exact_address: asset.exact_address ?? null,
+      audience: asset.audience ?? null, sphere: asset.sphere ?? null, sphere_override: asset.sphere_override ?? null,
+      retirement: asset.retirement, created_at: asset.created_at, updated_at: now,
+      data_blob: JSON.stringify(data), ...sri };
+    const columns = Object.keys(params);
+    db.prepare(`INSERT INTO ${ASSET_TABLE} (${columns.join(',')}) VALUES (${columns.map(name => `@${name}`).join(',')})
+      ON CONFLICT(id) DO UPDATE SET ${columns.filter(name => name !== 'id' && name !== 'created_at').map(name => `${name}=excluded.${name}`).join(',')}`).run(params);
+    const written = readAsset(asset.id)!;
+    indexWorkEntity('asset', written);
+    return written;
+  };
+  const checkAssetParent = (asset: Asset): void => {
+    const seen = new Set([asset.id]);
+    let id = asset.belongs_to;
+    while (id !== undefined) {
+      if (seen.has(id)) throw new AssetValidationError('belongs_to would create a cycle', 'belongs_to');
+      seen.add(id);
+      const parent = readAsset(id);
+      if (!parent || parent.deleted_at != null || !['live', 'stale_unreachable'].includes(parent.sync_state)) {
+        throw new AssetValidationError('belongs_to must name a live asset', 'belongs_to');
+      }
+      id = parent.belongs_to;
+    }
+  };
+  const saveAssetReading = (id: string, field: string, reading: AssetReading): void => {
+    db.prepare(`INSERT INTO asset_reading_history(asset_id,field,as_of,value) VALUES(?,?,?,?)
+      ON CONFLICT(asset_id,field,as_of) DO UPDATE SET value=excluded.value`).run(id, field, reading.as_of, JSON.stringify(reading));
+  };
+  const writeAsset: WorkEntityStore['writeAsset'] = (input, now = Date.now()) => db.transaction(() => {
+    if (input.preset_application && input.source?.kind !== 'owner') throw new AssetValidationError('A preset application requires a direct owner action');
+    if (!input.source || !['owner', 'confirmed_document', 'extracted'].includes(input.source.kind)
+      || typeof input.source.ref !== 'string' || !input.source.ref.trim()) throw new AssetValidationError('An explicit fact source is required', 'source');
+    const existing = input.id ? readAsset(input.id) : null;
+    if (existing && (existing.deleted_at != null || existing.sync_state === 'tombstoned')) throw new AssetValidationError('This asset was deleted');
+    if (existing && existing.source_id !== input.source_id) throw new AssetValidationError('Assets cannot move between Sources', 'source_id');
+    const draft: Asset = existing ? structuredClone(existing) : {
+      id: input.id ?? newId(), name: '', status: 'active', source_id: input.source_id,
+      last_seen_at: now, sync_state: 'live', conflict_policy: 'recued_wins',
+      dates: {}, readings: {}, observations: {}, values: [], anchors: [], attributes: {}, settings: {}, rules: [],
+      field_sources: {}, retirement: 'part', created_at: now, updated_at: now,
+    };
+    const source = { ...input.source, at: now };
+    const accepts = (path: string): boolean => !draft.field_sources[path]
+      || ASSET_SOURCE_RANKS[draft.field_sources[path]!.kind] <= ASSET_SOURCE_RANKS[source.kind];
+    const stamp = (path: string, before: unknown, after: unknown): boolean => {
+      if (!accepts(path)) return false;
+      const prior = draft.field_sources[path];
+      let same = before === after;
+      if (!same && before !== undefined && after !== undefined) {
+        try { same = canonicalJSONStringify(before) === canonicalJSONStringify(after); }
+        catch { throw new AssetValidationError('Asset facts must contain valid JSON'); }
+      }
+      if (same && prior?.kind === source.kind && prior.ref === source.ref) return false;
+      draft.field_sources[path] = source; return true;
+    };
+    for (const name of ['name', 'class_id', 'status', 'holder_contact', 'belongs_to', 'audience', 'sphere', 'sphere_override',
+      'document_number', 'serial_number', 'exact_address', 'retirement', 'values', 'anchors'] as const) {
+      if (!Object.hasOwn(input, name) || input[name] === undefined) continue;
+      const value = input[name];
+      // A form's unchanged blank optional field is still unknown. Preserve an
+      // existing deletion receipt, but never turn an empty slot into a new pin.
+      if (value === null && draft[name] === undefined) continue;
+      if (stamp(name, draft[name], value)) {
+        if (value === null) delete (draft as unknown as Record<string, unknown>)[name];
+        else (draft as unknown as Record<string, unknown>)[name] = structuredClone(value);
+      }
+    }
+    for (const name of ['dates', 'readings', 'observations', 'attributes', 'settings'] as const) {
+      const patch = input[name];
+      if (patch === undefined) continue;
+      if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new AssetValidationError(`${name} must be an object`, name);
+      for (const [field, raw] of Object.entries(patch)) {
+        if (['__proto__', 'prototype', 'constructor'].includes(field)) throw new AssetValidationError('Reserved field name', name);
+        const path = `${name}.${field}`;
+        const observed = name === 'readings' || name === 'observations';
+        // Applying a class carries its existing fact maps forward; it is not a
+        // new manual sample and cannot reclaim a released or automated field.
+        if (input.preset_application && observed && existing && Object.hasOwn(existing[name], field)
+          && canonicalJSONStringify(raw) === canonicalJSONStringify(existing[name][field])) continue;
+        const manualSample = observed && source.kind === 'owner'
+          && (raw !== null || draft[name][field] != null || draft.field_sources[path]?.kind === 'owner');
+        if (manualSample && draft.automatic_updates?.[path] !== undefined) {
+          delete draft.automatic_updates[path];
+          if (!Object.keys(draft.automatic_updates).length) delete draft.automatic_updates;
+        }
+        if (raw === null && ['dates', 'readings', 'observations'].includes(name)
+          && (draft[name][field] === undefined || draft[name][field] === null) && !manualSample) {
+          // Declaring an unknown typed field is not an owner-authored fact.
+          // Otherwise a preset's empty battery slot would outrank its device forever.
+          (draft[name] as Record<string, unknown>)[field] = null; continue;
+        }
+        const value = name === 'observations' && raw !== null ? { ...raw as AssetCondition, source: source.ref } : raw;
+        if (stamp(path, draft[name][field], value) || manualSample) {
+          (draft[name] as Record<string, unknown>)[field] = structuredClone(value);
+          // Every explicit manual sample, including an identical sample or
+          // clear, invalidates stale handoffs even within one clock tick.
+          if (manualSample) draft.field_sources[path] = { ...source, revision: newId() };
+        }
+      }
+    }
+    if (input.rules !== undefined) {
+      if (!Array.isArray(input.rules)) throw new AssetValidationError('rules must be rows', 'rules');
+      const ids = new Set(input.rules.map(rule => rule.id));
+      if (ids.size !== input.rules.length) throw new AssetValidationError('Duplicate rule identity', 'rules.id');
+      const rows = new Map(draft.rules.map(rule => [rule.id, rule]));
+      for (const rule of input.rules) {
+        const previous = rows.get(rule.id);
+        if (input.preset_application && previous?.pinned) continue;
+        const changed = !previous || canonicalJSONStringify({ ...previous, pinned: false }) !== canonicalJSONStringify({ ...rule, pinned: false });
+        const value = { ...structuredClone(rule),
+          ...(input.source.kind === 'extracted' ? { enabled: false, pinned: false } : {}),
+          ...(existing && input.source.kind === 'owner' ? { pinned: input.preset_application ? false : changed || previous?.pinned === true || rule.pinned } : {}) };
+        if (stamp(`rules.${rule.id}`, rows.get(rule.id), value)) rows.set(rule.id, value);
+      }
+      // A replacement by the owner removes omitted rows. A lower-ranked
+      // contribution can never remove an owner row or unpin it.
+      if (input.source.kind === 'owner') for (const [id, row] of rows) {
+        if (!ids.has(id) && !(input.preset_application && row.pinned) && stamp(`rules.${id}`, row, null)) rows.delete(id);
+      }
+      draft.rules = [...rows.values()];
+    }
+    validateAsset(draft); checkAssetParent(draft);
+    if (existing && JSON.stringify(existing) === JSON.stringify(draft)) return existing;
+    const written = persistAsset(draft, { ...existing, ...input }, now);
+    for (const [field, reading] of Object.entries(written.readings)) {
+      if (reading && JSON.stringify(existing?.readings[field]) !== JSON.stringify(reading)) saveAssetReading(written.id, field, reading);
+    }
+    if (['sold', 'lost', 'retired'].includes(written.status) && existing?.status !== written.status) {
+      db.prepare(`INSERT INTO asset_retirement_job(asset_id,status,created_at) VALUES(?,?,?)
+        ON CONFLICT(asset_id) DO UPDATE SET status=excluded.status,created_at=excluded.created_at`).run(written.id, written.status, now);
+    }
+    return written;
+  })();
+  const projectAssetEffective = (id: string, read: WorkEntityStore['readAsset'], canReadParent: (parent: Asset) => boolean = () => true): Asset | null => {
+    const resolve = (key: string, seen: Set<string>): Asset | null => {
+      const own = read(key);
+      if (!own || seen.has(key)) return own;
+      seen.add(key);
+      const rawParent = own.belongs_to ? read(own.belongs_to) : null;
+      const parent = rawParent && rawParent.deleted_at == null && canReadParent(rawParent) ? resolve(rawParent.id, seen) : null;
+      if (own.sphere_override !== undefined) own.sphere = own.sphere_override;
+      if (!parent) return own;
+      const inherited: Record<string, string> = {};
+      for (const field of ['sphere', 'audience'] as const) if (own[field] === undefined && parent[field] !== undefined) {
+        (own as unknown as Record<string, unknown>)[field] = parent[field]; inherited[field] = parent.id;
+      }
+      if (!own.anchors.some(anchor => anchor.kind === 'place')) {
+        const places = parent.anchors.filter(anchor => anchor.kind === 'place');
+        if (places.length) { own.anchors.push(...places); inherited.anchors = parent.id; }
+        if (own.exact_address === undefined && parent.exact_address !== undefined) {
+          own.exact_address = parent.exact_address; inherited.exact_address = parent.id;
+        }
+      }
+      if (Object.keys(inherited).length) own.inherited_fields = inherited;
+      return own;
+    };
+    return resolve(id, new Set());
+  };
+  const readAssetEffective: WorkEntityStore['readAssetEffective'] = (id, canReadParent) => projectAssetEffective(id, readAsset, canReadParent);
+  const readAssetsEffective: WorkEntityStore['readAssetsEffective'] = ids => {
+    const result = new Map<string, Asset>(); const keys = [...new Set(ids)];
+    for (let offset = 0; offset < keys.length; offset += 200) {
+      const page = keys.slice(offset, offset + 200);
+      // UNION bounds legacy cycles. Keep a deleted parent for the ordinary
+      // projection's stop check, but do not follow its own parents unless it
+      // was explicitly requested as a root.
+      const rows = db.prepare(`WITH RECURSIVE ancestry(id,expand) AS (
+        SELECT id,1 FROM ${ASSET_TABLE} WHERE id IN (${page.map(() => '?').join(',')})
+        UNION
+        SELECT parent.id,parent.deleted_at IS NULL FROM ancestry link
+          JOIN ${ASSET_TABLE} child ON child.id=link.id
+          JOIN ${ASSET_TABLE} parent ON parent.id=child.belongs_to WHERE link.expand=1
+      ) SELECT * FROM ${ASSET_TABLE} WHERE id IN (SELECT id FROM ancestry)`).all(...page) as AssetRow[];
+      const raw = new Map(rows.map(row => { const asset = rowToAsset(row); return [asset.id, asset]; }));
+      const read = (id: string) => { const asset = raw.get(id); return asset ? structuredClone(asset) : null; };
+      for (const id of page) { const asset = projectAssetEffective(id, read); if (asset) result.set(id, asset); }
+    }
+    return result;
+  };
+  const ensureAsset: WorkEntityStore['ensureAsset'] = (input, now) => db.transaction(() => {
+    const current = readAsset(input.id);
+    return current ? { asset: current, created: false } : { asset: writeAsset(input, now), created: true };
+  })();
+  const assetWhere = (query?: WorkEntityListQuery) => {
+    const norm = normalizeListQuery(query); const where = buildListWhere({ ...norm, search: '' });
+    if (norm.search) { where.sql += ' AND (instr(js_lower(name),?)>0 OR instr(js_lower(COALESCE(class_id,\'\')),?)>0)'; where.params.push(norm.search.toLowerCase(), norm.search.toLowerCase()); }
+    return { norm, where };
+  };
+  const listAssets: WorkEntityStore['listAssets'] = query => {
+    const { norm, where } = assetWhere(query);
+    return (db.prepare(`SELECT * FROM ${ASSET_TABLE} ${where.sql} ORDER BY updated_at DESC,id ASC LIMIT ? OFFSET ?`)
+      .all(...where.params, norm.limit, norm.offset) as AssetRow[]).map(rowToAsset);
+  };
+  const countAssets: WorkEntityStore['countAssets'] = query => {
+    const { where } = assetWhere(query);
+    return (db.prepare(`SELECT COUNT(*) AS n FROM ${ASSET_TABLE} ${where.sql}`).get(...where.params) as { n: number }).n;
+  };
+  const deleteAsset: WorkEntityStore['deleteAsset'] = (id, options) => db.transaction(() => {
+    const now = options?.now ?? Date.now();
+    const result = options?.tombstone
+      ? db.prepare(`UPDATE ${ASSET_TABLE} SET deleted_at=?,sync_state='tombstoned',updated_at=? WHERE id=?`).run(now, now, id)
+      : db.prepare(`DELETE FROM ${ASSET_TABLE} WHERE id=?`).run(id);
+    if (!result.changes) return false;
+    db.prepare('DELETE FROM asset_observation_binding WHERE asset_id=?').run(id);
+    db.prepare('DELETE FROM asset_reading_history WHERE asset_id=?').run(id);
+    db.prepare('DELETE FROM asset_observation_handoff WHERE asset_id=?').run(id);
+    db.prepare('DELETE FROM asset_retirement_job WHERE asset_id=?').run(id);
+    db.prepare(`UPDATE ${ASSET_TABLE} SET belongs_to=NULL,updated_at=?,data_blob=json_remove(data_blob,'$.field_sources.belongs_to') WHERE belongs_to=?`).run(now, id);
+    ftsDeleteRecord(db, WORK_ENTITY_FTS_TABLE, workEntityFtsKey('asset', id));
+    return true;
+  })();
+  const walkByAssetId: WorkEntityStore['walkByAssetId'] = (after, limit) =>
+    (db.prepare(`SELECT * FROM ${ASSET_TABLE} WHERE id>? AND deleted_at IS NULL AND sync_state IN ('live','stale_unreachable') ORDER BY id LIMIT ?`)
+      .all(after, Math.min(MAX_LIST_LIMIT, Math.max(1, limit))) as AssetRow[]).map(rowToAsset);
+  if (!(db.prepare('PRAGMA table_info(asset_observation_binding)').all() as { name: string }[]).some(row => row.name === 'recipe_hash')) db.exec('ALTER TABLE asset_observation_binding ADD COLUMN recipe_hash TEXT');
+  const bindAssetObservations: WorkEntityStore['bindAssetObservations'] = binding => {
+    const asset = readAsset(binding.asset_id);
+    if (!asset || asset.deleted_at != null) throw new AssetValidationError('A live asset is required');
+    if (!binding.id || !binding.actor_ref || !binding.source_ref || !Array.isArray(binding.fields) || !binding.fields.length || typeof binding.enabled !== 'boolean') {
+      throw new AssetValidationError('An observation binding needs its source, actor and fields');
+    }
+    for (const path of binding.fields) {
+      const [kind, field, extra] = path.split('.');
+      if (extra || !field || (kind !== 'readings' && kind !== 'observations') || !Object.hasOwn(asset[kind], field)) {
+        throw new AssetValidationError(`Binding field '${path}' is not a typed observation`);
+      }
+    }
+    const prior = db.prepare('SELECT asset_id,actor_ref,source_ref FROM asset_observation_binding WHERE id=?').get(binding.id) as Pick<AssetObservationBinding, 'asset_id' | 'actor_ref' | 'source_ref'> | undefined;
+    if (prior && (prior.asset_id !== binding.asset_id || prior.actor_ref !== binding.actor_ref || prior.source_ref !== binding.source_ref)) throw new AssetValidationError('Binding identities cannot be reassigned');
+    db.prepare(`INSERT INTO asset_observation_binding(id,asset_id,actor_ref,source_ref,fields,enabled,recipe_hash) VALUES(@id,@asset_id,@actor_ref,@source_ref,@fields,@enabled,@recipe_hash)
+      ON CONFLICT(id) DO UPDATE SET fields=excluded.fields,enabled=excluded.enabled,recipe_hash=excluded.recipe_hash`).run({ ...binding, recipe_hash: binding.recipe_hash ?? null, fields: JSON.stringify(binding.fields), enabled: binding.enabled ? 1 : 0 });
+  };
+  const moveAssetObservations: WorkEntityStore['moveAssetObservations'] = (from, to) => db.transaction(() => {
+    if (from === to || !readAsset(to)) throw new AssetValidationError('Move observations to another live asset');
+    db.prepare('UPDATE OR IGNORE asset_observation_binding SET asset_id=? WHERE asset_id=?').run(to, from);
+    db.prepare('DELETE FROM asset_observation_binding WHERE asset_id=?').run(from);
+    db.prepare('UPDATE OR IGNORE asset_reading_history SET asset_id=? WHERE asset_id=?').run(to, from);
+    db.prepare('DELETE FROM asset_reading_history WHERE asset_id=?').run(from);
+    db.prepare('UPDATE asset_observation_handoff SET asset_id=? WHERE asset_id=?').run(to, from);
+  })();
+  type ObservationBindingRow = Omit<AssetObservationBinding, 'fields' | 'enabled' | 'recipe_hash'> & { fields: string; enabled: number; recipe_hash: string | null };
+  const observationBinding = ({ recipe_hash, ...row }: ObservationBindingRow): AssetObservationBinding =>
+    ({ ...row, ...(recipe_hash ? { recipe_hash } : {}), fields: JSON.parse(row.fields) as string[], enabled: row.enabled === 1 });
+  const listAssetObservationBindings: WorkEntityStore['listAssetObservationBindings'] = id =>
+    (db.prepare('SELECT * FROM asset_observation_binding WHERE asset_id=? ORDER BY actor_ref,source_ref').all(id) as ObservationBindingRow[]).map(observationBinding);
+  const listAssetObservationBindingsForAssets: WorkEntityStore['listAssetObservationBindingsForAssets'] = ids => {
+    const keys = [...new Set(ids)]; const result = new Map<string, AssetObservationBinding[]>(keys.map(id => [id, []]));
+    for (let offset = 0; offset < keys.length; offset += 200) {
+      const group = keys.slice(offset, offset + 200);
+      const rows = db.prepare(`SELECT * FROM asset_observation_binding WHERE asset_id IN (${group.map(() => '?').join(',')}) ORDER BY asset_id,actor_ref,source_ref`).all(...group) as ObservationBindingRow[];
+      for (const row of rows) result.get(row.asset_id)!.push(observationBinding(row));
+    }
+    return result;
+  };
+  const allowAssetAutomaticUpdates: WorkEntityStore['allowAssetAutomaticUpdates'] = (input, now = Date.now()) => db.transaction(() => {
+    const asset = readAsset(input.id);
+    if (!asset || asset.deleted_at != null || asset.sync_state !== 'live' || !['active', 'lent'].includes(asset.status)) throw new AssetValidationError('Choose an active local asset');
+    if (typeof input.path !== 'string' || !/^(readings|observations)\.[a-z][a-z0-9_]{0,63}$/u.test(input.path)) throw new AssetValidationError('Choose a reading or condition');
+    const [kind, field] = input.path.split('.') as ['readings' | 'observations', string];
+    const source = asset.field_sources[input.path];
+    // A response can be lost just before the first automatic sample arrives.
+    // Retrying cannot turn a completed handoff into an error or add a receipt.
+    if (Object.hasOwn(asset[kind], field) && source?.kind === 'observation') return asset;
+    if (!Object.hasOwn(asset[kind], field) || source?.kind !== 'owner') throw new AssetValidationError('This field no longer has a manual override. Refresh the asset.');
+    const value = asset[kind][field]!;
+    if (!input.expected || canonicalJSONStringify(input.expected) !== canonicalJSONStringify({ value, source })) throw new AssetValidationError('This field changed. Refresh the asset before allowing automatic updates.');
+    if (asset.automatic_updates?.[input.path] !== undefined) return asset;
+    if (!Number.isSafeInteger(now) || now < 0 || now > 8.64e15) throw new AssetValidationError('Invalid handoff time');
+    const draft = structuredClone(asset);
+    draft.automatic_updates = { ...draft.automatic_updates, [input.path]: Math.max(now, source.at, value?.as_of ?? 0) };
+    validateAsset(draft);
+    db.prepare('INSERT INTO asset_observation_handoff(id,asset_id,path,at,receipt) VALUES(?,?,?,?,?)')
+      .run(newId(), asset.id, input.path, now, JSON.stringify({ value, source }));
+    return persistAsset(draft, asset, now);
+  })();
+  const assetObservationHandoffs: WorkEntityStore['assetObservationHandoffs'] = (id, limit = 30) =>
+    (db.prepare('SELECT id,path,at,receipt FROM asset_observation_handoff WHERE asset_id=? ORDER BY at DESC,rowid DESC LIMIT ?')
+      .all(id, Math.min(1000, Math.max(1, limit))) as Array<{ id: string; path: string; at: number; receipt: string }>)
+      .map(({ receipt, ...row }) => ({ ...row, ...JSON.parse(receipt) as Pick<ReturnType<WorkEntityStore['assetObservationHandoffs']>[number], 'value' | 'source'> }));
+  const writeAssetObservations: WorkEntityStore['writeAssetObservations'] = (input, now = Date.now()) => db.transaction(() => {
+    if (Object.keys(input).some(key => !['binding_id', 'actor_ref', 'recipe_hash', 'readings', 'observations'].includes(key))) throw new AssetValidationError('The observation op writes only observations and readings');
+    for (const kind of ['readings', 'observations'] as const) if (input[kind] !== undefined
+      && (!input[kind] || typeof input[kind] !== 'object' || Array.isArray(input[kind]))) throw new AssetValidationError(`${kind} must be a field map`);
+    const row = db.prepare('SELECT asset_id FROM asset_observation_binding WHERE id=? AND actor_ref=? AND enabled=1').get(input.binding_id, input.actor_ref) as { asset_id: string } | undefined;
+    if (!row) throw new AssetValidationError('No enabled observation binding for this source');
+    const binding = listAssetObservationBindings(row.asset_id).find(value => value.id === input.binding_id)!;
+    if (binding.recipe_hash && binding.recipe_hash !== input.recipe_hash) throw new AssetValidationError('The bound recipe changed. Review and enroll its current version before it can write observations');
+    if (binding.recipe_hash) {
+      const installed = db.prepare('SELECT recipe_json FROM recipes WHERE recipe_id=?').get(binding.actor_ref.slice('recipe:'.length)) as { recipe_json: string } | undefined;
+      if (!installed || createHash('sha256').update(canonicalJsonString(canonicalRecipeDefinition(JSON.parse(installed.recipe_json)))).digest('hex') !== binding.recipe_hash) {
+        throw new AssetValidationError('The enrolled recipe is no longer installed at this version. Review and enroll its current version');
+      }
+    }
+    const asset = readAsset(row.asset_id);
+    if (!asset || asset.deleted_at != null || asset.sync_state !== 'live' || !['active', 'lent'].includes(asset.status)) throw new AssetValidationError('Observations cannot change a closed asset');
+    const draft = structuredClone(asset); const changed_fields: string[] = [];
+    const readingsToSave = new Set<string>(); let refreshed = false;
+    for (const kind of ['readings', 'observations'] as const) for (const [field, raw] of Object.entries(input[kind] ?? {})) {
+      const path = `${kind}.${field}`;
+      if (!binding.fields.includes(path)) throw new AssetValidationError(`This source is not bound to ${path}`);
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new AssetValidationError(`Invalid observation at ${path}`);
+      const fields = kind === 'readings' ? ['value', 'unit', 'as_of', 'evidence'] : ['active', 'certainty', 'as_of', 'evidence'];
+      if (Object.keys(raw).some(key => !fields.includes(key)) || raw.as_of > now) throw new AssetValidationError(`Unexpected field or future as-of at ${path}`);
+      const value = kind === 'observations' ? { ...raw, source: binding.source_ref } : raw;
+      const candidate = structuredClone(draft);
+      (candidate[kind] as Record<string, unknown>)[field] = value;
+      validateAsset(candidate);
+      const handoff = draft.field_sources[path]?.kind === 'owner' ? draft.automatic_updates?.[path] : undefined;
+      if ((draft.field_sources[path] && ASSET_SOURCE_RANKS[draft.field_sources[path]!.kind] > ASSET_SOURCE_RANKS.observation && handoff === undefined)
+        || (handoff !== undefined && value.as_of <= handoff)
+        || (draft[kind][field] && value.as_of < draft[kind][field]!.as_of)) continue;
+      const prior = draft[kind][field];
+      const semantic = (item: unknown): string => {
+        if (!item || typeof item !== 'object') return JSON.stringify(item);
+        const { as_of: _at, evidence: _evidence, ...facts } = item as Record<string, unknown>;
+        return canonicalJSONStringify(facts);
+      };
+      if (handoff === undefined && semantic(prior) === semantic(value)) {
+        if (prior && value.as_of > prior.as_of) {
+          (draft[kind] as Record<string, unknown>)[field] = value; refreshed = true;
+          draft.field_sources[path] = { kind: 'observation', ref: binding.source_ref, at: now };
+          if (kind === 'readings') readingsToSave.add(field);
+        }
+        continue;
+      }
+      if (prior?.as_of === value.as_of) throw new AssetValidationError('Conflicting observations have the same as-of');
+      (draft[kind] as Record<string, unknown>)[field] = value;
+      draft.field_sources[path] = { kind: 'observation', ref: binding.source_ref, at: now };
+      if (draft.automatic_updates) {
+        delete draft.automatic_updates[path];
+        if (!Object.keys(draft.automatic_updates).length) delete draft.automatic_updates;
+      }
+      changed_fields.push(path);
+      if (kind === 'readings') readingsToSave.add(field);
+    }
+    if (!changed_fields.length && !refreshed) return { asset, changed_fields };
+    // Fresh confirmation advances as-of/history, without changing the semantic
+    // update timestamp or publishing a revision. Older contradictory readings
+    // are still rejected after a fresh confirmation.
+    const written = persistAsset(draft, asset, changed_fields.length ? now : asset.updated_at);
+    for (const field of readingsToSave) saveAssetReading(written.id, field, written.readings[field]!);
+    if (!changed_fields.length) return { asset: written, changed_fields };
+    return { asset: written, changed_fields, prior: asset };
+  })();
+  const assetReadingHistory: WorkEntityStore['assetReadingHistory'] = (id, field, limit = 100) =>
+    (db.prepare('SELECT value FROM asset_reading_history WHERE asset_id=? AND field=? ORDER BY as_of DESC LIMIT ?')
+      .all(id, field, Math.min(10000, Math.max(1, limit))) as Array<{ value: string }>).map(row => JSON.parse(row.value) as AssetReading);
+  const assetReadingAt: WorkEntityStore['assetReadingAt'] = (id, field, at) => {
+    const row = db.prepare('SELECT value FROM asset_reading_history WHERE asset_id=? AND field=? AND as_of<=? ORDER BY as_of DESC LIMIT 1')
+      .get(id, field, at) as { value: string } | undefined;
+    return row ? JSON.parse(row.value) as AssetReading : null;
+  };
+  const pendingAssetRetirements: WorkEntityStore['pendingAssetRetirements'] = () =>
+    db.prepare('SELECT * FROM asset_retirement_job ORDER BY created_at,asset_id').all() as ReturnType<WorkEntityStore['pendingAssetRetirements']>;
+  const acknowledgeAssetRetirement: WorkEntityStore['acknowledgeAssetRetirement'] = id => { db.prepare('DELETE FROM asset_retirement_job WHERE asset_id=?').run(id); };
 
   const writeTask: WorkEntityStore['writeTask'] = (input, now = Date.now()) => {
     validateTaskInput(input);
@@ -3334,7 +3830,7 @@ export const createWorkEntityStore = (
 
   const listCommitments: WorkEntityStore['listCommitments'] = (q) => {
     const norm = normalizeListQuery(q);
-    const where = buildListWhere(norm);
+    const where = buildListWhere(norm, false, false, false, true);
     const rows = db
       .prepare(
         `SELECT * FROM ${COMMITMENT_TABLE} ${where.sql}
@@ -3373,7 +3869,7 @@ export const createWorkEntityStore = (
 
   const countCommitments: WorkEntityStore['countCommitments'] = (q) => {
     const norm = normalizeListQuery(q);
-    const where = buildListWhere(norm);
+    const where = buildListWhere(norm, false, false, false, true);
     const row = db
       .prepare(`SELECT COUNT(*) AS n FROM ${COMMITMENT_TABLE} ${where.sql}`)
       .get(...where.params) as { n: number };
@@ -3754,6 +4250,7 @@ export const createWorkEntityStore = (
   const readByKind: WorkEntityStore['readByKind'] = (kind, id) => {
     if (!WORK_ENTITY_KIND_SET.has(kind)) return null;
     switch (kind) {
+      case 'asset': { const a = readAsset(id); return a ? { _kind: 'asset', ...a } : null; }
       case 'task': {
         const t = readTask(id);
         return t ? { _kind: 'task', ...t } : null;
@@ -3792,6 +4289,7 @@ export const createWorkEntityStore = (
 
   const countByKind: WorkEntityStore['countByKind'] = (kind, query) => {
     switch (kind) {
+      case 'asset': return countAssets(query);
       case 'task':
         return countTasks(query);
       case 'note':
@@ -3810,6 +4308,7 @@ export const createWorkEntityStore = (
       throw new WorkEntityValidationError(`unknown kind '${kind}'`, 'kind');
     }
     switch (kind) {
+      case 'asset': return listAssets(query).map(asset => ({ _kind: 'asset' as const, ...asset }));
       case 'task':
         return listTasks(query).map((t) => ({ _kind: 'task' as const, ...t }));
       case 'note':
@@ -3922,6 +4421,10 @@ export const createWorkEntityStore = (
     findCommitment,
     deleteCommitment,
     countCommitments,
+    writeAsset, ensureAsset, readAsset, readAssetEffective, readAssetsEffective, listAssets, countAssets, deleteAsset, walkByAssetId,
+    listAssetChildren: id => (db.prepare(`SELECT * FROM ${ASSET_TABLE} WHERE belongs_to=? AND deleted_at IS NULL ORDER BY id`).all(id) as AssetRow[]).map(rowToAsset),
+    bindAssetObservations, moveAssetObservations, listAssetObservationBindings, listAssetObservationBindingsForAssets, allowAssetAutomaticUpdates, assetObservationHandoffs, writeAssetObservations, assetReadingHistory, assetReadingAt,
+    pendingAssetRetirements, acknowledgeAssetRetirement,
     writeBooking,
     ensureBooking,
     readBooking,

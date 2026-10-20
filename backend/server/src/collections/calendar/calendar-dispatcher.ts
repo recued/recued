@@ -1,3 +1,7 @@
+import { normalizeCalendarMutationPatch } from './mutation-patch.js';
+import { assertReviewedResource, currentResourceReview } from '../../resource-review.js';
+import { captureCalendarResource } from './resource-review.js';
+import { currentPreapprovalIo } from '../../preapproval-io-context.js';
 /** D-117 Phase 6 — calendar dispatcher.
  *
  *  Eight kernel ingredients route through this module:
@@ -367,29 +371,6 @@ const withAllDayDays = <T extends { start_at: number; end_at: number; timezone: 
     ? event
     : { ...event, ...normalizeAllDaySpan(event.start_at, event.end_at, event.timezone) };
 
-/** The same for a patch: when the event it leaves is all-day and the patch
- *  moves it, or makes a timed event all-day, its times become days. */
-const withAllDayPatch = (
-  patch: Partial<CanonicalEvent>,
-  existing: CanonicalEvent,
-): Partial<CanonicalEvent> => {
-  const allDay = patch.is_all_day ?? existing.is_all_day;
-  const becomesAllDay = patch.is_all_day === true && !existing.is_all_day;
-  if (!allDay || (patch.start_at === undefined && patch.end_at === undefined && !becomesAllDay)) return patch;
-  const days = withAllDayDays({
-    start_at: patch.start_at ?? existing.start_at,
-    end_at: patch.end_at ?? existing.end_at,
-    timezone: patch.timezone || existing.timezone,
-    is_all_day: true,
-  });
-  // Only the times the patch named, or that becoming days changed.
-  return {
-    ...patch,
-    ...(patch.start_at !== undefined || days.start_at !== existing.start_at ? { start_at: days.start_at } : {}),
-    ...(patch.end_at !== undefined || days.end_at !== existing.end_at ? { end_at: days.end_at } : {}),
-  };
-};
-
 export const handleCalendarCreate = async (
   deps: CalendarDispatcherDeps,
   input: {
@@ -416,32 +397,28 @@ export const handleCalendarCreate = async (
  *  can decide. CalDAV does the same split locally inside its adapter
  *  (single call) since it holds the ICS — the dispatcher just forwards
  *  the scope through and upserts the returned new-series payload. */
-/** A patch that moves an event, with the event's own zone and all-day flag
- *  filled in where it names neither.
- *
- *  ⛔⛔ WITHOUT THEM A MOVE ON GOOGLE OR OUTLOOK WAS DROPPED, AND THE STEP
- *  SUCCEEDED. Both adapters send a new start / end only alongside
- *  `patch.timezone` (`fromUpdatePatch`), so `{start_at, end_at}` alone — what
- *  the Reschedule button's recipe and the invite recipe's "the organizer moved
- *  it" step both send — reached the provider as an empty change, and the
- *  verified read-back stored the OLD time while the run reported success.
- *  Found 2026-10-07 while giving the invite recipe the owner's zone.
- *
- *  ⚠ The event's own values, never a guess: a move keeps the zone the event
- *  is shown in and stays timed or all-day as it was. An empty stored zone (an
- *  all-day CalDAV event with no TZID) reads as UTC, the all-day convention. */
-const withEventClock = (
-  patch: Partial<CanonicalEvent>,
-  existing: CanonicalEvent,
-): Partial<CanonicalEvent> => {
-  if (patch.start_at === undefined && patch.end_at === undefined) return patch;
-  return {
-    ...patch,
-    ...(patch.timezone === undefined || patch.timezone === ''
-      ? { timezone: existing.timezone || 'UTC' }
-      : {}),
-    ...(patch.is_all_day === undefined ? { is_all_day: existing.is_all_day } : {}),
-  };
+/** Only the built-in local provider may prepare a write for a shared commit.
+ * Provider/body preparation never runs while holding the realm write lock. */
+export const prepareLocalCalendarUpdate = async (deps: CalendarDispatcherDeps,
+  input: { slug: string; source_id: string; patch: Partial<CanonicalEvent>; scope?: CalendarMutationScope }):
+Promise<import('../../local-transaction.js').PreparedLocalWrite> => {
+  const { collection } = requireWrite(deps, input.slug, 'update_event');
+  if (collection.provider.kind !== 'local' || !collection.prepareVerifiedUpsert
+    || (input.scope != null && input.scope !== 'this_instance') || !currentResourceReview()) {
+    throw new RpcError('local_changes_unsupported', 'Atomic changes require a reviewed single-event local Calendar update.', 409);
+  }
+  const guarded = assertReviewedResource(captureCalendarResource(deps, 'calendar-update', input as unknown as Record<string, unknown>));
+  if (guarded?.precondition.kind !== 'local_version') throw new RpcError('local_changes_unsupported', 'A local Calendar version is required.', 409);
+  const row = collection.table.get(input.source_id)!;
+  const payload = await collection.provider.updateEvent({ calendar_id: row.event.calendar_id, source_id: input.source_id,
+    patch: normalizeCalendarMutationPatch(input.patch, row.event), scope: 'this_instance' });
+  const prepared = await collection.prepareVerifiedUpsert(payload, guarded.precondition.value);
+  return { db: prepared.db, apply: () => {
+    const live = requireWrite(deps, input.slug, 'update_event').collection;
+    if (live !== collection || live.provider.kind !== 'local') throw new RpcError('resource_conflict', 'The local Calendar was replaced.', 409);
+    assertReviewedResource(captureCalendarResource(deps, 'calendar-update', input as unknown as Record<string, unknown>));
+    prepared.apply();
+  } };
 };
 
 export const handleCalendarUpdate = async (
@@ -462,9 +439,13 @@ export const handleCalendarUpdate = async (
       404,
     );
   }
+  const guarded = currentResourceReview() ? assertReviewedResource(
+    captureCalendarResource(deps, 'calendar-update', input as unknown as Record<string, unknown>)) : undefined;
+  const expected_etag = guarded?.precondition.kind === 'etag' ? guarded.precondition.value : undefined;
+  const expected_version = guarded?.precondition.kind === 'local_version' ? guarded.precondition.value : undefined;
   const calendar_id = existing.event.calendar_id;
   const scope: CalendarMutationScope = input.scope ?? 'this_instance';
-  const patch = withAllDayPatch(withEventClock(input.patch, existing.event), existing.event);
+  const patch = normalizeCalendarMutationPatch(input.patch, existing.event);
 
   if (scope === 'this_and_future') {
     // CalDAV holds the whole series as one ICS file, so its adapter
@@ -483,21 +464,26 @@ export const handleCalendarUpdate = async (
             scope: 'this_and_future',
           }),
       );
-      await collection.applyVerifiedUpsert(payload);
+      await collection.applyVerifiedUpsert(payload, expected_version);
       return { source_id: payload.event.source_id };
     }
     return executeThisAndFuture(deps, collection, { ...input, patch }, existing.event, calendar_id);
   }
 
+  const reviewedIo = currentPreapprovalIo();
+  const review = currentResourceReview();
+  if (review) await reviewedIo?.beforeCalendarProvider?.(review, collection.provider.kind !== 'local');
   const payload = await callCalendarAdapter(input.slug, 'calendar-update', () =>
     collection.provider.updateEvent({
       calendar_id,
       source_id: input.source_id,
+      ...(expected_etag ? { expected_etag } : {}),
       patch,
       scope,
     }),
   );
-  await collection.applyVerifiedUpsert(payload);
+  if (review) reviewedIo?.afterCalendarProvider?.();
+  await collection.applyVerifiedUpsert(payload, expected_version);
   return { source_id: payload.event.source_id };
 };
 
@@ -616,22 +602,31 @@ export const handleCalendarDelete = async (
       404,
     );
   }
+  const guarded = currentResourceReview() ? assertReviewedResource(
+    captureCalendarResource(deps, 'calendar-delete', input as unknown as Record<string, unknown>)) : undefined;
+  const expected_etag = guarded?.precondition.kind === 'etag' ? guarded.precondition.value : undefined;
+  const expected_version = guarded?.precondition.kind === 'local_version' ? guarded.precondition.value : undefined;
   const calendar_id = existing.event.calendar_id;
   const scope: CalendarMutationScope = input.scope ?? 'this_instance';
 
+  const reviewedIo = currentPreapprovalIo();
+  const review = currentResourceReview();
+  if (review) await reviewedIo?.beforeCalendarProvider?.(review, collection.provider.kind !== 'local');
   await callCalendarAdapter(input.slug, 'calendar-delete', () =>
     collection.provider.deleteEvent({
       calendar_id,
       source_id: input.source_id,
+      ...(expected_etag ? { expected_etag } : {}),
       scope,
     }),
   );
+  if (review) reviewedIo?.afterCalendarProvider?.();
   // For `this_and_future` the triggering occurrence + its tail are gone
   // on the provider; we drop the triggering row now and let the next
   // sync tick reconcile the truncated tail (the caldav adapter does the
   // RRULE split locally — gcal/graph still throw rrule_unsupported for
   // this scope on delete, which surfaces above before we reach here).
-  collection.applyVerifiedDelete(input.source_id);
+  collection.applyVerifiedDelete(input.source_id, expected_version);
   // D-210 step 3 — echo the removed event's id so the engine's D-120
   // write link can key `calendar:<source_id>` after the warehouse row is
   // gone (the manifest's `writes.id_output_field` reads it here). The

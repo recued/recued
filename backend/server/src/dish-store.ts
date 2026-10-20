@@ -45,6 +45,8 @@ export const dishPreapprovalMaterial = (dish: Dish): Record<string, unknown> => 
 });
 
 export interface DishStore {
+  /** Host-only proof for atomic changes across local stores. */
+  readonly realmDatabase?: Database.Database;
   list(): Dish[];
   listByRecipe(recipe_id: string): Dish[];
   /** D-179 P3 — member dishes of a group. */
@@ -135,6 +137,7 @@ export const createDishStore = (
   };
 
   const store: DishStore = {
+    realmDatabase: db,
     list() {
       const rows = db.prepare(`SELECT data FROM dishes ORDER BY dish_id`).all() as { data: string }[];
       return rows.map(rowToDish);

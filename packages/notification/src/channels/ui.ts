@@ -42,6 +42,7 @@ export type UiNotificationEvent =
   | {
       kind: 'notification.ask';
       ask_id: string;
+      reminder?: true;
       message: NotificationMessage;
       options: readonly AskOption[];
       /** D-234 § 234.4e/f — so the in-app card can render the reason field and
@@ -50,6 +51,7 @@ export type UiNotificationEvent =
        *  own paired clients, where a channel adapter's payload is not. */
       note_prompt?: 'optional' | 'required';
       body?: string;
+      resource_review?: import('@recued/contracts').ResourceReview;
     }
   | { kind: 'notification.ask_closed'; ask_id: string };
 
@@ -95,6 +97,8 @@ export const createUiChannel = (opts: UiChannelOptions): Channel => {
           ? { note_prompt: extras.note_prompt }
           : {}),
         ...(extras?.body !== undefined ? { body: extras.body } : {}),
+        ...(extras?.resource_review ? { resource_review: extras.resource_review } : {}),
+        ...(extras?.reminder ? { reminder: true } : {}),
       });
     },
 

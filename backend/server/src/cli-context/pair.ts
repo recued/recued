@@ -7,7 +7,7 @@ import { cmdPair } from '../commands/pair.js';
 import { createPairingManager, parsePairCodeTtl } from '../pairing.js';
 import { createPairingStateStore } from '../pairing-state-store.js';
 import { createRecoveryKeyCheckStore } from '../recovery-key-store.js';
-import { openDatabase } from '../open-database.js';
+import { openApplicationDatabase } from '../open-application-database.js';
 import { resolveRealmDbPath } from '../realm-db-path.js';
 
 export interface PairProfileOptions {
@@ -52,7 +52,7 @@ export async function runPairProfile(options: PairProfileOptions): Promise<void>
   const serverDisplayName = env.RECUED_SERVER_NAME ?? hostname() ?? 'recued';
 
   options.bootTrace?.markDbOpenAttempted('configured-db-path');
-  const db = await openDatabase(dbPath);
+  const db = await openApplicationDatabase({ dbPath, env });
   try {
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');

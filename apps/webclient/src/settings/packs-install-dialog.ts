@@ -427,6 +427,7 @@ export interface InstallPreviewRecipe {
  *  ⛔ `resolved: false` ⇒ the dialog renders NOTHING rather than a count it
  *  cannot verify, and the picker falls back to the flat read tier. */
 export interface InstallPreview {
+  readonly update_tests?: { managed: boolean; manifest_hash: string };
   readonly vendor_permissions?: import('@recued/contracts').PackVendorPermissionReview;
   /** Client-only transport failure; an older server's unknown method is exempt. */
   readonly vendor_permission_review_failed?: boolean;
@@ -1119,6 +1120,7 @@ const renderInstallRecipeDisclosure = (
 };
 
 export interface PacksInstallDialogProps {
+  updateTests?: { element: HTMLElement; blocked: boolean };
   vendorPermissionsReviewed?: boolean;
   vendorPermissionsLoading?: boolean;
   onReconnectVendorPermissions?(name: string): void;
@@ -1962,6 +1964,8 @@ export const renderPacksInstallDialog = (
     }
   }
 
+  if (props.updateTests) container.appendChild(props.updateTests.element);
+
   const actions = doc.createElement('div');
   actions.className = 'packs-dialog-actions';
 
@@ -2012,6 +2016,7 @@ export const renderPacksInstallDialog = (
     installBtn.disabled = true;
     installBtn.setAttribute('aria-describedby', 'packs-dialog-vendor-permissions');
   }
+  if (!installing && props.updateTests?.blocked) installBtn.disabled = true;
   installBtn.addEventListener('click', () => {
     props.onSubmit();
   });

@@ -7364,6 +7364,7 @@ const CLOSED_SCOPE_TO_DOMAIN: Record<EnrichmentClosedScope, string> = {
   commitment: 'work',
   project: 'work',
   booking: 'work',
+  asset: 'work',
   'connection.api': 'connection',
   'connection.mcp': 'connection',
   'connection.notification': 'connection',

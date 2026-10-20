@@ -26,6 +26,7 @@ export const COMMITMENT_SCHEMA: CanonicalSchema = {
     { name: 'promised_for_at', type: 'timestamp', nullable: true },
     {
       name: 'lifecycle_state',
+      auto: true,
       type: 'enum',
       enum_values: COMMITMENT_LIFECYCLE_STATES,
       default: 'pending',

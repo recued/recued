@@ -999,6 +999,7 @@ const handleContractMint = async (
   const display_name = ensureNonEmptyString(method, 'display_name', a.display_name);
   const grant_kind = ensureOptionalMintGrantKind(method, a.grant_kind);
   const scope = ensureScope(method, a.scope);
+  const read_spheres = a.read_spheres === undefined ? undefined : ensureReadSpheres(a.read_spheres);
   const door_types = ensureOptionalDoorTypes(method, a.door_types);
   const expiry_at = ensureOptionalEpochMs(method, 'expiry_at', a.expiry_at);
   const max_uses = ensureOptionalMaxUses(method, a.max_uses);
@@ -1027,6 +1028,7 @@ const handleContractMint = async (
         minted_by,
         display_name,
         scope,
+        ...(read_spheres !== undefined && read_spheres !== null ? { read_spheres } : {}),
         ...(grant_kind !== undefined ? { grant_kind } : {}),
         ...(door_types !== undefined ? { door_types } : {}),
         ...(a.approved_actions_template !== undefined
@@ -1097,6 +1099,13 @@ const handleContractRevoke = async (
  *  The level-1 "door on/off" toggles 3c renders per door. `door_types` is REQUIRED
  *  (`[]` clears → wildcard); the reserved owner id is rejected (it is derived at
  *  the gate, never a stored door); a non-standing / missing row → `not_found`. */
+const ensureReadSpheres = (raw: unknown): import('@recued/contracts').Sphere[] | null => {
+  if (raw === null) return null;
+  if (!Array.isArray(raw) || raw.some(value => value !== 'personal' && value !== 'professional'))
+    throw new RpcError('bad_request', 'read_spheres must be personal/professional array, or null for all spheres', 400);
+  return [...new Set(raw)] as import('@recued/contracts').Sphere[];
+};
+
 const handleContractSetDoorTypes = async (
   definitionStore: ContractDefinitionStore,
   now: () => number,
@@ -2337,6 +2346,7 @@ type ContractMethods =
   | 'collection.contract.mintContract'
   | 'collection.contract.revokeContract'
   | 'collection.contract.setDoorTypes'
+  | 'collection.contract.setReadSpheres'
   | 'collection.contract.listContracts'
   | 'collection.contract.session_grant.list'
   | 'collection.contract.session_grant.revoke'
@@ -2391,6 +2401,7 @@ export const makeContractHandlers = (
       'collection.contract.mintContract',
       'collection.contract.revokeContract',
       'collection.contract.setDoorTypes',
+      'collection.contract.setReadSpheres',
       'collection.contract.listContracts',
       'collection.contract.session_grant.list',
       'collection.contract.session_grant.revoke',
@@ -2521,6 +2532,14 @@ export const makeContractHandlers = (
       // D-187 §6 (step 7) — in-place door-type edit (the level-1 "door on/off"
       // toggles 3c flips). Emits op `update` (an existing row changed, not a
       // mint/revoke) so every paired client's door surface re-lists.
+      'collection.contract.setReadSpheres': async (args) => {
+        const a = ensureRecordArgs('collection.contract.setReadSpheres', args);
+        const id = ensureNonEmptyString('collection.contract.setReadSpheres', 'contract_id', a.contract_id);
+        const view = definitionStore.setReadSpheres(id, ensureReadSpheres(a.read_spheres));
+        if (!view) throw new RpcError('not_found', 'No editable standing contract or customer template', 404);
+        emitContractChanged(deps.broadcast, 'update', id);
+        return toContractView(view, now());
+      },
       'collection.contract.setDoorTypes': async (args) => {
         const view = await handleContractSetDoorTypes(
           definitionStore,

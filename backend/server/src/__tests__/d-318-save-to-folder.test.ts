@@ -77,7 +77,12 @@ const harness = async (
       platform: 'file', slug, adapter_type: 'fs', config: { path: root }, caps: caps(write),
       auth_state: 'healthy', last_synced_at: null,
     });
-    const adapter = fsAdapterFactory.create({ slug, config: { path: root }, onEvent: () => {} }) as FileMutationCapable;
+    // Walked once, never watched: no test here reads a live event, and on macOS a
+    // recursive watcher's close blocks the event loop for seconds under disk load.
+    // Live watching is tested in `watched-folders.test.ts`.
+    const adapter = fsAdapterFactory.create({
+      slug, config: { path: root }, caps: { ...caps(write), watch: 'none' }, onEvent: () => {},
+    }) as FileMutationCapable;
     await adapter.start();
     adapters.set(slug, adapter);
   }

@@ -34,7 +34,8 @@ export const REMINDER_DELIVERY_BATCH = 50;
 export interface ReminderMessage {
   title: string;
   text: string;
-  link_url: string;
+  link_url?: string;
+  ui_link_url: string;
 }
 
 export interface ReminderDeliveryDeps {
@@ -48,6 +49,7 @@ export interface ReminderDeliveryDeps {
    *  owner's credentials cannot send, so the check waits as the executors do,
    *  and rings once it is unlocked. Absent ⇒ always ready. */
   isVaultUnlocked?: () => boolean;
+  publicBaseUrl?: () => string | null;
   now?: () => number;
 }
 
@@ -93,10 +95,12 @@ export const createReminderDelivery = (deps: ReminderDeliveryDeps): ReminderDeli
           if (!deps.store.recordAttempt(reminder.reminder_id, current)) continue;
           let delivered_to: readonly string[] = [];
           try {
+            const baseUrl = deps.publicBaseUrl?.();
             ({ delivered_to } = await deps.send({
               title: 'Reminder',
               text: reminderDeliveryText(reminder, current),
-              link_url: REMINDER_LIST_LINK,
+              ...(baseUrl ? { link_url: `${baseUrl.replace(/\/$/, '')}/${REMINDER_LIST_LINK}` } : {}),
+              ui_link_url: REMINDER_LIST_LINK,
             }));
           } catch {
             delivered_to = [];

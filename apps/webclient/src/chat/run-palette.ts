@@ -29,6 +29,7 @@ import {
 import type {
   AutoRunStatusEntry,
   ServerRecipeListEntry,
+  ServerRecipeFullEntry,
 } from '@recued/contracts';
 import {
   autoRunStateOf,
@@ -38,6 +39,11 @@ import {
   type RecipeReactiveShape,
 } from '../recipes/recipe-action-kind.js';
 import { NOT_INSTALLED_TEXT, isInstalledRecipeEntry, startsOnItsOwn } from '../recipes/running-as.js';
+import {
+  recipePagePrefill,
+  snapshotRunPageContext,
+  type RunPageContext,
+} from '../shell/run-page-context.js';
 
 export {
   autoRunStateOf,
@@ -62,6 +68,26 @@ const autoRunStateLabel = (state: AutoRunState): string => {
 const displayName = (entry: ServerRecipeListEntry): string =>
   entry.recipe.metadata?.name?.trim() || entry.recipe_id;
 
+/** Keep every recipe searchable. Only actual, unambiguous argument values
+ * change its order; ties retain the server's inventory order. */
+export const runPaletteRecipeOptions = (
+  recipes: readonly ServerRecipeListEntry[],
+  context: RunPageContext | null,
+): RefPicker.RefPickerOption[] => recipes.map(entry => {
+  const prefill = context && classifyRecipeAction(entry.recipe as RecipeReactiveShape) === 'manual'
+    ? recipePagePrefill(entry, context) : null;
+  const count = prefill ? Object.keys(prefill.config).length + Object.keys(prefill.context).length : 0;
+  const name = displayName(entry);
+  const details = [
+    ...(count > 0 ? [`Prefills ${count} argument${count === 1 ? '' : 's'} from this page`] : []),
+    ...(name !== entry.recipe_id ? [entry.recipe_id] : []),
+  ];
+  return { count, option: {
+    id: entry.recipe_id, label: name,
+    ...(details.length > 0 ? { sublabel: details.join(' · ') } : {}),
+  } };
+}).sort((a, b) => b.count - a.count).map(match => match.option);
+
 // ── DOM wiring ────────────────────────────────────────────────────
 
 export const RUN_PALETTE_STYLES_MARKER = 'data-recued-run-palette-styles';
@@ -78,6 +104,8 @@ export const RUN_PALETTE_NOT_INSTALLED_ATTR = 'data-recued-run-palette-not-insta
 const RECIPE_PICKER_ID = 'run-palette-recipe';
 
 export interface RunPaletteOptions {
+  /** Loaded selection on the page that opened this palette. Captured once. */
+  pageContext?: () => RunPageContext | null;
   /** D-269 step 1 — the server's resolved IANA zone, forwarded to the run
    *  modal's scheduled-activation stamp. Absent ⇒ this browser's, as before. */
   serverTimeZone?: () => string | undefined;
@@ -85,8 +113,12 @@ export interface RunPaletteOptions {
   /** The installed-recipe inventory — full entries (for classification +
    *  the Run modal). */
   recipeList: () => Promise<{ recipes: ReadonlyArray<ServerRecipeListEntry> }>;
+  /** Read the selected recipe's body before deriving context arguments. */
+  recipeGet?: (args: { recipe_id: string }) => Promise<{ recipe: ServerRecipeFullEntry | null }>;
   /** Run-modal callers (manual path). */
   execute?: RunModal.RunModalExecuteCaller;
+  fileRefSearch?: RunModal.WireRunModalOptions['fileRefSearch'];
+  recordRefSearch?: (entry: ServerRecipeListEntry) => RunModal.WireRunModalOptions['recordRefSearch'];
   /** D-320 — a recipe's slots, for the Run tab's Connection lines
    *  (`packs.connections.recipe`). Absent: no lines, as before. */
   recipeConnections?: (args: { recipe_id: string }) => ReturnType<NonNullable<RunModal.WireRunModalOptions['connectionSlots']>>;
@@ -308,6 +340,7 @@ const clearChildren = (el: HTMLElement): void => {
 };
 
 export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
+  const pageContext = snapshotRunPageContext(opts.pageContext);
   const doc = opts.document ?? (globalThis as { document?: Document }).document;
   if (doc === undefined) {
     throw new Error(
@@ -317,10 +350,14 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
   injectStyles(doc);
 
   let recipes: ReadonlyArray<ServerRecipeListEntry> = [];
+  let recipeOptions: readonly RefPicker.RefPickerOption[] = [];
   let autoRunEntries: ReadonlyArray<AutoRunStatusEntry> = [];
   let selectedId: string | null = null;
   let refPicker: RefPicker.RefPickerHandle | null = null;
   let childRunModal: RunModal.RunModalHandle | null = null;
+  let runReadPending = false;
+  let runReadError: string | null = null;
+  let runReadGeneration = 0;
   /** D-319 — the switch-on form, while it is open over the palette. */
   let childForm: { destroy(): void } | null = null;
   let switchOnPending = false;
@@ -352,6 +389,9 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
   title.textContent = 'Run a Recipe';
   const closeBtn = doc.createElement('button');
   closeBtn.type = 'button';
+  // Explicit tab stops keep these controls reachable when the browser's
+  // default keyboard navigation skips buttons and links.
+  closeBtn.setAttribute('tabindex', '0');
   closeBtn.setAttribute(RUN_PALETTE_CLOSE_ATTR, '');
   closeBtn.textContent = 'Close';
   closeBtn.addEventListener('click', () => requestClose());
@@ -372,21 +412,10 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
     if (ev.target === overlay) requestClose();
   });
 
-  const recipeOptions = (): ReadonlyArray<RefPicker.RefPickerOption> =>
-    recipes.map((entry) => {
-      const name = displayName(entry);
-      const named = name !== entry.recipe_id;
-      return {
-        id: entry.recipe_id,
-        label: name,
-        ...(named ? { sublabel: entry.recipe_id } : {}),
-      };
-    });
-
   const recipeSearch = (
     query: string,
   ): Promise<readonly RefPicker.RefPickerOption[]> =>
-    Promise.resolve(RefPicker.filterRefOptions(recipeOptions(), query));
+    Promise.resolve(RefPicker.filterRefOptions(recipeOptions, query));
 
   const mountPicker = (): void => {
     refPicker?.destroy();
@@ -425,25 +454,36 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
     });
   };
 
-  const openRunModalFor = (
+  const openResolvedRunModal = (
     entry: ServerRecipeListEntry,
     tab: RunModal.RunModalTab,
+    recipeConnections?: Awaited<ReturnType<NonNullable<RunPaletteOptions['recipeConnections']>>>,
   ): void => {
     if (childRunModal !== null) return;
     // Two document-level traps must never compete. The Run modal restores
     // focus to its palette action; its close callback then re-arms this trap.
     focusTrap?.release();
     focusTrap = null;
+    const prefill = tab === 'run' ? recipePagePrefill(entry, pageContext, recipeConnections?.slots) : null;
+    const recordRefSearch = opts.recordRefSearch?.(entry);
+    let initialConnections = recipeConnections;
     childRunModal = RunModal.wireRunModal({
       ...(opts.serverTimeZone ? { serverTimeZone: opts.serverTimeZone } : {}),
       recipe: entry,
       document: doc,
       initialTab: tab,
+      ...(prefill?.source ? { prefillSource: prefill.source, pagePrefill: prefill } : {}),
       ...(opts.execute !== undefined ? { execute: opts.execute } : {}),
+      ...(opts.fileRefSearch === undefined ? {} : { fileRefSearch: opts.fileRefSearch }),
+      ...(recordRefSearch === undefined ? {} : { recordRefSearch }),
       // D-320 — the Run tab's Connection lines. Missing from this dialog until a
       // visual pass found it (2026-10-10): the recipes and automation routes had them.
       ...(opts.recipeConnections !== undefined
-        ? { connectionSlots: () => opts.recipeConnections!({ recipe_id: entry.recipe_id }) }
+        ? { connectionSlots: () => {
+          const initial = initialConnections;
+          initialConnections = undefined;
+          return initial ? Promise.resolve(initial) : opts.recipeConnections!({ recipe_id: entry.recipe_id });
+        } }
         : {}),
       ...(opts.mailboxes !== undefined ? { mailboxes: opts.mailboxes } : {}),
       ...(opts.schedulesList !== undefined
@@ -463,10 +503,49 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
         childRunModal?.destroy();
         childRunModal = null;
         armFocusTrap();
+        const label = tab === 'run' ? 'Run' : 'Schedule';
+        const action = Array.from(actionArea.querySelectorAll<HTMLButtonElement>(`button[${RUN_PALETTE_ACTION_ATTR}]`))
+          .find(button => button.textContent === label);
+        (action ?? closeBtn).focus();
       },
     });
     const portal = (doc as { body?: HTMLElement }).body ?? overlay;
     portal.appendChild(childRunModal.element);
+  };
+
+  const openRunModalFor = (entry: ServerRecipeListEntry, tab: RunModal.RunModalTab): void => {
+    if (childRunModal !== null || runReadPending) return;
+    const needsSourceConnection = tab === 'run' && pageContext?.objects.some(object => object.apiSource !== undefined);
+    if (!opts.recipeGet && !needsSourceConnection) { openResolvedRunModal(entry, tab); return; }
+    const generation = ++runReadGeneration;
+    runReadPending = true;
+    runReadError = null;
+    renderActions();
+    closeBtn.focus();
+    void (async () => {
+      try {
+        const { recipe } = opts.recipeGet
+          ? await opts.recipeGet({ recipe_id: entry.recipe_id }) : { recipe: entry };
+        if (closed || generation !== runReadGeneration || selectedId !== entry.recipe_id) return;
+        if (!recipe || recipe.recipe_id !== entry.recipe_id || recipe.recipe_hash !== entry.recipe_hash
+          || recipe.version !== entry.version || recipe.publisher_id !== entry.publisher_id) {
+          throw new Error('This Recipe changed or is no longer available. Close Run and select it again.');
+        }
+        const recipeConnections = needsSourceConnection && opts.recipeConnections
+          ? await opts.recipeConnections({ recipe_id: entry.recipe_id }).catch(() => undefined) : undefined;
+        if (closed || generation !== runReadGeneration || selectedId !== entry.recipe_id) return;
+        openResolvedRunModal(recipe, tab, recipeConnections);
+      } catch (error) {
+        if (!closed && generation === runReadGeneration) {
+          runReadError = error instanceof Error ? error.message : 'Could not load this Recipe. Try again.';
+        }
+      } finally {
+        if (!closed && generation === runReadGeneration) {
+          runReadPending = false;
+          renderActions();
+        }
+      }
+    })();
   };
 
   /** D-319 §5.5 — the switch-on form, over the palette. */
@@ -565,9 +644,10 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
     label: string,
     primary: boolean,
     onClick: () => void,
-  ): HTMLElement => {
+  ): HTMLButtonElement => {
     const button = doc.createElement('button');
     button.type = 'button';
+    button.setAttribute('tabindex', '0');
     button.setAttribute(RUN_PALETTE_ACTION_ATTR, '');
     if (primary) button.setAttribute('data-variant', 'primary');
     button.textContent = label;
@@ -583,7 +663,7 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
     }
     actionArea.setAttribute(
       'aria-busy',
-      autoRunMutationPending ? 'true' : 'false',
+      autoRunMutationPending || runReadPending ? 'true' : 'false',
     );
     clearChildren(actionArea);
     if (selectedId === null) {
@@ -622,6 +702,7 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
         && opts.packsHref !== undefined
       ) {
         const packs = doc.createElement('a');
+        packs.setAttribute('tabindex', '0');
         packs.setAttribute(RUN_PALETTE_ACTION_ATTR, 'browse-packs');
         packs.setAttribute('href', opts.packsHref);
         packs.textContent = 'Look through starter Packs →';
@@ -653,6 +734,7 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
       actionArea.appendChild(note);
       if (opts.packsHref !== undefined) {
         const packs = doc.createElement('a');
+        packs.setAttribute('tabindex', '0');
         packs.setAttribute(RUN_PALETTE_ACTION_ATTR, 'browse-packs');
         packs.setAttribute('href', opts.packsHref);
         packs.textContent = 'Install it from Packs →';
@@ -665,12 +747,19 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
     const shippedOnly = !isInstalledRecipeEntry(entry) && startsOnItsOwn(entry.recipe);
 
     if (kind === 'manual') {
-      buttons.appendChild(
-        actionButton('Run', true, () => openRunModalFor(entry, 'run')),
-      );
-      buttons.appendChild(
-        actionButton('Schedule', false, () => openRunModalFor(entry, 'schedule')),
-      );
+      if (runReadPending || runReadError) {
+        const note = doc.createElement('p');
+        note.setAttribute('role', runReadError ? 'alert' : 'status');
+        note.setAttribute(RUN_PALETTE_RESULT_ATTR, '');
+        note.textContent = runReadError ?? 'Loading Recipe…';
+        actionArea.appendChild(note);
+      }
+      const run = actionButton('Run', true, () => openRunModalFor(entry, 'run'));
+      const schedule = actionButton('Schedule', false, () => openRunModalFor(entry, 'schedule'));
+      run.disabled = runReadPending;
+      schedule.disabled = runReadPending;
+      buttons.appendChild(run);
+      buttons.appendChild(schedule);
       actionArea.appendChild(buttons);
       return;
     }
@@ -707,6 +796,7 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
           buttons.appendChild(switchOn);
         } else if (opts.automationHref !== undefined) {
           const link = doc.createElement('a');
+          link.setAttribute('tabindex', '0');
           link.setAttribute(RUN_PALETTE_ACTION_ATTR, '');
           link.setAttribute('href', opts.automationHref(entry.recipe_id));
           link.textContent = 'Switch on in Automation →';
@@ -739,6 +829,7 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
     link.setAttribute(RUN_PALETTE_ACTION_ATTR, '');
     link.textContent = 'Manage in Automation →';
     if (opts.automationHref !== undefined) {
+      link.setAttribute('tabindex', '0');
       link.setAttribute('href', opts.automationHref(entry.recipe_id));
     }
     // Keep the palette's ownership signal alive until the shell handles the
@@ -750,7 +841,12 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
   };
 
   const selectRecipe = (recipeId: string | null): void => {
-    if (recipeId !== selectedId) autoRunNotice = null;
+    if (recipeId !== selectedId) {
+      autoRunNotice = null;
+      runReadGeneration += 1;
+      runReadPending = false;
+      runReadError = null;
+    }
     selectedId = recipeId;
     renderActions();
   };
@@ -779,6 +875,7 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
       inventoryState = 'loading';
       selectedId = null;
       recipes = [];
+      recipeOptions = [];
       refPicker?.destroy();
       refPicker = null;
       searchHost.innerHTML = '';
@@ -796,6 +893,7 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
       ]);
       if (closed) return;
       recipes = loaded;
+      recipeOptions = runPaletteRecipeOptions(loaded, pageContext);
       inventoryState = 'ready';
     } catch {
       if (!closed) inventoryState = 'error';

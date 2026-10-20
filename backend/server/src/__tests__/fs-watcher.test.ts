@@ -7,9 +7,9 @@
  *  events is `watched-folders.test.ts`. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, unlinkSync, type FSWatcher } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync, unlinkSync, type FSWatcher } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, relative } from 'node:path';
+import { join, relative, sep } from 'node:path';
 
 import {
   createFsWatcher,
@@ -240,5 +240,102 @@ describe('createFsWatcher — the settle walk after attaching', () => {
     writeFileSync(join(h.root, 'after-stop.txt'), 'x');
     await new Promise((r) => setTimeout(r, 150));
     expect(events.filter((e) => e.includes('after-stop'))).toEqual([]);
+  });
+});
+
+describe('createFsWatcher — a folder the watch names alone', () => {
+  // ⛔ A folder moved in or out can be reported as the folder alone, none of its files:
+  // macOS and Windows do both ways, Linux for a folder moved out (measured 2026-10-20). Here the
+  // stand-in watch reports exactly what the platform would; everything else comes from
+  // the watcher. And Windows reports a file's folder, and that folder's folder, on every
+  // write to the file, so a folder a walk has shown must not be walked again.
+  let h: Harness;
+  beforeEach(() => { h = newHarness(); });
+  afterEach(() => { h.close(); });
+
+  const start = async () => {
+    let listener: ((eventType: string, filename: string | null) => void) | undefined;
+    const events: string[] = [];
+    const watcher = createFsWatcher({
+      root: h.root, ignore: ['*.log'], debounceMs: 1, settleMs: -1,
+      onEvent: (event) => { events.push(`${event.type}:${relative(h.root, event.path).split(sep).join('/')}`); },
+      watchFactory: (_root, l) => {
+        listener = l;
+        return Object.assign(new EventEmitter(), { close: vi.fn() }) as unknown as FSWatcher;
+      },
+    });
+    await watcher.start();
+    events.length = 0;   // the start's walk
+    return { watcher, events, report: (name: string) => listener!('rename', name) };
+  };
+  /** A folder beside the watched one, on the same disk, to move in. */
+  const outside = (name: string): string => {
+    const dir = join(h.root, '..', name);
+    mkdirSync(join(dir, 'sub'), { recursive: true });
+    writeFileSync(join(dir, 'a.txt'), 'a');
+    writeFileSync(join(dir, 'sub', 'b.txt'), 'b');
+    writeFileSync(join(dir, 'sub', 'skip.log'), 'the ignore patterns still apply');
+    return dir;
+  };
+  const sorted = (events: string[]) => [...events].sort();
+
+  it('reports every file of a folder moved in, though the watch names only the folder', async () => {
+    const { watcher, events, report } = await start();
+    renameSync(outside('Projects'), join(h.root, 'Projects'));
+    report('Projects');
+    await vi.waitFor(() => expect(sorted(events)).toEqual(['change:Projects/a.txt', 'change:Projects/sub/b.txt']));
+    await watcher.stop();
+  });
+
+  it('reports a folder moved out as the folder gone', async () => {
+    renameSync(outside('Projects'), join(h.root, 'Projects'));
+    const { watcher, events, report } = await start();
+    renameSync(join(h.root, 'Projects'), join(h.root, '..', 'Away'));
+    report('Projects');
+    await vi.waitFor(() => expect(events).toEqual(['remove:Projects']));
+    await watcher.stop();
+  });
+
+  it('walks a folder that went and came back again', async () => {
+    renameSync(outside('Projects'), join(h.root, 'Projects'));
+    const { watcher, events, report } = await start();
+    renameSync(join(h.root, 'Projects'), join(h.root, '..', 'Away'));
+    report('Projects');
+    await vi.waitFor(() => expect(events).toEqual(['remove:Projects']));
+    renameSync(join(h.root, '..', 'Away'), join(h.root, 'Projects'));
+    report('Projects');
+    await vi.waitFor(() => expect(sorted(events)).toEqual([
+      'change:Projects/a.txt', 'change:Projects/sub/b.txt', 'remove:Projects',
+    ]));
+    await watcher.stop();
+  });
+
+  it('does not walk a folder a walk has shown, however often the watch names it', async () => {
+    renameSync(outside('Projects'), join(h.root, 'Projects'));
+    const { watcher, events, report } = await start();
+    writeFileSync(join(h.root, 'Projects', 'sub', 'b.txt'), 'b, edited');
+    // What Windows reports for that one write.
+    report('Projects');
+    report('Projects/sub');
+    report('Projects/sub/b.txt');
+    // A folder moved in at the same moment shows the folder events were handled.
+    renameSync(outside('Fresh'), join(h.root, 'Fresh'));
+    report('Fresh');
+    await vi.waitFor(() => expect(events).toEqual(expect.arrayContaining(['change:Fresh/a.txt', 'change:Fresh/sub/b.txt'])));
+    await new Promise((r) => setTimeout(r, 100));
+    expect(sorted(events)).toEqual(['change:Fresh/a.txt', 'change:Fresh/sub/b.txt', 'change:Projects/sub/b.txt']);
+    await watcher.stop();
+  });
+
+  it.skipIf(process.platform === 'win32')('does not walk into a link to a folder, as no walk does', async () => {
+    symlinkSync(outside('Elsewhere'), join(h.root, 'link'));
+    const { watcher, events, report } = await start();
+    renameSync(outside('Fresh'), join(h.root, 'Fresh'));
+    report('link');
+    report('Fresh');
+    await vi.waitFor(() => expect(events).toEqual(expect.arrayContaining(['change:Fresh/a.txt', 'change:Fresh/sub/b.txt'])));
+    await new Promise((r) => setTimeout(r, 100));
+    expect(sorted(events)).toEqual(['change:Fresh/a.txt', 'change:Fresh/sub/b.txt']);
+    await watcher.stop();
   });
 });

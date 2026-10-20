@@ -559,6 +559,7 @@ export const runDueStatusSweep = (
   if (released && deps.onReleased) {
     const items: QuietHoursDigestItem[] = [];
     for (const c of commitments) {
+      if (c.derivation === 'rule_emitted') continue; // Its own schedule releases after quiet hours.
       if (c.lifecycle_state !== 'pending') continue;
       if (c.promised_for_at === undefined) continue;
       if (c.due_status !== 'due_soon' && c.due_status !== 'overdue') continue;

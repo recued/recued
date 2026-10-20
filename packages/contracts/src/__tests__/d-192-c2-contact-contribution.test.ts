@@ -197,6 +197,7 @@ describe('D-192 C-2 — the kind vocabularies (identifier ÷ attribute split)', 
       'address',
       'photo',
       'birthday',
+      'anniversary',
     ]);
     // A phone number is something you MATCH a person by (D-138 predicate +
     // contact_phone_forms), so it belongs to the identifier axis. Storing it in

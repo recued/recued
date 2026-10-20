@@ -109,11 +109,41 @@ const CONTACT_SCHEMA: EntitySchemaIngredientInput = {
   },
 };
 
+/** P6: ordinary optional fields, protected on model egress by existing tags. */
+const ASSET_SCHEMA: EntitySchemaIngredientInput = {
+  ingredient_id: 'recued-canonical-asset', entity_id: 'asset', scope: 'data.asset',
+  projection_mode: 'canonical_mirror', schema_mode: 'static',
+  target_id: { fields: ['id'], template: '{id}' },
+  meta_fields: [
+    { key: 'document_number', type: 'string', source_path: 'document_number', privacy: 'external_id' },
+    { key: 'serial_number', type: 'string', source_path: 'serial_number', privacy: 'external_id' },
+    { key: 'exact_address', type: 'string', source_path: 'exact_address', privacy: 'address' },
+  ],
+  source_operations: { list: { catalog: 'recued-canonical-asset', operation: 'work.read' } },
+};
+
 /** `data.calendar` (canonical_mirror) — CanonicalEvent. `organizer.email` is the
  *  identifier seed (attendee arrays of objects are a comfort miss — the dot-path
  *  probe reads single objects + string-array leaves, not arrays of objects);
  *  `location` is a geo-suffixed `address` alias; `summary` / `description` are
  *  content-scanned. */
+const SITUATION_SCHEMAS: EntitySchemaIngredientInput[] = [
+  { ingredient_id: 'recued-canonical-situation-item', entity_id: 'situation_item', scope: 'data.situation_item',
+    projection_mode: 'canonical_mirror', schema_mode: 'static', target_id: { fields: ['ref.id'], template: '{ref.id}' },
+    meta_fields: [
+      { key: 'what.value', type: 'string', source_path: 'what.value', privacy: 'content' },
+      { key: 'where.value.name', type: 'string', source_path: 'where.value.name', privacy: 'address' },
+      { key: 'where.value.key', type: 'string', source_path: 'where.value.key', privacy: 'external_id' },
+      { key: 'who.value', type: 'json', source_path: 'who.value', privacy: 'name' },
+    ], source_operations: { list: { catalog: 'recued-canonical-situation-item', operation: 'situation.query' } } },
+  ...['situation_ref', 'situation_ambiguity'].map(entity_id => ({ ingredient_id: `recued-canonical-${entity_id.replaceAll('_', '-')}`, entity_id,
+    scope: `data.${entity_id}`, projection_mode: 'canonical_mirror' as const, schema_mode: 'static' as const,
+    target_id: { fields: ['id'], template: '{id}' },
+    meta_fields: [{ key: entity_id === 'situation_ref' ? 'id' : 'name', type: 'string' as const,
+      source_path: entity_id === 'situation_ref' ? 'id' : 'name', privacy: 'external_id' as const }],
+    source_operations: { list: { catalog: `recued-canonical-${entity_id.replaceAll('_', '-')}`, operation: 'situation.query' } } })),
+];
+
 const CALENDAR_SCHEMA: EntitySchemaIngredientInput = {
   ingredient_id: 'recued-canonical-calendar',
   entity_id: 'event',
@@ -259,6 +289,8 @@ export const CANONICAL_PII_ENTITY_SCHEMAS: readonly EntitySchemaIngredientInput[
     [
       MAIL_SCHEMA,
       CONTACT_SCHEMA,
+      ASSET_SCHEMA,
+      ...SITUATION_SCHEMAS,
       CALENDAR_SCHEMA,
       HUBSPOT_CONTACT_SCHEMA,
       SALESFORCE_CONTACT_SCHEMA,
@@ -319,6 +351,22 @@ export const CANONICAL_PII_ENTITY_SCHEMAS: readonly EntitySchemaIngredientInput[
  *  reads it per packet and must never mutate it. */
 export const CANONICAL_PII_ENTITY_PRIVACY_TAGS: readonly EntityPrivacyTag[] =
   Object.freeze([
+    ...SITUATION_SCHEMAS.map(schema => ({ entity_id: schema.entity_id,
+      fields: (schema.meta_fields ?? []).map(field => ({ path: field.key, kind: field.privacy! })) })),
+    {
+      entity_id: 'asset',
+      fields: (ASSET_SCHEMA.meta_fields ?? []).map(field => ({ path: field.key, kind: field.privacy! })),
+    },
+    {
+      // Each anchor is stamped on its own, so its tags hold at any index. A
+      // place name is the situation's `where.value.name`, aliased there too.
+      entity_id: 'asset_anchor',
+      fields: [
+        { path: 'name', kind: 'address' }, { path: 'address', kind: 'address' },
+        { path: 'latitude', kind: 'address' }, { path: 'longitude', kind: 'address' },
+        { path: 'value', kind: 'external_id' }, { path: 'identifier', kind: 'external_id' },
+      ],
+    },
     {
       // Exact mail reads stamp their hot_fields envelope. Derive its address
       // and subject tags from the same canonical schema used by mail producers.

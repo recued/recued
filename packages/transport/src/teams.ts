@@ -26,6 +26,7 @@
 import {
   classifyHttpError,
   DEFAULT_TIMEOUT_MS,
+  notSentMark,
   postJson,
   type HttpPostOutcome,
 } from './http.js';
@@ -91,7 +92,7 @@ const handleTeamsOutcome = (outcome: HttpPostOutcome): TransportSendResult => {
       outcome.kind === 'http_error'
         ? `${describeGraphError(outcome.json)} [http ${outcome.status}]`
         : outcome.detail;
-    return { ok: false, error: { kind, detail: `Teams: ${detail}` } };
+    return { ok: false, error: { kind, detail: `Teams: ${detail}`, ...notSentMark(outcome) } };
   }
   const env = (outcome.json ?? {}) as GraphMessageEnvelope;
   return typeof env.id === 'string' && env.id.length > 0

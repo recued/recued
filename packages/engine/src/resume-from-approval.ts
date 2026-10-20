@@ -33,6 +33,7 @@ export interface PauseToResume {
   readonly trigger_state?: Record<string, unknown>;
   readonly prefetch_completed?: string[];
   readonly foreach_progress?: ForeachCheckpointProgress;
+  readonly resource_review?: import('@recued/contracts').ResourceReview;
   readonly egress_bound?: { readonly requests: number; readonly total_bytes: number };
   readonly ingredient_slug?: string;
   readonly operation_id?: string;
@@ -60,6 +61,7 @@ export const resumeFromApproval = (pause: PauseToResume): InProcessResumeFrom =>
       ? { foreach_progress: structuredClone(pause.foreach_progress) }
       : {}),
     ...(pause.egress_bound !== undefined ? { egress_bound: pause.egress_bound } : {}),
+    ...(pause.resource_review ? { resource_review: structuredClone(pause.resource_review) } : {}),
     approved_target,
   };
 };

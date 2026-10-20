@@ -64,15 +64,19 @@
  *
  *  Self-loop note (for the wiring author): D-127's `MailCollection.send`
  *  rejects a `to` equal to the sender account's own address
- *  (`MAIL_SEND_SELF_LOOP_TO`). The email channel therefore needs a
- *  delivery address distinct from the `sender_mail_instance` account's
- *  own address — a `connection.notification` email enrollment concern,
- *  surfaced by the wiring, not this leaf.
+ *  (`MAIL_SEND_SELF_LOOP_TO`) unless the send is the owner's own
+ *  notification, alone and stamped with a reconciliation id (D-158
+ *  amendment 2026-10-18 — one address: the mailbox Recued sends from is
+ *  the one the owner reads). The wiring decides which sends those are
+ *  (`wire-email-channel.ts`), not this leaf.
  *
  *  Spec: D-158 § P2 / A.4 / N.4 / I-9.
  */
 
 import { htmlEscape, safeHttpUrl } from '../html.js';
+import { ASK_ID_SOURCE } from '../correlation.js';
+import { normalizeEmailAnswerToken as normalizeToken } from '../ask-text-answer.js';
+import type { AskDeliveryDestination, AskDeliveryEnvelope, AskDeliveryOutcome } from '../ask-delivery-store.js';
 import type { Channel } from './channel.js';
 import type {
   AskOption,
@@ -93,6 +97,8 @@ export interface OutboundEmail {
    *  one-link affordance. A plain `notify` and a non-public-server
    *  `ask` send `body_text` only. */
   body_html?: string;
+  /** Internal exact-send proof used by the server's existing mail fence. */
+  reconciliation_id?: string;
 }
 
 /** Sends one composed email through the user's BYO mail account.
@@ -106,6 +112,12 @@ export type EmailSender = (email: OutboundEmail) => Promise<void>;
 export interface EmailChannelDeps {
   /** Sends a composed email through the BYO mail account. */
   sendEmail: EmailSender;
+  /** Named, pinned reminder transport. Separate from the legacy sender so an
+   * adapter that only knows the default can never silently reroute a reminder. */
+  sendEmailDelivery?: (email: OutboundEmail, destination: AskDeliveryDestination) => Promise<AskDeliveryOutcome>;
+  /** Only supply when the sender enforces an exact reconciliation-id fence.
+   * Re-querying an uncertain attempt must not dispatch it a second time. */
+  reconcileEmailDelivery?: EmailChannelDeps['sendEmailDelivery'];
   /** Builds the public `ask` landing-page URL for an `ask_id` (D-158
    *  P2b-ii), or `undefined` while the server has no public address. When
    *  it answers, `deliverAsk` additionally carries a one-click answer link
@@ -135,6 +147,7 @@ const DEFAULT_ASK_SUBJECT = 'Recued — your input is needed';
  *  brackets + `#` make a recognizable token that survives a `Re:`
  *  prefix and round-trips on the reply subject. */
 const composeAskTag = (ask_id: string): string => `[#${ask_id}]`;
+const ASK_TAG = new RegExp(`\\[#(${ASK_ID_SOURCE})\\]`);
 
 /** Pull an `ask_id` out of a (possibly `Re:`-prefixed) subject. Matches
  *  the `[#<ask_id>]` tag anywhere in the string. Returns null when the
@@ -142,7 +155,7 @@ const composeAskTag = (ask_id: string): string => `[#${ask_id}]`;
  *  (or a mail client dropped the tag; the ask stays answerable on the
  *  `ui` channel). */
 export const extractAskId = (subject: string): string | null => {
-  const match = /\[#(ask-[A-Za-z0-9-]+)\]/.exec(subject);
+  const match = ASK_TAG.exec(subject);
   return match === null ? null : match[1];
 };
 
@@ -158,7 +171,7 @@ const ATTRIBUTION_LINE =
  *  whole body would match them all. Best-effort: a bottom-posted reply
  *  (typed below the quote) yields empty text → no answer → `ui`
  *  fallback. */
-const replyTextOf = (body: string): string => {
+export const emailReplyText = (body: string): string => {
   const kept: string[] = [];
   for (const line of body.split(/\r?\n/)) {
     if (QUOTE_LINE.test(line) || ATTRIBUTION_LINE.test(line)) break;
@@ -166,17 +179,6 @@ const replyTextOf = (body: string): string => {
   }
   return kept.join('\n').trim();
 };
-
-/** Normalize a reply or an option token for an exact comparison —
- *  lowercase, trim, drop trailing sentence punctuation, collapse inner
- *  whitespace. */
-const normalizeToken = (value: string): string =>
-  value
-    .trim()
-    .toLowerCase()
-    .replace(/[.!,;:]+$/, '')
-    .replace(/\s+/g, ' ')
-    .trim();
 
 /** Match the user's reply to exactly one option. The match is *exact*,
  *  not substring: the normalized reply text must EQUAL an option's
@@ -216,7 +218,7 @@ export const parseEmailReply = (
 ): InboundReply | null => {
   const ask_id = extractAskId(input.subject);
   if (ask_id === null) return null;
-  const option = matchOption(replyTextOf(input.body_text), options);
+  const option = matchOption(emailReplyText(input.body_text), options);
   if (option === null) return null;
   return { ask_id, option, via: EMAIL_CHANNEL_NAME };
 };
@@ -333,6 +335,30 @@ export const createEmailChannel = (deps: EmailChannelDeps): Channel => {
    *  delivered-map. */
   const delivered = new Set<string>();
 
+  const deliveryEmail = (envelope: AskDeliveryEnvelope): OutboundEmail => {
+    const first = envelope.asks[0]!;
+    const repeat = 'Repeat — the previous delivery could not be confirmed.';
+    let email: OutboundEmail;
+    if (envelope.asks.length === 1) email = composeAsk(first.ask_id, {
+      ...first.message,
+      text: envelope.repeat ? `${repeat}\n\n${first.message.text}` : first.message.text,
+      link_url: first.message.link_url ? safeHttpUrl(first.message.link_url) ?? undefined : undefined,
+    }, first.options, answerLink?.(first.ask_id));
+    else email = {
+      subject: `Recued reminders ${composeAskTag(first.ask_id)}`,
+      body_text: envelope.asks.map((ask, index) => envelope.closed_ask_ids?.includes(ask.ask_id)
+        ? `${index + 1}. Closed` : [
+        `${index + 1}. ${ask.message.title ?? 'Reminder'}`, ask.message.text,
+        `Answers: ${ask.options.map(option => option.label).join(', ')}`,
+        ask.message.link_url ? safeHttpUrl(ask.message.link_url) : undefined, answerLink?.(ask.ask_id),
+      ].filter(Boolean).join('\n')).join('\n\n')
+        + '\n\nReply with the item number and answer, for example: 2 done. A reply without an item changes nothing.',
+    };
+    if (envelope.repeat) email = { ...email, subject: `Repeat: ${email.subject}`,
+      ...(envelope.asks.length > 1 ? { body_text: `${repeat}\n\n${email.body_text}` } : {}) };
+    return { ...email, reconciliation_id: envelope.attempt_id };
+  };
+
   return {
     name: EMAIL_CHANNEL_NAME,
     capability: 'landing-page',
@@ -372,5 +398,19 @@ export const createEmailChannel = (deps: EmailChannelDeps): Channel => {
       // contract; a stale reply-request email is harmless (see header).
       return Promise.resolve();
     },
+
+    async deliverAskDelivery(envelope) {
+      if (!deps.sendEmailDelivery) return { outcome: 'not_delivered', error: 'The pinned email sender is unavailable' };
+      return deps.sendEmailDelivery(deliveryEmail(envelope), envelope.destination);
+    },
+    async reconcileAskDelivery(envelope) {
+      // The injected sender must use the existing reconciliation-id fence: an
+      // uncertain prior send is queried, never sent again by this call.
+      return deps.reconcileEmailDelivery
+        ? deps.reconcileEmailDelivery(deliveryEmail(envelope), envelope.destination) : { outcome: 'unknown' };
+    },
+    // SMTP messages have no remotely editable buttons. A late reply remains
+    // bound to the same durable question and cannot answer a replacement ask.
+    async withdrawAskDelivery() { return true; },
   };
 };

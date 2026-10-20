@@ -33,7 +33,12 @@
  *  of prior payload size.
  */
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { currentResourceReview, resourceConflict, resourceReviewHash } from '../../resource-review.js';
+import { recordLocalMutation } from '../../local-mutation-context.js';
+import { afterLocalCommit } from '../../local-transaction.js';
+import type { LocalUpdateInverse } from '../../local-update-undo-context.js';
+import { reverseLocalUpdate } from '@recued/recipes';
 import { isDeepStrictEqual } from 'node:util';
 import type Database from 'better-sqlite3';
 
@@ -109,6 +114,7 @@ export class CalendarTableError extends Error {
  *  from the event's `updated_at`, rotates `prior_payload`, and writes
  *  the hot-field columns from the event fields. */
 export interface CalendarUpsertInput {
+  expected_version?: string;
   event: CanonicalEvent;
   /** Size of the description body in bytes (UTF-8). Used for the
    *  inline-vs-CAS decision; also summed into the row's `size_bytes`
@@ -120,9 +126,8 @@ export interface CalendarUpsertInput {
   /** CAS pointer when the description is too large for inline
    *  storage. Caller has already written the body to CAS. */
   blob_hash?: string;
-  /** CalDAV ETag from the last REPORT calendar-query. Leave null for
-   *  gcal / graph which use a different cursor (stored on
-   *  `collection_instances.config.sync_cursor`). */
+  /** Provider ETag captured with this exact event payload. Google and
+   * CalDAV use it for version-bound writes, independently of sync cursors. */
   etag?: string;
   /** Unix-ms stamp for `received_at` on a first-ever insert. The
    *  column is preserved across replace — only new records pick it
@@ -134,6 +139,14 @@ export interface CalendarUpsertInput {
  *  compared as it is stored (JSON), so a field left out and one set to nothing
  *  agree. Empty for an event listed again as it was: a restart's scan lists
  *  every stored event again, and that is no change. */
+/** A series rule Recued newly reads for a row is no change to the event: Google
+ *  and Graph list instances without one, and Graph's used to be stored as
+ *  `GRAPH:<type>` (D-325). The provider's copy is the same, read differently now,
+ *  so a restart's scan must not wake every `updated` trigger once per instance. */
+export const calendarRuleLearned = (before: CanonicalEvent, after: CanonicalEvent, changed: readonly string[]): boolean =>
+  changed.length === 1 && changed[0] === 'recurrence_rule' && after.recurrence_rule !== undefined
+  && (before.recurrence_rule === undefined || before.recurrence_rule.startsWith('GRAPH:'));
+
 export const calendarEventChanges = (before: CanonicalEvent, after: CanonicalEvent): string[] => {
   const a = JSON.parse(JSON.stringify(before)) as Record<string, unknown>;
   const b = JSON.parse(JSON.stringify(after)) as Record<string, unknown>;
@@ -159,8 +172,9 @@ export interface CalendarRowSnapshot {
   body_inline: string | null;
   /** CAS pointer for oversized description bodies. */
   blob_hash: string | null;
-  /** CalDAV resource validator. Null for non-CalDAV adapters. */
+  /** Provider validator retained with this exact payload, when available. */
   etag: string | null;
+  resource_version: string;
   hot: CalendarRecordHotFields;
 }
 
@@ -236,13 +250,17 @@ export interface CalendarCollectionTable {
   upsert(input: CalendarUpsertInput): CalendarRowSnapshot | null;
   /** Remove by `source_id`. Returns `{ deleted, size_bytes,
    *  blob_hash }`. */
-  delete(source_id: string): CalendarDeleteResult;
+  delete(source_id: string, expected_version?: string): CalendarDeleteResult;
   /** Single-row snapshot or null when the source_id is unknown. */
   get(source_id: string): CalendarRowSnapshot | null;
   /** Single-row snapshot by primary-key `record_id` (the `cal:<hash>` id the
    *  generic `collection.get` addresses) or null when unknown — `get` above
    *  keys on the provider `source_id`. */
   getByRecordId(record_id: string): CalendarRowSnapshot | null;
+  /** D-325 §6.3 — what a situation read matches on each event ending after
+   *  `end_after`: its summary, location and, when asked, attendee emails,
+   *  without decoding every event. */
+  situationLines(end_after: number, attendees?: boolean): Array<{ record_id: string; summary: string; location: string | null; attendees: string[] }>;
   /** Hot-field-only stat (file-stat precedent): `exists: false` on
    *  missing rows; other columns omitted. */
   stat(source_id: string): CalendarRecordStat;
@@ -367,6 +385,7 @@ interface Row {
   body_inline: string | null;
   blob_hash: string | null;
   etag: string | null;
+  resource_version: string;
   record_payload: string;
   prior_payload: string | null;
 }
@@ -401,6 +420,7 @@ const rowToSnapshot = (row: Row): CalendarRowSnapshot => ({
   body_inline: row.body_inline,
   blob_hash: row.blob_hash,
   etag: row.etag,
+  resource_version: row.resource_version,
   hot: rowHotFields(row),
 });
 
@@ -557,7 +577,7 @@ export const createCalendarTable = (
 
   const reportDelta = (delta: number): void => {
     if (!onBytesChanged || delta === 0) return;
-    try { onBytesChanged(delta); } catch { /* never break writes */ }
+    try { afterLocalCommit(db, () => onBytesChanged(delta),'accounting'); } catch { /* never break writes */ }
   };
 
   const getByIdStmt = db.prepare(
@@ -566,6 +586,19 @@ export const createCalendarTable = (
   const getBySourceStmt = db.prepare(
     `SELECT * FROM ${tableName} WHERE source_id = ?`,
   );
+  const columns = db.prepare('PRAGMA table_info(' + tableName + ')').all() as { name: string }[];
+  if (!columns.some(column => column.name === 'resource_version')) {
+    db.transaction(() => {
+      const currentColumns = db.prepare('PRAGMA table_info(' + tableName + ')').all() as { name: string }[];
+      if (!currentColumns.some(column => column.name === 'resource_version')) {
+        db.exec('ALTER TABLE ' + tableName + ' ADD COLUMN resource_version TEXT');
+      }
+      const migrate = db.prepare('UPDATE ' + tableName + ' SET resource_version = ? WHERE record_id = ?');
+      for (const row of db.prepare('SELECT record_id FROM ' + tableName + ' WHERE resource_version IS NULL').all() as { record_id: string }[]) {
+        migrate.run(randomUUID(), row.record_id);
+      }
+    }).immediate();
+  }
   const deleteStmt = db.prepare(
     `DELETE FROM ${tableName} WHERE record_id = ?`,
   );
@@ -574,13 +607,13 @@ export const createCalendarTable = (
       record_id, source_id, received_at, modified_at, size_bytes,
       calendar_id, summary, start_at, end_at, status,
       organizer, ical_uid, location, is_all_day, is_recurring,
-      body_inline, blob_hash, etag,
+      body_inline, blob_hash, etag, resource_version,
       record_payload, prior_payload
     ) VALUES (
       @record_id, @source_id, @received_at, @modified_at, @size_bytes,
       @calendar_id, @summary, @start_at, @end_at, @status,
       @organizer, @ical_uid, @location, @is_all_day, @is_recurring,
-      @body_inline, @blob_hash, @etag,
+      @body_inline, @blob_hash, @etag, @resource_version,
       @record_payload, @prior_payload
     )
     ON CONFLICT(record_id) DO UPDATE SET
@@ -599,6 +632,7 @@ export const createCalendarTable = (
       body_inline    = excluded.body_inline,
       blob_hash      = excluded.blob_hash,
       etag           = excluded.etag,
+      resource_version = excluded.resource_version,
       record_payload = excluded.record_payload,
       prior_payload  = excluded.prior_payload
   `);
@@ -640,6 +674,26 @@ export const createCalendarTable = (
        )`,
   );
 
+  const recordReviewedMutation = (operation: 'calendar-update' | 'calendar-delete', event: CanonicalEvent,
+    expectedVersion: string | undefined, inverse?: LocalUpdateInverse): void => {
+    const review = currentResourceReview();
+    if (expectedVersion === undefined || !review) return;
+    const resource = review.resources[0];
+    if (review.operation !== operation || review.resources.length !== 1 || resource?.kind !== 'calendar'
+      || resource.key !== JSON.stringify([slug, event.calendar_id, event.source_id])
+      || resource.precondition.kind !== 'local_version' || resource.precondition.value !== expectedVersion) {
+      resourceConflict('The local calendar write does not match its reviewed target.');
+    }
+    if (operation === 'calendar-update') {
+      const actual = Object.fromEntries(Object.keys(resource.after ?? {}).map(key =>
+        [key, (event as unknown as Record<string, unknown>)[key] ?? null]));
+      if (!resource.after || resourceReviewHash(actual) !== resourceReviewHash(resource.after)) {
+        resourceConflict('The local calendar write does not match the reviewed change.');
+      }
+    } else if (resource.after !== null) resourceConflict('The local calendar deletion has no reviewed deletion.');
+    recordLocalMutation(db, 'local_calendar', review, inverse);
+  };
+
   const upsert = (input: CalendarUpsertInput): CalendarRowSnapshot | null => {
     validateUpsert(input);
     const now = input.now ?? Date.now();
@@ -648,6 +702,9 @@ export const createCalendarTable = (
 
     const priorRow = getByIdStmt.get(record_id) as Row | undefined;
     const prior = priorRow ? rowToSnapshot(priorRow) : null;
+    if (input.expected_version !== undefined && prior?.resource_version !== input.expected_version) {
+      resourceConflict('The local calendar event changed after review.');
+    }
 
     const body_inline = input.body_inline ?? null;
     const blob_hash = input.blob_hash ?? null;
@@ -691,6 +748,8 @@ export const createCalendarTable = (
       body_inline,
       blob_hash,
       etag,
+      resource_version: prior && prior.etag === etag && calendarEventChanges(prior.event, event).length === 0
+        ? prior.resource_version : randomUUID(),
       record_payload,
       prior_payload,
     });
@@ -703,16 +762,33 @@ export const createCalendarTable = (
       ftsIndexRecord(db, ftsName, record_id, ftsTextFor(event, null));
     }
 
+    let inverse: LocalUpdateInverse | undefined;
+    const resource = currentResourceReview()?.resources[0];
+    if (prior && resource?.precondition.kind === 'local_version') {
+      const before = prior.event as unknown as Record<string, unknown>;
+      const after = event as unknown as Record<string, unknown>;
+      const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+      for (const key of ['source_id', 'calendar_id', 'ical_uid', 'created_at', 'updated_at']) keys.delete(key);
+      const reversed = reverseLocalUpdate([...keys].map(key => ({ key, before: before[key], after: after[key],
+        beforePresent: Object.hasOwn(before, key) })));
+      if (reversed) inverse = { kind: 'local_calendar', slug, source_id: event.source_id, ...reversed,
+        binding: resource.binding, version: (getByIdStmt.get(record_id) as Row).resource_version, key: resource.key };
+    }
+    recordReviewedMutation('calendar-update', event, input.expected_version, inverse);
     reportDelta(input.size_bytes - (prior?.size_bytes ?? 0));
     return prior;
   };
 
-  const del = (source_id: string): CalendarDeleteResult => {
+  const del = (source_id: string, expected_version?: string): CalendarDeleteResult => {
     const row = getBySourceStmt.get(source_id) as Row | undefined;
+    if (expected_version !== undefined && row?.resource_version !== expected_version) {
+      resourceConflict('The local calendar event changed after review.');
+    }
     if (!row) return { deleted: false, size_bytes: 0, blob_hash: null, prior: null };
     const prior = rowToSnapshot(row);
     deleteStmt.run(row.record_id);
     ftsDeleteRecord(db, ftsName, row.record_id);
+    recordReviewedMutation('calendar-delete', prior.event, expected_version);
     reportDelta(-row.size_bytes);
     return {
       deleted: true,
@@ -727,6 +803,13 @@ export const createCalendarTable = (
     return row ? rowToSnapshot(row) : null;
   };
 
+  const situationLinesStmt = db.prepare(`SELECT record_id, summary, location, '[]' AS attendees FROM ${tableName} WHERE end_at > ?`);
+  const situationAttendeesStmt = db.prepare(`SELECT record_id, summary, location,
+      (SELECT json_group_array(json_extract(value, '$.email')) FROM json_each(record_payload, '$.attendees')) AS attendees
+    FROM ${tableName} WHERE end_at > ?`);
+  const situationLines: CalendarCollectionTable['situationLines'] = (end_after, attendees = false) =>
+    ((attendees ? situationAttendeesStmt : situationLinesStmt).all(end_after) as Array<{ record_id: string; summary: string; location: string | null; attendees: string }>)
+      .map(row => ({ ...row, attendees: (JSON.parse(row.attendees) as unknown[]).filter((email): email is string => typeof email === 'string' && email.length > 0) }));
   const getByRecordId = (record_id: string): CalendarRowSnapshot | null => {
     const row = getByIdStmt.get(record_id) as Row | undefined;
     return row ? rowToSnapshot(row) : null;
@@ -1011,10 +1094,11 @@ export const createCalendarTable = (
   };
 
   return {
-    upsert,
-    delete: del,
+    upsert: db.transaction(upsert).immediate,
+    delete: db.transaction(del).immediate,
     get,
     getByRecordId,
+    situationLines,
     stat,
     list,
     listSnapshots,

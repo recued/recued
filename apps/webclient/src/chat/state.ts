@@ -135,6 +135,7 @@ export interface TurnFailureNotice {
  *  Hydration reconstructs it from the server's durable action record; live
  *  events then advance the same card without relying on tab memory. */
 export interface PlanApprovalCard {
+  resource_review?: import('@recued/contracts').ResourceReview;
   plan_id: string;
   turn_id: string;
   /** The uncertain consumed action this fresh proposal follows. Correlation
@@ -352,6 +353,7 @@ export const hydrateThreadFromSnapshot = (
         : {}),
       tool: record.plan.tool,
       tier: record.plan.tier,
+      ...(record.plan.resource_review ? { resource_review: record.plan.resource_review } : {}),
       args: record.plan.args,
       args_hash: record.plan.args_hash,
       status: record.plan.status,
@@ -521,6 +523,8 @@ const samePlanExecutionReceipt = (
     return (
       left.result_ref === right.result_ref
       && left.run_id === right.run_id
+      && left.local_receipt?.receipt_id === right.local_receipt?.receipt_id
+      && left.recovered_from === right.recovered_from
     );
   }
   if (left.status === 'held' && right.status === 'held') {
@@ -546,6 +550,7 @@ const planExecutionReceiptFromEvent = (
   if (event.kind === 'chat.tool_call_started') {
     return { status: 'running', turn_id: event.turn_id };
   }
+  if (event.plan_execution?.local_receipt && event.plan_execution.turn_id === event.turn_id) return { ...event.plan_execution };
   if (event.status === 'error') {
     return {
       status: 'failed',
@@ -591,6 +596,8 @@ const applyPlanExecutionEvent = (
   ) return state;
 
   let execution = planExecutionReceiptFromEvent(event);
+  if (existing.execution?.status === 'completed' && existing.execution.local_receipt
+    && !(execution.status === 'completed' && execution.local_receipt)) return state;
   // A terminal lifecycle replay from an older producer can legitimately omit
   // the newer optional run address. Never let that erase a durable address
   // already recovered from the plan snapshot for the same one-time dispatch.
@@ -733,6 +740,7 @@ export const reduceChatThreadEvent = (
             : {}),
           tool: event.tool,
           tier: event.tier,
+          ...(event.resource_review ? { resource_review: event.resource_review } : {}),
           args: event.args,
           ...(event.args_hash !== undefined
             ? { args_hash: event.args_hash }
@@ -953,6 +961,7 @@ export const applyPlanResolution = (
             : {}),
           tool: plan.tool,
           tier: plan.tier,
+          ...(plan.resource_review ? { resource_review: plan.resource_review } : {}),
           args: plan.args,
           args_hash: plan.args_hash,
           status: plan.status,

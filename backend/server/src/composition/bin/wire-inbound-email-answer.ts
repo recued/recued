@@ -30,6 +30,14 @@
  *        no pass. And (D-318 step 8) a pass is read only from a stamp that
  *        parses cleanly, so a sender's address written into the receiver's own
  *        stamp cannot read as one (`authentication-results.ts`).
+ *    (c) one address (D-158 amendment 2026-10-18): the notification mailbox's
+ *        own Sent record, addressed to itself, when the connection names no
+ *        other recipient — the owner reads the mailbox Recued sends from, so
+ *        they answer from it. (a)'s footing: only someone holding the account
+ *        adds to its Sent record. Recued's own sends land in that same Sent
+ *        record, and each carries a reconciliation id, so none is read as a
+ *        reply (below). The copy delivered to the inbox (Graph, IMAP) is not
+ *        the proof; Gmail keeps one message carrying both labels.
  *
  *  Everything else is ignored, and the ask stays open, answerable in the web
  *  app (the always-on `ui` channel).
@@ -53,9 +61,10 @@
  *  leaf: `channels/email.ts` (`extractAskId` / `parseEmailReply`); outbound
  *  peer: `wire-email-channel.ts`. */
 
-import { isMailReconciliationId } from '@recued/contracts';
+import { isMailReconciliationId, type ConnectionRow } from '@recued/contracts';
 import {
   extractAskId,
+  emailReplyText,
   parseEmailReply,
   type NotificationBlock,
 } from '@recued/notification';
@@ -68,6 +77,8 @@ import { mailMayTrigger } from '../../mail-facts/mail-ingest.js';
 /** Who sends asks and who answers them, read from the
  *  `connection.notification.email` record at each message. */
 export interface EmailAnswerAccounts {
+  readonly connection_name?: string;
+  readonly connection_enrolled_at?: number;
   /** The mailbox asks are sent from, and replies arrive in. */
   readonly sender_slug: string;
   /** That mailbox's own address. */
@@ -76,7 +87,33 @@ export interface EmailAnswerAccounts {
   readonly recipient_address: string;
 }
 
-export type EmailAnswerProof = 'own_sent_record' | 'dmarc_pass';
+export type EmailAnswerProof = 'own_sent_record' | 'dmarc_pass' | 'self_sent_record';
+
+/** The accounts an email notification connection names: the mailbox asks go
+ *  from, its address, and the recipient — `default_recipient`, or, when the
+ *  connection names none, that mailbox itself (D-158 amendment 2026-10-18:
+ *  one address, the owner answers from the mailbox they read). Null for
+ *  another subtype, a malformed config, several recipients, or a part whose
+ *  address is unknown. */
+export const emailAnswerAccountsOf = (
+  record: Pick<ConnectionRow, 'name' | 'enrolled_at' | 'subtype' | 'config_json'>,
+  mailboxAddress: (slug: string) => string | undefined,
+): EmailAnswerAccounts | null => {
+  if (record.subtype !== undefined && record.subtype !== 'email') return null;
+  let cfg: { sender_mail_instance?: unknown; default_recipient?: unknown };
+  try { cfg = JSON.parse(record.config_json) as typeof cfg; }
+  catch { return null; }
+  const sender_slug = typeof cfg.sender_mail_instance === 'string' ? cfg.sender_mail_instance : '';
+  const sender_address = sender_slug ? mailboxAddress(sender_slug) ?? '' : '';
+  const configured = cfg.default_recipient;
+  const blank = configured === undefined || configured === null || configured === ''
+    || Array.isArray(configured) && configured.length === 0;
+  const recipient_address = blank ? sender_address
+    : typeof configured === 'string' ? configured
+      : Array.isArray(configured) && configured.length === 1 && typeof configured[0] === 'string' ? configured[0] : '';
+  return !sender_address || !recipient_address ? null : { sender_slug, sender_address, recipient_address,
+    connection_name: record.name, connection_enrolled_at: record.enrolled_at };
+};
 
 /** `"Ann" <Ann@Example.com>` → `ann@example.com`. */
 const bareAddress = (address: string): string => {
@@ -105,9 +142,13 @@ export const emailAnswerProof = (
   if (sender === '' || recipient === '') return null;
 
   // (a) The Sent copy in another mailbox Recued reads, by the provider's record.
+  // (c) One address: the notification mailbox is the owner's own, so their
+  // reply is its Sent copy, addressed to itself. Recued's own sends there carry
+  // a reconciliation id and were turned away above.
   if (msg.direction === 'outbound') {
-    if (ctx.slug === accounts.sender_slug) return null;
-    return msg.to.some((address) => bareAddress(address) === sender) ? 'own_sent_record' : null;
+    const toSender = msg.to.some((address) => bareAddress(address) === sender);
+    if (ctx.slug === accounts.sender_slug) return sender === recipient && toSender ? 'self_sent_record' : null;
+    return toSender ? 'own_sent_record' : null;
   }
 
   // (b) In the notification mailbox, from the owner's address, DMARC-passed.
@@ -123,7 +164,14 @@ export interface ComposeInboundEmailAnswerDeps {
   /** The accounts, re-read per message so a re-enrollment is picked up
    *  without a restart. `null` ⇒ email asks are not set up ⇒ ignored.
    *  Absent ⇒ inert. */
-  resolveAccounts?: () => EmailAnswerAccounts | null;
+  resolveAccounts?: (connection_name?: string) => EmailAnswerAccounts | null;
+  /** A reply to a plain ask is checked against the connection that ask went
+   *  through: the owner's choice for email (`createOwnerEmailConnection`).
+   *  Absent ⇒ `resolveAccounts()`, the record named `email`. */
+  resolveOwnerAccounts?: () => Promise<EmailAnswerAccounts | null>;
+  /** Authenticate against enrolled notification mailboxes before loading any
+   * ask. Production supplies all named email rows; legacy embedders use one. */
+  resolveAccountCandidates?: () => readonly EmailAnswerAccounts[];
   now?: () => number;
   log?: (
     level: 'info' | 'warn',
@@ -156,14 +204,42 @@ export const composeInboundEmailAnswer = (
   const answer = async (
     msg: CanonicalMessage,
     ask_id: string,
-    proof: EmailAnswerProof,
+    ctx: MailUpsertContext,
   ): Promise<void> => {
+    await block!.restoreAskDeliveries();
     const ask = await block!.getAsk(ask_id);
-    if (ask === null || ask.status !== 'open') return;
-    const reply = parseEmailReply({ subject: msg.subject, body_text: msg.body_text }, ask.options);
+    if (ask === null) return;
+    if (!ask.delivery_group_id && ask.status !== 'open') return;
+    const destinations = ask.delivery_group_id
+      ? (await block!.getAskDeliveryDestinations(ask.delivery_group_id)).filter(item => item.channel === 'email') : [];
+    const candidates = ask.delivery_group_id
+      ? destinations.map(destination => ({ destination, accounts: resolveAccounts!(destination.connection_name) }))
+      : [{ destination: undefined, accounts: deps.resolveOwnerAccounts ? await deps.resolveOwnerAccounts() : resolveAccounts!() }];
+    const authorized = candidates.map(candidate => ({ ...candidate,
+      proof: candidate.accounts ? emailAnswerProof(msg, ctx, candidate.accounts) : null,
+    })).find(candidate => candidate.proof !== null && (!candidate.destination || (!!candidate.accounts
+      && candidate.accounts.connection_name === candidate.destination.connection_name
+      && candidate.accounts.connection_enrolled_at === candidate.destination.connection_enrolled_at
+      && candidate.accounts.sender_slug === candidate.destination.sender_source
+      && bareAddress(candidate.accounts.recipient_address) === candidate.destination.recipient
+      && bareAddress(msg.from) === candidate.destination.expected_sender)));
+    if (!authorized) {
+      log?.('warn', 'inbound email reply ignored: not proven for this notification destination', { ask_id });
+      return;
+    }
+    const { proof, destination } = authorized;
+    const reply = ask.delivery_group_id
+      ? await block!.parseAskBundleReply(ask.delivery_group_id, emailReplyText(msg.body_text), 'email')
+      : parseEmailReply({ subject: msg.subject, body_text: msg.body_text }, ask.options);
     if (reply === null) return;
-    await block!.submitAnswer(reply);
-    log?.('info', 'inbound email reply recorded', { ask_id, option: reply.option, proof });
+    const outcome = await block!.submitAnswer({ ...reply, via: 'email', ...(destination ? { origin: {
+      connection_name: destination.connection_name!, connection_enrolled_at: destination.connection_enrolled_at!,
+      recipient: destination.recipient!, sender: bareAddress(msg.from),
+    } } : {}) });
+    // D-325 §5.1 — a reminder answered after it closed changed nothing. Email
+    // cannot say so in place, so the reply joins the unmatched ones in Today and Yours.
+    if (outcome === 'closed') await block!.recordLateAskReply(reply.ask_id, 'email', emailReplyText(msg.body_text));
+    log?.('info', 'inbound email reply recorded', { ask_id: reply.ask_id, option: reply.option, proof });
   };
 
   return {
@@ -172,19 +248,24 @@ export const composeInboundEmailAnswer = (
       const ask_id = extractAskId(msg.subject);
       if (ask_id === null) return;
       if (!mailMayTrigger(msg, ctx, now())) return;
-      const accounts = resolveAccounts();
-      if (accounts === null) return;
-      const proof = emailAnswerProof(msg, ctx, accounts);
-      if (proof === null) {
-        // Only a would-be reply in the notification mailbox is worth a line:
-        // the same tag in another mailbox's inbox is the ask itself, delivered.
-        if (ctx.slug === accounts.sender_slug && msg.direction !== 'outbound') {
+      const accounts = deps.resolveAccountCandidates?.()
+        ?? [resolveAccounts()].filter((item): item is EmailAnswerAccounts => item !== null);
+      if (accounts.length === 0) return;
+      if (!accounts.some(account => emailAnswerProof(msg, ctx, account) !== null)) {
+        // With one address the inbox holds Recued's own notification and the
+        // delivered copy of the owner's reply, whose Sent copy is the proof:
+        // neither is a reply worth a warning.
+        const deliveredToItself = (account: EmailAnswerAccounts): boolean =>
+          bareAddress(account.sender_address) === bareAddress(account.recipient_address)
+          && bareAddress(msg.from) === bareAddress(account.sender_address);
+        if (accounts.some(account => account.sender_slug === ctx.slug && !deliveredToItself(account))
+          && msg.direction !== 'outbound') {
           log?.('warn', 'inbound email reply ignored: not proven to be from the owner', { ask_id });
         }
         return;
       }
       let tracked!: Promise<void>;
-      tracked = answer(msg, ask_id, proof).catch((error) => {
+      tracked = answer(msg, ask_id, ctx).catch((error) => {
         log?.('warn', 'inbound email answer funnel — answer failed', {
           error: error instanceof Error ? error.message : String(error),
         });

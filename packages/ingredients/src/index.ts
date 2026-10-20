@@ -19,7 +19,7 @@ export {
   readBoundedResponseText,
   type BoundedResponseText,
 } from './bounded-response-body.js';
-export { withIngredientCache, type IngredientCacheOptions } from './cache.js';
+export { withIngredientCache, type IngredientCacheOptions, type IngredientCacheScope } from './cache.js';
 export {
   createIngredientExecutor,
   mergeManifestStepInput,

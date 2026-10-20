@@ -20,6 +20,8 @@
  *    - after a walk that read every directory, a stored file the walk did not
  *      see is taken out: it went while the server was down, or the folder's
  *      path was changed.
+ *    - a removal naming a folder inside it takes out the files under that
+ *      folder: a folder moved out is reported as the folder alone.
  *
  *  Record ids are `file:local:<b64url slug>:<b64url path>`, reversible like
  *  `file:remote:*`. ⛔ Never the `file:<32 hex>` shape: that means "bytes in the
@@ -174,6 +176,8 @@ export interface WatchedFolderCollection extends Collection {
    *  stored file it did not see taken out — a walk that could not read part of
    *  the folder is no list of what is on disk. */
   endWalk(opts: { complete: boolean }): Promise<void>;
+  /** When the last walk ended, or 0 before the first. */
+  lastWalkAt(): number;
   /** The folder's enrollment was deleted: its tables go, with no events —
    *  removing a source is not deleting its files. */
   drop(): void;
@@ -266,6 +270,23 @@ export const createWatchedFolderCollection = (
     return { outcome: 'removed' };
   };
 
+  /** The records of the files under `path` (relative, POSIX): the folder's
+   *  `source_id` range, which is indexed. */
+  const recordIdsUnder = (path: string): string[] =>
+    (db.prepare(`SELECT record_id FROM ${quoteSqliteIdent(table.tableName)} WHERE source_id >= ? AND source_id < ?`)
+      .all(`${path}/`, `${path}0`) as { record_id: string }[])   // '0' is the character after '/'
+      .map((row) => row.record_id);
+
+  /** A path the watcher reports gone. Not a file's: then a folder's, and its
+   *  files went with it — the watch may name only the folder. */
+  const removePath = (path: string, recordId: string): WatchedFileIngest => {
+    const file = removeRecord(recordId);
+    if (file.outcome === 'removed') return file;
+    let removed = false;
+    for (const id of recordIdsUnder(path)) removed = removeRecord(id).outcome === 'removed' || removed;
+    return removed ? { outcome: 'removed' } : file;
+  };
+
   const apply = async (event: FileAdapterEvent): Promise<WatchedFileIngest> => {
     const rootAbs = resolve(opts.root());
     const absPath = resolve(event.path);
@@ -274,7 +295,7 @@ export const createWatchedFolderCollection = (
     const path = toPosix(rel);
     const recordId = watchedFileRecordId(slug, path);
     if (walking && event.type === 'present') walked.add(recordId);
-    if (event.type === 'remove') return removeRecord(recordId);
+    if (event.type === 'remove') return removePath(path, recordId);
 
     let info: Awaited<ReturnType<typeof stat>>;
     try {
@@ -388,6 +409,7 @@ export const createWatchedFolderCollection = (
       storedBeforeWalk = [];
       walked.clear();
     }),
+    lastWalkAt: () => lastWalkAt,
     drop() {
       table.dropSchema();
       gate.setUsed(0);

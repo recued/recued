@@ -102,10 +102,9 @@ export interface FileStack {
    *  helpers `startAll()` uses at boot. */
   enrollDeps: EnrollDeps;
   /** Rehydrate live adapters for every row currently in the instance
-   *  store. Call once at boot after `autopromoteCollections` has run
-   *  so TOML-migrated rows are included. Individual adapter failures
-   *  log + skip; startAll resolves when all reachable adapters have
-   *  been attempted. */
+   *  store. Call once at boot. Individual adapter failures log + skip;
+   *  startAll resolves when all reachable adapters have been
+   *  attempted. */
   startAll(): Promise<void>;
   /** Stop every live adapter and clear the map. Called from the
    *  lifecycle drain's `pause_collections` step. Idempotent. */
@@ -117,6 +116,13 @@ export interface FileStack {
   attachWatchedFolders(attachment: WatchedFoldersAttachment): void;
   /** The attached folders, for tests and diagnostics. */
   watchedFolders(): WatchedFolders | undefined;
+  /** The folders the housekeeping walk covers (`watched-folder-walk`): every
+   *  `fs` folder with records whose realtime watch runs now, and when its last
+   *  walk ended. */
+  watchedFolderWalks(): Array<{ slug: string; last_walk_at: number }>;
+  /** Walk a folder again as a start does, behind its other lifecycle steps.
+   *  Resolves once the walk is over; a failure is logged, not thrown. */
+  walkFolderAgain(slug: string): Promise<void>;
 }
 
 export const composeFileStack = (
@@ -158,6 +164,38 @@ export const composeFileStack = (
       if (lifecycleTails.get(slug) === tail) lifecycleTails.delete(slug);
     }
   };
+
+  /** A folder's watch may have missed changes (`onRescanNeeded`), or the
+   *  housekeeping walk is due (`walkFolderAgain`): walk it again as a start
+   *  does, so what changed meanwhile lands and what went is taken out. Behind
+   *  the folder's other lifecycle steps; a request while one is waiting joins
+   *  it. Resolves once the walk is over; a failure is logged, not thrown. */
+  const walksWaiting = new Map<string, Promise<void>>();
+  const walkAgain = (slug: string): Promise<void> => {
+    const waiting = walksWaiting.get(slug);
+    if (waiting) return waiting;
+    if (closed) return Promise.resolve();
+    const walk = serializeLifecycle(slug, async () => {
+      walksWaiting.delete(slug);
+      const instance = liveAdapters.get(slug);
+      const folder = watched?.get(slug);
+      if (closed || !instance?.rescan || !folder) return;
+      folder.beginWalk();
+      let complete = false;
+      try {
+        ({ complete } = await instance.rescan());
+      } finally {
+        await folder.endWalk({ complete });
+      }
+    }).catch((err: unknown) => {
+      log('warn', `file-stack: walking '${slug}' again failed`, {
+        err: err instanceof Error ? err.message : String(err),
+      });
+    });
+    walksWaiting.set(slug, walk);
+    return walk;
+  };
+  const requestRescan = (slug: string): void => { void walkAgain(slug); };
 
   const startLiveAdapterUnlocked = async (
     row: Pick<CollectionInstanceRow, 'slug'>,
@@ -239,6 +277,7 @@ export const composeFileStack = (
           markStartDegraded();
         },
         onEvent: deliver,
+        ...(folder ? { onRescanNeeded: () => requestRescan(row.slug) } : {}),
         log,
       });
     } catch (err) {
@@ -465,5 +504,15 @@ export const composeFileStack = (
       });
     },
     watchedFolders: () => watched,
+    watchedFolderWalks: () => {
+      const walks: Array<{ slug: string; last_walk_at: number }> = [];
+      for (const slug of liveAdapters.keys()) {
+        const folder = watched?.get(slug);
+        const caps = instances.get('file', slug)?.caps as FileCollectionCaps | undefined;
+        if (folder && caps?.watch === 'realtime') walks.push({ slug, last_walk_at: folder.lastWalkAt() });
+      }
+      return walks;
+    },
+    walkFolderAgain: walkAgain,
   };
 };

@@ -19,12 +19,15 @@ import type Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createBootTrace } from '../../cli/boot-trace.js';
+import { createLLMConfigManager } from '../../llm-config.js';
 import { composeStorageContext } from '../../serve/compose-storage-context.js';
 import {
   isLiveWarehouseEmpty,
   restoreGuardUserDataTables,
   RESTORE_GUARD_NON_USER_TABLES,
 } from '../archive-runtime.js';
+
+import { createAssetClassStore, STARTER_ASSET_CLASSES } from '../../situations/asset-classes.js';
 
 let tmp: string | undefined;
 afterEach(() => {
@@ -51,6 +54,36 @@ const composeFreshDb = async (): Promise<Database.Database> => {
 };
 
 describe('M5 S3.1 — isLiveWarehouseEmpty (not-enrolled restore guard)', () => {
+  it('the real empty-model migration marker is bookkeeping while actual LLM and Chat settings still block', async () => {
+    const db = await composeFreshDb();
+    const llm = createLLMConfigManager(db);
+    expect(llm.deriveTranscriptionSlotOnce()).toBe('no_candidate');
+    expect(db.prepare('SELECT key,value FROM llm_config').all()).toEqual([{ key: 'transcription_slot.derived', value: '1' }]);
+    expect(restoreGuardUserDataTables(db)).toEqual([]);
+    const insert = db.prepare('INSERT INTO llm_config (key,value) VALUES (?,?)');
+    for (const key of ['slot_1.model', 'slot_1.api_key', 'usage.2026-10-18', 'transcription_slot.derived.extra']) {
+      insert.run(key, 'fixture');
+      expect(restoreGuardUserDataTables(db)).toContain('llm_config');
+      db.prepare('DELETE FROM llm_config WHERE key=?').run(key);
+    }
+    db.prepare("UPDATE llm_config SET value='0'").run();
+    expect(restoreGuardUserDataTables(db)).toContain('llm_config');
+    db.prepare("UPDATE llm_config SET value='1'").run();
+    db.exec("CREATE TABLE IF NOT EXISTS chat_config (key TEXT PRIMARY KEY,value TEXT NOT NULL)");
+    db.prepare('INSERT INTO chat_config (key,value) VALUES (?,?)').run('rolling_brief_enabled', '0');
+    expect(restoreGuardUserDataTables(db)).toContain('chat_config');
+  });
+
+  it('ignores only exact asset class seeds and keeps owner or altered classes restore-blocking', async () => {
+    const db = await composeFreshDb(); const classes = createAssetClassStore(db);
+    expect(RESTORE_GUARD_NON_USER_TABLES.has('asset_class_presets')).toBe(false);
+    expect(isLiveWarehouseEmpty(db)).toBe(true);
+    classes.saveOwner({ ...STARTER_ASSET_CLASSES[0]!, id: 'owner_copy', origin: 'owner' });
+    expect(restoreGuardUserDataTables(db)).toContain('asset_class_presets');
+    classes.deleteOwner('owner_copy'); expect(isLiveWarehouseEmpty(db)).toBe(true);
+    db.prepare('UPDATE asset_class_presets SET value=? WHERE id=?').run('{}', STARTER_ASSET_CLASSES[0]!.id);
+    expect(restoreGuardUserDataTables(db)).toContain('asset_class_presets');
+  });
   it('a freshly-composed server db reads EMPTY (denylist covers the boot seed)', async () => {
     const db = await composeFreshDb();
     // A red here NAMES the seeded table to add to RESTORE_GUARD_NON_USER_TABLES

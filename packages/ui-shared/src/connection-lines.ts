@@ -30,6 +30,7 @@ export interface ConnectionLineSlot {
   readonly variables: readonly string[];
   readonly connections: ReadonlyArray<{
     readonly connection_name: string;
+    readonly connection_revision?: string;
     readonly display_name: string;
     readonly is_default: boolean;
   }>;

@@ -39,6 +39,7 @@ import type { AuditLogStore } from '@recued/storage';
 import { createClientTokenStore } from '../pairing/client-tokens.js';
 import { createPairedInstancesStore } from '../paired-instances-store.js';
 import { openDatabase } from '../open-database.js';
+import { assertArchiveDatabaseSchema, DATABASE_SCHEMA_VERSION, readStoredDatabaseSchemaVersion } from '../database-schema.js';
 import { deriveDatabaseKeyFromRecoveryEntropy } from '../database-encryption.js';
 import {
   exportArchive,
@@ -62,12 +63,16 @@ import {
   stageRestore,
   commitStagedRestore,
   discardStagedRestore,
+  ArchiveRestoreCleanupError,
   previewToTempDb,
   type RestoreTargets,
   type StagedRestore,
 } from './archive-restore.js';
 import { createBundleStore } from '../bundle-store.js';
 import { createServerBundleStore } from '../server-bundle-store.js';
+import { createArchiveImportReceipts } from './archive-import-receipts.js';
+import { createSqliteRemoteBackups } from './remote-backups.js';
+import { resolveServerBundleSwapMarkerPath } from './server-bundle-swap.js';
 import { createRecoveryKeyCheckStore } from '../recovery-key-store.js';
 import { verifyRecoveryKeyAgainstRealm } from '../recovery-key-processor.js';
 import { exportServerPassport } from '../passport/index.js';
@@ -80,6 +85,7 @@ import type {
 } from './archive-handler.js';
 import { assertRecordsRestoreCoherence } from '../records/store.js';
 import { previewDatabaseScratchPath } from './archive-scratch.js';
+import { STARTER_ASSET_CLASSES } from '../situations/asset-classes.js';
 
 /** Attribution stamped onto an archive-embedded passport's
  *  `exported_by_client_id`. The archive rpc is operator-only, so this is
@@ -209,6 +215,8 @@ export const RESTORE_GUARD_NON_USER_TABLES: ReadonlySet<string> = new Set<string
   // ⛔ THE FOURTH TIME, after `audit_usage`, `fts_content_format` and the D-261
   // four — found by the full suite, not by the change that seeded the table.
   'data_repairs',
+  // Transactional schema receipts contain no owner content.
+  'database_schema_migrations',
   // 2. SERVER identity / config / networking / system state — populated by
   //    SETUP (identity, hostnames, TLS, exposure, operator config), never by user
   //    activity. Empty on the empty-config fresh-baseline yet non-empty on a
@@ -274,7 +282,24 @@ export const restoreGuardUserDataTables = (
     const row = database
       .prepare(`SELECT COUNT(*) AS n FROM ${quoteSqliteIdent(name)}`)
       .get() as { n: number };
-    if (row.n > 0) hits.push(name);
+    if (row.n > 0) {
+      // LLM composition runs this one-time migration even without a configured
+      // model. Only its exact no-content marker is boot bookkeeping; owner
+      // settings, credentials, usage and future keys in this mixed table must
+      // still block a destructive pre-enrollment restore.
+      if (name === 'llm_config' && row.n === 1 && database.prepare(
+        "SELECT 1 FROM llm_config WHERE key='transcription_slot.derived' AND value='1'",
+      ).get()) continue;
+      // D-325 seeds classes before enrollment. Ignore only exact known seeds;
+      // an owner, pack or altered row still blocks a destructive restore.
+      // The mixed table itself must never enter the non-user denylist.
+      if (name === 'asset_class_presets' && row.n <= STARTER_ASSET_CLASSES.length) {
+        const expected = new Map(STARTER_ASSET_CLASSES.map(value => [value.id, value]));
+        const seeds = database.prepare('SELECT id,version,origin,value FROM asset_class_presets').all() as Array<{ id: string; version: number; origin: string; value: string }>;
+        if (seeds.every(seed => { const value = expected.get(seed.id); return value && seed.origin === 'builtin' && seed.version === value.version && seed.value === JSON.stringify(value); })) continue;
+      }
+      hits.push(name);
+    }
   }
   return hits;
 };
@@ -495,6 +520,7 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
   const now = deps.now ?? (() => Date.now());
   const { db, dbPath, dataPath, configPath, serverVersion } = deps;
   const serverBundleStore = createServerBundleStore(dbPath);
+  const importReceipts = createArchiveImportReceipts(dbPath, { now });
 
   // The CURRENT realm's recovery-key check lives in `server_config` inside
   // this live db — read it to gate cross-realm restores (Q2). Reads are
@@ -515,6 +541,7 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
   const countDbRowsAtPath = async (
     path: string,
     databaseKey?: Uint8Array | null,
+    expectedSchemaVersion?: number,
   ): Promise<{
     record_count: number;
     tables: Record<string, number>;
@@ -522,6 +549,7 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
   }> => {
     const probe = await openDatabase(path, {
       readonly: true,
+      allowNewerSchema: true,
       ...(databaseKey !== undefined ? { databaseKey } : {}),
     });
     try {
@@ -531,7 +559,12 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
       // Validate that unit on the staged, still-discardable file before either
       // preview or swap can accept it. Pre-Records archives contain no Records
       // table and pass unchanged.
-      assertRecordsRestoreCoherence(probe);
+      if (expectedSchemaVersion !== undefined) assertArchiveDatabaseSchema(probe, expectedSchemaVersion);
+      // A future schema is counted only for a read-only compatibility preview;
+      // current Records invariants cannot describe its unknown table layout.
+      if (readStoredDatabaseSchemaVersion(probe) <= DATABASE_SCHEMA_VERSION) {
+        assertRecordsRestoreCoherence(probe);
+      }
       return countTablesFromProbe(probe as unknown as RowCountProbe);
     } finally {
       try { probe.close(); } catch { /* best effort */ }
@@ -604,6 +637,15 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
   };
 
   return {
+    reserveImportOperation: id => importReceipts.reserve(id),
+    refuseImportOperation: id => importReceipts.refused(id),
+    importOperationStatus(id) {
+      const result = importReceipts.status(id);
+      return (result.status === 'preparing' || result.status === 'waiting_for_restart')
+        && existsSync(resolveServerBundleSwapMarkerPath(dbPath))
+        ? { status: 'recovery_required' }
+        : result;
+    },
     canExport() {
       // The runtime is only constructed when the warehouse db exists
       // (gated at the wiring site). The recovery key arrives per call, so
@@ -845,7 +887,7 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
         try {
           return toWireManifest(
             preview.manifest,
-            await countDbRowsAtPath(tmp, previewDatabaseKey),
+            await countDbRowsAtPath(tmp, previewDatabaseKey, preview.manifest.schema_version),
             preview.passportPresent,
           );
         } finally {
@@ -918,7 +960,7 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
         : { realm: 'cross', authorized: false, reason: 'realm_mismatch' };
     },
 
-    async runImport({ path, force, recoveryKey, drivingClient }) {
+    async runImport({ path, force, recoveryKey, drivingClient, operation_id }) {
       const key = deriveArchiveKeyBuffer(recoveryKey);
       try {
       const targets: RestoreTargets = { dbPath, dataPath, configPath };
@@ -961,11 +1003,12 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
           await countDbRowsAtPath(staged.stagingPath, stagedDatabaseKey),
           staged.passportPresent,
         );
+        if (operation_id !== undefined) importReceipts.staged(operation_id, staged.stagingPath);
       } catch (err) {
         // Remove THIS restore's staged file (by its exact path) and put the
         // displaced CAS objects back before aborting.
         stagedDatabaseKey?.fill(0);
-        discardStagedRestore(staged.stagingPath, staged.displacedBlobs);
+        if (!discardStagedRestore(staged.stagingPath, staged.displacedBlobs)) throw new ArchiveRestoreCleanupError(err);
         throw err;
       }
       const restored_at = now();
@@ -996,16 +1039,22 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
       // restore and let the supervisor reboot on the ORIGINAL db.
       deps.requestRestart(async (drainOk) => {
         if (drainOk) {
-          await commitStagedRestore(targets, staged, { now });
+          await commitStagedRestore(targets, staged, { now, import_operation_id: operation_id });
         } else {
           // Also puts back any live CAS object the staging overlay wrote over:
           // the ORIGINAL db keeps serving and still references those hashes, so
           // leaving the archive realm's ciphertext there would strand them.
-          discardStagedRestore(staged.stagingPath, staged.displacedBlobs);
+          const recovered = discardStagedRestore(staged.stagingPath, staged.displacedBlobs);
+          if (operation_id !== undefined) importReceipts.abandoned(operation_id, recovered);
         }
       });
 
       return { manifest, restored_at, ...(rebind ? { rebind } : {}) };
+      } catch (error) {
+        if (operation_id !== undefined && error instanceof ArchiveRestoreCleanupError) {
+          try { importReceipts.abandoned(operation_id, false); } catch { /* keep the pending receipt when its store is unavailable */ }
+        }
+        throw error;
       } finally {
         // Wipe our copy of the recovery-key entropy. The restart callback
         // registered above captures only `targets`/`staged`/`now` — never
@@ -1123,6 +1172,7 @@ export const composeArchiveRpcDeps = (
 
   return {
     runtime,
+    remoteBackups: createSqliteRemoteBackups({ db, dbPath: opts.dbPath, getKeys: opts.getKeys, now: opts.now }),
     dataPath,
     now: opts.now,
     ...(opts.auditLog ? { auditLog: opts.auditLog } : {}),

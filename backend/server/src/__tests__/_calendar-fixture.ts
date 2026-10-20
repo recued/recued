@@ -17,6 +17,7 @@
  *  set is IDENTICAL to the real builder's. Without that ratchet this file is
  *  just a second place to be wrong, which is exactly what it exists to fix. */
 
+import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type { CanonicalEvent } from '@recued/contracts';
 
@@ -45,6 +46,7 @@ export const createCalendarFixtureTable = (
       body_inline     TEXT,
       blob_hash       TEXT,
       etag            TEXT,
+      resource_version TEXT,
       record_payload  TEXT NOT NULL,
       prior_payload   TEXT
     );
@@ -121,8 +123,8 @@ export const insertCalendarFixtureRow = (
        record_id, source_id, received_at, modified_at, size_bytes,
        calendar_id, summary, start_at, end_at, status, organizer,
        ical_uid, location, is_all_day, is_recurring,
-       body_inline, blob_hash, etag, record_payload, prior_payload
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, NULL)`,
+       body_inline, blob_hash, etag, resource_version, record_payload, prior_payload
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, NULL)`,
   ).run(
     row.record_id,
     event.source_id,
@@ -139,6 +141,9 @@ export const insertCalendarFixtureRow = (
     event.location ?? null,
     event.is_all_day ? 1 : 0,
     0,
+    // Production never stores a row without one: writes stamp it, and opening
+    // the table backfills older rows.
+    randomUUID(),
     JSON.stringify(event),
   );
 };

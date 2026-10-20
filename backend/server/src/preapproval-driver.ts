@@ -22,13 +22,13 @@ export const createPreapprovalDriver = (deps: {
   settleRecovered?: (
     trigger_id: string,
     event: WarehouseEvent,
-    run: (observe: Pick<InternalExecuteOverrides, 'onRunMinted'>) => Promise<ExecuteResponse | null>,
+    run: (observe: Pick<InternalExecuteOverrides, 'onRunMinted' | 'beforeRunStart'>) => Promise<ExecuteResponse | null>,
   ) => Promise<void>;
 }) => {
   const triggerCandidates = new WeakMap<object, { occurrence: TriggerOccurrence; entered: boolean }>();
   const runReviewedTrigger = async (
     futureRef: string,
-    observe: Pick<InternalExecuteOverrides, 'onRunMinted'> = {},
+    observe: Pick<InternalExecuteOverrides, 'onRunMinted' | 'beforeRunStart'> = {},
   ): Promise<ExecuteResponse | null> => {
     let handle: object | undefined;
     try {
@@ -98,7 +98,7 @@ export const createPreapprovalDriver = (deps: {
   async executeTrigger(
     request: ExecuteRequest,
     candidate: object,
-    observe: Pick<InternalExecuteOverrides, 'onRunMinted'> = {},
+    observe: Pick<InternalExecuteOverrides, 'onRunMinted' | 'beforeRunStart'> = {},
   ): Promise<ExecuteResponse | null> {
     if (!deps.storage.isReady()) return null;
     const entry = triggerCandidates.get(candidate);

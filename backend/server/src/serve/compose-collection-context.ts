@@ -58,6 +58,8 @@ import { createHeldMailFactEvents, type HeldMailFactEvents } from '../mail-facts
 import { createInstanceStore } from '../collections/instance-store.js';
 import { createBackfillStateLookup } from '../triggers/backfill-state.js';
 import { bootEventKeep, createBootEventRecorder, type BootEventRecorder } from '../triggers/boot-events.js';
+import { createEventTriggersStore, type EventTriggersStore } from '../triggers/store.js';
+import { situationSubscriberId } from '../triggers/dispatcher.js';
 import {
   createMailFactAiRunner,
   MAIL_FACT_AI_MANIFEST,
@@ -82,7 +84,7 @@ import { createOAuthPermissionService } from '../oauth-permission-consolidation.
 import { createOAuthAppUsageService } from '../oauth-app-usage-service.js';
 import { createOAuthAppRenewalService } from '../oauth-app-renewal-service.js';
 import type { OAuthProviderConfig } from '../collections/mail/oauth.js';
-import { oauthAppIssuerForProvider, resolveServerTimeZone } from '@recued/contracts';
+import { contactExcludedFromProactive, oauthAppIssuerForProvider, resolveServerTimeZone } from '@recued/contracts';
 import { createServerTimeZoneStore } from '../storage/server-timezone-store.js';
 import type { IngredientManifest, MailFactEmailRef } from '@recued/contracts';
 import type { ConnectionStoreSqlite } from '../storage/connection-store.js';
@@ -95,6 +97,43 @@ import type { WorkEntitySourceWriteExecutor } from '../work-entity-write-executo
 import type { GateRegistry } from '../storage-gates.js';
 import { createWatcherDispatcher } from '../watchers/index.js';
 import { createWorkEntityDispatchers } from '../work-entity-ingredients.js';
+import { createAssetOccurrenceService, type AssetOccurrenceService } from '../situations/asset-occurrence-service.js';
+import { createOwnerCompletionWriter } from '../situations/owner-completion.js';
+import { createAssetReminderService, type AssetReminderService } from '../situations/asset-reminder-service.js';
+import { createHouseholdHomeAssistant, type HouseholdHomeAssistant } from '../situations/household-home-assistant.js';
+import { createProactiveLearning, type ProactiveLearning } from '../situations/learning-runtime.js';
+import { createProactiveRetention, type ProactiveRetention } from '../situations/proactive-retention.js';
+import { createConnectionCatalogBindingStore } from '../storage/connection-catalog-binding-store.js';
+import { createContractStore } from '../storage/contract-store.js';
+import { decodeAuthFromStorage } from '../connection-auth-storage.js';
+import { createOccasionClockService } from '../situations/occasion-clock-service.js';
+import { declaredOccasions } from '../situations/declared-occasions.js';
+import { createEpisodeRuntime, type EpisodeRuntime } from '../situations/episode-runtime.js';
+import { parseWatchedFileRecordId } from '../collections/file/watched-folder-collection.js';
+import { createHouseholdDeliveryStore } from '../storage/household-delivery-store.js';
+import { selectOwnerNotificationConnection } from '../situations/reminder-destinations.js';
+import { createSQLiteCollection } from '../sqlite-collection.js';
+import { createNotificationSettingsStore, type NotificationSettings } from '@recued/notification';
+import { createProactiveHistoryStore } from '../storage/proactive-history-store.js';
+import { createProactiveProposalStore } from '../storage/proactive-proposal-store.js';
+import { createYoursService, type YoursService } from '../situations/yours-service.js';
+import { createSphereStore } from '../storage/sphere-store.js';
+import { createQuietHoursStore } from '../storage/quiet-hours-store.js';
+import { shouldSuppressForQuietHours } from '@recued/contracts';
+import { createSituationStore, type SituationStore } from '../storage/situation-store.js';
+import { occasionRuleSituation, resolveRuleSituation, ruleSituation } from '../situations/rule-situation.js';
+import { createClusterSummary } from '../situations/cluster-summary.js';
+import { createScheduledSituations, type ScheduledSituations } from '../situations/scheduled-situations.js';
+import { handleNotificationSend } from '../notification-handler.js';
+import { createSituationQuery } from '../situations/query.js';
+import { createSituationNamedPeople } from '../situations/named-people.js';
+import { recordDigestResponse } from '../situations/measures.js';
+import { buildSituationSources, situationSourceAccess } from '../situations/sources.js';
+import { createAssetClassStore } from '../situations/asset-classes.js';
+import { relateTravelDocuments, travelDocumentsVisible } from '../situations/travel-document-relations.js';
+import { createReminderStore } from '../storage/reminder-store.js';
+import { createCalendarTable } from '../collections/calendar/calendar-table.js';
+import { createCollectionTable } from '../collections/table.js';
 import { createWorkEntityResolver } from '../work-entity-resolver.js';
 import {
   createWebclientUploadService,
@@ -241,6 +280,16 @@ export interface CollectionContext extends ConnectionNotificationBundle {
   collectionRegistry: CollectionRegistry;
   watcherDispatcher: WatcherDispatcher;
   workEntityDispatchers: WorkEntityDispatchers | undefined;
+  assetOccurrences?: AssetOccurrenceService;
+  assetReminders?: AssetReminderService;
+  yours?: YoursService;
+  scheduledSituations?: ScheduledSituations;
+  episodeRuntime?: EpisodeRuntime;
+  proactiveLearning?: ProactiveLearning;
+  proactiveRetention?: ProactiveRetention;
+  situationStore?: SituationStore;
+  querySituation?: ReturnType<typeof createSituationQuery>;
+  spheres?: ReturnType<typeof createSphereStore>;
   oauthClientConfigDeps: OAuthClientConfigDeps;
   /** BYO OAuth app config rpc deps (get/set/clear). Absent on a db-less boot. */
   oauthAppConfigDeps?: OAuthAppConfigHandlerDeps;
@@ -483,13 +532,16 @@ export const composeCollectionContext = (
   const mailChatConversations = db !== undefined ? createMailChatConversations(db) : undefined;
   // D-318 audit — every reader of the owner's mail that lists the mail tables
   // (housekeeping producers, the contact backfill, the CRM twin join) leaves out
-  // the chat mailbox's table — its mail is the conversation, strangers' too —
-  // and, in the owner's other mailboxes, the rows marked as the conversation.
+  // a chat-only mailbox's table — its mail is the conversation, strangers' too —
+  // and, in the owner's mailboxes, the rows marked as the conversation. ⛔ One
+  // mailbox (§8.18): a chat mailbox that is one of the owner's own too is their
+  // mail, and only its marked rows are left out.
   if (db !== undefined && mailChatDoor !== undefined) {
     setCollectionReaderExclusion(db, {
       tables: (platform, table) => {
         const chat = mailChatDoor.get().chat_mailbox;
-        return platform === 'mail' && chat !== null && table === collectionTableName('mail', chat);
+        return platform === 'mail' && chat !== null && mailChatDoor.isChatOnlyMailbox(chat)
+          && table === collectionTableName('mail', chat);
       },
       rows: { mail: MAIL_CHAT_OWNER_ROWS_SQL },
     });
@@ -502,14 +554,22 @@ export const composeCollectionContext = (
         return (reconciliation_id: string): boolean => claims.get(reconciliation_id) !== null;
       })()
     : undefined;
-  const mailChatConversationMail = mailChatDoor !== undefined
+  // Typed: it and the proof below each ask the other, late.
+  const mailChatConversationMail: MailChatConversationMail | undefined = mailChatDoor !== undefined
     ? createMailChatConversationMail({
         door: mailChatDoor,
         mailbox: (slug) => collectionRegistry.get('mail', slug) as MailCollection | undefined,
         ...(isOwnSend ? { isOwnAnswer: isOwnSend } : {}),
+        // One mailbox (§8.18) — a reply in a conversation is the conversation,
+        // as the proof reads it. Late: the proof is made just below, and mail
+        // syncs only once the mail stack starts.
+        continues: (slug, references) => mailChatProof?.continuesConversation(slug, references) === true,
+        // ...and an email delivered on its provider's word stops being the
+        // conversation once the proof refutes it.
+        refuted: (slug, rfc_message_id) => mailChatProof?.refuted(slug, rfc_message_id) === true,
       })
     : undefined;
-  const mailChatProof = db !== undefined && mailChatDoor !== undefined
+  const mailChatProof: MailChatSentProof | undefined = db !== undefined && mailChatDoor !== undefined
     ? createMailChatSentProof({
         db,
         door: mailChatDoor,
@@ -518,12 +578,17 @@ export const composeCollectionContext = (
           .filter((collection): collection is MailCollection => collection.platform === 'mail'),
         ...(auditLog ? { auditLog } : {}),
         isUnlocked: isVaultUnlocked,
+        // One mailbox (§8.18) — an email the proof refutes is the owner's mail again.
+        ...(mailChatConversationMail
+          ? { onNotProven: (slug: string, record_id: string) => mailChatConversationMail.unmark(slug, record_id) }
+          : {}),
         log: (level, msg, data) => {
           const fn = level === 'warn' ? console.warn : console.log;
           fn(`[mail-chat] ${msg}`, data ?? '');
         },
       })
     : undefined;
+  let episodeRuntime: EpisodeRuntime | undefined;
   const mailStack = composeMailBoot({
     ...(options.managedOAuthConsumers ? { managedOAuth: options.managedOAuthConsumers } : {}),
     db,
@@ -533,10 +598,14 @@ export const composeCollectionContext = (
     ...(contactStore ? { contactStore } : {}),
     // D-315 — every upsert is read for mail facts, through the one writer.
     ...(mailFactWriter ? { mailFactWriter } : {}),
+    ...(db && workEntityStore && mailFactStore ? { onBeforeRetention: async (slug: string, cutoff: number) => {
+      if (!episodeRuntime) throw new Error('History capture must be ready before mail retention');
+      await episodeRuntime.captureBeforeRetention(slug, cutoff);
+    } } : {}),
     // D-318 P23 — and checked for a proven reply to an emailed ask.
     emailAnswerHook: (msg, ctx) => emailAnswerHook.run(msg, ctx),
-    // D-318 step 1 — the chat mailbox's mail is the conversation: no contacts, no facts.
-    ...(mailChatDoor ? { isChatMailbox: (slug: string) => mailChatDoor.isChatMailbox(slug) } : {}),
+    // D-318 step 1 — a chat-only mailbox's mail is the conversation: no contacts, no facts.
+    ...(mailChatDoor ? { isChatOnlyMailbox: (slug: string) => mailChatDoor.isChatOnlyMailbox(slug) } : {}),
     // Step 5 — nor its answers and requests in the owner's other mailboxes.
     ...(mailChatConversationMail ? { isChatConversationMail: mailChatConversationMail.isConversationMessage } : {}),
     // The audit — Recued's own mail is known by its send claims.
@@ -547,7 +616,7 @@ export const composeCollectionContext = (
     // Step 4 — and its files recorded once stored, so its turn carries them.
     ...(mailChatProof ? { chatFilesHook: mailChatProof.onMessageUpserted } : {}),
     // The audit — a deleted mailbox is forgotten by the door.
-    ...(mailChatDoor ? { onMailboxDeleted: (slug: string) => { mailChatDoor.forgetMailbox(slug); } } : {}),
+    onMailboxDeleted: (slug: string) => { mailChatDoor?.forgetMailbox(slug); episodeRuntime?.forgetSource(slug); },
     gateRegistry,
     ...(accountStore ? { accountStore } : {}),
     isVaultUnlocked,
@@ -671,20 +740,198 @@ export const composeCollectionContext = (
     keys,
     eventBus,
     collectionRegistry,
+    // D-325 P31/P43 — the brief, day-of notes and plain reminders send through
+    // the connection the owner named in Settings, never a household one.
+    ...(db ? { selectConnection: async (channel: string, rows: readonly import('@recued/contracts').ConnectionRow[]) => selectOwnerNotificationConnection({
+      settings: await createNotificationSettingsStore(createSQLiteCollection<NotificationSettings>(db, 'notification_settings')).get(),
+      channel, rows, isHousehold: row => createHouseholdDeliveryStore(db).isHousehold(row) }) } : {}),
   });
 
+  const situationStore = db ? createSituationStore(db, warehouseBus) : undefined;
+  let assetOccurrences: AssetOccurrenceService | undefined;
+  let assetReminders: AssetReminderService | undefined;
+  let householdHomeAssistant: HouseholdHomeAssistant | undefined;
+  const householdCatalogBindings = db ? createConnectionCatalogBindingStore(createContractStore(db)) : undefined;
+  const proactiveHistory = db ? createProactiveHistoryStore(db, createProactiveProposalStore(db)) : undefined;
+  const situationCalendars = new Map<string, ReturnType<typeof createCalendarTable>>();
+  const situationMailboxes = new Map<string, ReturnType<typeof createCollectionTable>>();
+  const localSituationMailboxes = () => db ? collectionRegistry.list().filter(collection => collection.platform === 'mail').map(collection => {
+    let table = situationMailboxes.get(collection.slug);
+    if (!table) { table = createCollectionTable({ db, platform: 'mail', slug: collection.slug }); situationMailboxes.set(collection.slug, table); }
+    return { slug: collection.slug, table };
+  }) : [];
+  const localSituationCalendars = () => db ? collectionRegistry.list().filter(collection => collection.platform === 'calendar').map(collection => {
+    let table = situationCalendars.get(collection.slug);
+    if (!table) { table = createCalendarTable({ db, slug: collection.slug }); situationCalendars.set(collection.slug, table); }
+    return { slug: collection.slug, table };
+  }) : [];
   const workEntityDispatchers = workEntityStore
     ? createWorkEntityDispatchers({
         store: workEntityStore,
+        ...(db ? { ownerCompletionWrite: createOwnerCompletionWriter(db, workEntityStore) } : {}),
         resolver: createWorkEntityResolver(workEntityStore),
         timeZone: serverTimeZone,
         bus: warehouseBus,
+        annotationCascadeOnDelete: (collection, id) => options.annotationDeps?.store.cascadeDelete(collection, id),
+        onAssetChanged: async (asset) => {
+          try {
+            if (['sold', 'lost', 'retired'].includes(asset.status)) await assetOccurrences?.retireAsset(asset.id);
+            else await assetOccurrences?.reconcileAsset(asset.id);
+          } catch (error) { console.warn('[assets] immediate clock reconcile failed; the minute service will retry', error); }
+        },
+        onAssetDeleted: async (asset) => {
+          try { await assetOccurrences?.retireAsset(asset.id); }
+          catch (error) { console.warn('[assets] retirement reconcile failed; the minute service will retry', error); }
+        },
         ...(enrichmentCascade ? { cascade: enrichmentCascade } : {}),
         ...(options.getWorkEntityWriteExecutor
           ? { getWriteExecutor: options.getWorkEntityWriteExecutor }
           : {}),
       })
     : undefined;
+  if (db && workEntityStore && workEntityDispatchers && situationStore) {
+    assetOccurrences = createAssetOccurrenceService({ db, work: workEntityStore, dispatchers: workEntityDispatchers,
+      timeZone: serverTimeZone, isVaultUnlocked: () => keys === undefined || keys.state() === 'unlocked',
+      withdraw: async id => { assetReminders?.withdraw(id); },
+      emitRule: async input => { situationStore.save(ruleSituation(input), { source: `asset-rule:${input.occurrence.id}` }, Date.now()); },
+      cycleEnded: occurrence => { resolveRuleSituation(situationStore, occurrence.id, `asset-rule:${occurrence.id}`, Date.now()); },
+      outcome: async input => {
+        resolveRuleSituation(situationStore, input.occurrence.id, `commitment:${input.commitment.id}`, input.commitment.lifecycle_changed_at);
+        situationStore.measure('clock.closure', 1, { outcome: input.commitment.lifecycle_state,
+          class: input.asset.class_id ?? 'unclassified', rule_kind: input.rule?.when.kind ?? 'unknown' }, input.commitment.lifecycle_changed_at, `clock-close:${input.occurrence.id}`);
+      },
+    });
+    const quiet = createQuietHoursStore(db);
+    householdHomeAssistant = createHouseholdHomeAssistant({ db, work: workEntityStore, occurrences: assetOccurrences, isVaultUnlocked,
+      connections: () => (connectionStore?.list({ kind: 'api' }) ?? []).filter(row => householdCatalogBindings?.catalogsForConnection(row.name).includes('home-assistant')),
+      credential: async row => { const auth = await decodeAuthFromStorage(row.auth_ciphertext, { kind: row.kind, name: row.name }, keys?.keyProvider('connection'));
+        return auth.type === 'bearer' && typeof auth.token === 'string' && auth.token ? auth.token : null; },
+    });
+    assetReminders = createAssetReminderService({ db, work: workEntityStore, dispatchers: workEntityDispatchers,
+      occurrences: assetOccurrences, timeZone: serverTimeZone,
+      projectHousehold: () => householdHomeAssistant!.tick(),
+      householdDestinations: async () => createHouseholdDeliveryStore(db).destinations(connectionStore?.list({ kind: 'notification' }) ?? []),
+      additionalSubjects: createOccasionClockService({ db, work: workEntityStore, dispatchers: workEntityDispatchers,
+        timeZone: serverTimeZone, isVaultUnlocked: () => keys === undefined || keys.state() === 'unlocked',
+        withdraw: id => assetReminders?.withdraw(id),
+        declared: () => declaredOccasions({ ...(contactStore ? { contacts: contactStore } : {}), calendars: localSituationCalendars,
+          timeZone: serverTimeZone, place: value => proactiveHistory!.place(value), sphere: (ref, source) => spheres?.resolve(ref, source).sphere }),
+        excludedPerson: id => { const contact = contactStore?.getByContactIdResolved(id) ?? contactStore?.get(id); return !!contact && contactExcludedFromProactive(contact); },
+        emitRule: input => { situationStore.save(occasionRuleSituation(input), { source: `occasion-rule:${input.occurrence.id}` }, Date.now()); },
+        cycleEnded: occurrence => { resolveRuleSituation(situationStore, occurrence.id, `occasion-rule:${occurrence.id}`, Date.now()); },
+        outcome: input => {
+          resolveRuleSituation(situationStore, input.occurrence.id, `commitment:${input.commitment.id}`, input.commitment.lifecycle_changed_at);
+          situationStore.measure('clock.closure', 1, { outcome: input.commitment.lifecycle_state,
+          class: input.occasion.class_id ?? 'occasion', rule_kind: 'annual' }, input.commitment.lifecycle_changed_at, `clock-close:${input.occurrence.id}`); },
+      }),
+      isVaultUnlocked: () => keys === undefined || keys.state() === 'unlocked',
+      isQuiet: instant => shouldSuppressForQuietHours({ policy: quiet.read(), instant, timeZone: serverTimeZone() }),
+      measure: (...args) => { situationStore.measure(...args); },
+      ownerResponse: (refs, at) => recordDigestResponse(situationStore, refs, at),
+    });
+  }
+  const spheres: ReturnType<typeof createSphereStore> | undefined = db && workEntityStore ? createSphereStore(db, workEntityStore, id =>
+    (contactStore?.getByContactIdResolved(id) ?? contactStore?.get(id))?.relationship, ref => {
+      if (ref.collection === 'episode' || ref.collection === 'history_trace') {
+        const sphere = episodeRuntime?.referenceSphere(ref); if (sphere) return { sphere };
+      }
+      if (ref.collection === 'calendar') {
+        const colon = ref.id.indexOf(':'); if (colon < 1) return undefined;
+        const slug = ref.id.slice(0, colon);
+        if (!collectionRegistry.list().some(row => row.platform === 'calendar' && row.slug === slug)) return undefined;
+        let table = situationCalendars.get(slug); if (!table) { table = createCalendarTable({ db, slug }); situationCalendars.set(slug, table); }
+        const row = table.getByRecordId(ref.id.slice(colon + 1)); return row ? { source: `calendar:${slug}:${row.hot.calendar_id}` } : undefined;
+      }
+      if (ref.collection === 'mail_fact' && options.mailFactStore) {
+        const facts = options.mailFactStore.factsForThing(ref.id);
+        const slugs = [...new Set(facts.map(fact => fact.email.slug))];
+        if (slugs.length === 1) return { source: `mail:${slugs[0]}` };
+        const known = facts.map(fact => spheres?.resolve({ collection: 'mail', id: `${fact.email.slug}:${fact.email.record_id}` }).sphere);
+        return known.length && known.every(value => value !== undefined && value === known[0]) ? { sphere: known[0] } : undefined;
+      }
+      return undefined;
+    }) : undefined;
+  if (db && workEntityStore && situationStore) episodeRuntime = createEpisodeRuntime({ db, work: workEntityStore, situations: situationStore,
+    ...(mailFactStore ? { mailFacts: mailFactStore } : {}), ...(contactStore ? { contacts: contactStore } : {}),
+    calendars: localSituationCalendars, mailboxes: localSituationMailboxes, timeZone: serverTimeZone, isVaultUnlocked,
+    photoFilePath: id => {
+      const parsed = parseWatchedFileRecordId(id); if (!parsed || !collectionRegistry.get('file', parsed.slug)?.get(id)) return undefined;
+      const root = createInstanceStore({ db }).get('file', parsed.slug)?.config.path;
+      if (typeof root !== 'string' || !root || parsed.path.split('/').includes('..')) return undefined;
+      return resolve(root, parsed.path);
+    },
+    ...(spheres ? { sphere: (ref, source) => spheres.resolve(ref, source).sphere } : {}),
+  });
+  const proactiveLearning = db && workEntityStore && spheres && situationStore ? createProactiveLearning({ db, work: workEntityStore, spheres, situations: situationStore,
+    ...(episodeRuntime ? { episodes: episodeRuntime } : {}), timeZone: serverTimeZone, isVaultUnlocked,
+    kindName: kind => options.mailFactStore?.getCustomType(kind)?.name,
+    excludedPerson: id => { const contact = contactStore?.getByContactIdResolved(id) ?? contactStore?.get(id); return !!contact && contactExcludedFromProactive(contact); },
+    tripExists: ref => {
+      if (ref.collection === 'mail_fact' && options.mailFactStore) {
+        const thing = options.mailFactStore.getThing(ref.id); const facts = options.mailFactStore.factsForThing(ref.id);
+        return !!thing && !['cancelled', 'returned', 'refund_issued'].includes(String(thing.variables.state)) && facts.some(fact =>
+          collectionRegistry.list().some(source => source.platform === 'mail' && source.slug === fact.email.slug));
+      }
+      if (ref.collection === 'calendar') {
+        const colon = ref.id.indexOf(':'); if (colon < 1) return false;
+        const source = localSituationCalendars().find(source => source.slug === ref.id.slice(0, colon));
+        const event = source?.table.getByRecordId(ref.id.slice(colon + 1)); return !!event && event.hot.status !== 'cancelled';
+      }
+      return false;
+    },
+  }) : undefined;
+  const querySituation = db && workEntityStore ? createSituationQuery({
+    sourceForCollection: situationSourceAccess,
+    ...(contactStore ? { namedPeople: createSituationNamedPeople(contactStore) } : {}),
+    relate: (facts, _query, context) => [...relateTravelDocuments(facts, createAssetClassStore(db).list().flatMap(preset => preset.travel_validity ?? []), serverTimeZone(),
+      travelDocumentsVisible(context, situationSourceAccess('asset'))), ...(proactiveLearning?.related(facts) ?? [])],
+    ...(proactiveLearning ? { rank: fact => proactiveLearning.rank(fact), relationClasses: () => proactiveLearning.relationClasses() } : {}),
+    sources: [...buildSituationSources({ db, work: workEntityStore, reminders: createReminderStore(db),
+      ...(contactStore ? { contacts: contactStore } : {}), ...(options.mailFactStore ? { mailFacts: options.mailFactStore } : {}),
+      timeZone: serverTimeZone,
+      place: value => proactiveHistory!.place(value),
+      ...(spheres ? { sphere: (ref, source) => spheres.resolve(ref, source).sphere } : {}),
+      calendars: localSituationCalendars,
+    }), ...(episodeRuntime ? [episodeRuntime.source] : [])],
+  }) : undefined;
+  const yours = db && workEntityStore && workEntityDispatchers && situationStore && assetOccurrences
+    ? createYoursService({ db, work: workEntityStore, dispatchers: workEntityDispatchers, situations: situationStore,
+      occurrences: assetOccurrences, ...(assetReminders ? { reminders: assetReminders } : {}), ...(spheres ? { spheres } : {}),
+      ...(options.mailFactStore ? { mailFacts: options.mailFactStore } : {}), ...(annotationDeps ? { annotations: annotationDeps.store } : {}),
+      ...(episodeRuntime ? { episodeRuntime } : {}),
+      ...(proactiveLearning ? { learning: proactiveLearning } : {}),
+      sphereSources: () => [...collectionRegistry.list().filter(row => row.platform === 'mail' || row.platform === 'calendar').map(row => ({ source: `${row.platform}:${row.slug}`, name: `${row.platform}: ${row.slug}` })),
+        ...workEntityStore.listSources().map(row => ({ source: `work:${row.id}`, name: row.id }))],
+      connections: () => connectionStore?.list({ kind: 'notification' }) ?? [],
+      // Not the chat-only mailbox: its mail is the conversation, never read for facts.
+      mailboxes: () => collectionRegistry.list().filter(row => row.platform === 'mail' && !mailChatDoor?.isChatOnlyMailbox(row.slug))
+        .flatMap(row => { const address = (row as MailCollection).accountEmail; return typeof address === 'string' && address ? [{ slug: row.slug, address }] : []; }),
+      ...(householdHomeAssistant ? { homeAssistant: householdHomeAssistant } : {}),
+      isVaultUnlocked, timeZone: serverTimeZone }) : undefined;
+
+  const scheduledSituations = db && workEntityStore && situationStore && querySituation && yours
+    ? createScheduledSituations({ db, work: workEntityStore, store: situationStore, query: querySituation, timeZone: serverTimeZone,
+        isVaultUnlocked, isQuiet: at => shouldSuppressForQuietHours({ policy: createQuietHoursStore(db).read(), instant: at, timeZone: serverTimeZone() }),
+        ...(privateAiCall ? { summarize: createClusterSummary({ call: privateAiCall, ready: () => {
+          if (!isVaultUnlocked()) return undefined;
+          try { if (isAiPaused(db, Date.now()) || backgroundAiBudgetSpent?.()) return undefined;
+            return isByokAllowedForBackground(db) ? 'any' : 'free';
+          } catch { return undefined; }
+        } }) } : {}),
+        overview: () => yours.overview(), send: message => handleNotificationSend({ dispatchers: channelDispatchers ?? {} }, message),
+        ...(episodeRuntime ? { retainCited: clusters => episodeRuntime!.retainCited(clusters), memoryAllowed: cluster => episodeRuntime!.memoryAllowed(cluster) } : {}),
+        ...(contactStore ? { personName: (id: string) => { const contact = contactStore.getByContactIdResolved(id) ?? contactStore.get(id); return contact ? contact.name ?? contact.email : undefined; } } : {}),
+        mailHealth: () => collectionRegistry.list().filter(collection => collection.platform === 'mail').map(collection => {
+          const health = collection.health(); return { name: collection.slug, last_success_at: health.last_indexed_at,
+            needs_attention: health.error_count_24h > 0 || health.last_indexed_at === 0 || Date.now() - health.last_indexed_at > 86_400_000 || health.auth_state === 'expired' || health.auth_state === 'unauthorized' };
+        }),
+      }) : undefined;
+  if (scheduledSituations) yours!.bindScheduled(scheduledSituations);
+  let feedSubscribers: EventTriggersStore | undefined;
+  const proactiveRetention = db && situationStore ? createProactiveRetention({ db, situations: situationStore, isVaultUnlocked,
+    subscribers: () => (feedSubscribers ??= createEventTriggersStore(db)).list().map(trigger => situationSubscriberId(trigger.trigger_id)),
+    ...(scheduledSituations ? { overview: scheduledSituations } : {}), ...(workEntityStore ? { work: workEntityStore } : {}),
+    ...(mailFactStore ? { mailFacts: mailFactStore } : {}) }) : undefined;
 
   // The authorize-URL read: client_id ONLY, never the secret, so it stays safe
   // on a locked server (`getClientId` does not decrypt). Store-only since the
@@ -810,6 +1057,16 @@ export const composeCollectionContext = (
     notificationHandler,
     channelDispatchers,
     workEntityDispatchers,
+    ...(assetOccurrences ? { assetOccurrences } : {}),
+    ...(assetReminders ? { assetReminders } : {}),
+    ...(yours ? { yours } : {}),
+    ...(scheduledSituations ? { scheduledSituations } : {}),
+    ...(episodeRuntime ? { episodeRuntime } : {}),
+    ...(proactiveLearning ? { proactiveLearning } : {}),
+    ...(proactiveRetention ? { proactiveRetention } : {}),
+    ...(situationStore ? { situationStore } : {}),
+    ...(spheres ? { spheres } : {}),
+    ...(querySituation ? { querySituation } : {}),
     oauthClientConfigDeps,
     ...(oauthAppConfigDeps ? { oauthAppConfigDeps } : {}),
     startCollectionAdapters,

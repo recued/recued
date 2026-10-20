@@ -11,7 +11,21 @@
  *  The restart drain + supervisor handoff are injected as a spy
  *  (`requestRestart`) so nothing actually drains or exits the process. */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+const cleanupFault = vi.hoisted(() => ({ directory: '' }));
+vi.mock('node:fs', async importOriginal => {
+  const fs = await importOriginal<typeof import('node:fs')>();
+  return { ...fs, unlinkSync: (path: import('node:fs').PathLike) => {
+    if (cleanupFault.directory && String(path).startsWith(cleanupFault.directory) && String(path).includes('.staging-')) {
+      throw new Error('fixture: staging cleanup unavailable');
+    }
+    return fs.unlinkSync(path);
+  } };
+});
+afterEach(() => { cleanupFault.directory = ''; });
+import { randomUUID } from 'node:crypto';
+import { createArchiveImportReceipts } from '../archive/archive-import-receipts.js';
 import {
   existsSync,
   mkdirSync,
@@ -331,7 +345,9 @@ describe('archive online runtime', () => {
     h.db.prepare('INSERT INTO example VALUES (?, ?)').run('foo', 'bar');
     expect(rowCount(h.db)).toBe(2);
 
-    const res = await h.runtime.runImport({ path, force: false, recoveryKey: h.mnemonic });
+    const operation_id = randomUUID(); h.runtime.reserveImportOperation!(operation_id);
+    const res = await h.runtime.runImport({ path, force: false, recoveryKey: h.mnemonic, operation_id });
+    expect(h.runtime.importOperationStatus!(operation_id)).toEqual({ status: 'waiting_for_restart' });
     expect(res.restored_at).toBe(FIXED_NOW);
     expect(res.manifest.tables.example).toBe(1);
     expect(h.restartCount()).toBe(1);
@@ -344,6 +360,7 @@ describe('archive online runtime', () => {
     // clean drain result (drainOk = true) → commit.
     h.db.close();
     await h.takeOnDrained()(true);
+    expect(createArchiveImportReceipts(h.dbPath).status(operation_id)).toEqual({ status: 'completed' });
 
     // dbPath is now the archived snapshot: 1 row, 'hello' present, 'foo' gone.
     const restored = new Database(h.dbPath, { readonly: true });
@@ -416,7 +433,9 @@ describe('archive online runtime', () => {
     h.db.prepare('INSERT INTO example VALUES (?, ?)').run('foo', 'bar'); // mutate live db
     expect(rowCount(h.db)).toBe(2);
 
-    const res = await h.runtime.runImport({ path, force: false, recoveryKey: h.mnemonic });
+    const operation_id = randomUUID(); h.runtime.reserveImportOperation!(operation_id);
+    const res = await h.runtime.runImport({ path, force: false, recoveryKey: h.mnemonic, operation_id });
+    expect(h.runtime.importOperationStatus!(operation_id)).toEqual({ status: 'waiting_for_restart' });
     expect(res.restored_at).toBe(FIXED_NOW);
     expect(stagedFiles(h.dir)).toHaveLength(1);
     expect(h.restartCount()).toBe(1);
@@ -424,6 +443,7 @@ describe('archive online runtime', () => {
     // Drain timed out / aborted → abandon the staged restore, reboot on the
     // ORIGINAL db. No swap, so no need to close the live handle.
     await h.takeOnDrained()(false);
+    expect(createArchiveImportReceipts(h.dbPath).status(operation_id)).toEqual({ status: 'not_applied' });
 
     // Staging discarded; the live db is UNTOUCHED (still 2 rows, not the
     // archived snapshot), and no backup was taken (dbPath never moved).
@@ -466,6 +486,21 @@ describe('archive online runtime', () => {
       .rejects.toThrow(/recovery|mnemonic/i);
     expect(h.restartCount()).toBe(0);
     expect(stagedFiles(h.dir)).toHaveLength(0);
+  });
+
+  it('retains recovery work when a failed staged import cannot remove its files', async () => {
+    h = newHarness();
+    const { path } = await h.runtime.runExport({ includeBlobs: false, includePassport: false, recoveryKey: h.mnemonic });
+    const bytes = readFileSync(path); bytes[bytes.length - 1] = bytes[bytes.length - 1]! ^ 1; writeFileSync(path, bytes);
+    const operation_id = randomUUID(); h.runtime.reserveImportOperation!(operation_id);
+    cleanupFault.directory = h.dir;
+    await expect(h.runtime.runImport({ path, force: false, recoveryKey: h.mnemonic, operation_id }))
+      .rejects.toThrow('ARCHIVE_RESTORE_RECOVERY_REQUIRED');
+    h.runtime.refuseImportOperation!(operation_id);
+    expect(h.runtime.importOperationStatus!(operation_id)).toEqual({ status: 'recovery_required' });
+    expect(h.restartCount()).toBe(0); expect(rowCount(h.db)).toBe(1);
+    expect(stagedFiles(h.dir).length).toBeGreaterThan(0);
+    expect(() => h.runtime.reserveImportOperation!(randomUUID())).toThrow('requires recovery');
   });
 
   it('force maps to allow-future-version: a future-min-consumer archive needs force', async () => {

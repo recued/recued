@@ -18,7 +18,7 @@ import {
   type InteractiveTransport,
   type Transport,
 } from '@recued/transport';
-import { getMessengerVendorDeclaration, listMessengerVendors } from '@recued/contracts';
+import { getMessengerVendorDeclaration, listMessengerVendors, type ConnectionRow } from '@recued/contracts';
 import {
   createRemoteChannel,
   type RemoteChannel,
@@ -159,6 +159,11 @@ export const buildMessengerCredentialResolvers = (deps: {
    *  the SAME instance given to the ingress supervisor: single-flight is
    *  per-instance, and two of them race on a rotating refresh token. */
   refreshAuth?: MessengerNotificationRefresher;
+  /** D-158 amendment 2026-10-20 — per vendor, the connection a call with no
+   *  destination goes through (`createRemoteCredentialResolver`). Only the
+   *  notification channels pass it; a turn and live control keep the row named
+   *  after the vendor. */
+  plainConnection?: (vendor: string) => () => Promise<ConnectionRow | { reason: string }>;
 }): Record<string, () => Promise<RemoteChannelCredential | null>> => {
   const out: Record<string, () => Promise<RemoteChannelCredential | null>> = {};
   for (const vendor of listMessengerVendors()) {
@@ -170,6 +175,7 @@ export const buildMessengerCredentialResolvers = (deps: {
         resolveRecipient,
         ...(deps.keys ? { keys: deps.keys } : {}),
         ...(deps.refreshAuth ? { refreshAuth: deps.refreshAuth } : {}),
+        ...(deps.plainConnection ? { plainConnection: deps.plainConnection(vendor) } : {}),
       });
     }
   }
@@ -209,6 +215,9 @@ export const buildMessengerRemoteChannels = (deps: {
   answerLink?: (ask_id: string, via?: string) => string | undefined;
   /** D-238 — see `buildMessengerCredentialResolvers`. */
   refreshAuth?: MessengerNotificationRefresher;
+  /** D-158 amendment 2026-10-20 — see `buildMessengerCredentialResolvers`: a
+   *  plain notify or ask follows the owner's choice for the channel. */
+  plainConnection?: (vendor: string) => () => Promise<ConnectionRow | { reason: string }>;
 }): Record<string, RemoteChannel> => {
   // ⛔ ALL transports, not the interactive subset — see
   // `buildAllMessengerTransports`. A `landing-page` vendor is a real channel.
@@ -217,6 +226,7 @@ export const buildMessengerRemoteChannels = (deps: {
     connectionStore: deps.connectionStore,
     ...(deps.keys ? { keys: deps.keys } : {}),
     ...(deps.refreshAuth ? { refreshAuth: deps.refreshAuth } : {}),
+    ...(deps.plainConnection ? { plainConnection: deps.plainConnection } : {}),
   });
   const out: Record<string, RemoteChannel> = {};
   for (const vendor of listMessengerVendors()) {

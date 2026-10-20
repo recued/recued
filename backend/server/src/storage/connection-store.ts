@@ -36,6 +36,19 @@ import {
 } from '@recued/contracts';
 
 const CONNECTION_TABLE = 'connections';
+const readCacheOwner = `${process.pid}:${randomUUID()}`;
+const readCacheOwnerExited = (owner: string): boolean => {
+  const pid = Number(owner.split(':')[0]);
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  // A restarted process (including PID 1 in a container) can reuse its PID.
+  // This process's store handles share one nonce; an older nonce is interrupted.
+  if (pid === process.pid) return owner !== readCacheOwner;
+  try { process.kill(pid, 0); return false; }
+  catch (error) {
+    // Permission failures and malformed markers cannot prove an exited owner.
+    return error instanceof Error && 'code' in error && error.code === 'ESRCH';
+  }
+};
 const credentialLeases = new WeakMap<Database.Database, Map<string, Promise<void>>>();
 const CREDENTIAL_ROTATION_ATTEMPT_TABLE =
   'connection_credential_rotation_attempts';
@@ -84,6 +97,21 @@ export const ensureConnectionSchema = (db: Database.Database): void => {
       ON ${CONNECTION_TABLE} (updated_at);
     CREATE INDEX IF NOT EXISTS idx_connections_kind
       ON ${CONNECTION_TABLE} (kind);
+
+    CREATE TABLE IF NOT EXISTS connection_read_cache_revisions (
+      kind TEXT NOT NULL,
+      name TEXT NOT NULL,
+      revision TEXT NOT NULL,
+      PRIMARY KEY (kind, name)
+    );
+    CREATE TABLE IF NOT EXISTS connection_read_cache_writes (
+      write_id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      name TEXT NOT NULL,
+      owner TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_connection_read_cache_writes_account
+      ON connection_read_cache_writes (kind, name);
 
     CREATE TABLE IF NOT EXISTS connection_auth_sources (
       kind TEXT NOT NULL,
@@ -379,6 +407,8 @@ const dbRowToCredentialRotationAttempt = (
 };
 
 export interface ConnectionStoreSqlite {
+  /** Host-only proof for atomic local reference changes. */
+  readonly realmDatabase?: Database.Database;
   /** Host-only secret-free history; never a client mutation surface. */
   authenticationRepairHistory?: AuthenticationRepairActionStore;
   permissionCleanupId?(name: string): string | undefined;
@@ -403,6 +433,12 @@ export interface ConnectionStoreSqlite {
     commit: () => void): void;
   /** Opaque local source identity. Trusted refresh preserves it; credential replacement changes it. */
   getAuthSourceId?(kind: ConnectionKind, name: string): string | undefined;
+  /** Host-only data freshness, separate from enrollment/credential identity.
+   * Undefined while a write is pending: those reads must bypass caching. */
+  getReadCacheRevision?(kind: ConnectionKind, name: string): string | undefined;
+  /** Persist before a provider write; finish atomically retires reads when the
+   * result changed (or may have changed) the account. No connection sync event. */
+  beginReadCacheWrite?(kind: ConnectionKind, name: string): (changed: boolean) => void;
   /** Fetch by composite key or null when absent. */
   get(kind: ConnectionKind, name: string): ConnectionRow | null;
   /** List every row, optionally filtered by kind. Newest `updated_at`
@@ -538,6 +574,23 @@ export const createConnectionStore = (
   db: Database.Database,
 ): ConnectionStoreSqlite => {
   ensureConnectionSchema(db);
+  // A prior process may have delivered its write without recording completion.
+  // Retire those generations before clearing their durable bypass markers.
+  db.transaction(() => {
+    const owners = db.prepare<[], { owner: string }>('SELECT DISTINCT owner FROM connection_read_cache_writes').all();
+    for (const { owner } of owners) {
+      // Other handles and live server processes may still be delivering writes.
+      if (!readCacheOwnerExited(owner)) continue;
+      const interrupted = db.prepare<[string], { kind: ConnectionKind; name: string }>(
+        'SELECT DISTINCT kind, name FROM connection_read_cache_writes WHERE owner = ?',
+      ).all(owner);
+      for (const { kind, name } of interrupted) db.prepare(
+        'INSERT INTO connection_read_cache_revisions VALUES (?, ?, ?) '
+        + 'ON CONFLICT(kind, name) DO UPDATE SET revision = excluded.revision',
+      ).run(kind, name, randomUUID());
+      db.prepare('DELETE FROM connection_read_cache_writes WHERE owner = ?').run(owner);
+    }
+  }).immediate();
   const repairHistory = createAuthenticationRepairActionStore(db);
   initializePreapprovalConnections(db);
   db.exec('CREATE TABLE IF NOT EXISTS connection_permission_cleanup_pauses (name TEXT PRIMARY KEY, job_id TEXT NOT NULL)');
@@ -1037,6 +1090,7 @@ export const createConnectionStore = (
     return row ? dbRowToConnectionRow(row) : null;
   };
   return {
+    realmDatabase: db,
     authenticationRepairHistory: repairHistory,
     permissionCleanupId: cleanupId,
     replacePermissionCleanupAuth(updates, jobId, phase, commit) {
@@ -1127,6 +1181,30 @@ export const createConnectionStore = (
         }
         return true;
       }).immediate();
+    },
+
+    getReadCacheRevision(kind, name) {
+      if (db.prepare('SELECT 1 FROM connection_read_cache_writes WHERE kind = ? AND name = ? LIMIT 1')
+        .get(kind, name)) return undefined;
+      return db.prepare<[string, string], { revision: string }>(
+        'SELECT revision FROM connection_read_cache_revisions WHERE kind = ? AND name = ?',
+      ).get(kind, name)?.revision ?? '0';
+    },
+
+    beginReadCacheWrite(kind, name) {
+      const id = randomUUID();
+      db.prepare('INSERT INTO connection_read_cache_writes VALUES (?, ?, ?, ?)').run(id, kind, name, readCacheOwner);
+      let finished = false;
+      return changed => {
+        if (finished) return;
+        db.transaction(() => {
+          if (changed) db.prepare('INSERT INTO connection_read_cache_revisions VALUES (?, ?, ?) '
+            + 'ON CONFLICT(kind, name) DO UPDATE SET revision = excluded.revision')
+            .run(kind, name, randomUUID());
+          db.prepare('DELETE FROM connection_read_cache_writes WHERE write_id = ?').run(id);
+        }).immediate();
+        finished = true;
+      };
     },
 
     getAuthSourceId(kind, name) {

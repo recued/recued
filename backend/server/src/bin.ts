@@ -59,6 +59,10 @@ const KNOWN_SUBCOMMANDS = new Set([
   'self-test',
   'update-lease',
   'release-floor',
+  // The server's own folder-watch process (`collections/file/watch-host.ts`): the
+  // packaged binary takes no `node -e`, so the server starts it as this. Internal,
+  // so not in the help.
+  'watch-host',
 ]);
 
 const args = process.argv.slice(2);
@@ -508,6 +512,12 @@ const dispatch = async (): Promise<void> => {
       bootTrace.markImport('./cli-context/release-floor.js');
       const { runReleaseFloorProfile } = await import('./cli-context/release-floor.js');
       await runReleaseFloorProfile({ args, bootTrace });
+      return;
+    }
+    case 'watch-host': {
+      bootTrace.markImport('./collections/file/watch-host.js');
+      const { runWatchHostChild } = await import('./collections/file/watch-host.js');
+      runWatchHostChild();
       return;
     }
     case 'rotate-passphrase': {

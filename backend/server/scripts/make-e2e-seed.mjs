@@ -132,6 +132,11 @@ const main = async () => {
   }
 
   const work = mkdtempSync(join(tmpdir(), 'recued-e2e-seedgen-'));
+  // This process owns the folder. If it is killed before the `finally` below,
+  // the next paired e2e run ends the server still running from here and
+  // deletes the folder (`reapOrphanedFolders` in apps/webclient/e2e/harness/
+  // live-binary.ts, which reads this same file name).
+  writeFileSync(join(work, 'e2e-owner.json'), JSON.stringify({ pid: process.pid }));
   const dbPath = join(work, 'seed-test.db');
   try {
     // The binary ships as TWO files; a copy without its addon cannot open a db.

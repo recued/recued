@@ -48,6 +48,8 @@ export type RunTermination = 'killed';
 
 export interface RunRegistration {
   run_id: string;
+  /** Trusted host execution lineage; never read from an ExecuteRequest. */
+  parent_run_id?: string;
   recipe_id: string;
   dish_id?: string;
   /** Host-derived declaration summary. Never caller data or run output. */
@@ -162,7 +164,7 @@ export class InFlightRegistry {
   private readonly subprocesses = new Map<string, Map<string, SubprocessHandle>>();
   /** Owner-kill callers may abandon an external/AI await immediately, but a
    * finite CLI tree must finish its close/error cleanup first. These waiters
-   * resolve when the last attached child for a run detaches. */
+   * resolve when the attached children for each owned run detach. */
   private readonly subprocessDrainWaiters = new Map<string, Set<() => void>>();
   private readonly terminated = new Map<string, RunTermination>();
   /** Latest host-observed liveness for each run. This is deliberately only a
@@ -386,9 +388,15 @@ export class InFlightRegistry {
     }
   }
 
-  /** Await real finite-child cleanup after a kill. External/AI-only runs have
-   * no attached child and resolve immediately, preserving abandon-await. */
+  /** Await finite-child cleanup throughout this run's nested invocations.
+   * External/AI-only families resolve immediately, preserving abandon-await. */
   waitForSubprocessDrain(run_id: string): Promise<void> {
+    const pending = this.familyRunIds(run_id).filter(id => (this.subprocesses.get(id)?.size ?? 0) > 0);
+    if (pending.length === 0) return Promise.resolve();
+    return Promise.all(pending.map(id => this.waitForOwnSubprocessDrain(id))).then(() => undefined);
+  }
+
+  private waitForOwnSubprocessDrain(run_id: string): Promise<void> {
     if ((this.subprocesses.get(run_id)?.size ?? 0) === 0) return Promise.resolve();
     return new Promise<void>((resolve) => {
       let waiters = this.subprocessDrainWaiters.get(run_id);
@@ -436,7 +444,7 @@ export class InFlightRegistry {
 
   /** Kill a *running* run. Idempotent: a run ALREADY KILLED returns
    *  `already_terminal`; an unknown run returns `not_found`. SIGKILLs EVERY
-   *  attached subprocess (forces the engine to fail fast) AND abandons the run's
+   *  attached subprocess in its nested run family AND abandons the run's
    *  await (external-io has no subprocess to kill).
    *
    *  D-181 slice-4 #1 follow-up — the guard checks for a prior KILL only, NOT any
@@ -451,13 +459,15 @@ export class InFlightRegistry {
     const reg = this.runs.get(run_id);
     if (!reg) return 'not_found';
     this.terminated.set(run_id, 'killed');
-    const inner = this.subprocesses.get(run_id);
-    if (inner) {
-      for (const sub of inner.values()) {
-        try {
-          sub.kill();
-        } catch {
-          /* process already exited */
+    for (const id of this.familyRunIds(run_id)) {
+      const inner = this.subprocesses.get(id);
+      if (inner) {
+        for (const sub of inner.values()) {
+          try {
+            sub.kill();
+          } catch {
+            /* process already exited */
+          }
         }
       }
     }
@@ -708,6 +718,25 @@ export class InFlightRegistry {
       if (oldest === undefined) break;
       this.terminalRuns.delete(oldest);
     }
+  }
+
+  private familyRunIds(run_id: string): string[] {
+    const children = new Map<string, string[]>();
+    for (const reg of this.runs.values()) {
+      if (reg.parent_run_id === undefined) continue;
+      const siblings = children.get(reg.parent_run_id) ?? [];
+      siblings.push(reg.run_id);
+      children.set(reg.parent_run_id, siblings);
+    }
+    const family = new Set<string>();
+    const pending = [run_id];
+    while (pending.length > 0) {
+      const id = pending.pop()!;
+      if (family.has(id)) continue;
+      family.add(id);
+      pending.push(...(children.get(id) ?? []));
+    }
+    return [...family];
   }
 
   private resolveSubprocessDrain(run_id: string): void {

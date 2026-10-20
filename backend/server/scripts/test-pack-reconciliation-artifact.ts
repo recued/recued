@@ -630,6 +630,12 @@ const assertMigrated = (
         // stores it that way. Fixing only the manifest assertion above left this
         // one behind and the rehearsal failed a second time on the same bump.
         version: String(LAUNCH_SAFE_TARGET_VERSION),
+        // An update records the dependencies the installed manifest declares
+        // (`recordPackInventory`), and the ledger admits only targets that
+        // declare none (`candidateBody` in `src/pack-reconciliation.ts`), so the
+        // snapshot is always empty. `d-259-pack-reconciliation.test.ts` pins the
+        // same; this copy is a release gate vitest never runs, so it was missed.
+        dependency_snapshot: { schema_version: 1, dependencies: [] },
       },
       `${fixture.slug} inventory changed beyond the approved version bump`,
     );

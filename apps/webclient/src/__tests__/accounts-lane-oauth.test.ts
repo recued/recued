@@ -220,8 +220,9 @@ describe('managed OAuth account enrollment', () => {
     const enrollManagedOAuth = vi.fn(async (_args: Record<string, unknown>) => ({ slug: 'work' }));
     const enrollOAuth = vi.fn(); const getOAuthClientConfig = vi.fn(); const setOAuthAppConfig = vi.fn();
     const list = async () => ({ instances: [] });
+    const onFirstMailboxConnected = vi.fn();
     const mount = mountAccountsLanePanel({ host: h.host as unknown as HTMLElement, document: {} as Document,
-      initialLane: test.lane, oauthEnv: fake.oauthEnv, getOAuthClientConfig, setOAuthAppConfig,
+      initialLane: test.lane, oauthEnv: fake.oauthEnv, getOAuthClientConfig, setOAuthAppConfig, onFirstMailboxConnected,
       mail: { ...makeMail(enrollOAuth), list, enrollManagedOAuth },
       calendar: { list, delete: async () => ({ ok: true }), enrollOAuth, enrollManagedOAuth },
       listManagedConnections: async () => ({ connections: [connection('saved', test.origin, test.path)] }),
@@ -236,11 +237,12 @@ describe('managed OAuth account enrollment', () => {
     h.field('name', 'work'); h.clickAction({ action: 'accounts-oauth-connect' }); await tick();
     expect(enrollManagedOAuth).toHaveBeenCalledOnce();
     expect(enrollManagedOAuth.mock.calls[0][0]).toEqual(test.lane === 'mail'
-      ? { provider: test.provider, account_slug: 'work', connection_name: 'saved', send_enabled: false, mutation_enabled: false }
+      ? { provider: test.provider, account_slug: 'work', connection_name: 'saved', send_enabled: false, mutation_enabled: false, backfill_days: 400 }
       : { adapter: test.provider, slug: 'work', connection_name: 'saved', write_enabled: false });
     expect(enrollOAuth).not.toHaveBeenCalled(); expect(setOAuthAppConfig).not.toHaveBeenCalled();
     expect(getOAuthClientConfig).not.toHaveBeenCalled(); expect(fake.popupOpenCount()).toBe(0);
-    expect(mount.getState().connectionSuccess?.slug).toBe('work'); mount.dispose();
+    expect(mount.getState().connectionSuccess?.slug).toBe('work');
+    expect(onFirstMailboxConnected).toHaveBeenCalledTimes(test.lane === 'mail' ? 1 : 0); mount.dispose();
   });
 
   it('requires a deliberate account choice and retains the common send choice when changing methods', async () => {
@@ -561,6 +563,7 @@ describe('Mail lane OAuth (mountAccountsLanePanel)', () => {
       provider: 'gmail',
       account_slug: 'work',
       code: 'AUTH-CODE-1',
+      backfill_days: 400,
       redirect_uri: REDIRECT_URI,
     });
     expect(mount.getState().stage).toBe('list');
@@ -2246,6 +2249,38 @@ describe('BYO OAuth-app credentials, inline on the connect flow', () => {
 
 const renewalCalendarCaps = { read: 'yes', list_calendars: 'yes', create_event: 'yes', update_event: 'yes', delete_event: 'yes',
   rsvp: 'yes', search: 'remote', watch: 'poll', auth: 'oauth', recurrence: 'server' } as const;
+const makePasswordHost = () => {
+  const h = makeHost(); const editor = { innerHTML: '' }; const heading = { focus: vi.fn(), scrollIntoView: vi.fn() };
+  Object.assign(h.host, {
+    querySelector: (selector: string) => selector === '[data-account-password-host]' ? editor : selector === '[data-account-password-heading]' ? heading : null,
+    querySelectorAll: () => [],
+  });
+  return { ...h, editor, heading };
+};
+it.each(['mail', 'calendar'] as const)('opens a deep-linked %s password editor without OAuth support or credential writes', async platform => {
+  const h = makePasswordHost(); const updateCredentials = vi.fn(async () => ({ ok: true as const, restart_needed: false }));
+  const list = async () => ({ instances: [{ platform, slug: 'work', account_email: 'owner@example.test', adapter_type: platform === 'mail' ? 'imap' : 'caldav', auth_state: 'expired' as const,
+    last_synced_at: 0, send_capable: platform === 'mail', caps: { ...renewalCalendarCaps, auth: 'app_password' as const } }] });
+  const mount = mountAccountsLanePanel({ host: h.host as unknown as HTMLElement, document: {} as Document, initialLane: platform,
+    initialDetailSlug: 'work', initialManageAuthentication: 'work',
+    mail: { list, updateCredentials, enrollImap: async () => ({ slug: 'unused', send_capable: false }), delete: async () => ({ ok: true }) },
+    calendar: { list, updateCredentials, delete: async () => ({ ok: true }) } });
+  await mount.whenLoaded(); expect(mount.getState().error).toBeNull(); expect(h.editor.innerHTML).toContain('Update credentials for work');
+  expect(h.editor.innerHTML.includes('data-account-password-field="smtp"')).toBe(platform === 'mail');
+  expect(h.heading.focus).toHaveBeenCalledOnce(); expect(updateCredentials).not.toHaveBeenCalled();
+  await mount.refresh(); expect(h.heading.focus).toHaveBeenCalledOnce(); mount.dispose();
+});
+it.each(['mail', 'calendar'] as const)('refuses a deep-linked %s password editor when credential updates are unavailable', async platform => {
+  const h = makePasswordHost(); const call = vi.fn<import('../settings/managed-oauth-panel.js').ManagedOAuthCaller>();
+  const list = async () => ({ instances: [{ platform, slug: 'work', account_email: 'owner@example.test', adapter_type: platform === 'mail' ? 'imap' : 'caldav', auth_state: 'expired' as const,
+    last_synced_at: 0, send_capable: false, caps: { ...renewalCalendarCaps, auth: 'app_password' as const } }] });
+  const mount = mountAccountsLanePanel({ host: h.host as unknown as HTMLElement, document: {} as Document, initialLane: platform,
+    initialDetailSlug: 'work', initialManageAuthentication: 'work', runCollectionAuthentication: call,
+    mail: { list, enrollImap: async () => ({ slug: 'unused', send_capable: false }), delete: async () => ({ ok: true }) },
+    calendar: { list, delete: async () => ({ ok: true }) } });
+  await mount.whenLoaded(); expect(mount.getState().error).toContain('cannot open an authentication review');
+  expect(h.editor.innerHTML).toBe(''); expect(h.heading.focus).not.toHaveBeenCalled(); expect(call).not.toHaveBeenCalled(); mount.dispose();
+});
 it.each(['mail', 'calendar'] as const)('opens a deep-linked %s reauthorization review once without consent or enrollment', async platform => {
   const h = makeHost(); const call = vi.fn<import('../settings/managed-oauth-panel.js').ManagedOAuthCaller>(async () => { throw Error('Fixture stops before consent'); });
   const enroll = vi.fn(async () => ({ slug: 'work' })); const list = async () => ({ instances: [{ slug: 'work', platform, caps: renewalCalendarCaps, last_synced_at: 0,

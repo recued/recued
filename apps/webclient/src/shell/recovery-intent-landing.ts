@@ -355,6 +355,11 @@ const ROUTE_LANDING_POLICIES: Record<WebclientRouteId, RouteLandingPolicy> = {
     continue: [control('.today-refresh'), heading('data-recued-data-route-heading')],
     review: [control('[data-today-task-error]'), control('[data-today-task-notice]')],
   },
+  yours: {
+    choose_again: [control('[data-yours-focus="refresh"]'), h1Target],
+    continue: [control('[data-yours-editor]'), h1Target],
+    review: [self('data-yours-error'), self('data-yours-status'), h1Target],
+  },
   /** D-291 — `#views` is the saved-view list; `#views/<id>` is that list plus
    *  the Data route rendered underneath. So the targets are the list's own
    *  controls FIRST (the thing this surface is for) and Data's after, for the
@@ -564,6 +569,7 @@ const ROUTE_LANDING_INVALIDATIONS: Record<
   // D-290 — a failed task write is the one thing that demotes a still-valid
   // landing to Review.
   today: [invalidation('[data-today-task-error]')],
+  yours: [invalidation('data-yours-error')],
   // D-250 § D7 — one section, one error surface; nothing to scope against a sibling.
   stats: [],
   logs: [

@@ -23,6 +23,8 @@
  *  server floor is untouched), so this route no longer hosts it. */
 
 import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
+import { mountSourceSpheresPanel, type SourceSpheresOptions } from './source-spheres-panel.js';
+import { isAuthenticationIncidentHistoryFilters } from '@recued/contracts';
 import {
   CONNECTION_NAME_REGEX,
   CONNECTIONS_PAGE_STYLES,
@@ -47,6 +49,11 @@ import {
   connectionsEnrollAddress,
   connectionsOAuthAppsAddress,
   connectionsOAuthAppAddress,
+  connectionsAccessResultAddress,
+  connectionsAccessCheckAddress,
+  connectionsAccessRepairReturn,
+  isConnectionAccessResultReference,
+  isConnectionAccessCheckReference,
   connectionsAddressSelection,
   connectionsLaneAddress,
   isConnectionsTabId,
@@ -54,6 +61,8 @@ import {
   type ConnectionsAddress,
   type ConnectionsTabId,
   type ConnectionOAuthAppReview,
+  type ConnectionAccessResultReference,
+  type ConnectionAccessCheckReference,
 } from './connections-navigation.js';
 import type { ProviderSetupContinuityStore } from './provider-setup-continuity.js';
 import type { SignInGridCallers } from './sign-in-grid-controls.js';
@@ -132,6 +141,8 @@ import { createReconnectWorklistPanel, RECONNECT_WORKLIST_STYLES } from '../sett
 import { createAuthenticationIncidentPanel, AUTHENTICATION_INCIDENT_STYLES } from './authentication-incident-panel.js';
 import { createAuthenticationAccessPanel } from './authentication-access-panel.js';
 import { createManagedOAuthMigrationPanel } from '../settings/managed-oauth-migration-panel.js';
+import { mountConnectionReplacementPanel } from './connection-replacement-panel.js';
+import type { ConnectionReplacementCaller } from './connection-replacement-caller.js';
 import { createOAuthAppsPanel, OAUTH_APPS_STYLES, type OAuthAppsCaller } from '../settings/oauth-apps-panel.js';
 import { OAUTH_TROUBLESHOOTING_STYLES } from './oauth-troubleshooting.js';
 
@@ -431,14 +442,20 @@ export const CONNECTIONS_ROUTE_STYLES = [
 ].join('\n');
 
 export interface BootstrapConnectionsRouteOptions {
+  sourceSpheres?: SourceSpheresOptions;
   authenticationIncidentHistoryCaller?: import('@recued/contracts').AuthenticationIncidentHistoryCaller;
+  authenticationHistoryExportCaller?: import('@recued/contracts').AuthenticationHistoryExportCaller;
   initialIncidentHistory?: import('@recued/contracts').AuthenticationIncidentScope | null;
+  initialIncidentHistoryFilters?: import('@recued/contracts').AuthenticationIncidentHistoryFilters;
   initialAccessVerification?: import('@recued/contracts').AuthenticationAccessSelection | null;
+  initialAccessResult?: ConnectionAccessResultReference | null;
+  initialAccessCheck?: ConnectionAccessCheckReference | null;
   authenticationRepairsCaller?: import('@recued/contracts').AuthenticationRepairCaller;
   initialManageOAuthApps?: boolean;
   initialOAuthAppReview?: ConnectionOAuthAppReview;
   initialAccountAuthentication?: { platform: 'mail' | 'calendar'; slug: string };
   initialRenewalReturn?: ConnectionOAuthAppReview;
+  initialAccessRepairReturn?: ConnectionAccessResultReference;
   oauthAppsCaller?: OAuthAppsCaller;
   reconnectWorklistCaller?: import('../settings/reconnect-worklist-panel.js').PackReconnectCaller;
   onWorklistReconnect?(group: import('@recued/contracts').PackReconnectGroup): void;
@@ -572,6 +589,8 @@ export interface BootstrapConnectionsRouteOptions {
   /** Boot-owned safe guide carrier shared by route remounts. */
   providerSetupContinuity?: ProviderSetupContinuityStore;
   connectionsStartVendorOAuthCaller?: ConnectionsStartVendorOAuthCaller;
+  /** Owner-reviewed replacement of selected local account references. */
+  connectionReplacementCaller?: ConnectionReplacementCaller;
   /** D-322 — optional managed OAuth broker RPC. */
   connectionsManagedOAuthCaller?: import('../settings/managed-oauth-panel.js').ManagedOAuthCaller;
   /** R26.2 Option B — the pure code-exchange rpc, so a loopback PWA can finish
@@ -759,11 +778,12 @@ export const bootstrapConnectionsRoute = (
     tabBar.appendChild(link);
   }
   routeRoot.appendChild(tabBar);
+  const sourceSpheres = opts.sourceSpheres ? mountSourceSpheresPanel(routeRoot, opts.sourceSpheres) : undefined;
 
   // Lane panels replace their own host. Keep the shared worklist above it so
   // an account refresh cannot remove the repair entry point.
   const worklistHost = (opts.reconnectWorklistCaller || opts.authenticationRepairsCaller)
-    && opts.initialIncidentHistory === undefined && opts.initialAccessVerification === undefined
+    && opts.initialIncidentHistory === undefined && opts.initialAccessVerification === undefined && opts.initialAccessResult === undefined && opts.initialAccessCheck === undefined
     && !opts.initialPermissionRepair && !opts.permissionRepairUnavailable ? doc.createElement('div') : null;
   if (worklistHost) routeRoot.appendChild(worklistHost);
   if (opts.initialRenewalReturn) {
@@ -771,6 +791,13 @@ export const bootstrapConnectionsRoute = (
     const copy = doc.createElement('p'); copy.textContent = 'After repairing this sign-in, review and run new token-renewal checks. Opening a review does not start a check.';
     const back = doc.createElement('a'); back.textContent = 'Review token renewal after repair'; back.href = connectionsOAuthAppAddress(opts.initialRenewalReturn).hash;
     back.setAttribute('href', back.href); back.setAttribute('data-renewal-repair-return', ''); note.appendChild(copy); note.appendChild(back); routeRoot.appendChild(note);
+  }
+  const accessRepairReturn = isConnectionAccessResultReference(opts.initialAccessRepairReturn) ? opts.initialAccessRepairReturn : undefined;
+  if (accessRepairReturn) {
+    const note = doc.createElement('aside'); note.className = 'connections-setup-return';
+    const copy = doc.createElement('p'); copy.textContent = 'After repairing this sign-in, return to its saved access result. Review current access before choosing Run checks. The earlier result stays historical.';
+    const back = doc.createElement('a'); back.textContent = 'Return to saved access check'; back.href = connectionsAccessResultAddress(accessRepairReturn).hash;
+    back.setAttribute('href', back.href); back.setAttribute('data-access-repair-return', ''); note.appendChild(copy); note.appendChild(back); routeRoot.appendChild(note);
   }
   const content = doc.createElement('div');
   content.setAttribute(CONNECTIONS_ROUTE_CONTENT_ATTR, '');
@@ -785,6 +812,7 @@ export const bootstrapConnectionsRoute = (
   let incidentHistory: ReturnType<typeof createAuthenticationIncidentPanel> | null = null;
   let accessVerification: ReturnType<typeof createAuthenticationAccessPanel> | null = null;
   let migrationPanel: ReturnType<typeof createManagedOAuthMigrationPanel> | null = null;
+  let replacementPanel: ReturnType<typeof mountConnectionReplacementPanel> | null = null;
   let connectionsGrant: ConnectionsGrantPanelMount | null = null;
   let webhooksPanel: WebhooksPanelMount | null = null;
   const authenticationSettings = doc.createElement('details');
@@ -817,22 +845,45 @@ export const bootstrapConnectionsRoute = (
     if (location !== undefined) location.hash = hash;
   };
 
-  if (opts.initialAccessVerification !== undefined) {
+  const savedCheck = (reference: ConnectionAccessCheckReference): void => navigate(connectionsAccessCheckAddress(reference).hash);
+  if (opts.initialAccessCheck !== undefined) {
+    const back = doc.createElement('a'); back.textContent = 'Back to connection history'; back.href = '#connections/others/incident-history';
+    back.setAttribute('href', back.href); content.appendChild(back);
+    if (!isConnectionAccessCheckReference(opts.initialAccessCheck)) appendUnavailable(doc, content, 'This saved-check link is invalid. Open connection history or Authentication repairs for a fresh review.');
+    else if (!opts.connectionsManagedOAuthCaller) appendUnavailable(doc, content, 'Saved access results are unavailable. Reconnect or update the server, then try again.');
+    else {
+      const host = doc.createElement('div'); content.appendChild(host);
+      accessVerification = createAuthenticationAccessPanel({ document: doc, call: opts.connectionsManagedOAuthCaller, savedCheck });
+      accessVerification.mount(host); void accessVerification.openCheck(opts.initialAccessCheck, () => navigate('#connections/others/incident-history'));
+    }
+  } else if (opts.initialAccessResult !== undefined) {
+    const back = doc.createElement('a'); back.textContent = 'Back to connection history'; back.href = '#connections/others/incident-history';
+    back.setAttribute('href', back.href); content.appendChild(back);
+    if (!isConnectionAccessResultReference(opts.initialAccessResult)) appendUnavailable(doc, content, 'This saved-result link is invalid. Open connection history or Authentication repairs for a fresh review.');
+    else if (!opts.connectionsManagedOAuthCaller) appendUnavailable(doc, content, 'Saved access results are unavailable. Reconnect or update the server, then try again.');
+    else {
+      const host = doc.createElement('div'); content.appendChild(host);
+      accessVerification = createAuthenticationAccessPanel({ document: doc, call: opts.connectionsManagedOAuthCaller, savedCheck });
+      accessVerification.mount(host); void accessVerification.openResult(opts.initialAccessResult, () => navigate('#connections/others/incident-history'));
+    }
+  } else if (opts.initialAccessVerification !== undefined) {
     const back = doc.createElement('a'); back.textContent = 'Back to connection history'; back.href = '#connections/others/incident-history';
     back.setAttribute('href', back.href); content.appendChild(back);
     if (opts.initialAccessVerification === null) appendUnavailable(doc, content, 'This access-check link is invalid. Open connection history and choose Verify access.');
     else if (!opts.connectionsManagedOAuthCaller) appendUnavailable(doc, content, 'Access checks are unavailable. Reconnect or update the server, then try again.');
     else {
       const host = doc.createElement('div'); content.appendChild(host);
-      accessVerification = createAuthenticationAccessPanel({ document: doc, call: opts.connectionsManagedOAuthCaller });
+      accessVerification = createAuthenticationAccessPanel({ document: doc, call: opts.connectionsManagedOAuthCaller, savedCheck });
       accessVerification.mount(host); accessVerification.open(opts.initialAccessVerification, undefined, () => navigate('#connections/others/incident-history'));
     }
   } else if (opts.initialIncidentHistory !== undefined) {
-    if (opts.initialIncidentHistory === null) appendUnavailable(doc, content, 'This incident history link is invalid. Open Authentication repairs and choose Incident history.');
+    if (opts.initialIncidentHistory === null || opts.initialIncidentHistoryFilters !== undefined && !isAuthenticationIncidentHistoryFilters(opts.initialIncidentHistoryFilters)) appendUnavailable(doc, content, 'This incident history link is invalid. Open Authentication repairs and choose Incident history.');
     else {
       incidentHistory = createAuthenticationIncidentPanel({ document: doc, scope: opts.initialIncidentHistory,
+        ...(opts.initialIncidentHistoryFilters ? { filters: opts.initialIncidentHistoryFilters } : {}),
         navigate, ...(opts.oauthAppsCaller ? { renewal: opts.oauthAppsCaller } : {}),
         ...(opts.connectionsManagedOAuthCaller ? { verify: opts.connectionsManagedOAuthCaller } : {}),
+        ...(opts.authenticationHistoryExportCaller ? { exportHistory: opts.authenticationHistoryExportCaller } : {}),
         ...(opts.authenticationIncidentHistoryCaller ? { call: opts.authenticationIncidentHistoryCaller } : {}) });
       incidentHistory.mount(content);
     }
@@ -850,6 +901,7 @@ export const bootstrapConnectionsRoute = (
         );
       },
       onGoToChat: (source) => navigate(serializeChatConnectedSource(source)),
+      onFirstMailboxConnected: () => navigate('#yours/proposals'),
       onOpenLane: (lane) => navigate(connectionsLaneAddress(lane).hash),
       ...(initialDetailSlug !== undefined
         ? { initialDetailSlug }
@@ -861,7 +913,10 @@ export const bootstrapConnectionsRoute = (
       ...(opts.file !== undefined ? { file: opts.file } : {}),
       ...(opts.connectionsEnrollListCaller !== undefined
         ? { listManagedConnections: opts.connectionsEnrollListCaller } : {}),
-      onOpenManagedConnections: (name) => navigate(name ? '#connections/others/review-access/api/' + encodeURIComponent(name) : '#connections/others'),
+      onOpenManagedConnections: (name) => {
+        const destination = name ? '#connections/others/review-access/api/' + encodeURIComponent(name) : '#connections/others';
+        navigate(accessRepairReturn ? connectionsAccessRepairReturn(destination, accessRepairReturn) : destination);
+      },
       ...(opts.connectionsManagedOAuthCaller ? { runCollectionAuthentication: opts.connectionsManagedOAuthCaller } : {}),
       ...(opts.listCloudFiles ? { listCloudFiles: opts.listCloudFiles } : {}),
       ...(opts.accountSetupContinuity ? { setupContinuity: opts.accountSetupContinuity,
@@ -869,7 +924,7 @@ export const bootstrapConnectionsRoute = (
           const draft = opts.accountSetupContinuity?.read();
           navigate(destination === 'apps' ? connectionsOAuthAppsAddress().hash : connectionsEnrollAddress(draft ? accountSetupEnrollment(draft).vendor : undefined).hash);
         } } : {}),
-      onManageSavedApps: () => navigate(connectionsOAuthAppsAddress().hash),
+      onManageSavedApps: () => navigate(accessRepairReturn ? connectionsAccessRepairReturn(connectionsOAuthAppsAddress().hash, accessRepairReturn) : connectionsOAuthAppsAddress().hash),
       onAuthenticationChanged: () => { void reconnectWorklist?.refresh(); },
       ...(opts.getOAuthClientConfig !== undefined
         ? { getOAuthClientConfig: opts.getOAuthClientConfig }
@@ -1038,6 +1093,9 @@ export const bootstrapConnectionsRoute = (
       });
       section.appendChild(migrate); section.appendChild(migrationNotice); section.appendChild(migrationHost);
     }
+    if (opts.connectionReplacementCaller) replacementPanel = mountConnectionReplacementPanel({ host: content, caller: opts.connectionReplacementCaller,
+      busyOther: () => (connectionsEnroll?.hasInFlightWork() ?? false) || (connectionsEnroll?.hasUnsavedChanges() ?? false) || (migrationPanel?.busy() ?? false) || (brokerPanel?.busy() ?? false),
+      changed: () => { void connectionsEnroll?.refresh(); } });
     const canMountEnroll =
       opts.connectionsEnrollListCaller !== undefined
       && opts.connectionsEnrollCaller !== undefined
@@ -1332,12 +1390,15 @@ export const bootstrapConnectionsRoute = (
 
   let disposed = false;
   const hasInFlightWork = (): boolean =>
+    (sourceSpheres?.busy() ?? false) ||
     (accountsPanel?.hasInFlightWork() ?? false)
     || (brokerPanel?.busy() ?? false)
     || (oauthAppsPanel?.busy() ?? false)
+    || (replacementPanel?.busy() ?? false)
     || (migrationPanel?.busy() ?? false)
     || (reconnectWorklist?.busy() ?? false)
     || (accessVerification?.hasInFlightWork() ?? false)
+    || (incidentHistory?.hasInFlightWork() ?? false)
     || (connectionsEnroll?.hasInFlightWork() ?? false)
     || (connectionsGrant?.hasInFlightWork() ?? false)
     || (webhooksPanel?.hasInFlightWork() ?? false);
@@ -1388,19 +1449,20 @@ export const bootstrapConnectionsRoute = (
         }
       : {}),
     hasUnsavedChanges: () =>
-      (accountsPanel?.hasUnsavedChanges() ?? false) || (accessVerification?.hasDraft() ?? false) || (oauthAppsPanel?.hasDraft() ?? false) || (brokerPanel?.hasDraft() ?? false) || (migrationPanel?.hasDraft() ?? false) || (connectionsEnroll?.hasUnsavedChanges() ?? false),
+      (replacementPanel?.hasDraft() ?? false) || (sourceSpheres?.hasDraft() ?? false) || (accountsPanel?.hasUnsavedChanges() ?? false) || (reconnectWorklist?.hasDraft() ?? false) || (accessVerification?.hasDraft() ?? false) || (incidentHistory?.hasDraft() ?? false) || (oauthAppsPanel?.hasDraft() ?? false) || (brokerPanel?.hasDraft() ?? false) || (migrationPanel?.hasDraft() ?? false) || (connectionsEnroll?.hasUnsavedChanges() ?? false),
     unsavedChangesPrompt: () =>
-      accessVerification?.hasDraft() === true ? 'Leave this access review? Its selected resources will not be kept.' : oauthAppsPanel?.hasDraft() === true ? 'Discard this OAuth app draft? The secret is held only in this editor.' : brokerPanel?.hasDraft() === true
+      replacementPanel?.hasDraft() ? 'Leave this account replacement review? Completed changes and their receipts stay on the server.' : sourceSpheres?.hasDraft() ? 'Discard this source sphere change?' : reconnectWorklist?.hasDraft() === true ? 'Leave this access review? Unstarted checks and resource choices will not be kept. Started jobs remain in connection history.' : accessVerification?.hasDraft() === true || incidentHistory?.hasDraft() === true ? 'Leave this access review? Its selected resources will not be kept.' : oauthAppsPanel?.hasDraft() === true ? 'Discard this OAuth app draft? The secret is held only in this editor.' : brokerPanel?.hasDraft() === true
         ? 'Discard this OAuth broker setup? Credential fields are not saved in your browser and cannot be restored after leaving.'
         : accountsPanel?.hasUnsavedChanges() ? 'Discard this account setup or replacement password? Credentials entered here cannot be restored.' : connectionsEnroll?.unsavedChangesPrompt() ?? null,
     hasInFlightWork,
     inFlightWorkPrompt: () =>
-      hasInFlightWork()
+      reconnectWorklist?.inFlightWorkPrompt() ?? (hasInFlightWork()
         ? 'Connections is still doing something. Leave anyway?'
-        : null,
+        : null),
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      sourceSpheres?.dispose();
       if (accountsPanel !== null) accountsPanel.dispose();
       if (connectionsEnroll !== null) connectionsEnroll.dispose();
       brokerPanel?.dispose();
@@ -1409,6 +1471,7 @@ export const bootstrapConnectionsRoute = (
       incidentHistory?.dispose();
       accessVerification?.dispose();
       for (const unsubscribe of worklistUnsubs) unsubscribe();
+      replacementPanel?.dispose();
       migrationPanel?.dispose();
       if (webhooksPanel !== null) webhooksPanel.dispose();
       try {

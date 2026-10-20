@@ -45,6 +45,7 @@ import type { WebclientReconnectSubscriber } from '../realtime/connection-status
 import {
   ASK_CARD_ATTR,
   ASK_CARD_ERROR_ATTR,
+  ASK_CARD_GRANT_ATTR,
   ASK_CARD_OPTION_ATTR,
   APPROVAL_CARD_ACTION_ATTR,
   APPROVAL_CARD_ATTR,
@@ -91,6 +92,7 @@ interface FakeEl {
   getAttribute(k: string): string | null;
   removeAttribute(k: string): void;
   appendChild(c: FakeEl): FakeEl;
+  append(...children: FakeEl[]): void;
   removeChild(c: FakeEl): FakeEl;
   addEventListener(type: string, fn: () => void): void;
   removeEventListener(type: string, fn: () => void): void;
@@ -133,6 +135,7 @@ const makeFakeEl = (tag: string, onFocus?: (el: FakeEl) => void): FakeEl => {
       el.children.push(c);
       return c;
     },
+    append(...children) { for (const child of children) el.appendChild(child); },
     removeChild(c) {
       const i = el.children.indexOf(c);
       if (i >= 0) el.children.splice(i, 1);
@@ -426,6 +429,44 @@ describe('D-169 P2 — bootstrapApprovalsRoute: re-hosts the asks panel', () => 
     // Same shared card the bridge + the old Settings section render.
     const cards = collectByAttr(root, ASK_CARD_ATTR);
     expect(cards.map((c) => c.getAttribute(ASK_CARD_ATTR))).toEqual(['a1', 'a2']);
+
+    route.dispose();
+  });
+
+  it('shows the terms of "Allow this session" on the full card', async () => {
+    const runList = vi.fn(async () => ({
+      asks: [ask('a1', {
+        title: 'Approve: Send a composed email',
+        text: [
+          'Recipe send-composed-mail wants to run mail-send (step send).',
+          'Write actions change data outside Recued, so Recued held it for you.',
+          '',
+          '  to: recued.dev@outlook.com',
+          '  subject: Grant check',
+          '',
+          "'Allow this session' lets mail-send run up to 5 more times within 1 hour without asking you, as long as these stay exactly as they are now:",
+          '- sender_mail_instance = recued.dev@gmail.com (Gmail)',
+          '- to = recued.dev@outlook.com',
+          '- these stay empty: attachments, bcc, cc',
+          'These may change from one run to the next: body, subject. A change to anything above asks you again.',
+          '',
+          'Approve?',
+        ].join('\n'),
+        options: [
+          { id: 'approve', label: 'Approve' },
+          { id: 'allow_session', label: 'Allow this session' },
+          { id: 'deny', label: 'Deny' },
+        ],
+      })],
+    }));
+    const { root, route } = mountFor({ runList });
+    await route.asksPanel().whenLoaded();
+
+    const [grant] = collectByAttr(root, ASK_CARD_GRANT_ATTR);
+    expect(grant?.getAttribute(ASK_CARD_GRANT_ATTR)).toBe('a1');
+    const text = JSON.stringify(grant);
+    expect(text).toContain('sender_mail_instance = recued.dev@gmail.com (Gmail)');
+    expect(text).toContain('These may change from one run to the next: body, subject.');
 
     route.dispose();
   });

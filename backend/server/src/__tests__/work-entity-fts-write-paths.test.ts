@@ -11,6 +11,7 @@ import { RECUED_BUILTIN_SOURCE_ID, WORK_ENTITY_KINDS } from '@recued/contracts';
 import type { WorkEntityKind } from '@recued/contracts';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { WORK_ENTITY_LONG_TEXT_FIELD } from '../work-entity-searchable-text.js';
 
 import {
   createWorkEntityStore,
@@ -70,6 +71,7 @@ const writeOnePerKind = (): void => {
     id: 'k-booking', source_id: src('booking'), title: 'Peregrine ring 04',
     slot_start_at: NOW, slot_end_at: NOW + 1, created_at: NOW, updated_at: NOW,
   }, NOW);
+  store.writeAsset({ id: 'k-asset', source_id: src('asset'), name: 'Peregrine ring 04', source: { kind: 'owner', ref: 'fixture' } }, NOW);
 };
 
 describe('work-entity FTS — write-path completeness', () => {
@@ -87,9 +89,7 @@ describe('work-entity FTS — write-path completeness', () => {
     writeOnePerKind();
     for (const kind of WORK_ENTITY_KINDS) {
       const hit = store.searchIdsByText(kind, 'tessellation', 20);
-      // `booking` carries no long-text column at all — deliberate, per
-      // WORK_ENTITY_LONG_TEXT_FIELD. Every other kind must match on it.
-      if (kind === 'booking') expect(hit).toEqual([]);
+      if (WORK_ENTITY_LONG_TEXT_FIELD[kind] === null) expect(hit).toEqual([]);
       else expect(hit, `kind '${kind}' does not index its long text`).toEqual([`k-${kind}`]);
     }
   });

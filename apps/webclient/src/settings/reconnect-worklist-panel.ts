@@ -1,12 +1,15 @@
 import { isPackReconnectWorklist, type PackReconnectGroup, type PackReconnectRequest,
   type PackReconnectResponse } from '@recued/contracts';
 import { isAuthenticationRepairWorklist, CONNECTION_NAME_REGEX, type AuthenticationRepairCaller, type AuthenticationRepairWorklist, type AuthenticationRepairGroup, type AuthenticationRepairTarget } from '@recued/contracts';
-import { connectionsAccountAddress, connectionsReviewAccessAddress, connectionsOAuthAppsAddress } from '../connections/connections-navigation.js';
+import { connectionsAccountAddress, connectionsReviewAccessAddress, connectionsOAuthAppsAddress, connectionsVerifyAccessAddress } from '../connections/connections-navigation.js';
 import { cloudFileSourceSlug } from '../data/cloud-file-explorer.js';
 import { authenticationIncidentHistoryHref } from '@recued/ui-shared';
 import type { ReconnectWorklistReturn } from './reconnect-worklist-continuity.js';
 import { createAuthenticationAccessPanel, appendAuthenticationAccessSummary, AUTHENTICATION_ACCESS_STYLES } from '../connections/authentication-access-panel.js';
+import { appendLatestAuthenticationAccess, LATEST_AUTHENTICATION_ACCESS_STYLES } from '../connections/authentication-access-summary.js';
 import type { ManagedOAuthCaller } from './managed-oauth-panel.js';
+import { createBulkAuthenticationAccessPanel, BULK_AUTHENTICATION_ACCESS_STYLES } from '../connections/bulk-authentication-access-panel.js';
+import { createAuthenticationAccessRepairShortcuts } from '../connections/authentication-access-repair-shortcuts.js';
 export type PackReconnectCaller = (args: PackReconnectRequest) => Promise<PackReconnectResponse>;
 
 export const createReconnectWorklistPanel = (deps: {
@@ -42,12 +45,18 @@ export const createReconnectWorklistPanel = (deps: {
   };
   const button = (label: string, action: string, fn: () => void): HTMLButtonElement => {
     const b = node('button', label); b.type = 'button'; b.disabled = writing || navigating || loading;
+    b.disabled ||= accessRepairs?.busy() ?? false;
     b.setAttribute('data-reconnect-worklist-action', action); b.addEventListener('click', () => {
-      if (!disposed && !writing && !navigating && !loading) fn();
+      if (!disposed && !writing && !navigating && !loading && !accessRepairs?.busy()) fn();
     }); return b;
   };
   const render = (): void => {
     if (!host || disposed) return;
+    const disclosureBeforeRender = host.querySelector<HTMLDetailsElement>('.reconnect-worklist-disclosure');
+    if (disclosureBeforeRender) expanded = disclosureBeforeRender.open;
+    const expandedAccess = new Set((repairs?.groups ?? []).filter(group => host?.querySelector<HTMLDetailsElement>('[data-authentication-access-disclosure="' + group.id + '"]')?.open).map(group => group.id));
+    accessRepairs?.beginRender();
+    const bulkFocus = bulkHost.contains(doc.activeElement) ? doc.activeElement as HTMLElement | null : null;
     while (host.firstChild) host.removeChild(host.firstChild);
     const disclosure = node('details'); disclosure.className = 'reconnect-worklist-disclosure'; disclosure.open = expanded;
     disclosure.addEventListener('toggle', () => { if (disclosure.isConnected) expanded = disclosure.open; });
@@ -64,6 +73,14 @@ export const createReconnectWorklistPanel = (deps: {
     if (deps.repairs) {
       const history = node('a', 'Connection incident history'); history.href = authenticationIncidentHistoryHref();
       history.setAttribute('href', history.href); history.setAttribute('data-authentication-history-link', 'all'); section.appendChild(history);
+    }
+    if (bulkPanel) {
+      section.appendChild(button('Verify multiple accounts', 'bulk-access', () => {
+        if (accessPanel?.hasDraft() || accessPanel?.busy()) { notice = 'Close the current access review before choosing multiple accounts.'; render(); return; }
+        expanded = true; void bulkPanel.open(() => host?.querySelector<HTMLElement>('[data-reconnect-worklist-action="bulk-access"]')?.focus());
+        bulkHost.scrollIntoView?.({ block: 'nearest' });
+      }));
+      section.appendChild(bulkHost); bulkPanel.mount(bulkHost);
     }
     const reviewed = data?.groups.filter(g => g.reviewed).length ?? 0;
     if (reviewed) {
@@ -118,15 +135,27 @@ export const createReconnectWorklistPanel = (deps: {
       const claimed = new Set<string>();
       for (const account of repairs?.groups ?? []) {
         const permissions = account.kind === 'account' ? visible.filter(g => g.name && account.connection_names.includes(g.name)) : [];
-        if (!account.issues.length && !permissions.length && !account.access_verification) continue;
+        if (!account.issues.length && !permissions.length && !account.access_verification && !account.access_summary?.lookup_incomplete
+          && !account.access_summary?.targets.some(t => t.latest || t.state === 'unavailable')) continue;
         const article = node('article'); article.setAttribute('data-authentication-repair-group', account.id);
         article.appendChild(node('h3', account.label)); article.appendChild(node('p', authLabel(account)));
         const history = node('a', 'Incident history'); history.href = authenticationIncidentHistoryHref({ kind: 'group', id: account.id });
         history.setAttribute('href', history.href); history.setAttribute('data-authentication-history-link', account.id); article.appendChild(history);
-        if (account.access_verification) {
-          const details = node('details'); details.appendChild(node('summary', 'Latest access check')); appendAuthenticationAccessSummary(doc, details, account.access_verification); article.appendChild(details);
+        if (account.access_summary) {
+          appendLatestAuthenticationAccess(doc, article, account.access_summary, accessPanel ? (entry, sourceButton) => {
+            if (disposed || loading || writing || accessRepairs?.busy() || !host?.contains(sourceButton)) return;
+            void accessPanel.openSaved(entry, () => host?.querySelector<HTMLElement>('[data-authentication-repair-group="' + account.id + '"]')
+              ?.querySelector<HTMLElement>('[data-latest-access-view="' + entry.result.id + '"]')?.focus(), account.access_summary!.selection);
+            accessHost.scrollIntoView?.({ block: 'nearest' });
+          } : undefined, accessRepairs?.append);
+        } else if (account.access_verification) {
+          const details = node('details'); details.setAttribute('data-authentication-access-disclosure', account.id); details.open = expandedAccess.has(account.id);
+          details.appendChild(node('summary', 'Latest access check')); appendAuthenticationAccessSummary(doc, details, account.access_verification, accessRepairs?.append); article.appendChild(details);
         }
-        if (accessPanel) {
+        if (accessPanel && account.access_summary) {
+          const verify = node('a', 'Verify access'); verify.href = connectionsVerifyAccessAddress({ kind: 'group', id: account.id }).hash;
+          verify.setAttribute('href', verify.href); verify.setAttribute('data-reconnect-worklist-action', 'verify-' + account.id); article.appendChild(verify);
+        } else if (accessPanel) {
           const verify = button(account.access_verification?.status === 'checking' ? 'View access check' : 'Verify access', 'verify-' + account.id,
             () => { accessPanel.open({ kind: 'group', id: account.id }, account.access_verification,
               () => host?.querySelector<HTMLElement>('[data-reconnect-worklist-action="verify-' + account.id + '"]')?.focus()); accessHost.scrollIntoView?.({ block: 'nearest' }); });
@@ -155,6 +184,7 @@ export const createReconnectWorklistPanel = (deps: {
       }
     }
     disclosure.appendChild(section); host.appendChild(disclosure);
+    if (bulkFocus && bulkHost.contains(bulkFocus) && (doc.activeElement === bulkFocus || doc.activeElement === doc.body)) bulkFocus.focus({ preventScroll: true });
   };
   const accept = (result: PackReconnectResponse, action: PackReconnectRequest['action']): void => {
     if (result.action !== action || !isPackReconnectWorklist(result)) throw new Error('The reconnect worklist could not be read. Update the server or refresh.');
@@ -164,6 +194,7 @@ export const createReconnectWorklistPanel = (deps: {
     if (disposed || navigating) return pending;
     // Pack broadcasts must be replayed after the in-flight snapshot or write.
     if (loading || writing) { refreshQueued = true; return pending; }
+    accessRepairs?.reset();
     pending = (async () => {
       do {
         refreshQueued = false;
@@ -190,6 +221,7 @@ export const createReconnectWorklistPanel = (deps: {
   };
   const mutate = (action: 'mark_reviewed' | 'restore_review', group: PackReconnectGroup): Promise<void> => {
     if (disposed || writing || loading || navigating) return pending;
+    accessRepairs?.reset();
     const gen = ++generation; writing = true; error = ''; render();
     pending = (async () => {
       try {
@@ -209,12 +241,19 @@ export const createReconnectWorklistPanel = (deps: {
   };
   const accessHost = doc.createElement('div');
   const accessPanel = deps.verify ? createAuthenticationAccessPanel({ document: doc, call: deps.verify, updated: () => { void refresh(); } }) : undefined;
+  const bulkHost = doc.createElement('div');
+  const bulkPanel = deps.verify && deps.repairs ? createBulkAuthenticationAccessPanel({ document: doc, read: deps.repairs, call: deps.verify,
+    updated: () => { void refresh(); } }) : undefined;
+  const accessRepairs = deps.verify ? createAuthenticationAccessRepairShortcuts({ document: doc, call: deps.verify, host: () => host,
+    active: () => !disposed && !loading && !writing && !navigating && !bulkPanel?.busy() && !accessPanel?.hasInFlightWork(), changed: () => render() }) : undefined;
   return {
     mount(element: HTMLElement): void { host = element; render(); if (!data && !loading) void refresh(); },
     refresh,
-    whenLoaded: (): Promise<void> => pending,
-    busy: (): boolean => writing,
-    dispose(): void { disposed = true; generation += 1; accessPanel?.dispose(); host = null; },
+    whenLoaded: async (): Promise<void> => { await pending; await accessPanel?.whenLoaded(); await bulkPanel?.whenLoaded(); await accessRepairs?.whenLoaded(); },
+    hasDraft: (): boolean => (accessPanel?.hasDraft() ?? false) || (bulkPanel?.hasDraft() ?? false),
+    inFlightWorkPrompt: (): string | null => bulkPanel?.busy() ? 'Leave the account checks? Unstarted checks will stop. Started jobs keep running and stay in connection history.' : null,
+    busy: (): boolean => writing || (accessPanel?.hasInFlightWork() ?? false) || (bulkPanel?.busy() ?? false),
+    dispose(): void { disposed = true; generation += 1; accessRepairs?.dispose(); accessPanel?.dispose(); bulkPanel?.dispose(); host = null; },
   };
 };
-export const RECONNECT_WORKLIST_STYLES = `.reconnect-worklist{border:1px solid var(--border);border-radius:10px;padding:16px;margin:12px 0;overflow-wrap:anywhere}.reconnect-worklist h2{margin-top:0}.reconnect-worklist article{border-top:1px solid var(--border);padding:12px 0}.reconnect-worklist button,.reconnect-worklist article>a{margin:4px 8px 4px 0}.reconnect-worklist button{font:inherit;border:1px solid var(--border);background:var(--surface);color:var(--fg);border-radius:6px;min-height:36px;padding:7px 12px;cursor:pointer}.reconnect-worklist [data-authentication-repair-link]{display:block;min-height:32px;padding:6px 0;width:fit-content;max-width:100%}.reconnect-worklist button:disabled{opacity:.6;cursor:default}.reconnect-worklist [role=alert]{color:var(--danger,#b42318)}.reconnect-worklist summary{cursor:pointer}` + AUTHENTICATION_ACCESS_STYLES;
+export const RECONNECT_WORKLIST_STYLES = `.reconnect-worklist{border:1px solid var(--border);border-radius:10px;padding:16px;margin:12px 0;overflow-wrap:anywhere}.reconnect-worklist h2{margin-top:0}.reconnect-worklist article{border-top:1px solid var(--border);padding:12px 0}.reconnect-worklist button,.reconnect-worklist article>a{margin:4px 8px 4px 0}.reconnect-worklist button{font:inherit;border:1px solid var(--border);background:var(--surface);color:var(--fg);border-radius:6px;min-height:36px;padding:7px 12px;cursor:pointer}.reconnect-worklist [data-authentication-repair-link]{display:block;min-height:32px;padding:6px 0;width:fit-content;max-width:100%}.reconnect-worklist button:disabled{opacity:.6;cursor:default}.reconnect-worklist [role=alert]{color:var(--danger,#b42318)}.reconnect-worklist summary{cursor:pointer}` + AUTHENTICATION_ACCESS_STYLES + LATEST_AUTHENTICATION_ACCESS_STYLES + BULK_AUTHENTICATION_ACCESS_STYLES;

@@ -31,7 +31,7 @@ import { describe, expect, it } from 'vitest';
 
 import { CHAT_MAIN_TURN_SYSTEM_PROMPT } from '../chat-turn-executor.js';
 import { resolveLlmSystemPrompt } from '../llm-system-prompt.js';
-import { HELD_FOR_APPROVAL_MESSAGE } from '../run-result-agent-projection.js';
+import { approvalElsewhereMessage, HELD_FOR_APPROVAL_MESSAGE } from '../run-result-agent-projection.js';
 
 /** Block 1 doing everything a prompt can do to become a Recued feature. */
 const HOSTILE_ROLE_BLOCK = [
@@ -147,7 +147,10 @@ describe('D-177 rule 5 slice E — 5.g posture copy ratchet', () => {
     // says, and Recued must never say it. Widening this to the composed prompt
     // would turn an owner's own sentence into a boot failure and would be
     // enforcing grammar in place of a capability.
-    for (const s of [CHAT_MAIN_TURN_SYSTEM_PROMPT, HELD_FOR_APPROVAL_MESSAGE]) {
+    // The held result's sentence about the ask's other channels is Recued's too.
+    const elsewhere = approvalElsewhereMessage(['ui', 'bridge', 'slack', 'telegram', 'whatsapp', 'discord', 'teams', 'email']);
+    expect(elsewhere).toBeDefined();
+    for (const s of [CHAT_MAIN_TURN_SYSTEM_PROMPT, HELD_FOR_APPROVAL_MESSAGE, elsewhere!]) {
       expect(s).not.toMatch(/you (can|may) (grant|approve|allow)/i);
     }
   });

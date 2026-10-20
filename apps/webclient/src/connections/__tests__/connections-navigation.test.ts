@@ -13,10 +13,75 @@ import {
   connectionsOAuthAppAddress, parseConnectionsOAuthApp, connectionsAccountAuthenticationAddress, parseConnectionsAccountAuthentication,
   connectionsRenewalRepairReturn, parseConnectionsRenewalRepairReturn,
   connectionsVerifyAccessAddress, parseConnectionsVerifyAccess,
+  connectionsAccessResultAddress, parseConnectionsAccessResult, connectionsAccessRepairReturn, parseConnectionsAccessRepairReturn,
+  connectionsAccessCheckAddress, parseConnectionsAccessCheck, isConnectionAccessCheckReference,
+  connectionsIncidentHistoryAddress, parseConnectionsIncidentHistoryView,
 } from '../connections-navigation.js';
 import { parseShellRoute } from '../../shell/route.js';
 
 describe('Connections hierarchical navigation contract', () => {
+  it.each([{ kind: 'all' }, { kind: 'oauth_apps' }, { kind: 'connection', name: 'filter' }, { kind: 'group', id: 'a'.repeat(64) },
+    { kind: 'collection', platform: 'calendar', slug: 'filter' }, { kind: 'file_source', source_id: 'work/files' }] as const)('round-trips a filtered history address for %j', scope => {
+    const filters = { search: 'École / 100%_', type: 'verification' as const, outcome: 'failed' as const, from: '2026-10-01', through: '2026-10-17' };
+    const address = connectionsIncidentHistoryAddress(scope, filters); expect(parseConnectionsIncidentHistoryView(parseShellRoute(address.hash).segments)).toEqual({ scope, filters });
+    expect(parseConnectionsIncidentHistoryView(parseShellRoute(connectionsIncidentHistoryAddress(scope).hash).segments)).toEqual({ scope, filters: {} });
+    expect(address.hash).not.toContain('?');
+  });
+  it.each(['filter', 'filter/unknown/value', 'filter/type/incident/type/repair', 'filter/type/unknown', 'filter/outcome/healthy',
+    'filter/search/word/extra', 'filter/search/%0Asecret', 'filter/from/2026-02-30', 'filter/from/2026-10-17/through/2026-10-01',
+    'filter/search/' + 'x'.repeat(129), 'filter/type/incident/authorize', 'connection/work/filter/type/repair/from-access/token/value'])('rejects invalid or mixed history filters: %s', tail => {
+    expect(parseConnectionsIncidentHistoryView(parseShellRoute('#connections/others/incident-history/' + tail).segments)).toBeNull();
+  });
+  const reference = { verification_id: 'verify-12345678-1234-4123-8123-123456789abc', target_id: 'a'.repeat(64) };
+  it.each(['result', 'comparison'] as const)('round-trips a saved %s page with an optional exact resource', view => {
+    for (const target_id of [undefined, reference.target_id]) {
+      const saved = { verification_id: reference.verification_id, view, ...(target_id ? { target_id } : {}) };
+      const hash = connectionsAccessCheckAddress(saved).hash;
+      expect(isConnectionAccessCheckReference(saved)).toBe(true); expect(parseConnectionsAccessCheck(parseShellRoute(hash).segments)).toEqual(saved);
+      expect(hash).toBe('#connections/others/access-check/' + saved.verification_id + (target_id ? '/target/' + target_id : '') + (view === 'comparison' ? '/compare' : ''));
+      for (const suffix of ['/authorize', '/compare/compare', '/from-access/' + reference.verification_id + '/' + reference.target_id]) expect(parseConnectionsAccessCheck(parseShellRoute(hash + suffix).segments)).toBeNull();
+    }
+  });
+  it('rejects malformed saved-check identities, resources and ambiguous view tails', () => {
+    const prefix = '#connections/others/access-check/';
+    for (const tail of ['', 'token', 'https%3A%2F%2Fvendor.test', reference.verification_id + '/target', reference.verification_id + '/target/token',
+      reference.verification_id + '/compare/target/' + reference.target_id, reference.verification_id + '/target/' + reference.target_id + '/result']) {
+      expect(parseConnectionsAccessCheck(parseShellRoute(prefix + tail).segments)).toBeNull();
+    }
+    expect(isConnectionAccessCheckReference({ ...reference, view: 'authorize' })).toBe(false);
+    expect(parseConnectionsAccessCheck(['others', 'access-result', reference.verification_id])).toBeNull();
+  });
+  it('routes saved results with an opaque source and exact target, without resource URLs or credentials', () => {
+    const hash = connectionsAccessResultAddress(reference).hash;
+    expect(parseConnectionsAccessResult(parseShellRoute(hash).segments)).toEqual(reference);
+    expect(parseConnectionsAccessResult(parseShellRoute(hash + '/authorize').segments)).toBeNull();
+    expect(parseConnectionsAccessResult(['others', 'access-result', 'https://vendor.test', reference.target_id])).toBeNull();
+    expect(parseConnectionsAccessResult(['others', 'access-result', reference.verification_id, 'token'])).toBeNull();
+  });
+  it.each(['#connections/others/review-access/api/work', '#connections/mail/work/manage-authentication', '#connections/calendar/work/manage-authentication',
+    '#connections/others/switch-file-authentication/api/drive', '#connections/others', '#connections/others/oauth-apps', '#connections/others/oauth-apps/google/default/usage'])('keeps a saved-result return on %s', hash => {
+    const base = parseShellRoute(hash).segments;
+    const full = connectionsAccessRepairReturn(hash, reference);
+    expect(parseConnectionsAccessRepairReturn(parseShellRoute(full).segments)).toEqual({ segments: base, reference });
+    expect(parseConnectionsAccessRepairReturn(parseShellRoute(full + '/authorize').segments)).toBeNull();
+    expect(parseConnectionsAccessRepairReturn(parseShellRoute(full + '/from-access/' + reference.verification_id + '/' + reference.target_id).segments)).toBeNull();
+  });
+  it('rejects unsupported destinations, mixed return contexts and invalid identities', () => {
+    const suffix = '/from-access/' + reference.verification_id + '/' + reference.target_id;
+    for (const hash of ['#connections/others/enroll/google' + suffix, '#connections/mail/work' + suffix,
+      '#connections/others/review-access/api/work/from-renewal/google/default' + suffix,
+      '#connections/others/review-access/api/work/from-access/token/' + reference.target_id,
+      '#connections/others/review-access/api/work/from-access/' + reference.verification_id + '/https%3A%2F%2Fvendor.test']) {
+      expect(parseConnectionsAccessRepairReturn(parseShellRoute(hash).segments)).toBeNull();
+    }
+  });
+  it('routes a recheck using only its retained access-result identity', () => {
+    const selection = { kind: 'verification' as const, id: 'verify-12345678-1234-4123-8123-123456789abc' };
+    const hash = connectionsVerifyAccessAddress(selection).hash;
+    expect(parseConnectionsVerifyAccess(parseShellRoute(hash).segments)).toEqual(selection);
+    expect(parseConnectionsVerifyAccess(parseShellRoute(hash + '/target').segments)).toBeNull();
+    expect(parseConnectionsVerifyAccess(['others', 'verify-access', 'verification', 'https://vendor.test'])).toBeNull();
+  });
   it('routes Verify access with a typed opaque selection and rejects resource or credential tails', () => {
     const selection = { kind: 'renewal' as const, id: 'renewal-12345678-1234-4123-8123-123456789abc' };
     const hash = connectionsVerifyAccessAddress(selection).hash;

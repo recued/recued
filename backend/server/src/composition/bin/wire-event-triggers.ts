@@ -1,3 +1,4 @@
+import { subscriberContractSnapshot } from '../../situations/subscriber-snapshot.js';
 /** Event-trigger substrate composer (reactive-substrate slice 1).
  *
  *  The D-109 Phase G substrate (store + dispatcher + `triggers.*` rpc
@@ -62,6 +63,7 @@ import {
 import { createEventTriggersStore, type EventTriggersStore } from '../../triggers/store.js';
 
 export interface ComposeEventTriggersInput {
+  readContextForSubscriber?: EventTriggerDispatcherDeps['readContextForSubscriber'];
   /** SQLite handle. Absent (dbless harness) → substrate stays unwired. */
   db: Database.Database | undefined;
   /** Warehouse-events bus the dispatcher subscribes patterns on. */
@@ -86,9 +88,10 @@ export interface ComposeEventTriggersInput {
   /** R21.1 — live vault-unlocked predicate. The dispatcher drops the
    *  reactive fan-out while sealed. Absent → un-gated. */
   isVaultUnlocked?: () => boolean;
-  /** D-318 step 1 — is this mailbox the email chat door's chat mailbox? A mail
-   *  event from it starts no recipe. Absent ⇒ none is. */
-  isChatMailbox?: (slug: string) => boolean;
+  /** D-318 step 1 — is this mailbox the email chat door's chat mailbox, used
+   *  for chat alone (not one of the owner's own too, §8.18)? A mail event from
+   *  it starts no recipe. Absent ⇒ none is. */
+  isChatOnlyMailbox?: (slug: string) => boolean;
   /** D-318 step 5 — is this stored message the conversation with the chat
    *  mailbox, in another mailbox? It starts no recipe either. Absent ⇒ none is. */
   isChatConversationRecord?: (slug: string, record_id: string) => boolean;
@@ -97,6 +100,7 @@ export interface ComposeEventTriggersInput {
   onAutomationFailure?: EventTriggerDispatcherDeps['onAutomationFailure'];
   /** D-315 §6.4 — told of every fire the dispatcher records. */
   onFired?: EventTriggerDispatcherDeps['onFired'];
+  situations?: EventTriggerDispatcherDeps['situations'];
   /** D-315 §5.1 — the kinds of email the owner made on this server, which
    *  the rows `triggers.create` / `update` make are checked against. */
   mailFactTypes?: TriggersRpcDeps['mailFactTypes'];
@@ -135,7 +139,7 @@ export interface EventTriggersBundle {
 export type SettleRecoveredTrigger = (
   trigger_id: string,
   event: WarehouseEvent,
-  run: (observe: Pick<InternalExecuteOverrides, 'onRunMinted'>) => Promise<ExecuteResponse | null>,
+  run: (observe: Pick<InternalExecuteOverrides, 'onRunMinted' | 'beforeRunStart'>) => Promise<ExecuteResponse | null>,
 ) => Promise<void>;
 
 export const composeEventTriggers = (
@@ -143,7 +147,7 @@ export const composeEventTriggers = (
 ): EventTriggersBundle | undefined => {
   const {
     db, warehouseBus, executeDeps, auditLog, eventBus, localManifestStore, isVaultUnlocked,
-    isChatMailbox, isChatConversationRecord, onAutomationFailure, onFired,
+    isChatOnlyMailbox, isChatConversationRecord, onAutomationFailure, onFired,
   } = input;
   if (!db) return undefined;
 
@@ -196,8 +200,15 @@ export const composeEventTriggers = (
     bus: warehouseBus,
     store,
     getPreapprovalDriver: () => executeDeps.preapprovalDriver,
+    ...(input.situations ? { situations: input.situations } : {}),
+    ...(input.readContextForSubscriber ? { readContextForSubscriber: input.readContextForSubscriber } : {}),
+    readGrantsForSubscriber: (trigger) => executeDeps.contractOverlay?.resolveReadGrantChecker?.({
+      channel: 'reactive', actor: 'system', event_kind: trigger.pattern, source_recipe: trigger.recipe_id,
+      ...(trigger.read_contract_id ? { contract_id: trigger.read_contract_id } : {}),
+    }),
     runtime: {
-      runRecipe: async ({ recipe_id, context, dish_id, trigger_id, candidate, origin }) => {
+      runRecipe: async ({ recipe_id, context, dish_id, trigger_id, candidate, origin, beforeRunStart, subscriber_contract_id }) => {
+        if ((store.get(trigger_id)?.read_contract_id ?? null) !== (subscriber_contract_id ?? null)) throw new Error('Subscriber contract changed before dispatch');
         const driver = executeDeps.preapprovalDriver;
         // A queued legacy event cannot acquire a newly composed/accepted
         // reviewed execution. Live rows are reread even without the driver.
@@ -235,6 +246,7 @@ export const composeEventTriggers = (
             actor: 'system',
             event_kind,
             source_recipe: recipe_id,
+            ...(store.get(trigger_id)?.read_contract_id ? { contract_id: store.get(trigger_id)!.read_contract_id! } : {}),
             // D-215 slice 1a — background automation is contract-free.
             // The `(reactive, system)` channel already resolves to the `read`
             // ceiling, so writes still HOLD without turning the owner sentinel
@@ -245,10 +257,17 @@ export const composeEventTriggers = (
           // settings (resolved inside handleExecute).
           ...(dish_id !== null ? { dish_id } : {}),
         };
+        const readContract = store.get(trigger_id)?.read_contract_id;
+        if (readContract) {
+          if (!executeDeps.situationAccess) throw new Error('Subscriber contract reads are unavailable');
+          request.contract_snapshot = subscriberContractSnapshot({ access: executeDeps.situationAccess,
+            source: request.execution_source!, contract_id: readContract, slugs: executeDeps.executorConfig.manifests.slugs(),
+            scope_restrictions: executeDeps.contractOverlay?.resolveContractScopeRestrictions?.(request.execution_source!) ?? [], now: Date.now() });
+        }
         // D-315 §6.4 — learn the run's id the moment it exists, so the
         // dispatcher's `trigger_fired` names the run whatever becomes of it.
         let run_id: string | undefined;
-        const observe = { onRunMinted: (id: string) => { run_id = id; } };
+        const observe = { onRunMinted: (id: string) => { run_id = id; }, ...(beforeRunStart ? { beforeRunStart } : {}) };
         const result = driver
           ? await driver.executeTrigger(request, candidate!, observe)
           : await handleExecute(executeDeps, request, observe);
@@ -259,7 +278,7 @@ export const composeEventTriggers = (
     ...(eventBus ? { eventBus } : {}),
     backfillState,
     ...(isVaultUnlocked ? { isVaultUnlocked } : {}),
-    ...(isChatMailbox ? { isChatMailbox } : {}),
+    ...(isChatOnlyMailbox ? { isChatOnlyMailbox } : {}),
     ...(isChatConversationRecord ? { isChatConversationRecord } : {}),
     ...(onAutomationFailure ? { onAutomationFailure } : {}),
     ...(onFired ? { onFired } : {}),

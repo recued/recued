@@ -174,6 +174,7 @@ export const COLLECTION_DISPLAY_SCHEMAS: Readonly<
     summary_fields: ['lifecycle_state', 'slot_start_at', 'monetary_amount', 'created_at'],
     detail_renderer: 'json',
   },
+  asset: { primary_field: 'name', summary_fields: ['class_id', 'status', 'holder_contact'], detail_renderer: 'json' },
   form_response: {
     primary_field: 'form_definition_id',
     summary_fields: ['submitted_at', 'accepted_at', 'endpoint_id'],

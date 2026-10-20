@@ -46,7 +46,6 @@ import {
   IV_LEN,
   MAGIC,
   MIN_CONSUMER_VERSION,
-  SCHEMA_VERSION,
   UINT32_LEN,
   type ArchiveManifest,
 } from './archive-format.js';
@@ -64,6 +63,7 @@ import {
 import { fsyncDir, fsyncFile } from '../durable-fs.js';
 import { createEncryptedBlobStore, type BlobStore } from '../storage/blob-store.js';
 import { copyDatabaseForSnapshot } from '../open-database.js';
+import { readDatabaseSchema } from '../database-schema.js';
 import { listReferencedBlobHashes } from '../storage/sqlite-cache-store.js';
 import { listSharedReferencedBlobHashes } from '../storage/shared-store.js';
 import { listAnnotationReferencedBlobHashes } from '../storage/annotation-store.js';
@@ -325,7 +325,13 @@ export const exportArchive = async (
     //    its implicit destination has no matching key. The db streams from
     //    this file into the archive (never read whole into memory), so we
     //    only need its byte length up front for the record header.
+    const snapshotSchema = readDatabaseSchema(opts.db);
     await copyDatabaseForSnapshot(opts.db, dbTemp);
+    // Supported migrations only advance the version. A concurrent upgrade
+    // across VACUUM makes this snapshot's version ambiguous; refuse the export.
+    if (readDatabaseSchema(opts.db).stored_version !== snapshotSchema.stored_version) {
+      throw new Error('ARCHIVE_SOURCE_SCHEMA_CHANGED: the database upgraded while its backup was taken; retry the export');
+    }
     const dbByteLen = statSync(dbTemp).size;
 
     // 2. Gather the small plaintext inputs (config / vault / passport — all
@@ -393,7 +399,7 @@ export const exportArchive = async (
       producer_version: opts.producerVersion,
       min_consumer_version: MIN_CONSUMER_VERSION,
       archive_format_version: ARCHIVE_FORMAT_VERSION,
-      schema_version: SCHEMA_VERSION,
+      schema_version: snapshotSchema.version,
       created_at: now,
       source_host: opts.sourceHost ?? safeHostname(),
       db_size_bytes: dbByteLen,

@@ -8,9 +8,12 @@ import { createInstanceStore } from '../collections/instance-store.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createAuditLogStore, createInMemoryCollection, type ActivityEntry, type AuditEntry } from '@recued/storage';
 import { createAskStore, createNotificationBlock, createNotificationSettingsStore, createUiChannel,
-  type NotificationSettings, type PendingAsk, type UiNotificationEvent } from '@recued/notification';
+  type NotificationSettings, type PendingAsk, type RemoteChannel, type UiNotificationEvent } from '@recued/notification';
 
 import type { ResolvedLanAddress } from '../network/resolve-lan-address.js';
+import type { MailUpsertContext } from '../collections/mail/mail-collection.js';
+import { mailHeaderMap, type CanonicalMessage } from '../collections/mail/provider.js';
+import { createSQLiteCollection } from '../sqlite-collection.js';
 
 const listenerMocks = vi.hoisted(() => {
   const coordinator = {
@@ -104,6 +107,12 @@ vi.mock('../pack-reconciliation.js', () => ({
   reconcileInstalledPacksOnBoot: listenerMocks.reconcileInstalledPacksOnBoot,
 }));
 
+// The real dispatcher, recorded, so a case can drive the one composition built.
+vi.mock('../composition/bin/wire-inbound-answer-dispatcher.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../composition/bin/wire-inbound-answer-dispatcher.js')>();
+  return { ...actual, composeInboundAnswerDispatcher: vi.fn(actual.composeInboundAnswerDispatcher) };
+});
+
 vi.mock('../ingredient-authoring/installed-manifest-boot-check.js', () => ({
   checkInstalledManifestsOnBoot: listenerMocks.checkInstalledManifestsOnBoot,
   notifyUnrunnablePacks: listenerMocks.notifyUnrunnablePacks,
@@ -113,6 +122,7 @@ import {
   composeListeners,
   type ComposeListenersOptions,
 } from '../serve/compose-listeners.js';
+import { composeInboundAnswerDispatcher } from '../composition/bin/wire-inbound-answer-dispatcher.js';
 import { D165_CONTRACT_SCHEMA, type RecipeDefinition } from '@recued/contracts';
 import { createContractStore } from '../storage/contract-store.js';
 import { createContractDefinitionStore } from '../storage/contract-definition-store.js';
@@ -700,6 +710,121 @@ describe('composeListeners', () => {
     }).emailAnswerHook;
     expect(bind).toHaveBeenCalledTimes(1);
     expect(bind.mock.calls[0]![0]).toBeTypeOf('function');
+  });
+
+  it('D-158 amendment 2026-10-19 — checks a plain ask’s emailed reply against the email connection the owner chose', async () => {
+    // ⛔ The funnel's unit tests hand it the owner's connection themselves; this
+    // is the composition that must. `alerts` sends for the connection named
+    // `email`; the owner chose `home-mail`, the `home` mailbox's, so a plain ask
+    // went out from `home` and only a reply there answers it.
+    const base = makeOptions(); const connections = createConnectionStore(storageDb);
+    const mailboxes: Record<string, string> = { alerts: 'alerts@recued-owner.example', home: 'home@recued-owner.example' };
+    for (const [name, enrolled_at, slug] of [['email', 1, 'alerts'], ['home-mail', 2, 'home']] as const) {
+      connections.upsert({ kind: 'notification', name, subtype: 'email', display_name: name, auth_ciphertext: '',
+        config_json: JSON.stringify({ sender_mail_instance: slug, default_recipient: 'owner@example.com' }), enrolled_at, updated_at: enrolled_at });
+    }
+    await createNotificationSettingsStore(createSQLiteCollection<NotificationSettings>(storageDb, 'notification_settings'))
+      .setChannelMode('email', { connection: { name: 'home-mail', enrolled_at: 2 } });
+    const block = createNotificationBlock({ askStore: createAskStore(createInMemoryCollection<PendingAsk>()),
+      settingsStore: createNotificationSettingsStore(createInMemoryCollection<NotificationSettings>()),
+      channels: [createUiChannel({ busSink: () => {} })] });
+    vi.spyOn(block, 'getAsk').mockResolvedValue({ ask_id: 'ask-deploy', message: { text: 'Approve the deploy?' },
+      options: [{ id: 'approve', label: 'Approve' }, { id: 'reject', label: 'Reject' }], handler_kind: 'test.handler', handler_payload: {},
+      fanout_channels: ['email'], status: 'open', created_at: 0 });
+    const submitAnswer = vi.spyOn(block, 'submitAnswer').mockResolvedValue({ outcome: 'accepted' } as never);
+    const options = makeOptions({ app: { ...base.app, connectionStoreRef: connections },
+      collection: { ...base.collection, collectionRegistry: {
+        get: (platform: string, slug: string) => (platform === 'mail' && mailboxes[slug] ? { accountEmail: mailboxes[slug] } : undefined),
+        list: () => [],
+      } },
+      execution: { ...base.execution, notificationBlock: block } });
+    // The owner's DMARC-passed reply, as it lands in a notification mailbox.
+    const reply = (slug: string, option: string): [CanonicalMessage, MailUpsertContext] => [{
+      source_id: `reply-${slug}`, rfc_message_id: `<reply-${slug}@example.com>`, from: 'Owner <owner@example.com>',
+      to: [mailboxes[slug]!], cc: [], subject: 'Re: Recued — your input is needed [#ask-deploy]', thread_id: `thread-${slug}`,
+      folder_or_label: 'INBOX', direction: 'inbound', is_read: false, is_flagged: false, has_attachments: false,
+      received_at: Date.now() - 60_000, body_text: option,
+      headers: mailHeaderMap([['Authentication-Results', 'mx.google.com; dkim=pass header.i=@example.com header.s=s1; '
+        + 'dmarc=pass (p=NONE sp=QUARANTINE dis=NONE) header.from=example.com']]),
+    }, { slug, record_id: `${slug}:1`, account_email: mailboxes[slug]!, first_seen: true, backfill_complete: true,
+      backfill_days: 30, attachments: [] }];
+    const result = await composeListeners(options);
+    try {
+      const hook = (options.collection as unknown as { emailAnswerHook: { bind: ReturnType<typeof vi.fn> } })
+        .emailAnswerHook.bind.mock.calls[0]![0] as (msg: CanonicalMessage, ctx: MailUpsertContext) => void;
+      // Each says another option, so the answer shows which reply counted.
+      hook(...reply('alerts', 'reject'));
+      hook(...reply('home', 'approve'));
+    } finally { await result.server.close(); }
+    // Closing waits for the answers in flight.
+    expect(submitAnswer).toHaveBeenCalledTimes(1);
+    expect(submitAnswer.mock.calls[0]![0]).toMatchObject({ ask_id: 'ask-deploy', option: 'approve', via: 'email' });
+  });
+
+  it('D-158 amendment 2026-10-20 — takes an answer to a plain ask only from the Telegram connection the owner chose', async () => {
+    // ⛔ The dispatcher's own tests hand it the owner's connection; this is the
+    // composition that must. `telegram` is the row named after the channel; the
+    // owner chose `private`, so a plain ask went out there and only a press there
+    // answers it.
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ ok: true, result: true }))));
+    try {
+      const base = makeOptions(); const connections = createConnectionStore(storageDb);
+      for (const [name, enrolled_at] of [['telegram', 1], ['private', 2]] as const) {
+        connections.upsert({ kind: 'notification', name, subtype: 'telegram', display_name: name, auth_ciphertext: '',
+          config_json: JSON.stringify({ chat_id: `${name}-chat` }), enrolled_at, updated_at: enrolled_at });
+      }
+      await createNotificationSettingsStore(createSQLiteCollection<NotificationSettings>(storageDb, 'notification_settings'))
+        .setChannelMode('telegram', { connection: { name: 'private', enrolled_at: 2 } });
+      const block = createNotificationBlock({ askStore: createAskStore(createInMemoryCollection<PendingAsk>()),
+        settingsStore: createNotificationSettingsStore(createInMemoryCollection<NotificationSettings>()),
+        channels: [createUiChannel({ busSink: () => {} })] });
+      vi.spyOn(block, 'getAsk').mockResolvedValue({ ask_id: 'ask-deploy', status: 'open' } as never);
+      const submitAnswer = vi.spyOn(block, 'submitAnswer').mockResolvedValue({ outcome: 'accepted' } as never);
+      const telegram = { name: 'telegram', capability: 'inline', parseInboundMessage: () => null,
+        parseInboundReply: () => ({ ask_id: 'ask-deploy', option: 'approve', via: 'telegram' }) } as unknown as RemoteChannel;
+      const result = await composeListeners(makeOptions({ app: { ...base.app, connectionStoreRef: connections },
+        execution: { ...base.execution, notificationBlock: block, messengerChannels: { telegram } } }));
+      try {
+        const { messengerDispatchers } = vi.mocked(composeInboundAnswerDispatcher).mock.results.at(-1)!
+          .value as ReturnType<typeof composeInboundAnswerDispatcher>;
+        const pressOn = (connection_name: string) => messengerDispatchers.telegram!({ connection_name, update_id: '1',
+          payload: { update_id: 1, callback_query: { id: 'cb', from: { id: 1001 }, data: 'x', message: { message_id: 1, chat: { id: 1 } } } } } as never);
+        await pressOn('telegram');
+        expect(submitAnswer).not.toHaveBeenCalled();
+        await pressOn('private');
+        expect(submitAnswer).toHaveBeenCalledTimes(1);
+      } finally { await result.server.close(); }
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it('D-325 §5.1 — tells a Slack presser, through the press, that a reminder already closed', async () => {
+    // ⛔ The dispatcher's own tests hand it a Slack reply function; this is the
+    // composition that must. The function reads `fetch` when it is composed.
+    const sent: Array<{ url: string; body: unknown }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      sent.push({ url: String(url), body: init?.body }); return new Response('ok');
+    }));
+    try {
+      const base = makeOptions();
+      const block = createNotificationBlock({ askStore: createAskStore(createInMemoryCollection<PendingAsk>()),
+        settingsStore: createNotificationSettingsStore(createInMemoryCollection<NotificationSettings>()),
+        channels: [createUiChannel({ busSink: () => {} })] });
+      // A reminder already closed elsewhere: the press changes nothing, and the block says so.
+      vi.spyOn(block, 'submitAnswer').mockResolvedValue('closed');
+      vi.spyOn(block, 'getAsk').mockResolvedValue({ delivery_group_id: 'group' } as never);
+      const slack = { name: 'slack', capability: 'inline', parseInboundMessage: () => null,
+        parseInboundReply: () => ({ ask_id: 'ask-passport', option: 'done', via: 'slack' }) } as unknown as RemoteChannel;
+      const result = await composeListeners(makeOptions({ execution: { ...base.execution, notificationBlock: block, messengerChannels: { slack } } }));
+      try {
+        const { messengerDispatchers } = vi.mocked(composeInboundAnswerDispatcher).mock.results.at(-1)!
+          .value as ReturnType<typeof composeInboundAnswerDispatcher>;
+        await messengerDispatchers.slack!({ connection_name: 'slack', payload: { type: 'block_actions', user: { id: 'U-owner' },
+          response_url: 'https://hooks.slack.com/actions/T1/1/press', actions: [{ type: 'button', value: 'ask-passport|done' }] } });
+      } finally { await result.server.close(); }
+    } finally { vi.unstubAllGlobals(); }
+    expect(sent.filter(post => post.url.startsWith('https://hooks.slack.com/')).map(post => ({ url: post.url, body: JSON.parse(String(post.body)) })))
+      .toEqual([{ url: 'https://hooks.slack.com/actions/T1/1/press',
+        body: { response_type: 'ephemeral', replace_original: false, text: 'This reminder is already closed.' } }]);
   });
 
   it('D-318 step 2 — starts the Sent-record proof after binding the owner’s notice, and stops it at close', async () => {

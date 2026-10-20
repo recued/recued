@@ -352,7 +352,7 @@ const renderPhase = (s: RestoreOnboardingState, armed: boolean): string => {
         'Saving your things. Your server restarts when it is done.',
       );
     case 'done':
-      return statusScreen('done', 'All back. Starting Recued…');
+      return statusScreen('done', 'Backup accepted. Starting Recued…');
     case 'fatal':
       return renderFatal(s);
   }

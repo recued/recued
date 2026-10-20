@@ -61,6 +61,7 @@ export interface GatedActionHandoff {
 }
 
 export interface GatedActionReceipt {
+  local_receipt?: import('./resource-review.js').LocalMutationReceiptSummary;
   action_ref: string;
   /** Stable decision group. A single action uses its own action_ref; a D-177
    * batch uses batch_id. Never an ask_id. */

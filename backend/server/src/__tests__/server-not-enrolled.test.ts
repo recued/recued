@@ -89,6 +89,16 @@ describe('server NOT enrolled — gates active', () => {
     }
   });
 
+  it('keeps remote backup storage and history unavailable before enrollment', async () => {
+    const ws = await connectWs(server.port, 'test-realm');
+    try {
+      for (const method of ['server.archive.destinations', 'server.archive.backups', 'server.archive.backup.check', 'server.archive.backup.retrieve']) {
+        const r = await callRpc(ws, method, {});
+        expect(r.error?.code).toBe('server_not_enrolled');
+      }
+    } finally { ws.close(); }
+  });
+
   // M5 S3 — the pre-pair restore onboarding set is allowed pre-enrollment so a
   // code-paired-but-not-yet-enrolled server can stage + validate + restore a
   // backup. These run BEFORE the enrollment test below (which mutates the shared
@@ -103,6 +113,7 @@ describe('server NOT enrolled — gates active', () => {
         'server.archive.upload.finalize',
         'server.archive.upload.delete',
         'server.archive.import',
+        'server.archive.import_status',
       ]) {
         const r = await callRpc(ws, method, {});
         expect(r.ok).toBe(false);

@@ -108,6 +108,9 @@ export interface CollectionInstanceRecord<Caps = CollectionCaps> {
 }
 
 export interface CollectionInstanceStore {
+  /** Stable host identity across updates; delete/recreate always changes it.
+   * Narrow non-SQLite doubles may omit this, disabling version-bound reviews. */
+  getIncarnation?(platform: CollectionPlatform, slug: string): string | null;
   /** D-322 §44 — shared lifecycle lease across store handles for this DB.
    * Optional for narrow non-SQLite test doubles. */
   authenticationLocks?: Set<string>;
@@ -285,7 +288,18 @@ export const createInstanceStore = (
   const synchronize = (platform: CollectionPlatform, slug: string, row: CollectionInstanceRecord | null) =>
     synchronizePreapprovalIdentity(db, 'collection_instance', `${platform}:${slug}`,
       row ? collectionInstancePreapprovalMaterial(row) : null);
+  // Backfill legacy rows before any preview savepoint can roll this identity back.
+  db.transaction(() => {
+    for (const raw of listAllStmt.all() as Parameters<typeof parseRow>[0][]) {
+      const row = parseRow(raw); synchronize(row.platform, row.slug, row);
+    }
+  }).immediate();
   return {
+    getIncarnation(platform, slug) {
+      const row = db.prepare("SELECT incarnation FROM preapproval_resource_identity WHERE kind='collection_instance' AND key=? AND present=1")
+        .get(`${platform}:${slug}`) as { incarnation: string } | undefined;
+      return row?.incarnation ?? null;
+    },
     authenticationLocks: collectionAuthenticationLocks(db),
     upsert(record) {
       return db.transaction(() => {

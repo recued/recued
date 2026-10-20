@@ -1,6 +1,7 @@
 import { hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import type Database from 'better-sqlite3';
+import { createOrdinaryLocalMutations } from '../ordinary-local-mutations.js';
 import {
   createAuditLogStore,
   createCheckpointStore,
@@ -22,7 +23,7 @@ import {
   deriveMcpInboundTokenId,
 } from '../storage/chat-inbound-token-store.js';
 import type { BootTrace } from '../cli/boot-trace.js';
-import { openDatabase } from '../open-database.js';
+import { openApplicationDatabase } from '../open-application-database.js';
 import { createManifestRegistry } from '../manifest-loader.js';
 import { createRecipeStore } from '../recipe-store.js';
 import { createRecordsStore } from '../records/index.js';
@@ -154,7 +155,7 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
   const dbPath = resolveRealmDbPath(getArg(options.args, 'db') ?? env.DB_PATH);
 
   options.bootTrace?.markDbOpenAttempted('configured-db-path');
-  const db = await openDatabase(dbPath);
+  const db = await openApplicationDatabase({ dbPath, env });
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   options.bootTrace?.mark('db-opened');
@@ -181,7 +182,8 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
   ensureAuditIndexes(db);
   ensureMemorySchema(db);
 
-  const commitStore = createCommitStore(createSQLiteCollection<Commit>(db, 'commits'));
+  const localMutations = createOrdinaryLocalMutations(db);
+  const commitStore = localMutations.wrapStore(createCommitStore(createSQLiteCollection<Commit>(db, 'commits')));
   ensureCommitSchema(db);
   const checkpointStore = createCheckpointStore(
     createSQLiteCollection<Checkpoint>(db, 'checkpoints'),
@@ -195,6 +197,7 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
   const gatedActionStore = createGatedActionStore(
     createSQLiteCollection<GatedActionRecord>(db, GATED_ACTION_TABLE),
     {
+      localMutationReceipt: localMutations.forAction,
       compareAndSet: createSqliteGatedActionCompareAndSet(db),
       nextChangeSeq: gatedActionChangeClock.nextChangeSeq,
       changeClock: gatedActionChangeClock.snapshot,
@@ -517,6 +520,7 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
     db,
     enrichmentStore,
     commitStore,
+    localMutations,
     checkpointStore,
     mcpActionStore,
     gatedActionStore,

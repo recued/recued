@@ -93,16 +93,19 @@ export const handleNotificationsSetChannel = async (
   // R31 — the payload is a two-axis patch (was a single `enabled`
   // boolean). Reuses the same `{ notification?, approval? }` validator as
   // `set_bridge_mode`; the block applies the readiness + capability gates.
-  if (!isModePatch(args.patch)) {
+  if (!isModePatch(args.patch) || (args.patch.connection !== undefined && args.patch.connection !== null
+    && (typeof args.patch.connection !== 'object' || typeof args.patch.connection.name !== 'string'
+      || args.patch.connection.name.length < 1 || args.patch.connection.name.length > 200
+      || !Number.isFinite(args.patch.connection.enrolled_at)))) {
     throw new RpcError(
       'bad_request',
       'notifications.set_channel: patch must be { notification?: boolean; approval?: boolean }',
     );
   }
-  if (args.patch.notification === undefined && args.patch.approval === undefined) {
+  if (args.patch.notification === undefined && args.patch.approval === undefined && args.patch.connection === undefined) {
     throw new RpcError(
       'bad_request',
-      'notifications.set_channel: patch must specify at least one of notification / approval',
+      'notifications.set_channel: patch must specify notification, approval or a connection',
     );
   }
   return deps.block.setNotificationChannelMode(args.channel, args.patch);

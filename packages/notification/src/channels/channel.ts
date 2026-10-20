@@ -18,6 +18,7 @@
 
 import type { AskExtras } from '../types.js';
 import type { AskOption, ChannelName, NotificationMessage } from '../types.js';
+import type { AskDeliveryEnvelope, AskDeliveryOutcome, AskDeliveryReceipt } from '../ask-delivery-store.js';
 
 /** D-163 N.1 — three capability classes. The medium declares which one
  *  applies at construction time; the block reads it once per `ask` /
@@ -116,4 +117,17 @@ export interface Channel {
    *  close). MUST be idempotent: closing an already-closed or unknown
    *  prompt is a no-op. */
   closeAsk(ask_id: string): Promise<void>;
+
+  /** D-325's receipt-aware path. A definite refusal is not_delivered; a timeout,
+   * disconnect or lost acknowledgement is unknown. Never silently fall back to
+   * the current default connection when a pinned connection is unavailable. */
+  deliverAskDelivery?(envelope: AskDeliveryEnvelope): Promise<AskDeliveryOutcome>;
+  /** Restore provider ids and item membership WITHOUT sending anything. */
+  restoreAskDelivery?(receipt: AskDeliveryReceipt, closed_ask_ids: readonly string[]): void | Promise<void>;
+  /** Replace this message's buttons with those of the remaining items. Return
+   * true only after provider acknowledgement (email has no buttons to remove). */
+  withdrawAskDelivery?(receipt: AskDeliveryReceipt, closed_ask_ids: readonly string[]): Promise<boolean>;
+  /** Only implement when the provider can authoritatively resolve this exact
+   * attempt, rather than guessing from a similar recent message. */
+  reconcileAskDelivery?(envelope: AskDeliveryEnvelope): Promise<AskDeliveryOutcome>;
 }

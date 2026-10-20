@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isAuthenticationAccessPreview, isAuthenticationAccessRequest, isAuthenticationAccessVerification, isAuthenticationAccessSelection,
+import { isAuthenticationAccessPreview, isAuthenticationAccessRequest, isAuthenticationAccessVerification, isAuthenticationAccessSelection, authenticationAccessRecheckResults,
   type AuthenticationAccessPreview, type AuthenticationAccessVerification } from '../authentication-access-verification.js';
 import { isAuthenticationIncidentHistoryPage } from '../authentication-incident-history.js';
 const preview = (): AuthenticationAccessPreview => ({ id: 'a'.repeat(43), fingerprint: 'b'.repeat(64), selection: { kind: 'group', id: 'c'.repeat(64) }, label: 'Work', expires_at: 2000,
@@ -9,6 +9,56 @@ const receipt = (): AuthenticationAccessVerification => ({ id: 'verify-12345678-
   targets_truncated: false, usage_available: true, uses: [], results: [{ id: 'd'.repeat(64), target: { kind: 'connection', name: 'work' }, label: 'Work API',
     authentication_revision: 'e'.repeat(64), current: 'yes', checks: [{ kind: 'api_read', status: 'passed' }] }] });
 describe('saved-authentication access wire boundary', () => {
+  it('accepts optional fresh file navigation metadata without requiring it on older receipts', () => {
+    const v = receipt(); v.results[0]!.target = { kind: 'file_source', source_id: 'opaque-source' };
+    expect(isAuthenticationAccessVerification(v)).toBe(true);
+    v.results[0]!.file_connection = { name: 'drive-work', updated_at: 123 };
+    expect(isAuthenticationAccessVerification(v)).toBe(true);
+  });
+  it.each(['api', 'collection', 'superseded', 'unknown', 'name', 'time'] as const)('rejects invalid file navigation metadata: %s', kind => {
+    const v = receipt(); const r = v.results[0]!; r.target = { kind: 'file_source', source_id: 'opaque-source' };
+    r.file_connection = { name: 'drive-work', updated_at: 123 };
+    if (kind === 'api') r.target = { kind: 'connection', name: 'work' };
+    if (kind === 'collection') r.target = { kind: 'collection', platform: 'mail', slug: 'work' };
+    if (kind === 'superseded') r.current = 'no';
+    if (kind === 'unknown') r.current = 'unknown';
+    if (kind === 'name') r.file_connection.name = '../work';
+    if (kind === 'time') r.file_connection.updated_at = -1;
+    expect(isAuthenticationAccessVerification(v)).toBe(false);
+  });
+  it.each(['targets', 'results', 'checks', 'uses'] as const)('rejects sparse %s in saved access evidence', field => {
+    const p = preview(); const v = receipt();
+    if (field === 'targets') p.targets = Array(1);
+    if (field === 'results') v.results = Array(1);
+    if (field === 'checks') v.results[0]!.checks = Array(1);
+    if (field === 'uses') { p.uses = Array(1); v.uses = Array(1); }
+    if (field === 'targets' || field === 'uses') expect(isAuthenticationAccessPreview(p)).toBe(false);
+    if (field !== 'targets') expect(isAuthenticationAccessVerification(v)).toBe(false);
+  });
+  it.each(['target_ids', 'choices'] as const)('rejects a sparse %s array instead of treating it as a reviewed selection', field => {
+    const p = preview();
+    const request = { action: 'authentication_access_run', review_id: p.id, fingerprint: p.fingerprint, attempt_id: 'c'.repeat(43), choices: [], target_ids: [p.targets[0]!.id] };
+    expect(isAuthenticationAccessRequest({ ...request, [field]: Array(1) })).toBe(false);
+  });
+  it('recognizes retained access-result selections and bounded explicit target subsets', () => {
+    const selection = { kind: 'verification' as const, id: receipt().id }; const p = preview(); p.selection = selection;
+    expect(isAuthenticationAccessPreview(p)).toBe(true);
+    expect(isAuthenticationAccessSelection({ ...selection, kind: ['verification'] })).toBe(false);
+    expect(isAuthenticationAccessSelection({ ...selection, id: 'https://vendor.test/result' })).toBe(false);
+    const request = { action: 'authentication_access_run', review_id: p.id, fingerprint: p.fingerprint, attempt_id: 'c'.repeat(43), choices: [], target_ids: [p.targets[0]!.id] };
+    expect(isAuthenticationAccessRequest(request)).toBe(true);
+    for (const invalid of [[], [p.targets[0]!.id, p.targets[0]!.id], ['raw-token'], 'all', Array.from({ length: 33 }, (_, i) => i.toString(16).padStart(64, '0'))]) {
+      expect(isAuthenticationAccessRequest({ ...request, target_ids: invalid })).toBe(false);
+    }
+  });
+  it('rechecks only completed non-passing reads, including a missing file download after metadata passed', () => {
+    const v = receipt(); v.results[0]!.checks.push({ kind: 'write_permissions', status: 'unconfirmed', reason: 'not_executed' });
+    expect(authenticationAccessRecheckResults(v)).toEqual([]);
+    v.results[0]!.checks.push({ kind: 'file_download', status: 'unconfirmed', reason: 'resource_required' });
+    expect(authenticationAccessRecheckResults(v)).toEqual(v.results);
+    v.results[0]!.checks = [{ kind: 'api_read', status: 'failed', reason: 'access_rejected' }]; expect(authenticationAccessRecheckResults(v)).toEqual(v.results);
+    v.status = 'checking'; delete v.finished_at; expect(authenticationAccessRecheckResults(v)).toEqual([]);
+  });
   it.each(['check kind', 'check reason', 'comparison', 'use kind'] as const)('rejects coerced access evidence: %s', field => {
     const v = receipt();
     if (field === 'check kind') Object.assign(v.results[0]!.checks[0]!, { kind: ['write_permissions'] });

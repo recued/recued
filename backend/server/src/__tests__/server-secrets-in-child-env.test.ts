@@ -136,6 +136,7 @@ describe('every program the server starts for others goes through envForOthers',
     'keys/machine-secret.ts': 'the OS keychain helpers',
     'network/read-default-route-gateway.ts': 'route',
     'supervision/process-group-kill.ts': 'taskkill',
+    'collections/file/watch-host.ts': "a process running the server's own folder-watch program, with an empty environment",
   };
   const FOR_OTHERS = [
     'cli-invocation-executor.ts',

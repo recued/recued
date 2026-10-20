@@ -65,6 +65,7 @@
 import {
   canonicalizeEmail,
   canonicalizeMailingAddress,
+  isContactAnnualDate,
   type ContactAliasKind,
   type ContactAttributeKind,
   type RecipeDefinition,
@@ -128,6 +129,7 @@ const SELECT_FIELDS = [
   'businessAddress',
   'homeAddress',
   'otherAddress',
+  'birthday',
   'lastModifiedDateTime',
 ].join(',');
 
@@ -135,7 +137,7 @@ const SELECT_FIELDS = [
  *  explicit `[]` / `null` says "I looked and this person has none"; a MISSING key
  *  says the leaf never looked, and the runner fails the record for it. */
 const SUPPLIED_ALIASES: readonly ContactAliasKind[] = ['email_alias', 'phone_alias'];
-const SUPPLIED_ATTRIBUTES: readonly ContactAttributeKind[] = ['name', 'org', 'address'];
+const SUPPLIED_ATTRIBUTES: readonly ContactAttributeKind[] = ['name', 'org', 'address', 'birthday'];
 
 // ────────────────────────────────────────────────────────────────
 // Graph's shape → the canonical one
@@ -236,6 +238,23 @@ const addressOf = (contact: Record<string, unknown>): unknown | null => {
   return null;
 };
 
+const DAY_MS = 86_400_000;
+
+/** D-325 — Outlook's birthday as an annual date. Graph gives a UTC timestamp, which
+ *  can hold the LOCAL midnight of the day: 2 April entered in Berlin can arrive as
+ *  `1980-04-01T23:00:00Z`. So the date is the NEAREST UTC midnight, never the UTC
+ *  date as written. Year 1604 means no year, as Apple writes it; the vCard import
+ *  reads it the same way. */
+const birthdayOf = (contact: Record<string, unknown>): string | null => {
+  const raw = str(contact.birthday);
+  if (raw === null) return null;
+  const ms = Date.parse(raw);
+  if (!Number.isFinite(ms)) return null;
+  const day = new Date(Math.round(ms / DAY_MS) * DAY_MS).toISOString().slice(0, 10);
+  const date = day.startsWith('1604-') ? `--${day.slice(5)}` : day;
+  return isContactAnnualDate(date) ? date : null;
+};
+
 /** The record's OWN last-modified — EVENT time, never ingestion time (D-120
  *  bistemporal). Graph carries it as `lastModifiedDateTime` (ISO 8601, inherited
  *  from `outlookItem`). Absent or unparseable ⇒ fall back to `now`, the honest
@@ -270,6 +289,7 @@ const toContactRecord = (
   attributes.name = nameOf(contact);
   attributes.org = orgOf(contact);
   attributes.address = addressOf(contact);
+  attributes.birthday = birthdayOf(contact);
 
   return {
     remote_id,

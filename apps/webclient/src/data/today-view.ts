@@ -2,15 +2,16 @@
 import type {
   CollectionInstanceRow, CollectionSourceFreshness, SourceRegistration,
   WorkEntity, WorkEntityListRpcRequest, WorkEntitySourceFreshness,
+  ProactiveToday, SituationBasis, SituationCluster, SituationItem, SituationReason, SituationRef, SituationWindow, Sphere,
 } from '@recued/contracts';
 import { isDateOnlyDue, resolveTaskListFilter } from '@recued/contracts';
 import { e } from '@recued/ui-shared';
 import { serializeShellRoute, serializeSourceRecordAddress } from '../shell/route.js';
-import { humanizeRpcError } from '../shell/rpc-error-copy.js';
+import { classifyRpcError, humanizeRpcError } from '../shell/rpc-error-copy.js';
 import type { BootstrapDataRouteOptions } from './bootstrap-data-route.js';
 
-type TodayKind = 'task' | 'commitment' | 'calendar';
-type TodayGroup = 'overdue' | 'today' | 'next';
+type TodayKind = 'task' | 'commitment' | 'calendar' | 'situation';
+type TodayGroup = 'overdue' | 'today' | 'next' | 'coming_up';
 interface Freshness { label: string; detail: string; warning: boolean }
 export interface TodaySource {
   key: string;
@@ -20,6 +21,9 @@ export interface TodaySource {
   writeCapable?: boolean;
 }
 export interface TodayItem {
+  ref?: SituationRef;
+  sphere?: Sphere;
+  sphereReason?: string;
   key: string;
   title: string;
   when: number;
@@ -32,6 +36,9 @@ export interface TodayItem {
   direction?: string;
   unreachable?: boolean;
   taskId?: string;
+  commitmentId?: string;
+  cluster?: SituationCluster;
+  dateUnknown?: boolean;
 }
 export interface TodayTaskEdit {
   key: string;
@@ -50,6 +57,13 @@ export interface TodayTaskActions {
   canReschedule: boolean;
   edit: TodayTaskEdit | null;
   notice: string | null;
+  canCloseCommitment?: boolean;
+  commitmentBusy?: boolean;
+  error?: string | null;
+  /** §15.4 — the coded answers on what Recued put in a cluster. */
+  canDismissSituation?: boolean;
+  /** The last dismissal, which the notice offers to undo. */
+  undoDismissal?: string | null;
 }
 export interface TodaySnapshot {
   now: number;
@@ -64,11 +78,12 @@ export interface TodaySnapshot {
    *  FINISHED read, and on a first load they would be asserted about sources
    *  that have not answered yet. */
   complete: boolean;
+  proactive?: ProactiveToday;
 }
 
 const PAGE_SIZE = 100;
 const MAX_PAGES = 100;
-const kindLabel = { task: 'Task', commitment: 'Commitment', calendar: 'Calendar event' };
+const kindLabel = { task: 'Task', commitment: 'Commitment', calendar: 'Calendar event', situation: 'On file' };
 const unknownFreshness = (): Freshness => ({ label: 'Recued does not know how old this is', detail: 'This source did not say how old its information is.', warning: true });
 const localFreshness = (): Freshness => ({ label: 'Local', detail: 'Kept in Recued itself, so there is nothing to bring in.', warning: false });
 const validDate = (value: unknown): value is number =>
@@ -149,11 +164,13 @@ const workItem = (entity: WorkEntity, window: ReturnType<typeof todayWindow>): T
   const overdue = allDay ? when < todayStart.getTime() : when < window.now;
   return {
     key: `${entity._kind}:${entity.id}`, title: entity._kind === 'task' ? entity.title : entity.statement,
+    ref: { collection: entity._kind, id: entity.id },
     when, group: overdue ? 'overdue' : when < window.tomorrow ? 'today' : 'next',
     ...(allDay ? { allDay: true } : {}),
     kind: entity._kind, sourceKey: `work:${entity.source_id}`,
     href: serializeShellRoute('data', entity._kind, entity.id),
     ...(entity._kind === 'task' ? { taskId: entity.id } : {}),
+    ...(entity._kind === 'commitment' ? { commitmentId: entity.id } : {}),
     ...(entity._kind === 'commitment' ? { direction: { outbound: 'You promised', inbound: 'Promised to you', internal: 'Personal commitment' }[entity.direction] } : {}),
     ...(entity.sync_state === 'stale_unreachable' ? { unreachable: true } : {}),
   };
@@ -170,7 +187,7 @@ export const replaceTodayTask = (snapshot: TodaySnapshot, entity: Extract<WorkEn
 /** Read independently so a failed source cannot erase the other sources' results.
  * Limits are explicit and visible; every page reuses the same date window. */
 export const loadToday = async (
-  opts: Pick<BootstrapDataRouteOptions, 'workEntitySourceListCaller' | 'workEntityListCaller' | 'collectionListInstancesCaller' | 'collectionListCaller'>,
+  opts: Pick<BootstrapDataRouteOptions, 'spheres' | 'proactiveTodayCaller' | 'workEntitySourceListCaller' | 'workEntityListCaller' | 'collectionListInstancesCaller' | 'collectionListCaller'>,
   now: number,
   isCurrent: () => boolean = () => true,
   /** ⛔⛔ CALLED AS EACH READ SETTLES, because the four are independent and
@@ -188,6 +205,7 @@ export const loadToday = async (
   const issues: string[] = [];
   const calendarSources: TodaySource[] = [];
   let registrations: readonly SourceRegistration[] = [];
+  let proactive: ProactiveToday | undefined;
   const workSources = new Map<string, { kind: 'task' | 'commitment'; fresh?: WorkEntitySourceFreshness }>();
   const fail = (scope: string, error: unknown): void => { issues.push(`${scope}: ${humanizeRpcError(error)}`); };
   /** One sorted, source-annotated view of whatever has arrived so far.
@@ -208,10 +226,40 @@ export const loadToday = async (
           && registration.sync_posture !== 'read_through',
         freshness: workFreshness(info.fresh, registration, now) });
     }
-    return { ...span, complete,
-      items: [...items].sort((a, b) => a.when - b.when || a.key.localeCompare(b.key)),
+    const questionIds = new Set(proactive?.occurrences.filter(row => row.question).map(row => row.commitment.id));
+    const projected = items.filter(item => !item.commitmentId || !questionIds.has(item.commitmentId)).map(item => ({ ...item }));
+    for (const occurrence of proactive?.occurrences ?? []) {
+      if (occurrence.question) continue;
+      const existing = projected.find(item => item.commitmentId === occurrence.commitment.id);
+      const longWindow = workItem({ ...occurrence.commitment, _kind: 'commitment' }, { ...span, before: 8.64e15 });
+      const item = existing ?? (occurrence.reminders_started && longWindow && longWindow.when >= span.before
+        ? { ...longWindow, group: 'coming_up' as const } : undefined);
+      if (!item) continue;
+      item.href = occurrence.subject_kind === 'occasion' ? serializeShellRoute('yours', 'occasions', 'occasion', occurrence.asset_id) : serializeShellRoute('yours', 'asset', occurrence.asset_id);
+      if (!item.title.includes(occurrence.asset_name)) item.title += ` · ${occurrence.asset_name}`;
+      if (!existing) projected.push(item);
+    }
+    for (const cluster of proactive?.situations.clusters ?? []) {
+      const calendar = cluster.items.find(item => item.ref.collection === 'calendar');
+      const existing = calendar ? projected.find(item => item.key === `calendar:${calendar.ref.id}`)
+        : projected.find(item => cluster.items.some(value => `${value.ref.collection}:${value.ref.id}` === item.key));
+      if (existing) { existing.cluster = cluster; continue; }
+      const anchor = cluster.items.find(item => item.when.value?.from === cluster.span?.from && ['calendar', 'booking', 'occasion', 'birthday'].includes(item.kind))
+        ?? cluster.items.find(item => item.when.value?.from === cluster.span?.from) ?? cluster.items[0]!;
+      const when = anchor.when_day ? utcDayAsLocal(Date.parse(anchor.when_day)) : cluster.span?.from ?? anchor.when.value?.from;
+      projected.push({ key: `situation:${cluster.id}`, title: anchor.what.value ?? 'On file',
+        ref: anchor.ref,
+        when: when ?? now, group: when !== undefined && when >= span.tomorrow ? when >= span.before ? 'coming_up' : 'next' : 'today',
+        kind: 'situation', sourceKey: 'situations', href: situationRefHref(anchor.ref), cluster,
+        ...(anchor.when_day ? { allDay: true } : {}),
+        ...(when === undefined ? { dateUnknown: true } : {}) });
+    }
+    if (projected.some(item => item.kind === 'situation')) sources.push({ key: 'situations', label: 'Connected records', kind: 'situation',
+      freshness: { label: 'On file', detail: 'Values from the linked records; their sources may have newer information.', warning: false } });
+    return { ...span, complete, ...(proactive ? { proactive } : {}),
+      items: projected.sort((a, b) => a.when - b.when || a.key.localeCompare(b.key)),
       sources: sources.sort((a, b) => a.label.localeCompare(b.label) || a.key.localeCompare(b.key)),
-      issues: [...issues].sort() };
+      issues: [...issues, ...(proactive?.situations.partial?.length ? [`Too many ${proactive.situations.partial.map(collection => `${collection.replaceAll('_', ' ')}s`).join(', ')} to check in one read. Some may be missing.`] : [])].sort() };
   };
   const emit = (): void => { if (onPartial !== undefined && isCurrent()) onPartial(project(false)); };
   const readWork = async (kind: 'task' | 'commitment'): Promise<void> => {
@@ -283,6 +331,7 @@ export const loadToday = async (
             if (end <= now || start >= span.before || fields.status === 'cancelled') continue;
             items.push({
               key: `${source.key}:${record.record_id}`, title: typeof fields.summary === 'string' && fields.summary.trim() ? fields.summary : 'Untitled event',
+              ref: { collection: 'calendar', id: `${instance.slug}:${record.record_id}` },
               when: start, group: start < span.tomorrow ? 'today' : 'next', kind: 'calendar', sourceKey: source.key,
               href: serializeSourceRecordAddress({ tab: 'calendar', collectionSlug: instance.slug, recordId: record.record_id }),
               allDay,
@@ -316,6 +365,16 @@ export const loadToday = async (
       registrations = (await opts.workEntitySourceListCaller()).sources;
     } catch (error) { fail('Sources', error); }
   };
+  const readProactive = async (): Promise<void> => {
+    if (!opts.proactiveTodayCaller) return;
+    try {
+      const value = await opts.proactiveTodayCaller({ now, before: span.before });
+      if (!isCurrent()) return;
+      proactive = value;
+      for (const row of value.occurrences) if (!workSources.has(row.commitment.source_id)) workSources.set(row.commitment.source_id, { kind: 'commitment' });
+    // An older server has no Yours: Today leaves the section out rather than report it.
+    } catch (error) { if (classifyRpcError(error).code !== 'unknown_method') fail('Yours and situations', error); }
+  };
   // ⛔ `.then(emit)` per reader, NOT `await` in sequence: the four stay
   // concurrent (serialising them would make every load pay all four latencies)
   // and each paints the moment it lands. `readSources` emits too — it supplies
@@ -325,9 +384,93 @@ export const loadToday = async (
     readWork('task').then(emit),
     readWork('commitment').then(emit),
     readCalendars().then(emit),
+    ...(opts.proactiveTodayCaller ? [readProactive().then(emit)] : []),
   ]);
-  return project(true);
+  const result = project(true);
+  if (opts.spheres?.readMany) {
+    const refs = [...new Map(result.items.flatMap(item => item.ref ? [[JSON.stringify([item.ref.collection, item.ref.id]), item.ref] as const] : [])).values()];
+    const placements = new Map<string, { sphere?: Sphere; reason: string }>();
+    try {
+      for (let offset = 0; offset < refs.length && isCurrent(); offset += 500) for (const placement of await opts.spheres.readMany(refs.slice(offset, offset + 500)))
+        placements.set(JSON.stringify([placement.ref.collection, placement.ref.id]), placement);
+      result.items = result.items.map(item => { const placement = item.ref ? placements.get(JSON.stringify([item.ref.collection, item.ref.id])) : undefined;
+        return placement ? { ...item, sphere: placement.sphere, sphereReason: placement.reason } : item; });
+    } catch (error) { if (classifyRpcError(error).code !== 'unknown_method') result.issues.push('Sphere placements could not be read. Filters may be incomplete.'); }
+  }
+  return result;
 };
+
+export const situationRefHref = (ref: SituationRef): string => {
+  if (ref.collection === 'asset') return serializeShellRoute('yours', 'asset', ref.id);
+  // Yours selects one at `#yours/occasions/occasion/<id>` and `#yours/episodes/episode/<id>`.
+  if (ref.collection === 'episode') return serializeShellRoute('yours', 'episodes', 'episode', ref.id);
+  if (ref.collection === 'occasion') return serializeShellRoute('yours', 'occasions', 'occasion', ref.id);
+  if (ref.collection === 'calendar' && ref.id.includes(':')) return serializeSourceRecordAddress({ tab: 'calendar', collectionSlug: ref.id.slice(0, ref.id.indexOf(':')), recordId: ref.id.slice(ref.id.indexOf(':') + 1) });
+  if (ref.collection === 'reminder') return '#data/reminder';
+  // A bill or delivery opens as itself: the facts list alone left the owner to find it.
+  if (ref.collection === 'mail_fact') return serializeShellRoute('data', 'mail_fact', 'thing', ref.id);
+  return serializeShellRoute('data', ref.collection, ref.id);
+};
+/** The four coded answers (§15.4) go on what Recued computed or inferred. A
+ * record the owner keeps has its own actions (Done, Cancel), not these. */
+export const SITUATION_DISMISSALS = [['not_now', 'Not now'], ['not_this_one', 'Not this one'], ['never_this_kind', 'Never this kind'], ['wrong', 'That’s wrong']] as const;
+const renderDismissals = (cluster: SituationCluster, index: number, actionAttr: string, busy: boolean): string => {
+  const title = cluster.items[index]!.what.value ?? 'this item';
+  return `<div class="today-cluster-dismiss" role="group" aria-label="${e(`Answer: ${title}`)}">${SITUATION_DISMISSALS.map(([code, label]) =>
+    `<button type="button" ${actionAttr}="today-situation-dismiss" data-today-dismiss-cluster="${e(cluster.id)}" data-today-dismiss-item="${index}" data-today-dismiss="${code}" aria-label="${e(`${label}: ${title}`)}"${busy ? ' disabled' : ''}>${label}</button>`).join('')}</div>`;
+};
+/** A link that opens a cluster item reports the open (Option A, §8). A situation row's own
+ * link opens the item it was made from, so it reports that item too. */
+const openAttrs = (actionAttr: string, cluster: SituationCluster, index: number): string =>
+  ` ${actionAttr}="today-situation-open" data-today-open-cluster="${e(cluster.id)}" data-today-open-item="${index}"`;
+const rowOpenAttrs = (item: TodayItem, actionAttr: string): string => {
+  const ref = item.ref; const index = ref && item.cluster ? item.cluster.items.findIndex(value => value.ref.collection === ref.collection && value.ref.id === ref.id) : -1;
+  return index < 0 ? '' : openAttrs(actionAttr, item.cluster!, index);
+};
+const capitalized = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1);
+/** Why an item is here and how Recued knows it (§6.2), in the owner's words. */
+const REASON_WORDS: Record<SituationReason, string> = { due: 'due', collides: 'overlaps something else', related: 'connected to this', missing: 'something is missing', last_time: 'from last time' };
+const BASIS_WORDS: Record<SituationBasis, string> = { declared: 'From your records', derived: 'Worked out from your records', inferred: 'Recued’s guess' };
+const reasonText = (item: SituationItem): string => {
+  // Today reads each group again by its own items, so all of them are connected; the group says so.
+  const reasons = item.reasons.length > 1 ? item.reasons.filter(reason => reason !== 'related') : item.reasons;
+  return [capitalized(reasons.map(reason => (REASON_WORDS as Record<string, string>)[reason] ?? reason.replaceAll('_', ' ')).join(', ')),
+    (BASIS_WORDS as Record<string, string>)[item.basis] ?? item.basis].filter(Boolean).join(' · ');
+};
+/** How an item misses its group's own time, place or people (§6.2). A fit needs no words,
+ * and an unknown value says so itself. */
+const whenFit = (item: SituationItem, span: SituationWindow | null): string => {
+  const value = item.when.value; const verdict = item.when.verdict;
+  // A last-time item is judged by its season, not by the gap.
+  if (!value || !span || (verdict !== 'near' && verdict !== 'outside') || item.reasons.includes('last_time')) return '';
+  const side = value.from > span.to ? 'after' : value.to < span.from ? 'before' : null;
+  return side ? `${verdict === 'near' ? 'shortly' : 'well'} ${side} this` : '';
+};
+const WHERE_FIT: Partial<Record<string, string>> = { outside: 'not where this is' };
+const WHO_FIT: Partial<Record<string, string>> = { near: 'some of the people in this', outside: 'none of the people in this' };
+const fitted = (value: string, fit: string | undefined): string => fit ? `${value} · ${fit}` : value;
+/** An item names people by id; a server older than the names map, or a contact since
+ * removed, leaves one that is counted, never shown. An address is its own name. */
+const peopleText = (ids: readonly string[], people: ReadonlyMap<string, string> | undefined): string => {
+  const named = ids.flatMap(id => { const name = people?.get(id) ?? (id.includes('@') ? id : undefined); return name ? [name] : []; });
+  const unnamed = ids.length - named.length;
+  const rest = !unnamed ? [] : [people ? `${unnamed} ${unnamed === 1 ? 'person' : 'people'} no longer in your contacts` : unnamed === 1 ? 'a contact' : `${unnamed} contacts`];
+  return named.length ? [...named, ...rest].join(', ') : capitalized(rest.join(', '));
+};
+/** A record an item rests on, as Data names it. */
+const SOURCE_WORDS: Partial<Record<string, string>> = { calendar: 'Calendar event', mail: 'Email', mail_fact: 'Mail fact', memory: 'Memory note', history_trace: 'Retained evidence' };
+const sourceLinks = (evidence: SituationItem['evidence']): string =>
+  [...new Map(evidence.map(ref => [JSON.stringify([ref.collection, ref.id]), ref])).values()]
+    .map(ref => `<a href="${e(situationRefHref(ref))}">${e(SOURCE_WORDS[ref.collection] ?? capitalized(ref.collection.replaceAll('_', ' ')))}</a>`).join(', ');
+const renderCluster = (cluster: SituationCluster | undefined, summary?: string, answers?: { actionAttr: string; busy: boolean }, people?: ReadonlyMap<string, string>): string => !cluster ? '' : `${summary ? `<p class="today-cluster-summary" data-today-cluster-summary>${e(summary)}</p>` : ''}<ul class="today-cluster" data-today-cluster="${e(cluster.id)}">${cluster.items.map((item, index) =>
+  `<li><a href="${e(situationRefHref(item.ref))}"${answers ? openAttrs(answers.actionAttr, cluster, index) : ''}>${e(item.what.value ?? 'Unknown')}</a>
+    <span data-today-reasons>${e(reasonText(item))}</span>
+    <dl><dt>When</dt><dd data-today-verdict="${e(item.when.verdict)}">${e(fitted(item.when_day ? new Date(item.when_day).toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' }) : item.when.value ? dateLabel(item.when.value.from) : 'No date', whenFit(item, cluster.span)))}</dd>
+    <dt>Where</dt><dd data-today-verdict="${e(item.where.verdict)}">${e(item.where.value ? fitted(item.where.value.name, WHERE_FIT[item.where.verdict]) : 'Not recorded')}</dd>
+    <dt>Who</dt><dd data-today-verdict="${e(item.who.verdict)}">${e(item.who.value?.length ? fitted(peopleText(item.who.value, people), WHO_FIT[item.who.verdict]) : 'Not recorded')}</dd></dl>
+    ${item.evidence.length ? `<div>Sources: ${sourceLinks(item.evidence)}</div>` : ''}
+    ${answers && item.basis !== 'declared' ? renderDismissals(cluster, index, answers.actionAttr, answers.busy) : ''}</li>`).join('')}
+  ${cluster.omitted ? `<li>${cluster.omitted} more related items</li>` : ''}</ul>`;
 
 export const TODAY_VIEW_STYLES = `
 .today-view { max-width:960px; margin-top:18px; }
@@ -347,6 +490,13 @@ export const TODAY_VIEW_STYLES = `
 .today-row time { font-size:13px; color:var(--muted); }
 .today-row a { color:var(--fg); overflow-wrap:anywhere; text-decoration:none; }
 .today-row a:hover { text-decoration:underline; }
+.today-cluster { display:grid; gap:12px; margin-top:12px; padding-left:20px; font-size:13px; }
+.today-cluster li > span { display:block; color:var(--muted); margin-top:4px; }
+.today-cluster dl { display:grid; grid-template-columns:55px 1fr; gap:4px 10px; }
+.today-cluster dt,.today-cluster dd { margin:0; }
+.today-cluster-summary { margin:12px 0 0; font-weight:600; }
+.today-cluster-dismiss { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+.today-cluster-dismiss button { min-height:44px; }
 .today-meta { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; margin-top:6px; font-size:12px; color:var(--muted); overflow-wrap:anywhere; }
 .today-freshness { font-size:12px; padding:2px 6px; border:1px solid var(--border, #303642); border-radius:4px; }
 .today-freshness[data-warning] { color:var(--fg); background:var(--warn-soft); font-weight:600; }
@@ -355,17 +505,17 @@ export const TODAY_VIEW_STYLES = `
 .today-empty-lead { margin:0; font-size:15px; color:var(--fg); }
 .today-empty-sub { margin:0; font-size:13px; }
 .today-empty-create { min-height:38px; padding:7px 14px; font:inherit; font-size:13px; font-weight:650; color:var(--on-accent); background:var(--accent); border:1px solid var(--accent); border-radius:8px; cursor:pointer; }
-.today-task-actions, .today-task-editor { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:10px; min-width:0; }
+.today-commitment-actions, .today-task-actions, .today-task-editor { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:10px; min-width:0; }
 .today-task-editor { border:1px solid var(--border); border-radius:8px; padding:12px; background:var(--surface-subtle, var(--surface)); border-inline-start:3px solid var(--accent); }
 .today-task-editor p { flex-basis:100%; margin:0; overflow-wrap:anywhere; }
 .today-task-editor .today-task-editor-title { color:var(--fg); font-weight:650; }
 .today-task-editor .today-task-hint { font-size:12px; }
 .today-task-editor label { display:grid; gap:5px; min-width:0; max-width:100%; }
-.today-task-actions button, .today-task-editor button, .today-task-editor input { box-sizing:border-box; min-height:44px; max-width:100%; min-width:0; padding:7px 10px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--fg); font:inherit; font-size:13px; }
-.today-task-actions button, .today-task-editor button { cursor:pointer; }
+.today-commitment-actions button, .today-task-actions button, .today-task-editor button, .today-task-editor input { box-sizing:border-box; min-height:44px; max-width:100%; min-width:0; padding:7px 10px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--fg); font:inherit; font-size:13px; }
+.today-commitment-actions button, .today-task-actions button, .today-task-editor button { cursor:pointer; }
 .today-task-editor .today-task-primary { background:var(--accent); color:var(--on-accent); border-color:var(--accent); font-weight:600; }
-.today-task-actions button[aria-disabled=true], .today-task-editor button[aria-disabled=true] { opacity:.6; cursor:default; }
-.today-task-actions button:not([aria-disabled=true]):hover { border-color:var(--accent); }
+.today-commitment-actions button[aria-disabled=true], .today-task-actions button[aria-disabled=true], .today-task-editor button[aria-disabled=true] { opacity:.6; cursor:default; }
+.today-task-actions button:not([aria-disabled=true]):hover, .today-commitment-actions button:not([disabled]):hover { border-color:var(--accent); }
 .today-view :focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
 .today-view [data-today-task-notice] { border-inline-start:3px solid var(--accent); padding:10px 12px; background:var(--surface-subtle, var(--surface)); color:var(--fg); overflow-wrap:anywhere; }
 .today-task-editor [role=alert] { color:var(--danger, var(--fg)); }
@@ -404,22 +554,29 @@ const renderTaskEditor = (actions: TodayTaskActions | undefined, actionAttr: str
   </div>`;
 };
 
-export const renderToday = (snapshot: TodaySnapshot | null, loading: boolean, actionAttr: string, sourcesOpen?: boolean, canCreate?: boolean, actions?: TodayTaskActions): string => {
+export type TodaySphereFilter = 'all' | 'personal' | 'professional' | 'unsorted';
+export const renderToday = (snapshot: TodaySnapshot | null, loading: boolean, actionAttr: string, sourcesOpen?: boolean, canCreate?: boolean, actions?: TodayTaskActions, sphereFilter: TodaySphereFilter = 'all'): string => {
+  if (snapshot && sphereFilter !== 'all') snapshot = { ...snapshot, items: snapshot.items.filter(item => sphereFilter === 'unsorted' ? item.sphere === undefined && item.sphereReason !== undefined : item.sphere === sphereFilter) };
   const warning = snapshot !== null && (snapshot.issues.length > 0 || snapshot.sources.some((source) => source.freshness.warning)
     || snapshot.items.some((item) => item.unreachable));
   const sources = new Map(snapshot?.sources.map((source) => [source.key, source]));
+  const people = snapshot?.proactive?.people ? new Map(Object.entries(snapshot.proactive.people)) : undefined;
   const sourceWarnings = snapshot?.sources.filter((source) => source.freshness.warning).length ?? 0;
   const groups: Array<{ id: TodayGroup; label: string; empty: string }> = [
     { id: 'overdue', label: 'Overdue', empty: 'Nothing is late.' },
     { id: 'today', label: 'Today', empty: 'Nothing else is due today.' },
     { id: 'next', label: 'Next seven days', empty: 'Nothing else in the next seven days.' },
+    { id: 'coming_up', label: 'Coming up', empty: 'No later items have started reminding.' },
   ];
   return `<section class="today-view" data-today-view aria-busy="${loading}">
     <header class="today-header"><div><h2>Today</h2>
       <p>Tasks, commitments, and calendar events in one place.</p>
       ${snapshot === null ? '' : `<p>Seven-day window: ${e(dateLabel(snapshot.now))}–${e(dateLabel(snapshot.before - 1))} · Your local time</p>`}
     </div><button type="button" class="today-refresh" ${actionAttr}="refresh-today" aria-disabled="${loading}">Refresh</button></header>
-    ${actions?.notice ? `<p role="status" tabindex="-1" data-today-task-notice>${e(actions.notice)}</p>` : ''}
+    ${snapshot?.proactive?.phone_ready === false ? '<p role="status">Reminders currently reach only the app. <a href="#connections">Connect a phone channel</a>.</p>' : ''}
+    ${actions?.notice ? `<p role="status" tabindex="-1" data-today-task-notice>${e(actions.notice)}${actions.undoDismissal
+      ? ` <button type="button" ${actionAttr}="today-situation-restore" data-today-dismissal="${e(actions.undoDismissal)}">Undo</button>` : ''}</p>` : ''}
+    ${actions?.error ? `<p role="alert" tabindex="-1" data-today-task-error>${e(actions.error)}</p>` : ''}
     ${actions?.edit && !snapshot?.items.some(item => item.key === actions.edit?.key) ? renderTaskEditor(actions, actionAttr) : ''}
     ${snapshot === null ? '<p role="status">Loading Today…</p>' : `
       <p class="today-updated" role="status">${snapshot.complete === false
@@ -427,6 +584,7 @@ export const renderToday = (snapshot: TodaySnapshot | null, loading: boolean, ac
         : loading ? 'Loading again. These are the old results.'
         : `Checked ${e(new Date(snapshot.now).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }))}`}</p>
       ${warning ? `<div class="today-notice" role="status"><p>Some sources may be missing or out of date. Results below may be incomplete.</p>${snapshot.issues.map((issue) => `<p>${e(issue)}</p>`).join('')}</div>` : ''}
+      <label>Sphere <select data-today-sphere aria-label="Today sphere" style="min-height:44px">${[['all', 'All spheres'], ['personal', 'Personal'], ['professional', 'Work'], ['unsorted', 'Unsorted']].map(([value, title]) => `<option value="${value}"${value === sphereFilter ? ' selected' : ''}>${title}</option>`).join('')}</select></label>
       <details class="today-sources"${sourcesOpen ? ' open' : ''}><summary>Sources · ${snapshot.sources.length}${sourceWarnings > 0 ? ` · ${sourceWarnings} need attention` : ''}</summary><ul>
       ${snapshot.sources.map((source) => `<li><span>${e(source.label)} · ${e(kindLabel[source.kind])}</span>${renderFreshness(source.freshness)}<span>${e(source.freshness.detail)}</span></li>`).join('')}
       </ul></details>
@@ -443,15 +601,23 @@ export const renderToday = (snapshot: TodaySnapshot | null, loading: boolean, ac
           <h3 id="today-group-${group.id}">${group.label}<span class="today-count">${items.length}</span></h3>
           ${items.length === 0 ? `<p>${snapshot.complete === false ? 'Still loading…' : warning ? 'Recued found nothing.' : group.empty}</p>` : `<ul class="today-list">${items.map((item) => {
             const source = sources.get(item.sourceKey);
-            const when = `${dateLabel(item.when)} · ${item.allDay ? 'All day' : new Date(item.when).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`;
-            return `<li class="today-row" data-today-item="${e(item.key)}"><time datetime="${e(new Date(item.when).toISOString())}">${e(when)}${item.ongoing ? ' · In progress' : ''}</time><div>
-              <a href="${e(item.href)}">${e(item.title)}</a><div class="today-meta"><span>${e(kindLabel[item.kind])}</span><span>${e(source?.label ?? item.sourceKey)}</span>
-              ${item.direction === undefined ? '' : `<span>${e(item.direction)}</span>`}${renderFreshness(item.unreachable ? { label: 'Recued cannot reach this source', detail: 'This may be out of date.', warning: true } : source?.freshness ?? unknownFreshness())}
-              </div>${actions && item.taskId !== undefined && !item.unreachable && source?.writeCapable ? `<div class="today-task-actions">
+            const when = item.dateUnknown ? 'Date unknown' : `${dateLabel(item.when)} · ${item.allDay ? 'All day' : new Date(item.when).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`;
+            const whenMarkup = item.dateUnknown ? '<span>Date unknown</span>' : `<time datetime="${e(new Date(item.when).toISOString())}">${e(when)}${item.ongoing ? ' · In progress' : ''}</time>`;
+            return `<li class="today-row" data-today-item="${e(item.key)}">${whenMarkup}<div>
+              <a href="${e(item.href)}"${actions?.canDismissSituation ? rowOpenAttrs(item, actionAttr) : ''}>${e(item.title)}</a><div class="today-meta"><span>${e(kindLabel[item.kind])}</span><span>${e(source?.label ?? item.sourceKey)}</span>
+              ${item.sphereReason === undefined ? '' : `<span data-item-sphere title="${e(item.sphereReason)}">${item.sphere === 'personal' ? 'Personal' : item.sphere === 'professional' ? 'Work' : 'Unsorted'} · ${e(item.sphereReason)}</span>`}
+              ${item.direction === undefined ? '' : `<span>${e(item.direction)}</span>`}${item.kind === 'situation' ? '' : renderFreshness(item.unreachable ? { label: 'Recued cannot reach this source', detail: 'This may be out of date.', warning: true } : source?.freshness ?? unknownFreshness())}
+              </div>${renderCluster(item.cluster, item.cluster ? snapshot.proactive?.summaries?.[item.cluster.id] : undefined,
+                actions?.canDismissSituation ? { actionAttr, busy: actions.commitmentBusy === true } : undefined, people)}${actions && item.taskId !== undefined && !item.unreachable && source?.writeCapable ? `<div class="today-task-actions">
                 ${actions.canComplete ? `<button type="button" ${actionAttr}="today-task-complete" data-today-task="${e(item.key)}" aria-label="Complete ${e(item.title)}"${actions.edit ? ' aria-disabled="true"' : ''}>${actions.edit?.key === item.key && actions.edit.busy && actions.edit.action === 'complete' ? 'Completing…' : 'Complete'}</button>` : ''}
                 ${actions.canReschedule ? `<button type="button" ${actionAttr}="today-task-reschedule" data-today-task="${e(item.key)}" aria-label="Reschedule ${e(item.title)}" aria-expanded="${actions.edit?.key === item.key && actions.edit.action === 'reschedule'}"${actions.edit ? ' aria-disabled="true"' : ''}>Reschedule</button>` : ''}
+              </div>` : ''}${actions?.canCloseCommitment && item.commitmentId && !item.unreachable && source?.writeCapable ? `<div class="today-commitment-actions">
+                <button type="button" ${actionAttr}="today-commitment-fulfill" data-today-task="${e(item.key)}" aria-label="Done: ${e(item.title)}"${actions.commitmentBusy ? ' disabled' : ''}>Done</button>
+                <button type="button" ${actionAttr}="today-commitment-cancel" data-today-task="${e(item.key)}" aria-label="Cancel: ${e(item.title)}"${actions.commitmentBusy ? ' disabled' : ''}>Cancel</button>
               </div>` : ''}${actions?.edit?.key === item.key ? renderTaskEditor(actions, actionAttr) : ''}</div></li>`;
           }).join('')}</ul>`}</section>`;
-      }).join('')}`}
+      }).join('')}
+      ${snapshot.proactive?.proposal_count ? `<p data-today-proposals><a href="#yours/proposals">${snapshot.proactive.proposal_count} proposals and questions wait</a>${snapshot.proactive.newest_proposal ? ` · ${e(snapshot.proactive.newest_proposal.title)}` : ''}</p>` : ''}
+      ${snapshot.proactive?.unmatched_replies.length ? `<section data-today-unmatched><h3>Unmatched replies</h3><p>These replies changed nothing. <a href="#yours/proposals">Review in Yours</a>.</p><ul>${snapshot.proactive.unmatched_replies.map(reply => `<li><p>${e(reply.text)}</p><p>${e(reply.reason.replaceAll('_', ' '))}</p></li>`).join('')}</ul></section>` : ''}`}
   </section>`;
 };

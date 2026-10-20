@@ -105,6 +105,7 @@ const FIELD_READERS: ReadonlyArray<{
   { field: 'title', read: (c) => c.title, from: (e) => e.title },
   { field: 'photo', read: (c) => c.photo, from: (e) => e.photo },
   { field: 'birthday', read: (c) => c.birthday, from: (e) => e.birthday },
+  { field: 'anniversary', read: (c) => c.anniversary, from: (e) => e.anniversary },
   { field: 'address', read: (c) => c.mailing_address, from: (e) => e.address },
 ];
 
@@ -176,7 +177,8 @@ export const planContactFileImport = (
     });
   }
 
-  return { format: parsed.format, adds, unchanged, changes, errors };
+  return { format: parsed.format, adds, unchanged, changes, errors,
+    ...(parsed.date_notes.length > 0 ? { date_notes: parsed.date_notes } : {}) };
 };
 
 /** Apply the plan. Re-parses the SAME bytes, so the client cannot hand back a plan
@@ -227,6 +229,7 @@ export const applyContactFileImport = (
             ...(entry.title !== undefined ? { title: entry.title } : {}),
             ...(entry.photo !== undefined ? { photo: entry.photo } : {}),
             ...(entry.birthday !== undefined ? { birthday: entry.birthday } : {}),
+            ...(entry.anniversary !== undefined ? { anniversary: entry.anniversary } : {}),
             ...(entry.address !== undefined ? { mailing_address: entry.address } : {}),
           },
           now,
@@ -257,6 +260,7 @@ export const applyContactFileImport = (
           ['title', entry.title],
           ['photo', entry.photo],
           ['birthday', entry.birthday],
+          ['anniversary', entry.anniversary],
           ['address', entry.address],
         ] as const) {
           if (value === undefined) continue;
@@ -284,6 +288,7 @@ export const applyContactFileImport = (
           ['title', entry.title],
           ['photo', entry.photo],
           ['birthday', entry.birthday],
+          ['anniversary', entry.anniversary],
           ['address', entry.address],
         ] as const) {
           if (value === undefined) continue;

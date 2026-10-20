@@ -363,6 +363,7 @@ const pageQueryOf = (args: unknown): MailFactPageQuery => {
   const complete = flag('complete');
   const unpaired = flag('unpaired');
   const hasRun = flag('has_run');
+  const thingId = text('thing_id');
   return {
     limit,
     ...(type !== undefined ? { type } : {}),
@@ -372,6 +373,7 @@ const pageQueryOf = (args: unknown): MailFactPageQuery => {
     ...(complete !== undefined ? { complete } : {}),
     ...(unpaired !== undefined ? { unpaired } : {}),
     ...(hasRun !== undefined ? { has_run: hasRun } : {}),
+    ...(thingId !== undefined ? { thing_id: thingId } : {}),
     ...(raw.email !== undefined ? { email: emailRefOf(raw.email, 'email') } : {}),
     ...(raw.before !== undefined ? { before: cursorOf(raw.before) } : {}),
   };

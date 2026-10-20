@@ -79,6 +79,7 @@ export interface WorkEntityEdgeLocalRowLookup {
   readTask(id: string): { id: string } | null;
   readProject(id: string): { id: string } | null;
   readNote(id: string): { id: string } | null;
+  readAsset?(id: string): { id: string } | null;
 }
 
 export interface WorkEntityEdgeResolutionDeps {
@@ -210,11 +211,11 @@ const resolveWorkReferenceEdge = (
   input: DesiredWorkEntityEdgesInput,
   deps: WorkEntityEdgeResolutionDeps,
 ): WorkEntityEdgeWrite | null => {
-  const target = rel.target as 'task' | 'project' | 'note';
+  const target = rel.target as 'task' | 'project' | 'note' | 'asset';
   if (rel.pairing === 'remote_id') {
     const target_source_id = siblingSourceId(input.source_id, target);
     if (target_source_id === null) return null;
-    const local = deps.mirror !== undefined
+    const local = deps.mirror !== undefined && target !== 'asset'
       ? deps.mirror.getBySourceIdentity(target, target_source_id, ref)
       : null;
     return {
@@ -231,7 +232,7 @@ const resolveWorkReferenceEdge = (
     if (store === undefined) return null;
     const row = target === 'task'
       ? store.readTask(ref)
-      : target === 'project' ? store.readProject(ref) : store.readNote(ref);
+      : target === 'project' ? store.readProject(ref) : target === 'asset' ? store.readAsset?.(ref) ?? null : store.readNote(ref);
     if (row === null) return null; // vendor claims a local id that doesn't exist
     return {
       local_field: rel.local_field,
@@ -259,6 +260,7 @@ const resolveReferenceEdge = (
     case 'task':
     case 'project':
     case 'note':
+    case 'asset':
       return resolveWorkReferenceEdge(rel, ref, input, deps);
     case 'calendar.event':
     case 'mail_message':

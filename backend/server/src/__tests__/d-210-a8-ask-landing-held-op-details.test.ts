@@ -267,9 +267,9 @@ describe('D-210 A.8 3d-2b — buildAskLandingDetails', () => {
         // A boolean is never blank: absent reads No, as its unchecked box does.
         { label: 'notify_visitor', value: 'No' },
         // Absent (null, or not carried) and blank stay apart, as the ask text keeps them.
-        { label: 'Not set', value: 'Reconciliation id, Start at' },
+        { label: 'Not set', value: 'Reconciliation ID, Start at' },
         // Named as the cards label a row: a key humanized, a declared label as written.
-        { label: 'Empty', value: 'Cc, In reply to, Sender mailbox' },
+        { label: 'Empty', value: 'CC, In reply to, Sender mailbox' },
       ]);
     });
 

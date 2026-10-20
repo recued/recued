@@ -71,6 +71,17 @@ export const todayDemoReply = (method: string, raw: unknown): { result?: unknown
     return { result: { entities: rows.slice(args.offset ?? 0, (args.offset ?? 0) + 1), total: rows.length } };
   }
   if (method === 'work_entity.get') return { result: { entity: visible.find((entity) => entity.id === args.id) ?? null } };
+  if (method === 'work_entity.commitment.fulfill' || method === 'work_entity.commitment.cancel') {
+    const log = JSON.parse(sessionStorage.getItem('recued-test-today-mutations') ?? '[]') as unknown[];
+    log.push({ method, args });
+    sessionStorage.setItem('recued-test-today-mutations', JSON.stringify(log));
+    if (document.documentElement.dataset.todayWriteFailure === '1') return { error: { code: 'unavailable', message: 'Commitment close failed. Try again.' } };
+    const original = visible.find(entity => entity._kind === 'commitment' && entity.id === args.id);
+    if (original?._kind !== 'commitment') return { error: { code: 'not_found', message: 'Commitment is no longer available.' } };
+    const updated = { ...original, lifecycle_state: method.endsWith('fulfill') ? 'fulfilled' : 'cancelled', lifecycle_changed_at: Date.now(), updated_at: Date.now() };
+    sessionStorage.setItem(taskStateKey, JSON.stringify(currentEntities().map(entity => entity.id === updated.id ? updated : entity)));
+    return { result: { entity: updated } };
+  }
   if (method === 'work_entity.task.mark_done' || (method === 'work_entity.upsert' && args.kind === 'task')) {
     const log = JSON.parse(sessionStorage.getItem('recued-test-today-mutations') ?? '[]') as unknown[];
     log.push({ method, args });

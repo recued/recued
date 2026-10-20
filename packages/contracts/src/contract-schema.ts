@@ -344,7 +344,7 @@ const VALUE_SHAPES: Readonly<Record<string, ValueShape>> = {
   installed_pack_info: {
     fields: [
       'pack_slug', 'publisher', 'version', 'installed_at', 'ingredient_ids',
-      'authored_pack_slug',
+      'authored_pack_slug', 'dependency_snapshot',
     ],
     types: {
       pack_slug: 'string',
@@ -362,6 +362,9 @@ const VALUE_SHAPES: Readonly<Record<string, ValueShape>> = {
        *  and absent on every non-Records pack, whose `pack_slug` already IS the
        *  authored slug. */
       authored_pack_slug: 'string?',
+      /** The installed manifest's declarations and observed dependency identities.
+       * Missing on older inventory; absence never means dependency-free. */
+      dependency_snapshot: 'json?',
     },
     required: ['pack_slug', 'version', 'installed_at'],
   },
@@ -637,6 +640,7 @@ const VALUE_SHAPES: Readonly<Record<string, ValueShape>> = {
       'display_name',
       'scope',
       'door_execution_policy',
+      'read_spheres',
       'door_types',
       'max_risk_without_approval',
       'approved_actions_template',
@@ -669,6 +673,7 @@ const VALUE_SHAPES: Readonly<Record<string, ValueShape>> = {
       display_name: 'string',
       scope: 'contract_scope',
       door_execution_policy: 'door_execution_policy?',
+      read_spheres: 'enum:personal|professional[]?',
       // D-187 §6 + D-196 — the level-1 door-type axis.
       // Optional array-of-enum: absent / `[]` = wildcard (any door type — the
       // behaviour-preserving default); a non-empty list restricts the contract

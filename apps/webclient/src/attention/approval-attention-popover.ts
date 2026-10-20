@@ -12,7 +12,7 @@
 
 import { CONNECTION_NAME_REGEX } from '@recued/ui-shared';
 import { renderAttentionSlot } from '@recued/ui-shared/top-bar';
-import { askDetailLabel, formatAskAge } from '@recued/ui-shared/approval-card';
+import { askDetailLabel, formatAskAge, splitSessionGrantTerms } from '@recued/ui-shared/approval-card';
 import {
   CONNECTION_AUTH_TYPES,
   connectionCredentialRejectionCorrection,
@@ -1214,15 +1214,23 @@ const optionModifierClass = (label: string): string => {
  *  buttons are, which is the placement `buildPreflightAsk` composes it last
  *  to get. */
 const splitGatewayAskBody = (
-  text: string,
+  fullText: string,
 ): { prose: string; payload: string; fieldCount: number } => {
+  // ⛔ NOT THE TERMS OF "ALLOW THIS SESSION". The #approvals card shows them; the
+  // popover leaves them out. The owner, 2026-10-19: "for the popover … maybe not
+  // necessary because it takes too much attention away". Their lines start at
+  // the left margin, so without this they would land in the visible prose.
+  const { text } = splitSessionGrantTerms(fullText);
   const lines = text.split(/\r?\n/);
-  const payloadLines = lines.filter((line) => /^\s{2,}\S/.test(line));
+  // The ids line ("Technical: recipe …, step …, action ….") is a reference, not
+  // the question: it goes behind the disclosure with the payload.
+  const isPayload = (line: string): boolean => /^\s{2,}\S/.test(line) || /^Technical: /.test(line);
+  const payloadLines = lines.filter(isPayload);
   if (payloadLines.length === 0) {
     return { prose: text, payload: '', fieldCount: 0 };
   }
   const prose = lines
-    .filter((line) => !/^\s{2,}\S/.test(line))
+    .filter((line) => !isPayload(line))
     .join('\n')
     // The payload left a blank line behind on both sides of itself.
     .replace(/\n{3,}/g, '\n\n')

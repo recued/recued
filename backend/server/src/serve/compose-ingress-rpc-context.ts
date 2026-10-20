@@ -344,6 +344,7 @@ export const composeIngressRpcContext = async (
 
   const mcpHttpBundle = composeMcpHttpTransport({
     executeDeps: execution.executeDeps,
+    ...(execution.executeDeps.situationAccess ? { situationAccess: execution.executeDeps.situationAccess } : {}),
     // Vault-lock gate — MCP `tools/call` is refused while the server vault is
     // LOCKED, so no MCP-driven side effect fires on a sealed server (parity
     // with the autonomous executors' pause-while-locked contract).

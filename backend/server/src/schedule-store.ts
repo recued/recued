@@ -11,6 +11,7 @@
  */
 
 import type Database from 'better-sqlite3';
+import { afterLocalCommit } from './local-transaction.js';
 import type { Schedule } from '@recued/scheduler';
 import {
   assertPreapprovalLegacyEnable, initializePreapprovalLifecycle, mutatePreapprovalResource,
@@ -21,12 +22,14 @@ import {
 /** Runtime statistics and internal parking do not change reviewed material. */
 export const schedulePreapprovalMaterial = (schedule: Schedule): Record<string, unknown> => ({
   recipe_id: schedule.recipe_id, publisher_id: schedule.publisher_id,
+  missed_policy: schedule.missed_policy ?? 'auto', time_zone: schedule.time_zone ?? null,
   mode: schedule.mode ?? 'recurring', cron_expression: schedule.cron_expression,
   run_at: schedule.run_at ?? null, enabled: schedule.enabled,
   instance_id: schedule.instance_id ?? null, dish_id: schedule.dish_id ?? null,
 });
 
 export interface ScheduleStore {
+  readonly realmDatabase?: Database.Database;
   list(): Schedule[];
   listByRecipe(recipe_id: string): Schedule[];
   get(schedule_id: string): Schedule | null;
@@ -85,7 +88,7 @@ export const createScheduleStore = (
   const onBytesChanged = options.onBytesChanged;
   const reportDelta = (delta: number): void => {
     if (!onBytesChanged || delta === 0) return;
-    try { onBytesChanged(delta); } catch (_err) { /* never break writes */ }
+    try { afterLocalCommit(db, () => onBytesChanged(delta), 'accounting'); } catch (_err) { /* never break writes */ }
   };
 
   const rowToSchedule = (row: { data: string }): Schedule =>
@@ -109,6 +112,7 @@ export const createScheduleStore = (
   ).get(id) ? 'one_shot' : 'next_schedule';
 
   return {
+    realmDatabase: db,
     list() {
       const rows = db.prepare(`SELECT data FROM schedules ORDER BY schedule_id`).all() as { data: string }[];
       return rows.map(rowToSchedule);

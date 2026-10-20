@@ -1,3 +1,5 @@
+import { createAutomationRehearsalHost } from '../automation-rehearsal-host.js';
+import { createAutomationRehearsalStore } from '../storage/automation-rehearsal-store.js';
 import { connectionViewFromRow } from '@recued/contracts';
 import { randomBytes } from 'node:crypto';
 import { createSavedDataViewStore } from '../saved-data-view-store.js';
@@ -21,10 +23,20 @@ import { composeVendorWebhookPort } from '../composition/bin/wire-vendor-webhook
 import { composeInboundAnswerDispatcher } from '../composition/bin/wire-inbound-answer-dispatcher.js';
 import { createPreapprovalTelegramIngress } from '../preapproval-telegram-ingress.js';
 import { composePreapproval } from '../composition/bin/wire-preapproval.js';
-import { composeInboundEmailAnswer } from '../composition/bin/wire-inbound-email-answer.js';
+import { createRecipeRegressionStore } from '../storage/recipe-regression-store.js';
+import { createRecipeRunCaptureStore } from '../storage/recipe-run-capture-store.js';
+import { createRecipeReleaseStore } from '../storage/recipe-release-store.js';
+import { createPermissionRegressionStore } from '../storage/permission-regression-store.js';
+import { createPermissionRegressionHost } from '../permission-regression-host.js';
+import { createPackUpdateStore } from '../storage/pack-update-store.js';
+import { assertRecipeAuthoringGates } from '../recipe-save-handler.js';
+import { createPreapprovalCodec } from '../storage/preapproval-codec.js';
+import { composeInboundEmailAnswer, emailAnswerAccountsOf } from '../composition/bin/wire-inbound-email-answer.js';
+import { createOwnerEmailConnection, createOwnerNotificationConnection } from '../composition/bin/owner-email-connection.js';
 import { materializeMailBody } from '../mail-body-read-handler.js';
 import { composeMailChatTurns } from '../mail-chat-door/turns.js';
 import { composeMailChatAnswers, type MailChatAnswers } from '../mail-chat-door/answers.js';
+import { recipeToolTitle } from '../recipe-tool-name.js';
 import { closeMailSendOutcomeAsk, raiseMailSendOutcomeAsk } from '../mail-send-outcome-ask.js';
 import { createMailSendClaimStore } from '../storage/mail-send-claim-store.js';
 import { linkMailFactRuns, mailFactScreensRpcDeps } from '../mail-facts/screens-wiring.js';
@@ -40,6 +52,7 @@ import { countCalendarOverlap } from '../collections/calendar/overlap-counter.js
 import type { MailCollection } from '../collections/mail/mail-collection.js';
 import { createInMemoryAskLandingNonceStore } from '../ask-landing-nonce-store.js';
 import { createAskLandingDetailResolver } from '../ask-landing-held-op-details.js';
+import { createAskActionNamer } from '../ask-card-action-name.js';
 import { createAskCardDetailResolver } from '../ask-card-held-op-details.js';
 import { resolveArgEditSchema } from '../preflight-arg-schema-resolver.js';
 import { buildResolverDeps } from '../composition/bin/wire-reception-inbox-deps.js';
@@ -111,6 +124,7 @@ import {
 import { deriveReceptionPepperFromSubDek } from '../ports/reception/server-secret-pepper.js';
 import { createReceptionAttachFileSeam } from '../ports/reception/projection/reception-attach-file.js';
 import { composeTelegramCallbackAck } from '../composition/bin/wire-telegram-callback-ack.js';
+import { composeSlackPressReply } from '../composition/bin/wire-slack-press-reply.js';
 import { createMessengerIngressStateStore } from '../storage/messenger-ingress-state-store.js';
 import {
   createMessengerIngressSupervisor,
@@ -480,6 +494,7 @@ export interface ComposeListenersOptions {
     | 'mailStack'
     | 'collectionAuthentication'
     | 'collectionOAuthAppSwitch'
+    | 'yours'
     // D-315 §6.3 — the one fact writer, for a backfill.
     | 'mailFactWriter'
     | 'mailFactTriggerRoom'
@@ -506,6 +521,7 @@ export interface ComposeListenersOptions {
     // `work_entity.{upsert,delete}` pair-RPC so writes emit warehouse
     // events on the SAME path the ingredient channel uses.
     | 'workEntityDispatchers'
+    | 'situationStore'
     // D-160 A.8 step 6 — inbound messenger media lands in the D-172
     // `received` collection (`origin: 'messenger_media'`).
     | 'inboundFileCollection'
@@ -521,6 +537,7 @@ export interface ComposeListenersOptions {
   >;
   execution: Pick<
     ExecutionContext,
+    | 'situationAccess'
     | 'executeDeps'
     | 'notificationBlock'
     // The `/ask` landing's live batch-membership read — a single-member batch
@@ -889,7 +906,17 @@ export const composeListeners = async (
     // SAME instances the notification block registered (lock-step). Always an
     // object (empty when no connection store) so it threads directly.
     messengerChannels: execution.messengerChannels,
+    connectionEnrollment: name => app.connectionStoreRef?.get('notification', name)?.enrolled_at,
+    householdRemindersOnly: name => collection.yours?.isHouseholdConnection(name) ?? false,
+    // D-158 amendment 2026-10-20 — a plain ask went out through the owner's
+    // connection for the channel, so only an answer that came in on it counts.
+    ...(app.connectionStoreRef && storage.db ? { plainAskConnection: async (vendor: string) => {
+      const row = await createOwnerNotificationConnection(storage.db!, app.connectionStoreRef!, vendor)();
+      return 'reason' in row ? null : { name: row.name, enrolled_at: row.enrolled_at };
+    } } : {}),
     ...(telegramAck ? { telegramAck } : {}),
+    // D-325 §5.1 — a press on a Slack reminder that already closed says so.
+    slackPressReply: composeSlackPressReply(),
     ...(messengerTurnIngest ? { messengerTurnIngest } : {}),
     ...(messengerLiveControl ? { messengerLiveControl } : {}),
     // WatchSource messenger push source — verified non-callback user
@@ -955,25 +982,30 @@ export const composeListeners = async (
   // address with a DMARC pass (wire-inbound-email-answer.ts). Inert unless the
   // block and the connection store are composed.
   const emailReplyConnStore = app.connectionStoreRef;
+  const mailboxEmail = (slug: string) => (collection.collectionRegistry.get('mail', slug) as MailCollection | undefined)?.accountEmail;
+  const resolveEmailAnswerAccounts = (connection_name = 'email') => {
+    const record = emailReplyConnStore?.get('notification', connection_name);
+    return record ? emailAnswerAccountsOf(record, mailboxEmail) : null;
+  };
+  // A plain ask went through the owner's email connection, so its reply is checked against it.
+  const ownerEmailConnection = emailReplyConnStore && storage.db ? createOwnerEmailConnection(storage.db, emailReplyConnStore) : undefined;
   const inboundEmailAnswer = composeInboundEmailAnswer({
     ...(execution.notificationBlock ? { block: execution.notificationBlock } : {}),
     ...(emailReplyConnStore
       ? {
-          resolveAccounts: () => {
-            const record = emailReplyConnStore.get('notification', 'email');
-            if (record === null) return null;
-            let cfg: { sender_mail_instance?: unknown; default_recipient?: unknown };
-            try {
-              cfg = JSON.parse(record.config_json) as typeof cfg;
-            } catch {
-              return null;
-            }
-            const sender_slug = typeof cfg.sender_mail_instance === 'string' ? cfg.sender_mail_instance : '';
-            const recipient_address = typeof cfg.default_recipient === 'string' ? cfg.default_recipient : '';
-            if (sender_slug === '' || recipient_address === '') return null;
-            const sender = collection.collectionRegistry.get('mail', sender_slug) as MailCollection | undefined;
-            const sender_address = sender?.accountEmail ?? '';
-            return sender_address === '' ? null : { sender_slug, sender_address, recipient_address };
+          resolveAccounts: resolveEmailAnswerAccounts,
+          ...(ownerEmailConnection ? { resolveOwnerAccounts: async () => {
+            const row = await ownerEmailConnection(); return 'reason' in row ? null : emailAnswerAccountsOf(row, mailboxEmail);
+          } } : {}),
+          resolveAccountCandidates: () => {
+            const rows = typeof emailReplyConnStore.list === 'function'
+              ? emailReplyConnStore.list({ kind: 'notification' }) : [];
+            const names = rows.filter(row => row.subtype === 'email' || (row.name === 'email' && !row.subtype)).map(row => row.name);
+            if (names.length === 0) names.push('email');
+            return names.flatMap(name => {
+              const accounts = resolveEmailAnswerAccounts(name);
+              return accounts ? [accounts] : [];
+            });
           },
         }
       : {}),
@@ -1059,6 +1091,8 @@ export const composeListeners = async (
           publicBaseUrl: () => storage.publicAddress.baseUrl('root'),
           isUnlocked: app.isVaultUnlocked,
           ...(storage.auditLog ? { auditLog: storage.auditLog } : {}),
+          // The follow-up after an approval names the recipe by its title.
+          toolTitle: (tool_name) => recipeToolTitle(storage.recipeStore, tool_name),
           log: (level, msg, data) => {
             const fn = level === 'warn' ? console.warn : console.log;
             fn(`[mail-chat] ${msg}`, data ?? '');
@@ -1484,6 +1518,11 @@ export const composeListeners = async (
   const historyDeps: HistoryDeps = {
     ...(storage.auditLog ? { auditLog: storage.auditLog } : {}),
     ...(askCardDetails ? { resolveAskDetails: askCardDetails } : {}),
+    // The card's "Action" row in the owner's words: the held action's name from
+    // its manifest, or composed from a catalog operation's id.
+    nameAskAction: createAskActionNamer({
+      getManifest: (slug: string) => execution.executorConfig.manifests.get(slug),
+    }),
     ...(execution.notificationBlock
       ? {
           listOpenAsks: () => execution.notificationBlock!.listOpenAsks(),
@@ -1492,8 +1531,8 @@ export const composeListeners = async (
           // answer arrives on the `ui` inbound path; the first-class
           // `bridge` channel is notify-only), so the handler stays
           // channel-agnostic.
-          submitAnswer: (ask_id: string, option_id: string, note?: string) =>
-            execution.notificationBlock!.submitAnswer({
+          submitAnswer: async (ask_id: string, option_id: string, note?: string) => {
+            await execution.notificationBlock!.submitAnswer({
               ask_id,
               option: option_id,
               via: 'ui',
@@ -1501,7 +1540,8 @@ export const composeListeners = async (
               // this ask invited a note, caps it, and refuses a missing required
               // one. Nothing here re-judges any of that.
               ...(note !== undefined ? { note } : {}),
-            }),
+            });
+          },
         }
       : {}),
   };
@@ -1735,8 +1775,8 @@ export const composeListeners = async (
       : {}),
     ...(execution.notificationBlock
       ? {
-          submitAnswer: (ask_id: string, option_id: string, note?: string) =>
-            execution.notificationBlock!.submitAnswer({
+          submitAnswer: async (ask_id: string, option_id: string, note?: string) => {
+            await execution.notificationBlock!.submitAnswer({
               ask_id,
               option: option_id,
               via: 'ui',
@@ -1744,7 +1784,8 @@ export const composeListeners = async (
               // this ask invited a note, caps it, and refuses a missing required
               // one. Nothing here re-judges any of that.
               ...(note !== undefined ? { note } : {}),
-            }),
+            });
+          },
           // D-177 N.14 — the allow-for-this-form offer, read off the REAL
           // ask (as raised, never recomputed): present iff the ask is
           // still open, actually carries the `allow_session` option, and
@@ -1880,7 +1921,7 @@ export const composeListeners = async (
       && app.keys
       ? {
           getAsk: (ask_id: string) => execution.notificationBlock!.getAsk(ask_id),
-          submitAnswer: (reply) => execution.notificationBlock!.submitAnswer(reply),
+          submitAnswer: async (reply) => { await execution.notificationBlock!.submitAnswer(reply); },
           getVerificationPhrase: async () =>
             (await execution.notificationBlock!.getNotificationSettings())
               .verification_phrase,
@@ -2021,14 +2062,20 @@ export const composeListeners = async (
     db: storage.db,
     warehouseBus: app.warehouseBus,
     executeDeps: execution.executeDeps,
+    ...(collection.situationStore ? { situations: collection.situationStore } : {}),
+    ...(execution.situationAccess ? { readContextForSubscriber: (trigger: import('@recued/contracts').EventTrigger) => {
+      try { return execution.situationAccess!.context({ channel: 'reactive', actor: 'system', event_kind: trigger.pattern, source_recipe: trigger.recipe_id,
+        ...(trigger.read_contract_id ? { contract_id: trigger.read_contract_id } : {}) }, null); }
+      catch { return undefined; }
+    } } : {}),
     auditLog: storage.auditLog,
     eventBus: storage.eventBus,
     localManifestStore: storage.localManifestStore,
     // R21.1 — reactive fan-out drops while the vault is sealed.
     isVaultUnlocked: app.isVaultUnlocked,
-    // D-318 step 1 — the chat mailbox's mail starts no mail recipe.
+    // D-318 step 1 — a chat-only mailbox's mail starts no mail recipe.
     ...(collection.mailChatDoor
-      ? { isChatMailbox: (slug: string) => collection.mailChatDoor!.isChatMailbox(slug) }
+      ? { isChatOnlyMailbox: (slug: string) => collection.mailChatDoor!.isChatOnlyMailbox(slug) }
       : {}),
     // Step 5 — nor do its answers and requests in the owner's other mailboxes.
     ...(collection.mailChatConversationMail
@@ -2070,8 +2117,13 @@ export const composeListeners = async (
   // subscribed it): the boot recorder keeps no more. What it kept is replayed
   // below, once the pre-approval driver is there.
   collection.bootEvents.seal();
+  if (storage.recipeStore) collection.yours?.bindRecipes(storage.recipeStore);
   // D-315 §4.3 — an AI answer that may start recipes waits for room in this
   // dispatcher's queue, as a backfill's email does.
+  if (eventTriggersBundle && execution.contractDefinitionStore) collection.yours?.bindSubscribers({
+    store: eventTriggersBundle.store, contracts: execution.contractDefinitionStore,
+    changed: () => eventTriggersBundle.dispatcher.rebuild(),
+  });
   if (eventTriggersBundle && collection.mailFactTriggerRoom !== undefined) {
     collection.mailFactTriggerRoom.current = () => eventTriggersBundle.dispatcher.room();
   }
@@ -3173,7 +3225,63 @@ export const composeListeners = async (
       } as never
     : null;
 
+  const recipeRegressionDeps = app.clientTokensRef && app.keys ? {
+    store: createRecipeRegressionStore(storage.db,createPreapprovalCodec(app.keys.keyProvider('vault'),'Unlock Recued before using saved recipe tests.')),
+    clientTokens: app.clientTokensRef,
+  } : undefined;
+  const recipeRunCaptureDeps = recipeRegressionDeps && app.keys ? {
+    store: createRecipeRunCaptureStore(createPreapprovalCodec(app.keys.keyProvider('vault'),'Unlock Recued before capturing recipe runs.'),recipeRegressionDeps.store),
+    clientTokens: recipeRegressionDeps.clientTokens,
+  } : undefined;
+  const releaseFormReader = storage.publicEndpointRegistryStoreRef
+    ? createFormDefinitionReader(filter => storage.publicEndpointRegistryStoreRef!.list(filter),parseIntakeFormConfig) : undefined;
+  const recipeReleaseDeps = recipeRegressionDeps && app.keys ? {
+    store: createRecipeReleaseStore(storage.db,createPreapprovalCodec(app.keys.keyProvider('vault'),'Unlock Recued before using reviewed recipe releases.'),
+      rpc.observabilityBundle.recipeListDeps.store,recipeRegressionDeps.store,
+      recipe => { assertRecipeAuthoringGates({ ...(releaseFormReader ? { formDefinitionReader: releaseFormReader } : {}) },recipe,'recipe.release.activate'); }),
+    suites: recipeRegressionDeps.store,clientTokens: recipeRegressionDeps.clientTokens,
+  } : undefined;
+
+  const packUpdateDeps = recipeRegressionDeps && app.keys && app.contractStoreRef ? {
+    store: createPackUpdateStore(storage.db,createPreapprovalCodec(app.keys.keyProvider('vault'),'Unlock Recued before reviewing pack updates.'),
+      rpc.observabilityBundle.recipeListDeps.store,app.contractStoreRef,recipeRegressionDeps.store),
+    suites: recipeRegressionDeps.store,clientTokens: recipeRegressionDeps.clientTokens,
+  } : undefined;
+
+  const permissionRegressionDeps = app.keys && app.clientTokensRef && app.contractStoreRef && app.chatInboundTokenStoreRef
+    && app.connectionStoreRef && execution.contractDefinitionStore && execution.grantEntryStore && scheduleDeps && rpc.autoRunDeps && eventTriggersBundle ? {
+      clientTokens: app.clientTokensRef,
+      store: createPermissionRegressionStore(storage.db, createPreapprovalCodec(app.keys.keyProvider('vault'), 'Unlock Recued before using permission tests.'),
+        createPermissionRegressionHost({ db: storage.db, contracts: app.contractStoreRef, definitions: execution.contractDefinitionStore,
+          grants: execution.grantEntryStore, inbound: app.chatInboundTokenStoreRef, execution: execution.executeDeps,
+          profiles: { connectionStore: app.connectionStoreRef, getManifest: slug => execution.executorConfig.manifests.get(slug),
+            contractGrantStore: app.contractGrantStoreRef, connectionCatalogBindingStore: app.connectionCatalogBindingStoreRef },
+          automations: () => [
+            ...scheduleDeps.store.list().map(item => ({ kind: 'schedule' as const, id: item.schedule_id, label: 'Schedule for ' + item.recipe_id, recipe_id: item.recipe_id })),
+            ...rpc.autoRunDeps!.settingsStore.list().map(item => ({ kind: 'auto_run' as const, id: item.dish_id, label: 'Timer for ' + item.recipe_id, recipe_id: item.recipe_id })),
+            ...eventTriggersBundle.store.list().map(item => ({ kind: 'trigger' as const, id: item.trigger_id, label: 'Trigger for ' + item.recipe_id,
+              recipe_id: item.recipe_id, ...(item.read_contract_id ? { contract_id: item.read_contract_id } : {}) })),
+          ],
+        })),
+    } : undefined;
+
+  const automationRehearsalDeps = app.keys && app.clientTokensRef && scheduleDeps && eventTriggersBundle && rpc.autoRunDeps
+    && execution.executeDeps.dishStore && contractStore ? {
+      clientTokens: app.clientTokensRef,
+      store: createAutomationRehearsalStore(storage.db, createPreapprovalCodec(app.keys.keyProvider('vault'), 'Unlock Recued before rehearsing automation.'),
+        createAutomationRehearsalHost({ db: storage.db, recipes: execution.executeDeps.recipeStore, dishes: execution.executeDeps.dishStore,
+          schedules: { ...scheduleDeps, missingPackDepsForRecipe: createMissingPackDepsForRecipe(storage.recipeStore,
+            () => contractStore.scan('installed_pack', []), slug => execution.executorConfig.manifests.get(slug)) },
+          triggers: eventTriggersBundle.triggersDeps, timers: rpc.autoRunDeps })),
+    } : undefined;
+
   const serverHandlerSet = createServerHandlerSet({
+    ...(recipeRegressionDeps ? { recipeRegressionDeps } : {}),
+    ...(recipeRunCaptureDeps ? { recipeRunCaptureDeps } : {}),
+    ...(recipeReleaseDeps ? { recipeReleaseDeps } : {}),
+    ...(automationRehearsalDeps ? { automationRehearsalDeps } : {}),
+    ...(permissionRegressionDeps ? { permissionRegressionDeps } : {}),
+    ...(packUpdateDeps ? { packUpdateDeps } : {}),
     ...(preapproval ? { preapprovalDeps: preapproval.handlers } : {}),
     ...(webclientBundle ? { webclientBundle } : {}),
     executeDeps: execution.executeDeps,
@@ -3408,7 +3516,7 @@ export const composeListeners = async (
             ...(authenticationAlertStore ? { authenticationHistory: async query => {
               const page = authenticationAlertStore.history(query);
               return collection.oauthAppConfigDeps?.renewal ? collection.oauthAppConfigDeps.renewal.history(page) : page;
-            } } : {}),
+            }, authenticationHistoryExport: async query => authenticationAlertStore.export(query) } : {}),
             ...(authenticationAccess ? { authenticationAccess } : {}),
             // D-320 phase 3 (3b) — a deleted connection moves the webhook doors
             // that named it, as a change to a pack's connections does.
@@ -3732,6 +3840,7 @@ export const composeListeners = async (
     },
     // D-324 — the Data → Reminders list: the same dispatchers as the
     // `core.reminder.*` ops, so the screen and chat answer alike.
+    ...(collection.yours ? { yoursDeps: collection.yours } : {}),
     ...(storage.db
       ? {
           reminderDeps: {
@@ -4241,10 +4350,11 @@ export const composeListeners = async (
             ...(storage.eventBus ? { eventBus: storage.eventBus } : {}),
             ...(collection.mailFactWriter ? { writer: collection.mailFactWriter } : {}),
             // D-318 audit — the email chat door's conversation is not the owner's
-            // mail: no facts from the chat mailbox, or from its answers and
-            // requests in the owner's other mailboxes.
+            // mail: no facts from a chat-only mailbox, or from its answers and
+            // requests in the owner's mailboxes (the chat mailbox too, with one
+            // mailbox).
             ...(collection.mailChatDoor
-              ? { isChatMailbox: (slug: string) => collection.mailChatDoor!.isChatMailbox(slug) }
+              ? { isChatOnlyMailbox: (slug: string) => collection.mailChatDoor!.isChatOnlyMailbox(slug) }
               : {}),
             ...(collection.mailChatConversationMail
               ? { isConversationMail: collection.mailChatConversationMail.isConversationMail }
@@ -4508,6 +4618,7 @@ export const composeListeners = async (
   // wired (composeExecutionContext always passes `getBridgeDispatcher`
   // so the ref's getter returns this exact value verbatim).
   options.publishBridgeDispatcher?.(serverHandlerSet.wsHandle.bridgeDispatcher);
+  if (serverHandlerSet.wsHandle.bridgeReminders) execution.notificationBlock?.bindBridgeReminders(serverHandlerSet.wsHandle.bridgeReminders);
 
   // D-169 P1 — Bind the live WS handle into the system-status thunk
   // ref. Construct order: deps → createServerHandlerSet → wsHandle

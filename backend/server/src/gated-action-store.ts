@@ -16,7 +16,7 @@ import type {
   GatedActionStatus,
   GatedActionTerminalStatus,
 } from '@recued/contracts';
-import { GATED_ACTION_STATUSES, isGatedActionTerminal } from '@recued/contracts';
+import { GATED_ACTION_STATUSES, isGatedActionTerminal, isResourceReview, isLocalMutationReceiptSummary } from '@recued/contracts';
 import type { Collection } from '@recued/storage';
 import type Database from 'better-sqlite3';
 
@@ -26,6 +26,7 @@ export const GATED_ACTION_TERMINAL_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 export const GATED_ACTION_MAX_RESULT_BYTES = 1 * 1_024 * 1_024;
 
 interface GatedActionRecordFields {
+  local_receipt?: import('@recued/contracts').LocalMutationReceiptSummary;
   schema_version: 1;
   action_ref: string;
   approval_ref: string;
@@ -49,6 +50,7 @@ interface GatedActionRecordFields {
   /** Host-owned dispatch fact. Missing legacy rows fail safe to
    * `returned_result`. */
   settlement_mode?: GatedActionSettlementMode;
+  resource_review?: import('@recued/contracts').ResourceReview;
   approved_bound?: { requests: number; total_bytes: number };
   created_at: number;
   updated_at: number;
@@ -82,6 +84,7 @@ export interface CreateHeldGatedActionInput {
   ingredient_slug?: string;
   operation_id?: string;
   connection_name?: string;
+  resource_review?: import('@recued/contracts').ResourceReview;
   approved_bound?: { requests: number; total_bytes: number };
   settlement_mode?: GatedActionSettlementMode;
   status_message?: string;
@@ -182,6 +185,8 @@ export interface SqliteGatedActionChangeClock {
 }
 
 export interface CreateGatedActionStoreOptions {
+  /** Host-only proof for this exact direct, version-reviewed operation. */
+  localMutationReceipt?: (record: GatedActionRecord) => import('@recued/contracts').LocalMutationReceiptSummary | null;
   now?: () => number;
   newActionRef?: (input: CreateHeldGatedActionInput) => string;
   maxResultBytes?: number;
@@ -462,6 +467,7 @@ const validObserved = (value: unknown): value is GatedActionObserved => {
 
 export const isGatedActionRecord = (value: unknown): value is GatedActionRecord => {
   if (!isPlainObject(value) || value.schema_version !== 1) return false;
+  if (value.local_receipt !== undefined && !isLocalMutationReceiptSummary(value.local_receipt)) return false;
   const text = (key: string): boolean =>
     typeof value[key] === 'string' && (value[key] as string).length > 0;
   const finite = (key: string): boolean =>
@@ -524,6 +530,7 @@ export const projectGatedActionReceipt = (
   record: GatedActionRecord,
   options: { includeResult?: boolean } = {},
 ): GatedActionReceipt => ({
+  ...(record.local_receipt ? { local_receipt: record.local_receipt } : {}),
   action_ref: record.action_ref,
   approval_ref: record.approval_ref,
   run_id: record.run_id,
@@ -539,7 +546,8 @@ export const projectGatedActionReceipt = (
   ...(record.origin === 'preapproval_member' ? { preapproval: record.preapproval } : {}),
   status: record.status,
   terminal: isGatedActionTerminal(record.status),
-  status_message: record.status_message,
+  status_message: record.status_message + (record.local_receipt && record.status !== 'succeeded'
+    ? ' The local change has a saved confirmation.' : ''),
   created_at: record.created_at,
   updated_at: record.updated_at,
   change_seq: record.change_seq,
@@ -660,7 +668,8 @@ export const projectGatedActionApprovalGroup = (
     approval_ref: approvalRef,
     status,
     terminal,
-    status_message: statusMessage,
+    status_message: statusMessage + (receipts.some(receipt => receipt.local_receipt) && status !== 'succeeded'
+      ? ' A local change has a saved confirmation.' : ''),
     action_refs: receipts.map((receipt) => receipt.action_ref),
     ...counts,
     updated_at: Math.max(...receipts.map((receipt) => receipt.updated_at)),
@@ -740,7 +749,16 @@ export const createGatedActionStore = (
   };
   const allLive = async (): Promise<GatedActionRecord[]> => {
     const rows = await backing.list();
-    const valid = rows.filter(isGatedActionRecord);
+    const valid = rows.map(row => {
+      // Local Records uses the catalog's empty connection sentinel. Receipt
+      // display has no connection in that case; keep older held rows readable.
+      if (isPlainObject(row) && row.connection_name === '' && isResourceReview(row.resource_review)
+        && row.resource_review.resources.every(resource => resource.kind === 'records')) {
+        const { connection_name: _local, ...local } = row;
+        return local;
+      }
+      return row;
+    }).filter(isGatedActionRecord);
     const groups = new Map<string, GatedActionRecord[]>();
     for (const row of valid) {
       const group = groups.get(row.approval_ref);
@@ -761,10 +779,14 @@ export const createGatedActionStore = (
       }
       for (const row of group) await backing.delete(row.action_ref);
     }
-    return out;
+    return out.map(row => {
+      const proof = options.localMutationReceipt?.(row);
+      const { local_receipt: _savedSummary, ...history } = row;
+      return proof ? { ...history, local_receipt: proof } : history;
+    });
   };
   const live = async (record: GatedActionRecord | null): Promise<GatedActionRecord | null> => {
-    if (record === null || !isGatedActionRecord(record)) return null;
+    if (record === null || !isPlainObject(record) || typeof record.action_ref !== 'string') return null;
     // Expiry is approval-group atomic, so even a point read goes through the
     // same snapshot/prune rule as list.
     return (await allLive()).find((row) => row.action_ref === record.action_ref) ?? null;
@@ -863,6 +885,7 @@ export const createGatedActionStore = (
         status_message: input.status_message ?? 'Waiting for owner approval.',
         current_checkpoint_id: input.checkpoint_id,
         settlement_mode: settlementMode,
+        resource_review: input.resource_review ? structuredClone(input.resource_review) : undefined,
         dispatch_attempt_id: undefined,
         // A new checkpoint for the same step is a new decision envelope. It
         // keeps the stable action identity but must not inherit a prior batch
@@ -876,7 +899,7 @@ export const createGatedActionStore = (
         ...(input.operation_id !== undefined
           ? { operation_id: input.operation_id }
           : {}),
-        ...(input.connection_name !== undefined
+        ...(input.connection_name
           ? { connection_name: input.connection_name }
           : {}),
         ...(input.approved_bound !== undefined
@@ -937,7 +960,7 @@ export const createGatedActionStore = (
             ? { ingredient_slug: input.ingredient_slug }
             : {}),
           ...(input.operation_id !== undefined ? { operation_id: input.operation_id } : {}),
-          ...(input.connection_name !== undefined
+          ...(input.connection_name
             ? { connection_name: input.connection_name }
             : {}),
           status: 'awaiting_approval',
@@ -947,6 +970,7 @@ export const createGatedActionStore = (
             ? { predecessor_action_ref: input.predecessor_action_ref }
             : {}),
           settlement_mode: input.settlement_mode ?? 'returned_result',
+          ...(input.resource_review ? { resource_review: structuredClone(input.resource_review) } : {}),
           ...(input.approved_bound !== undefined
             ? { approved_bound: input.approved_bound }
             : {}),
@@ -1173,21 +1197,24 @@ export const createGatedActionStore = (
         if (existing === null || isGatedActionTerminal(existing.status) || !matches(existing)) return existing;
         const at = now();
         const retained = retainResult(input.result, maxResultBytes);
-        return writeUpdate(existing, (current) =>
-          isGatedActionTerminal(current.status) || !matches(current)
-            ? null
-            : {
-                status: input.status,
-                status_message: input.status_message,
-                terminal_at: at,
-                expires_at: at + terminalRetentionMs,
-                result: retained.result,
-                ...(retained.result_omitted_reason !== undefined
-                  ? { result_omitted_reason: retained.result_omitted_reason }
-                  : {}),
-                ...(input.observed !== undefined ? { observed: input.observed } : {}),
-                ...(input.handoff !== undefined ? { handoff: input.handoff } : {}),
-              });
+        return writeUpdate(existing, (current) => {
+          if (isGatedActionTerminal(current.status) || !matches(current)) return null;
+          const proof = options.localMutationReceipt?.(current);
+          return {
+            status: proof ? 'succeeded' : input.status,
+            status_message: proof ? 'The local change committed. No automatic replay was needed.' : input.status_message,
+            ...(proof ? { local_receipt: proof } : {}),
+            terminal_at: at,
+            expires_at: at + terminalRetentionMs,
+            result: retained.result,
+            ...(retained.result_omitted_reason !== undefined
+              ? { result_omitted_reason: retained.result_omitted_reason }
+              : {}),
+            ...(proof ? { observed: { items: 1, succeeded: 1, failed: 0 } }
+              : input.observed !== undefined ? { observed: input.observed } : {}),
+            ...(input.handoff !== undefined ? { handoff: input.handoff } : {}),
+          };
+        });
       });
     },
 

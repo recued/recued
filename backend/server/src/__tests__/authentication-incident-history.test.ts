@@ -36,10 +36,24 @@ const fixture = async (path = ':memory:') => {
     ...(cursor ? { cursor } : {}), ...(limit ? { limit } : {}) }, now);
   await save();
   return { db, connections, store, decode, read, save, tick, health, history, setNow: (value: number) => { now = value; }, setAvailable: (value: boolean) => { available = value; },
-    handlers: () => makeConnectionHandlers({ store: connections, authenticationHistory: async query => store.history(query, now) })!.handlers };
+    handlers: () => makeConnectionHandlers({ store: connections, authenticationHistory: async query => store.history(query, now), authenticationHistoryExport: async query => store.export(query, now) })!.handlers };
 };
 
 describe('retained connection incident history', () => {
+  it('exports through the owner RPC using only retained observations and fails clearly when support is unavailable', async () => {
+    const f = await fixture(); await f.tick(); const before = f.db.prepare('SELECT * FROM authentication_incident_history').all(); const reads = f.decode.mock.calls.length;
+    const response = await f.handlers()['collection.connection.managedOAuth']({ action: 'authentication_history_export', scope: { kind: 'connection', name: 'work' }, filters: { search: ' Work ', type: 'incident' } }, undefined as never);
+    expect(response).toMatchObject({ action: 'authentication_history_export', report: { complete: true, entry_count: 1, filters: { search: 'Work', type: 'incident' },
+      entries: [{ type: 'incident', outcome: 'open' }] } });
+    expect(JSON.stringify(response)).not.toMatch(/never-export|ciphertext|resource_key|required_checks/);
+    expect(f.decode).toHaveBeenCalledTimes(reads); expect(f.db.prepare('SELECT * FROM authentication_incident_history').all()).toEqual(before);
+    const projection = { handle: vi.fn(), worklist: vi.fn(), history: vi.fn() };
+    await makeConnectionHandlers({ store: f.connections, authenticationAccess: projection, authenticationHistoryExport: async query => f.store.export(query, clock) })!
+      .handlers['collection.connection.managedOAuth']({ action: 'authentication_history_export', scope: { kind: 'all' } }, undefined as never);
+    expect(projection.history).not.toHaveBeenCalled(); expect(projection.handle).not.toHaveBeenCalled(); expect(projection.worklist).not.toHaveBeenCalled();
+    await expect(makeConnectionHandlers({ store: f.connections })!.handlers['collection.connection.managedOAuth']({ action: 'authentication_history_export', scope: { kind: 'all' } }, undefined as never)).rejects.toMatchObject({ code: 'not_configured' });
+    await expect(f.handlers()['collection.connection.managedOAuth']({ action: 'authentication_history_export', scope: { kind: 'all' }, cursor: 'older' } as never, undefined as never)).rejects.toMatchObject({ code: 'bad_request' });
+  });
   it.each([2, 4])('compares actual operation time %s with apply rather than the later passive monitor tick', async operationOffset => {
     const f = await fixture(); await f.tick();
     f.connections.authenticationRepairHistory!.begin('managed_reauthorization', 'proof-clock', { action: 'reauthorize', targets: [{ kind: 'connection', name: 'work' }] }, clock + 1);
@@ -224,7 +238,20 @@ describe('retained connection incident history', () => {
     if (response.action !== 'authentication_history') throw new Error('Wrong response');
     expect(isAuthenticationIncidentHistoryPage(response.history)).toBe(true); expect(f.decode).toHaveBeenCalledTimes(reads);
     expect(f.db.prepare('SELECT data FROM authentication_alert_episodes').all()).toEqual(before);
+    const filtered = await f.handlers()['collection.connection.managedOAuth']({ action: 'authentication_history', scope: { kind: 'connection', name: 'work' },
+      filters: { search: ' Work ', type: 'incident', outcome: 'open' } }, undefined as never);
+    expect(filtered.action === 'authentication_history' && filtered.history.filters).toEqual({ search: 'Work', type: 'incident', outcome: 'open' });
+    expect(f.decode).toHaveBeenCalledTimes(reads); expect(f.db.prepare('SELECT data FROM authentication_alert_episodes').all()).toEqual(before);
     await expect(makeConnectionHandlers({ store: f.connections })!.handlers['collection.connection.managedOAuth']({ action: 'authentication_history', scope: { kind: 'all' } }, undefined as never)).rejects.toMatchObject({ code: 'not_configured' });
     await expect(f.handlers()['collection.connection.managedOAuth']({ action: 'authentication_history', scope: { kind: 'all' }, limit: 0 }, undefined as never)).rejects.toMatchObject({ code: 'bad_request' });
+    await expect(f.handlers()['collection.connection.managedOAuth']({ action: 'authentication_history', scope: { kind: 'all' }, filters: { outcome: 'healthy' } as never }, undefined as never)).rejects.toMatchObject({ code: 'bad_request' });
+  });
+  it('filters incident lifecycle states without treating retirement or a missing problem as recovery', async () => {
+    const f = await fixture(); await f.tick(); f.setNow(clock + 1); f.health('ok'); await f.tick();
+    const read = (outcome: 'open' | 'retired' | 'recovered') => f.store.history({ scope: { kind: 'all' }, filters: { type: 'incident', outcome } }, clock + 10);
+    expect(read('open').incidents).toHaveLength(1); expect(read('recovered').incidents).toEqual([]);
+    f.setNow(clock + 2); await f.save('work', 'new-grant'); await f.tick(); expect(read('retired').incidents).toHaveLength(1);
+    f.setNow(clock + 3); f.health('auth_failed'); await f.tick(); f.setNow(clock + 4); f.health('ok', true); await f.tick();
+    expect(read('recovered').incidents).toHaveLength(1); expect(read('open').incidents).toEqual([]); expect(read('retired').incidents).toHaveLength(1);
   });
 });

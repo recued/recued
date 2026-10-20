@@ -47,6 +47,28 @@ export interface PreparePreapproval {
   decision_deadline: number;
   dispatch_deadline: number;
 }
+/** Paired owner preparation only. Origin, remaining calls and resource
+ * versions are loaded from the original execution by the host. */
+export interface PreapprovalContinuationRequest {
+  proposal_id: string;
+  idempotency_key: string;
+  activation: Extract<PreapprovalActivation, { kind: 'one_shot' }>;
+  decision_deadline: number;
+  dispatch_deadline: number;
+}
+export interface PreapprovalCompletedOperation {
+  proposal_id: string;
+  member_id: string;
+  label: string;
+  action_ref: string;
+  commit_id: string | null;
+  run_id: string | null;
+}
+export interface PreapprovalContinuationReview {
+  proposal_id: string;
+  future_execution_ref: string;
+  completed: PreapprovalCompletedOperation[];
+}
 export type PreapprovalProposalStatus = 'awaiting_owner' | 'approved' | 'denied'
   | 'cancelled' | 'expired' | 'invalidated';
 /** The operation tiers a reviewed member can carry. Mirrors the runtime's own
@@ -149,6 +171,8 @@ export interface PreapprovalMemberReview {
   connection_id: string | null;
   account_id: string | null;
   resources: PreapprovalResourcePin[];
+  /** Host-authored before/after values for the paired owner's review. */
+  resource_review?: import('./resource-review.js').ResourceReview;
   conditional: boolean;
   eligible: boolean;
   reason: string | null;
@@ -160,6 +184,7 @@ export interface PreapprovalUncoveredCall {
   subtree: boolean;
 }
 export interface PreapprovalReview extends PreapprovalResult {
+  continuation?: PreapprovalContinuationReview;
   review_digest: string;
   challenge: string;
   challenge_expires_at: number;
@@ -176,6 +201,9 @@ export interface PreapprovalReview extends PreapprovalResult {
   interaction_notes: string[];
 }
 export interface PreapprovalMemberOutcome {
+  /** Present only for retained, supported private attempts on this server. */
+  provider_verification?: 'mail';
+  local_receipt?: import('./resource-review.js').LocalMutationReceiptSummary;
   member_id: string;
   parent_member_id: string | null;
   op_id: string;
@@ -187,7 +215,17 @@ export interface PreapprovalMemberOutcome {
   status_message: string | null;
   reconciled_outcome: 'succeeded' | 'failed' | null;
 }
+/** A locator only. Outcomes and provider evidence are always host-derived. */
+export interface PreapprovalReconcileRequest { proposal_id: string; member_id: string }
+export interface PreapprovalReconcileResult {
+  status: 'verified' | 'unknown' | 'unavailable' | 'unsupported';
+  message: string;
+  checked_at: number;
+  evidence_id?: string;
+  inspection: PreapprovalInspection;
+}
 export interface PreapprovalInspection extends PreapprovalResult {
+  recovery?: { eligible: boolean; reason: string | null; successor_proposal_id: string | null };
   retired_review?: { at: number; recipe_name: string };
   /** Full immutable material for an individual owner's get. List pages omit
    * it. No challenge is minted by inspecting an accepted execution. */
@@ -305,6 +343,19 @@ export const parsePreparePreapproval = (value: unknown): PreparePreapproval => {
     && (decision_deadline > activation.run_at || activation.run_at >= dispatch_deadline))) return bad();
   return { idempotency_key: string(row.idempotency_key, 128), subject: parsedSubject,
     activation, decision_deadline, dispatch_deadline };
+};
+export const parsePreapprovalContinuation = (value: unknown): PreapprovalContinuationRequest => {
+  const row = closed(value, ['proposal_id', 'idempotency_key', 'activation', 'decision_deadline', 'dispatch_deadline']);
+  const activation = parsePreapprovalActivation(row.activation);
+  const decision_deadline = integer(row.decision_deadline), dispatch_deadline = integer(row.dispatch_deadline);
+  if (activation.kind !== 'one_shot' || decision_deadline > activation.run_at
+    || activation.run_at >= dispatch_deadline || decision_deadline >= dispatch_deadline) return bad();
+  return { proposal_id: parsePreapprovalId(row.proposal_id, 'pap'), idempotency_key: string(row.idempotency_key, 128),
+    activation, decision_deadline, dispatch_deadline };
+};
+export const parsePreapprovalReconcile = (value: unknown): PreapprovalReconcileRequest => {
+  const row = closed(value, ['proposal_id', 'member_id']);
+  return { proposal_id: parsePreapprovalId(row.proposal_id, 'pap'), member_id: parsePreapprovalId(row.member_id, 'pam') };
 };
 export const parsePreapprovalSelection = (value: unknown): PreapprovalSelection => {
   const row = closed(value, ['proposal_id', 'expected_revision', 'member_ids']);

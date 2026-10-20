@@ -27,7 +27,6 @@ import {
 } from './webclient-sync.js';
 import { Readable, Transform, type TransformCallback } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { discardResponseBody, fetchOriginPinned } from '@recued/ingredients';
 import { verify } from '@recued/release';
 import { fsyncDir, fsyncFile } from '../durable-fs.js';
 import type Database from 'better-sqlite3';
@@ -149,6 +148,10 @@ export const defaultDownload = async (
     throw new TypeError('update download timeout must be a positive safe integer');
   }
 
+  // Database startup also uses this module's snapshot recovery helpers. Keep
+  // the ingredient execution graph out of lightweight CLI profiles until an
+  // update actually downloads an artifact.
+  const { discardResponseBody, fetchOriginPinned } = await import('@recued/ingredients');
   const origin = new URL(url).origin;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);

@@ -14,9 +14,10 @@
  *  whichever `connection.notification.<name>` record the user enrolled
  *  per subtype.
  *
- *  Per-channel record selection: the *first* enrolled
- *  `connection.notification.*` record with matching subtype wins
- *  (newest `updated_at` first per `connectionStore.list({ kind })`).
+ *  Per-channel record selection: the record the owner named for the
+ *  channel in notification settings, else the only one enrolled; several
+ *  with no choice, or a household destination, send nothing (D-325 P31/P43,
+ *  `selectOwnerNotificationConnection`). Never whichever came first.
  *  Re-enrollments pick up immediately because the dispatcher rescans
  *  the store on every call rather than caching at boot — the
  *  notification path is low-frequency (one call per alert fire,
@@ -127,11 +128,15 @@ export interface SubtypeDispatcherDeps {
    *  lives at the channel-boot boundary; this builder treats them
    *  separately by design. */
   subtype: NotificationSubtype;
+  /** D-325 P31/P43 — the owner's named connection among the subtype's rows,
+   *  or why nothing is sent. Absent ⇒ the first row (a harness that composes
+   *  no notification settings). */
+  selectConnection?: (channel: NotificationChannel, rows: readonly ConnectionRow[]) => Promise<ConnectionRow | { reason: string }>;
 }
 
 /** Build one channel's dispatcher closure. The returned closure
- *  rescans the connection store on every call, picks the first
- *  matching `kind: 'notification'` record by subtype, and invokes the
+ *  rescans the connection store on every call, picks the owner's named
+ *  `kind: 'notification'` record of the subtype, and invokes the
  *  connection-notification handler against that record. Channels with
  *  no enrolled connection report `{ ok: false, reason:
  *  'NO_CONNECTION_BOUND' }` rather than throwing — the kernel
@@ -143,10 +148,12 @@ export const buildSubtypeDispatcher = (
   const call = buildSyntheticCall(deps.channel);
   return async (payload: NotificationPayload): Promise<NotificationDispatchResult> => {
     const records = deps.connectionStore.list({ kind: 'notification' });
-    const match = records.find((r): r is ConnectionRow => r.subtype === deps.subtype);
-    if (!match) {
+    const rows = records.filter((r): r is ConnectionRow => r.subtype === deps.subtype);
+    if (rows.length === 0) {
       return { ok: false, reason: 'NO_CONNECTION_BOUND' };
     }
+    const match = deps.selectConnection ? await deps.selectConnection(deps.channel, rows) : rows[0]!;
+    if ('reason' in match) return { ok: false, reason: match.reason };
 
     const params: Record<string, unknown> = {
       text: payload.text,

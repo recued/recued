@@ -60,6 +60,7 @@ export interface GrantEntryRow {
  *  consume it). Keyed by `(contract_id, entry_key)`: `get` / `set` / `clear` operate on
  *  one entry; `listForContract` enumerates a contract's whole grant set. */
 export interface ContractGrantEntryStore {
+  readonly realmDatabase?: ContractStore['realmDatabase'];
   /** The explicit grant value the contract has stored for `(contract_id, entry_key)`:
    *  `true` (granted) / `false` (explicit revoke), or `undefined` when NO row is
    *  persisted (the resolver then applies the author default). A malformed row resolves
@@ -134,6 +135,7 @@ export const createContractGrantEntryStore = (
   contractStore: ContractStore,
 ): ContractGrantEntryStore => {
   const store: ContractGrantEntryStore = {
+    realmDatabase: contractStore.realmDatabase,
     get(contract_id, entry_key) {
       if (!contract_id || !entry_key) return undefined; // an empty id is never a real key
       const row = contractStore.get(CONTRACT_GRANT_SCOPE, [contract_id, entry_key]);

@@ -81,6 +81,7 @@ const wrapRecipeStore = (
   publisherDefault: string,
   now: number,
   currentPackSlug: string,
+  packUpdatePermit?: object,
 ): BulkPackRegistry => {
   return {
     async getInstalled(recipe_id, publisher_id) {
@@ -154,6 +155,7 @@ const wrapRecipeStore = (
         'pair-sync',
         record.installed_at,
         stampedSlug,
+        packUpdatePermit,
       );
       if (record.upstream_version != null && record.upstream_hash != null) {
         store.updateUpstream(
@@ -173,6 +175,8 @@ const wrapRecipeStore = (
  *  and is callable from MCP handlers, future rpc shims, or boot-time
  *  one-click pack provisioning. */
 export interface InstallBulkPackOnServerDeps {
+  /** Internal reviewed-update authority, never read from a wire input. */
+  packUpdatePermit?: object;
   recipeStore: RecipeStore;
   /** D-247 D15.1 — write each recipe's grant row with the install's chosen access
    *  ceiling applied, BEFORE the recipes are saved. The caller closes over the
@@ -289,6 +293,7 @@ export const installBulkPackOnServer = async (
     deps.publisherDefault ?? 'recued-core',
     now,
     input.pack_slug,
+    deps.packUpdatePermit,
   );
 
   // D-139 P6.B — body-content MCP visibility grants. The engine calls

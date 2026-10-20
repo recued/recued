@@ -151,6 +151,29 @@ describe('composeEventTriggers', () => {
     expect(request).not.toHaveProperty('config');
   });
 
+  it('D-215 amendment — a subscriber under the read contract the owner chose always dispatches with its snapshot', async () => {
+    // A contract_id with no snapshot is the outage D-215 removed. The one contract a
+    // background producer may stamp is this owner-selected read contract, and only
+    // with the snapshot that limits the run to it.
+    seedTrigger(store, {}); store.update('t-1', { read_contract_id: 'work-contract' });
+    const grants = { isVerbOpGranted: () => true, isCollectionReadGranted: () => true, isTopicReadGranted: () => true };
+    const bundle = compose({ executeDeps: { recipeStore: { listStored: () => [] }, executorConfig: { manifests: { slugs: () => ['work-entity-get'] } },
+      situationAccess: { context: () => ({ owner: false, spheres: ['professional'], grants }) } } as never })!;
+    handlers[0]!.handler(makeEvent());
+    await bundle.dispatcher.drained();
+    const [, request] = vi.mocked(handleExecute).mock.calls[0]!;
+    expect(request.execution_source).toMatchObject({ channel: 'reactive', actor: 'system', contract_id: 'work-contract' });
+    expect(request.contract_snapshot).toMatchObject({ contract_id: 'work-contract', read_spheres: ['professional'] });
+  });
+
+  it('D-215 amendment — without the reads to build that snapshot, the subscriber does not run', async () => {
+    seedTrigger(store, {}); store.update('t-1', { read_contract_id: 'work-contract' });
+    const bundle = compose()!;
+    handlers[0]!.handler(makeEvent());
+    await bundle.dispatcher.drained();
+    expect(handleExecute).not.toHaveBeenCalled();
+  });
+
   it('D-318 step 5 — the conversation’s mail in another mailbox starts no recipe; that mailbox’s own does', async () => {
     seedTrigger(store, { pattern: 'data.mail.**' });
     const bundle = compose({ isChatConversationRecord: (_slug, record_id) => record_id === 'answer-1' })!;

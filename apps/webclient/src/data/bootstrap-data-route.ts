@@ -1,3 +1,5 @@
+import { mountSpherePlacement, type SpherePlacementCallers } from '../yours/sphere-placement.js';
+import { isContactAnnualDate } from '@recued/contracts';
 import { recordsRecordAddress,type RecordsRecordAddress } from './records-navigation.js';
 import { CONNECTION_NAME_REGEX } from '@recued/contracts';
 import { connectionsFileAuthenticationAddress } from '../connections/connections-navigation.js';
@@ -213,7 +215,8 @@ import {
   type LogsRunAddress,
   type SourceRecordDataTab,
 } from '../shell/route.js';
-import { humanizeRpcError } from '../shell/rpc-error-copy.js';
+import { classifyRpcError, humanizeRpcError } from '../shell/rpc-error-copy.js';
+import { runPageObject, type RunPageContext } from '../shell/run-page-context.js';
 import {
   createMailFactsSurface,
   MAIL_FACTS_ACTION_PREFIX,
@@ -493,6 +496,8 @@ export const DATA_ROUTE_CONTACT_IMPORT_ATTR = 'data-recued-data-contact-import';
 /** Focusable durable receipt for a completed contact-import mutation. */
 export const DATA_ROUTE_CONTACT_IMPORT_RESULT_ATTR =
   'data-recued-data-contact-import-result';
+/** The file preview's dates it could not use as written. */
+export const DATA_ROUTE_CONTACT_IMPORT_DATES_ATTR = 'data-recued-data-contact-import-dates';
 const DATA_ROUTE_IMPORT_TARGET_ATTR = 'data-import-target';
 const DATA_ROUTE_IMPORT_SOURCE_ATTR = 'data-import-source';
 
@@ -507,7 +512,9 @@ const DATA_ROUTE_TIMELINE_ENTITY_ATTR = 'data-recued-data-timeline-entity';
 const SHARED_ACTION_ATTR = 'data-action';
 const DEFAULT_LIMIT = 100;
 
-export type DataOwnItTabId = 'contact' | WorkEntityKind;
+type DataWorkEntityKind = Exclude<WorkEntityKind, 'asset'>;
+export type DataOwnItTabId = 'contact' | DataWorkEntityKind;
+const DATA_WORK_ENTITY_KINDS = WORK_ENTITY_KINDS.filter((kind): kind is DataWorkEntityKind => kind !== 'asset');
 export type DataReceivedTabId = 'form_response';
 /** D-315 §6 — Data → Received → Mail facts. Its own tab type, like `webhook`:
  *  a member of `DATA_RECEIVED_TABS` would be sent to the form-response
@@ -541,7 +548,7 @@ export type DataTabId =
 
 export const DATA_OWN_IT_TABS: readonly DataOwnItTabId[] = [
   'contact',
-  ...WORK_ENTITY_KINDS,
+  ...DATA_WORK_ENTITY_KINDS,
 ];
 
 export const DATA_MIRROR_TABS: readonly MirrorDataKind[] = [
@@ -623,6 +630,9 @@ export type DataWorkEntityUpsertCaller = (
 export type DataTaskMarkDoneCaller = (
   args: WorkEntityTaskMarkDoneRpcRequest,
 ) => Promise<WorkEntityTaskMarkDoneRpcResponse>;
+export type DataCommitmentCloseCaller = (
+  args: { id: string; outcome: 'fulfill' | 'cancel' },
+) => Promise<{ entity: Extract<WorkEntity, { _kind: 'commitment' }> }>;
 export type DataWorkEntityDeleteCaller = (
   args: WorkEntityDeleteRpcRequest,
 ) => Promise<WorkEntityDeleteRpcResponse>;
@@ -664,6 +674,10 @@ export type DataContactUpsertCaller = (
     first_seen?: number;
     phone?: string;
     company?: string;
+    birthday?: string | null;
+    anniversary?: string | null;
+    relationship?: import('@recued/contracts').ContactRelationship | null;
+    privacy_marks?: import('@recued/contracts').ContactPrivacyMark[];
   },
 ) => Promise<{ contact: ContactRecord }>;
 export type DataContactDeleteCaller = (
@@ -895,15 +909,21 @@ export interface BootstrapDataRouteOptions {
   hideHeading?: boolean;
   root: HTMLElement;
   document?: Document;
+  proactiveTodayCaller?: (input: { now: number; before: number }) => Promise<import('@recued/contracts').ProactiveToday>;
   workEntitySourceListCaller?: WorkEntitySourceListCaller;
   workEntityListCaller?: DataWorkEntityListCaller;
   workEntityGetCaller?: DataWorkEntityGetCaller;
+  onOwnerRecordOpened?: (ref: import('@recued/contracts').SituationRef) => void;
   workEntityUpsertCaller?: DataWorkEntityUpsertCaller;
   taskMarkDoneCaller?: DataTaskMarkDoneCaller;
+  commitmentCloseCaller?: DataCommitmentCloseCaller;
   workEntityDeleteCaller?: DataWorkEntityDeleteCaller;
   manageRescheduleLinkCaller?: DataManageRescheduleLinkCaller;
   contactListCaller?: DataContactListCaller;
   contactGetCaller?: DataContactGetCaller;
+  contactHistoryCaller?: (id: string) => Promise<Pick<import('@recued/contracts').YoursSnapshot, 'episodes' | 'occasions'>>;
+  /** D-325 P44 — hide an episode cited on a contact's page (`yours.change` episode.hide). */
+  contactEpisodeHideCaller?: (id: string) => Promise<unknown>;
   /** D-205 item 3 — the per-source value view on the contact detail page. Absent →
    *  the page renders exactly as it did before (winner + its provenance, no
    *  other-sources block). Not a floor for anything: it ADDS a reason to a value the
@@ -1022,6 +1042,7 @@ export interface BootstrapDataRouteOptions {
   uploadDeleteCaller?: DataUploadDeleteCaller;
   uploadConnectFactory?: Upload.UploadConnectFactory;
   filePreviewCallers?: FilePreviewCallers;
+  spheres?: SpherePlacementCallers;
   /** D-172 Half-A "open" — file-content read for the Files tab download. Absent
    *  → no download button (metadata-only drill-down). */
   fileReadCaller?: DataFileReadCaller;
@@ -1112,6 +1133,10 @@ interface ContactDialogValues {
   name: string;
   phone: string;
   company: string;
+  birthday: string;
+  anniversary: string;
+  relationship: string;
+  privacy_marks: string;
 }
 
 interface ContactDialogState {
@@ -1120,6 +1145,9 @@ interface ContactDialogState {
   errors: Partial<Record<keyof ContactDialogValues, string>>;
   submitting: boolean;
   submit_error: string | null;
+  /** The record an edit was filled from. An emptied field clears only what this
+   *  record had; the list row or the open detail may not carry the field. */
+  original?: ContactRecord;
 }
 
 interface TimelineSnapshot {
@@ -1164,6 +1192,10 @@ interface ContactDetailState {
    *  `{matches: []}` — a refusal that renders as absence is a false negative stated
    *  as fact.) */
   contributions_failed: boolean;
+  history?: Pick<import('@recued/contracts').YoursSnapshot, 'episodes' | 'occasions'> | null;
+  history_failed?: boolean;
+  /** D-325 P44 — the server can hide an episode cited here. */
+  history_can_hide?: boolean;
 }
 
 /** D-205 #2b — live progress of a running `contact.merge.scan_now`, assembled
@@ -1207,6 +1239,7 @@ interface ContactScanState {
 }
 
 export interface DataRoute {
+  getRunPageContext(): RunPageContext | null;
   currentView(): SavedDataViewDefinition | null;
   /** Rebind saved settings without reloading records or disposing a draft. */
   bindSavedView(view: SavedDataView): void;
@@ -2245,8 +2278,8 @@ const dataVerificationGuidance = (
 const errMessage = (err: unknown): string =>
   humanizeRpcError(err);
 
-const isWorkEntityTab = (tab: DataTabId): tab is WorkEntityKind =>
-  (WORK_ENTITY_KINDS as readonly string[]).includes(tab);
+const isWorkEntityTab = (tab: DataTabId): tab is DataWorkEntityKind =>
+  (DATA_WORK_ENTITY_KINDS as readonly string[]).includes(tab);
 
 const isMirrorTab = (tab: DataTabId): tab is MirrorDataKind =>
   (DATA_MIRROR_TABS as readonly string[]).includes(tab);
@@ -2285,7 +2318,7 @@ const RUN_ADDRESSABLE_DATA_TABS: readonly DataEntityVerificationTab[] = [
   'contact',
   'form_response',
   'crm',
-  ...WORK_ENTITY_KINDS,
+  ...DATA_WORK_ENTITY_KINDS,
   'annotation',
   'link',
   'shared',
@@ -2499,7 +2532,9 @@ const formDefinitionForKind = (
     ? { ...definition, fields: definition.fields.filter(
         (field) => field.name !== 'done' && field.name !== 'completed_at',
       ) }
-    : definition;
+    : kind === 'commitment'
+      ? { ...definition, fields: definition.fields.filter(field => field.name !== 'lifecycle_state') }
+      : definition;
   return allowEmptyRefArrays(editable);
 };
 
@@ -2728,6 +2763,7 @@ const contactValuesFromRecord = (contact: ContactRecord): ContactDialogValues =>
   name: contact.name ?? '',
   phone: contact.phone ?? '',
   company: contact.company ?? '',
+  birthday: contact.birthday ?? '', anniversary: contact.anniversary ?? '', relationship: contact.relationship ?? '', privacy_marks: (contact.privacy_marks ?? []).join(', '),
 });
 
 const emptyContactValues = (): ContactDialogValues => ({
@@ -2735,10 +2771,11 @@ const emptyContactValues = (): ContactDialogValues => ({
   name: '',
   phone: '',
   company: '',
+  birthday: '', anniversary: '', relationship: '', privacy_marks: '',
 });
 
 const contactDialogFingerprint = (values: ContactDialogValues): string =>
-  JSON.stringify([values.email, values.name, values.phone, values.company]);
+  JSON.stringify(values);
 
 const validateContactDialog = (
   values: ContactDialogValues,
@@ -2750,6 +2787,7 @@ const validateContactDialog = (
   } else if (!email.includes('@')) {
     errors.email = 'An email address needs an @ in it.';
   }
+  for (const key of ['birthday', 'anniversary'] as const) if (values[key].trim() && !isContactAnnualDate(values[key].trim())) errors[key] = 'Use YYYY-MM-DD or --MM-DD for an unknown year.';
   return errors;
 };
 
@@ -2759,6 +2797,7 @@ const hasContactErrors = (
 
 const contactUpsertArgs = (
   values: ContactDialogValues,
+  previous?: ContactRecord,
 ): Parameters<DataContactUpsertCaller>[0] => {
   const out: Parameters<DataContactUpsertCaller>[0] = {
     email: values.email.trim(),
@@ -2769,6 +2808,12 @@ const contactUpsertArgs = (
   if (name !== undefined) out.name = name;
   if (phone !== undefined) out.phone = phone;
   if (company !== undefined) out.company = company;
+  // An emptied date clears the one the contact had; leaving it out would keep it.
+  if (values.birthday.trim() || previous?.birthday) out.birthday = values.birthday.trim() || null;
+  if (values.anniversary.trim() || previous?.anniversary) out.anniversary = values.anniversary.trim() || null;
+  if (values.relationship.trim() || previous?.relationship) out.relationship = values.relationship.trim() as import('@recued/contracts').ContactRelationship || null;
+  const marks = values.privacy_marks.split(',').map(mark => mark.trim()).filter(Boolean) as import('@recued/contracts').ContactPrivacyMark[];
+  if (marks.length || previous?.privacy_marks?.length) out.privacy_marks = marks;
   return out;
 };
 
@@ -2986,6 +3031,17 @@ const renderContactDialog = (
               dialog.submitting,
               error('company'),
             )}
+            ${renderContactField('birthday', 'Birthday (YYYY-MM-DD or --MM-DD)', dialog.values.birthday, dialog.submitting, error('birthday'))}
+            ${renderContactField('anniversary', 'Anniversary (YYYY-MM-DD or --MM-DD)', dialog.values.anniversary, dialog.submitting, error('anniversary'))}
+            <label>Relationship
+              <select ${DATA_ROUTE_CONTACT_FIELD_ATTR}="relationship" aria-label="Relationship" ${dialog.submitting ? 'disabled' : ''}>
+                ${[['', 'Unspecified'], ['family', 'Family'], ['friend', 'Friend'], ['colleague', 'Colleague'], ['client', 'Client']].map(([value, title]) => `<option value="${e(value!)}" ${dialog.values.relationship === value ? 'selected' : ''}>${e(title!)}</option>`).join('')}
+              </select>
+            </label>
+            <fieldset><legend>Exclude from automatic suggestions</legend>
+              ${[['hidden', 'Hidden'], ['deceased', 'Deceased'], ['former_partner', 'Former partner']].map(([mark, title]) => `<label><input type="checkbox" ${DATA_ROUTE_CONTACT_FIELD_ATTR}="privacy_marks" data-contact-privacy-mark="${mark}" value="${mark}" ${dialog.values.privacy_marks.split(',').map(value => value.trim()).includes(mark!) ? 'checked' : ''} ${dialog.submitting ? 'disabled' : ''}>${title}</label>`).join('')}
+            </fieldset>
+            <p>Hidden, deceased and former-partner contacts are excluded from automatic birthday, occasion and memory suggestions. These marks are set by you.</p>
           </div>
           ${submitError}
           <footer class="data-dialog-actions">
@@ -3196,6 +3252,9 @@ const contactDetailFields = (contact: ContactRecord): ContactDetailField[] => {
       : undefined,
   );
   push('birthday', 'Birthday', contact.birthday);
+  push('anniversary', 'Anniversary', contact.anniversary);
+  push('relationship', 'Relationship', contact.relationship);
+  push('privacy_marks', 'Privacy marks', contact.privacy_marks?.join(', '));
   // ⛔ `photo` is a remote URL as the VENDOR supplied it, and it renders as TEXT
   // on purpose. Do NOT "improve" this into an <img src={photo}> — D-192 C-2's
   // North star is that avatar bytes are NEVER fetched, and an <img> would beacon
@@ -3399,6 +3458,13 @@ const renderContactDetailView = (
       ${identity}
       <h3 class="data-subsection-title">Activity</h3>
       ${timeline}
+      ${state.history !== undefined ? `<section data-contact-proactive-history><h3 class="data-subsection-title">Occasions and recorded episodes</h3>
+        ${state.history_failed ? '<p role="status">This history could not be read. Reopen the contact to retry.</p>' : state.history === null ? '<p>Loading recorded history…</p>'
+          : `<ul>${state.history.occasions.map(row => `<li><a href="#yours/occasions/occasion/${e(encodeURIComponent(row.id))}">${e(row.title)}</a> · ${e(row.month_day)}</li>`).join('')}
+            ${state.history.episodes.map(row => `<li data-contact-episode="${e(row.id)}"><a href="#yours/episodes/episode/${e(encodeURIComponent(row.id))}">${e(row.title)}</a> · ${e(new Date(row.when.from).toLocaleDateString())}
+              <a href="#yours/episodes/episode/${e(encodeURIComponent(row.id))}/correct" aria-label="Correct ${e(row.title)}">Correct</a>
+              ${state.history_can_hide ? `<button type="button" ${DATA_ROUTE_ACTION_ATTR}="hide-contact-episode" data-episode-id="${e(row.id)}" aria-label="Hide ${e(row.title)}">Hide</button>` : ''}</li>`).join('')}</ul>
+            ${!state.history.occasions.length && !state.history.episodes.length ? '<p>No recorded occasions or episodes for this contact.</p>' : ''}`}</section>` : ''}
     </section>
   `;
 };
@@ -3693,6 +3759,14 @@ const renderFileImportPanel = (state: ContactImportState): string => {
         : `<details class="data-file-import-errors">
              <summary>${e(`${plan.errors.length} row${plan.errors.length === 1 ? '' : 's'} could not be read`)}</summary>
              <ul role="list">${plan.errors.map((x) => `<li>${e(x)}</li>`).join('')}</ul>
+           </details>`}
+
+      ${(plan.date_notes ?? []).length === 0
+        ? ''
+        // D-325 — the person imports, but a date that will not remind them is named.
+        : `<details class="data-file-import-dates" ${DATA_ROUTE_CONTACT_IMPORT_DATES_ATTR}>
+             <summary>${e(`${plan.date_notes!.length} date${plan.date_notes!.length === 1 ? '' : 's'} could not be used as written`)}</summary>
+             <ul role="list">${plan.date_notes!.map((x) => `<li>${e(x)}</li>`).join('')}</ul>
            </details>`}
 
       ${plan.changes.length === 0
@@ -4141,6 +4215,7 @@ const renderContactSurface = (
   canImport: boolean,
   canUploadFile: boolean,
   now: number,
+  loadedCount?: number,
 ): string => {
   if (contactScan !== null) {
     return renderContactScanView(contactScan, canScan, now);
@@ -4219,7 +4294,7 @@ const renderContactSurface = (
     ${renderLoadMoreFooter({
       marker: DATA_ROUTE_CONTACT_LOAD_MORE_ATTR,
       action: 'load-more-contacts',
-      loaded: contacts.length,
+      loaded: loadedCount ?? contacts.length,
       total,
       loadingMore,
     })}
@@ -4889,6 +4964,8 @@ const renderWorkEntitySurface = (
    *  section is then omitted rather than asserting an empty past. */
   historyHtml: string,
   taskCompletion?: { done: boolean; can_change: boolean; busy?: boolean; notice?: string },
+  commitmentLifecycle?: { state: string; can_change: boolean },
+  loadedCount?: number,
 ): string => {
   const options = [...sourceOptionsForKind(sources, state.kind)];
   if (state.selected_source_id !== null && !options.some((option) => option.id === state.selected_source_id)) {
@@ -4968,7 +5045,7 @@ const renderWorkEntitySurface = (
   const footerHtml = renderLoadMoreFooter({
     marker: DATA_ROUTE_WORK_ENTITY_LOAD_MORE_ATTR,
     action: 'load-more-work-entities',
-    loaded: entities.length,
+    loaded: loadedCount ?? entities.length,
     total,
     loadingMore,
   });
@@ -4990,6 +5067,7 @@ const renderWorkEntitySurface = (
       : {}),
     discard_guard: discardGuardOpen,
     ...(taskCompletion !== undefined ? { task_completion: taskCompletion } : {}),
+    ...(commitmentLifecycle !== undefined ? { commitment_lifecycle: commitmentLifecycle } : {}),
     ...(workEntityHistoryHtml !== '' ? { history_html: workEntityHistoryHtml } : {}),
     ...(footerHtml !== '' ? { footer_html: footerHtml } : {}),
   });
@@ -5187,6 +5265,9 @@ export const bootstrapDataRoute = (
     actionAttr: DATA_ROUTE_ACTION_ATTR,
     render: () => render(),
     onAddressChange: () => syncDataHash(),
+    // A bill or delivery opened by its address, as Today links to it, is opened as a
+    // booking's page is: the server learns trips from it (D-325 §8).
+    onThingOpened: id => opts.onOwnerRecordOpened?.({ collection: 'mail_fact', id }),
   });
   // D-324 — Data → Owned → Reminders keeps its own state, as Mail facts does.
   const remindersSurface = createRemindersSurface({
@@ -5396,6 +5477,17 @@ export const bootstrapDataRoute = (
   // flow-20 — contact drill-down timeline (own-it Contacts tab), separate
   // from the mirror-tab `timeline` above.
   let contactDetail: ContactDetailState | null = null;
+  let sphereControl: ReturnType<typeof mountSpherePlacement> | undefined;
+  let dataSphere: 'all' | 'personal' | 'professional' | 'unsorted' = 'all';
+  let facetKey = ''; let facetGeneration = 0; let facetsLoading = false; let facetError = '';
+  // An older server has no sphere placements: the filter is left out, not reported.
+  let spheresUnsupported = false;
+  const facetPlacements = new Map<string, import('@recued/contracts').YoursSpherePlacement>();
+  const facetId = (ref: import('@recued/contracts').SituationRef) => JSON.stringify([ref.collection, ref.id]);
+  const facetIncludes = (ref: import('@recued/contracts').SituationRef) => {
+    if (dataSphere === 'all') return true; const value = facetPlacements.get(facetId(ref));
+    return !!value && (dataSphere === 'unsorted' ? !value.sphere : value.sphere === dataSphere);
+  };
   let loadingContactDetail = false;
   let pendingContactDetailFocusEmail: string | null = null;
   let contactEditOpenSeq = 0;
@@ -5560,6 +5652,7 @@ export const bootstrapDataRoute = (
 
   let explorerRecords: CollectionRecord[] = [];
   let explorerDetail: CollectionExplorerDetailState | null = null;
+  let explorerLiveRefreshPending = false;
   // D-210 step 3 — the open calendar record's timeline (its move history:
   // D-120 write links + the D-119 `scheduled-from` origin edge). Fetched
   // lazily on open, calendar-only for now (the explorer's detailTimelineHtml
@@ -6129,7 +6222,7 @@ export const bootstrapDataRoute = (
         }),
       ]) } : {}),
       selectedSlug: explorerSelectedSlug,
-      records: explorerRecords,
+      records: (tab === 'calendar' || tab === 'mail') && explorerSelectedSlug ? explorerRecords.filter(row => facetIncludes({ collection: tab, id: `${explorerSelectedSlug}:${row.record_id}` })) : explorerRecords,
       detail,
       loading: explorerLoading,
       ...(explorerError !== undefined ? { error: explorerError } : {}),
@@ -6291,6 +6384,29 @@ export const bootstrapDataRoute = (
   };
 
   const render = (): void => {
+    const canFacet = !spheresUnsupported && opts.spheres?.readMany && activeLens === 'data' && (isWorkEntityTab(activeTab) || ['contact', 'calendar', 'mail'].includes(activeTab));
+    // A filter over no loaded records filters nothing, so it shows once there are
+    // records (or while a chosen sphere needs a way back to all).
+    let facetHasRecords = false;
+    if (canFacet) {
+      const refs = isWorkEntityTab(activeTab) ? workEntities.map(row => ({ collection: row._kind, id: row.id }))
+        : activeTab === 'contact' ? contacts.map(row => ({ collection: 'contact', id: row.contact_id ?? row.email }))
+        : explorerSelectedSlug ? explorerRecords.map(row => ({ collection: activeTab, id: `${explorerSelectedSlug}:${row.record_id}` })) : [];
+      facetHasRecords = refs.length > 0;
+      const key = JSON.stringify([activeTab, refs]);
+      if (key !== facetKey) {
+        facetKey = key; const generation = ++facetGeneration; facetsLoading = true; facetError = '';
+        void (async () => {
+          const placements: Awaited<ReturnType<NonNullable<SpherePlacementCallers['readMany']>>> = [];
+          for (let offset = 0; offset < refs.length; offset += 500) placements.push(...await opts.spheres!.readMany!(refs.slice(offset, offset + 500)));
+          if (disposed || generation !== facetGeneration) return; placements.forEach(value => facetPlacements.set(facetId(value.ref), value));
+        })().catch(error => { if (disposed || generation !== facetGeneration) return;
+          if (classifyRpcError(error).code === 'unknown_method') { spheresUnsupported = true; dataSphere = 'all'; } else facetError = 'Sphere placements could not be read. This filter may be incomplete.'; })
+          // Under "All spheres" the placements change nothing on screen until a sphere is
+          // picked, so they load quietly: a repaint here took focus from a just-saved row.
+          .finally(() => { if (!disposed && generation === facetGeneration) { facetsLoading = false; if (dataSphere !== 'all' || facetError || spheresUnsupported) render(); } });
+      }
+    }
     if (filePreviewRecord && (activeLens !== 'data' || activeTab !== 'files' || explorerDetail?.record_id !== filePreviewRecord.id
       || explorerSelectedSlug !== filePreviewRecord.slug)) { filePreviewAbort?.abort(); filePreviewRecord = null; }
     if (fileChatRecord && (activeLens !== 'data' || activeTab !== 'files' || explorerDetail?.record_id !== fileChatRecord.id
@@ -6794,7 +6910,7 @@ export const bootstrapDataRoute = (
     }
     const body = activeTab === 'contact'
       ? renderContactSurface(
-          contacts,
+          contacts.filter(row => facetIncludes({ collection: 'contact', id: row.contact_id ?? row.email })),
           contactRollups,
           contactTotal,
           loadingMoreContacts,
@@ -6812,6 +6928,7 @@ export const bootstrapDataRoute = (
           canImport,
           canUploadFile,
           (opts.now ?? Date.now)(),
+          contacts.length,
         )
       : isReceivedTab(activeTab)
         ? renderFormResponseSurface(
@@ -6839,7 +6956,7 @@ export const bootstrapDataRoute = (
             workEntityState,
             sources,
             defaultsByKind,
-            workEntities,
+            workEntities.filter(row => facetIncludes({ collection: row._kind, id: row.id })),
             workEntityTotal,
             loadingMoreWorkEntities,
             pendingWorkEntityDialogOpen?.kind === activeTab
@@ -6895,6 +7012,15 @@ export const bootstrapDataRoute = (
                   ? { notice: 'A task change is waiting for source confirmation.' }
                   : taskCompletionNotice !== null ? { notice: taskCompletionNotice } : {}) };
             })(),
+            workEntityDialogEntity?._kind === 'commitment' ? {
+              state: workEntityDialogEntity.lifecycle_state,
+              can_change: opts.commitmentCloseCaller !== undefined
+                && workEntityDialogEntity.sync_state === 'live' && workEntityDialogEntity.deleted_at == null
+                && sources.some(source => source.id === workEntityDialogEntity?.source_id && source.top_tier_kind === 'commitment' && source.write_capable && source.sync_posture !== 'read_through')
+                && (workEntityDialogEntity.lifecycle_state === 'pending'
+                  || (workEntityDialogEntity.lifecycle_state === 'expired' && workEntityDialogEntity.expiry_policy !== 'strict_expire')),
+            } : undefined,
+            workEntities.length,
           )
         : activeTab === 'search'
           ? renderUniversalSearch({
@@ -7081,6 +7207,9 @@ export const bootstrapDataRoute = (
           )}
       ${loading && activeLens !== 'memory' ? '<p class="data-loading">Loading data...</p>' : ''}
       ${renderErrors(errors)}
+      ${canFacet && (facetHasRecords || dataSphere !== 'all') ? `<label>Sphere (loaded records) <select data-data-sphere aria-label="Data sphere" style="min-height:44px">${[['all', 'All spheres'], ['personal', 'Personal'], ['professional', 'Work'], ['unsorted', 'Unsorted']].map(([value, title]) => `<option value="${value}"${value === dataSphere ? ' selected' : ''}>${title}</option>`).join('')}</select></label>
+        ${dataSphere === 'all' ? '' : '<p>This filter applies to loaded records. Load more to find further matches.</p>'}
+        ${facetsLoading && dataSphere !== 'all' ? '<p role="status">Reading sphere placements…</p>' : ''}${facetError ? `<p role="status">${e(facetError)}</p>` : ''}` : ''}
       ${activeLens === 'memory'
         ? lensBody
         : `<div ${DATA_ROUTE_TAB_PANEL_ATTR} id="${DATA_ROUTE_TAB_PANEL_ID}"
@@ -7111,7 +7240,24 @@ export const bootstrapDataRoute = (
     } else {
       routeRoot.innerHTML = markup;
     }
+    sphereControl?.dispose(); sphereControl = undefined;
+    if (opts.spheres && activeLens === 'data') {
+      const workId = isWorkEntityTab(activeTab) && workEntityState.dialog?.mode === 'edit' ? workEntityState.dialog.entity_id : activeTab === 'booking' ? bookingDetailId : null;
+      const ref = activeTab === 'contact' && contactDetail?.contact
+        ? { collection: 'contact', id: contactDetail.contact.contact_id ?? contactDetail.email }
+        : workId ? { collection: activeTab, id: workId }
+        : (activeTab === 'calendar' || activeTab === 'mail') && explorerDetail?.record && explorerSelectedSlug
+          ? { collection: activeTab, id: `${explorerSelectedSlug}:${explorerDetail.record_id}` } : null;
+      // In a dialog the control sits above its actions, so Save stays the last stop of its focus loop.
+      const dialog = routeRoot.querySelector<HTMLElement>('dialog,[role="dialog"]');
+      const actions = dialog?.querySelector<HTMLElement>('.work-entity-dialog-actions, .data-dialog-actions') ?? null;
+      if (ref) sphereControl = mountSpherePlacement(actions?.parentElement ?? dialog ?? routeRoot, ref, {
+        read: opts.spheres.read,
+        change: async input => { opaqueMutationsInFlight += 1; try { const result = await opts.spheres!.change(input); facetKey = ''; return result; } finally { opaqueMutationsInFlight -= 1; } },
+      }, actions);
+    }
     renderedActiveTab = activeTab;
+    if (activeElement?.hasAttribute?.('data-data-sphere')) routeRoot.querySelector<HTMLSelectElement>('[data-data-sphere]')?.focus();
     if (opts.savedView !== undefined && currentView() !== null
       && (activeLens === 'memory' ? !memoryLoading : !loading && !explorerLoading && !recordsState.loading)) {
       syncDataHash();
@@ -8208,6 +8354,7 @@ export const bootstrapDataRoute = (
    *  one whole-collection `list` (no instances), entries mapped into the explorer
    *  shape. The list ships full records, so there is no separate lazy `get`. */
   const loadSingleCollection = async (tab: DataSingleCollectionTabId): Promise<void> => {
+    explorerLiveRefreshPending = false;
     const seq = ++explorerSeq;
     explorerCollection = tab as CanonicalCollectionName; // schema key === tab id
     explorerInstances = [];
@@ -8327,6 +8474,7 @@ export const bootstrapDataRoute = (
    *  for a pick), then fetch its records. Called from `refreshActive`; the outer
    *  generation guard there paints the result. */
   const loadExplorer = async (tab: DataTabId): Promise<void> => {
+    explorerLiveRefreshPending = false;
     if (isSingleCollectionTab(tab)) return loadSingleCollection(tab);
     const platform = EXPLORER_TAB_PLATFORM[tab];
     const seq = ++explorerSeq;
@@ -8704,6 +8852,10 @@ export const bootstrapDataRoute = (
       (row ?? source ?? tab)?.focus?.({ preventScroll: true });
     }
     syncDataHash(); // back to the list → `#data/<tab>`
+    if (explorerLiveRefreshPending) {
+      explorerLiveRefreshPending = false;
+      runLiveRefresh();
+    }
   };
 
   const validatedRecordsView = (namespace: RecordsNamespaceView, kind: string) => {
@@ -11092,7 +11244,7 @@ export const bootstrapDataRoute = (
       `input[${SHARED_ACTION_ATTR}="search-work-entities"]`
       + `[data-kind="${origin.kind}"]`,
     ) ?? null;
-    const tab = collectionNavigationTarget(origin.kind);
+    const tab = origin.kind === 'asset' ? null : collectionNavigationTarget(origin.kind);
     const target = exact ?? search ?? tab;
     target?.focus?.({ preventScroll: true });
     target?.scrollIntoView?.({ block: 'nearest' });
@@ -11255,6 +11407,12 @@ export const bootstrapDataRoute = (
     kind: WorkEntityKind,
     id: string,
   ): Promise<void> => {
+    if (kind === 'asset') {
+      const view = doc.defaultView;
+      if (view) view.location.hash = `#yours/asset/${encodeURIComponent(id)}`;
+      return;
+    }
+
     if (
       pendingWorkEntityDialogOpen?.kind === kind
       && pendingWorkEntityDialogOpen.id === id
@@ -11329,6 +11487,7 @@ export const bootstrapDataRoute = (
     render();
     captureWorkEntityDialogBaseline();
     focusWorkEntityDialog();
+    if (kind === 'booking') opts.onOwnerRecordOpened?.({ collection: kind, id });
     // D-267 — the provenance feed, fetched AFTER the dialog is up and never
     // awaited by the open path: the editor is the point and must not wait on a
     // history read. ⚠ Guarded by the same `seq` as the open, so a feed arriving
@@ -11400,6 +11559,7 @@ export const bootstrapDataRoute = (
         loadingBookingDetail = false;
         syncDataHash();
         render();
+        if (bookingDetail?.entity) opts.onOwnerRecordOpened?.({ collection: 'booking', id });
       }
     }
   };
@@ -11595,6 +11755,46 @@ export const bootstrapDataRoute = (
     const error = routeRoot.querySelector<HTMLElement>('.work-entity-dialog-submit-error');
     error?.focus?.({ preventScroll: true });
     error?.scrollIntoView?.({ block: 'nearest' });
+  };
+
+  const changeCommitmentLifecycle = async (outcome: 'fulfill' | 'cancel'): Promise<void> => {
+    const dialog = workEntityState.dialog;
+    const opened = workEntityDialogEntity;
+    const close = opts.commitmentCloseCaller;
+    if (disposed || activeLens !== 'data' || activeTab !== 'commitment' || dialog?.mode !== 'edit'
+      || dialog.submitting || workEntityDiscardGuardOpen || opened?._kind !== 'commitment'
+      || opened.id !== dialog.entity_id || !close) return;
+    if (hasUnsavedWorkEntityDialog()) {
+      workEntityState = setDialogSubmitErrorTransition(workEntityState, 'Save or discard your edits before closing the commitment.');
+      render(); focusTaskCompletionError(); return;
+    }
+    const seq = workEntityDialogOpenSeq;
+    const stillHere = (): boolean => !disposed && seq === workEntityDialogOpenSeq
+      && activeTab === 'commitment' && workEntityState.dialog?.entity_id === opened.id;
+    workEntityState = setDialogSubmittingTransition(workEntityState, true);
+    workEntityState = setDialogSubmitErrorTransition(workEntityState, null);
+    opaqueMutationsInFlight += 1;
+    render();
+    try {
+      const { entity } = await close({ id: opened.id, outcome });
+      if (!stillHere()) return;
+      if (entity._kind !== 'commitment' || entity.id !== opened.id
+        || entity.lifecycle_state !== (outcome === 'fulfill' ? 'fulfilled' : 'cancelled')) {
+        throw new Error('The server did not confirm the close. Reopen the commitment to check it.');
+      }
+      workEntityDialogEntity = entity;
+      workEntityState = openEditDialogTransition(workEntityState, entity, getCanonicalSchema('commitment'));
+      workEntityDialogOriginal = { ...(workEntityState.dialog?.values ?? {}) };
+      render(); captureWorkEntityDialogBaseline();
+      routeRoot.querySelector<HTMLElement>('[data-commitment-status]')?.focus?.({ preventScroll: true });
+      pendingLoadPromise = refreshActive(true);
+      await pendingLoadPromise;
+    } catch (error) {
+      if (!stillHere()) return;
+      workEntityState = setDialogSubmittingTransition(workEntityState, false);
+      workEntityState = setDialogSubmitErrorTransition(workEntityState, errMessage(error));
+      render(); focusTaskCompletionError();
+    } finally { opaqueMutationsInFlight -= 1; }
   };
 
   const changeTaskCompletion = async (done: boolean): Promise<void> => {
@@ -12024,6 +12224,7 @@ export const bootstrapDataRoute = (
     contactDialog = {
       mode: 'edit',
       values: contactValuesFromRecord(contact),
+      original: contact,
       errors: {},
       submitting: false,
       submit_error: null,
@@ -12056,7 +12257,10 @@ export const bootstrapDataRoute = (
       const input = routeRoot.querySelector(
         `[${DATA_ROUTE_CONTACT_FIELD_ATTR}="${key}"]`,
       ) as HTMLInputElement | null;
-      if (input !== null) next[key] = input.value;
+      if (key === 'privacy_marks') {
+        if (typeof routeRoot.querySelectorAll === 'function') next[key] = [...routeRoot.querySelectorAll<HTMLInputElement>('[data-contact-privacy-mark]')].filter(control => control.checked).map(control => control.value).join(', ');
+      }
+      else if (input !== null) next[key] = input.value;
     }
     contactDialog = { ...contactDialog, values: next };
   };
@@ -12076,7 +12280,7 @@ export const bootstrapDataRoute = (
       contactDialog = { ...contactDialog, errors: dialogErrors };
       render();
       const firstInvalidField = (
-        ['email', 'name', 'phone', 'company'] as const
+        ['email', 'name', 'phone', 'company', 'birthday', 'anniversary', 'relationship', 'privacy_marks'] as const
       ).find((field) => dialogErrors[field] !== undefined);
       if (firstInvalidField !== undefined) {
         focusContactDialogField(firstInvalidField);
@@ -12084,11 +12288,12 @@ export const bootstrapDataRoute = (
       return;
     }
     const submittedValues = { ...contactDialog.values };
+    const previous = contactDialog.original ?? contactDetail?.contact ?? contacts.find(row => row.email === submittedValues.email);
     contactDialog = { ...contactDialog, submitting: true, submit_error: null };
     render();
     const editedEmail = submittedValues.email.trim();
     try {
-      await opts.contactUpsertCaller(contactUpsertArgs(submittedValues));
+      await opts.contactUpsertCaller(contactUpsertArgs(submittedValues, previous));
       if (disposed) return;
       contactDialog = null;
       retireContactDialogDraft();
@@ -12861,6 +13066,10 @@ export const bootstrapDataRoute = (
     ]);
     // Drop all three if the user navigated away / opened another contact in flight.
     if (disposed || contactDetail?.email !== trimmed) return;
+    // D-325 — a reference by contact id (Today, an occasion) opens the same page
+    // by the contact's email, so its timeline and address are the usual ones.
+    const byId = contactResult.ok ? contactResult.contact : null;
+    if (!trimmed.includes('@') && byId?.email && byId.email !== trimmed) { void openContactDetail(byId.email); return; }
 
     const nextErrors: DataLoadErrors = { ...errors };
     if (!contactResult.ok) nextErrors.contact_detail = contactResult.message;
@@ -12872,10 +13081,46 @@ export const bootstrapDataRoute = (
       response: timelineResult.ok ? timelineResult.response : null,
       contributions: contributionsResult.ok ? contributionsResult.contributions : [],
       contributions_failed: !contributionsResult.ok,
+      // The recorded history is loading from the first paint, so nothing repaints
+      // the detail between a restored focus and the history landing.
+      ...(opts.contactHistoryCaller && contactResult.ok && contactResult.contact ? { history: null, history_can_hide: opts.contactEpisodeHideCaller !== undefined } : {}),
     };
     loadingContactDetail = false;
     errors = nextErrors;
     render();
+    if (opts.contactHistoryCaller && contactDetail.contact) {
+      const current = contactDetail;
+      // The history lands after the page has settled (a save has already put focus
+      // back on Edit), so its repaint returns focus to the same control.
+      const paintKeepingFocus = () => {
+        const active = doc.activeElement as HTMLElement | null; const action = active?.getAttribute?.(DATA_ROUTE_ACTION_ATTR);
+        const email = active?.getAttribute?.(DATA_ROUTE_CONTACT_EMAIL_ATTR);
+        render();
+        if (action && active && !active.isConnected) routeRoot.querySelector<HTMLElement>(`[${DATA_ROUTE_ACTION_ATTR}="${CSS.escape(action)}"]`
+          + (email ? `[${DATA_ROUTE_CONTACT_EMAIL_ATTR}="${CSS.escape(email)}"]` : ''))?.focus({ preventScroll: true });
+      };
+      void opts.contactHistoryCaller(current.contact!.contact_id ?? current.contact!.email).then(history => {
+        if (disposed || contactDetail !== current || activeTab !== 'contact') return; current.history = history; paintKeepingFocus();
+      }).catch(error => { if (!disposed && contactDetail === current && activeTab === 'contact') {
+        if (classifyRpcError(error).code === 'unknown_method') delete current.history; else current.history_failed = true; paintKeepingFocus(); } });
+    }
+  };
+  /** D-325 P44 — Hide where an episode is cited: it leaves this page and every list,
+   * and is named under Memory exclusions in Yours → Episodes, where it can come back. */
+  const hideContactEpisode = async (id: string): Promise<void> => {
+    const current = contactDetail;
+    if (!current?.contact || !opts.contactEpisodeHideCaller || !opts.contactHistoryCaller) return;
+    try {
+      await opts.contactEpisodeHideCaller(id);
+      const history = await opts.contactHistoryCaller(current.contact.contact_id ?? current.contact.email);
+      if (disposed || contactDetail !== current) return;
+      current.history = history; render();
+      routeRoot.querySelector<HTMLElement>('[data-contact-proactive-history] h3')?.setAttribute('tabindex', '-1');
+      routeRoot.querySelector<HTMLElement>('[data-contact-proactive-history] h3')?.focus({ preventScroll: true });
+    } catch (error) {
+      if (disposed || contactDetail !== current) return;
+      errors = { ...errors, contacts: errMessage(error) }; render();
+    }
   };
 
   // D-172 Half-A "open" — turn a `data.file.read` result into a browser save.
@@ -14157,6 +14402,11 @@ export const bootstrapDataRoute = (
       if (email !== null) void openEditContactDialog(email);
       return;
     }
+    if (action === 'hide-contact-episode') {
+      const id = target.getAttribute('data-episode-id');
+      if (id !== null) void hideContactEpisode(id);
+      return;
+    }
     if (action === 'open-contact-detail') {
       const email = target.getAttribute(DATA_ROUTE_CONTACT_EMAIL_ATTR);
       if (email !== null) void openContactDetail(email);
@@ -14535,6 +14785,10 @@ export const bootstrapDataRoute = (
       pendingLoadPromise = changeTaskCompletion(action === 'complete-work-entity-task');
       return;
     }
+    if (action === 'fulfill-work-entity-commitment' || action === 'cancel-work-entity-commitment') {
+      pendingLoadPromise = changeCommitmentLifecycle(action === 'fulfill-work-entity-commitment' ? 'fulfill' : 'cancel');
+      return;
+    }
   };
 
   const onInput = (ev: Event): void => {
@@ -14669,6 +14923,12 @@ export const bootstrapDataRoute = (
         }
         return;
       }
+      const privacyMark = target.getAttribute('data-contact-privacy-mark');
+      if (privacyMark && contactDialog && !contactDialog.submitting) {
+        const marks = new Set(contactDialog.values.privacy_marks.split(',').map(value => value.trim()).filter(Boolean));
+        if ((target as HTMLInputElement).checked) marks.add(privacyMark); else marks.delete(privacyMark);
+        contactDialog = { ...contactDialog, values: { ...contactDialog.values, privacy_marks: [...marks].join(', ') } }; return;
+      }
       const contactField = target.getAttribute(DATA_ROUTE_CONTACT_FIELD_ATTR) as keyof ContactDialogValues | null;
       if (
         contactDialog !== null
@@ -14728,6 +14988,9 @@ export const bootstrapDataRoute = (
   const onChange = (ev: Event): void => {
     const target = ev.target as HTMLSelectElement | null;
     if (target === null || typeof target.getAttribute !== 'function') return;
+    if (target.getAttribute('data-data-sphere') !== null && ['all', 'personal', 'professional', 'unsorted'].includes(target.value)) {
+      dataSphere = target.value as typeof dataSphere; facetKey = ''; render(); routeRoot.querySelector<HTMLSelectElement>('[data-data-sphere]')?.focus(); return;
+    }
     if (target.getAttribute(DATA_ROUTE_COLLECTION_PICKER_ATTR) !== null) {
       const next = target.value;
       // A protected edit may refuse the switch. Keep the current collection
@@ -15075,6 +15338,13 @@ export const bootstrapDataRoute = (
   let liveRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   const runLiveRefresh = (): void => {
     if (disposed) return;
+    // A late upload/warehouse notification must not dismiss a record the
+    // owner just opened, or erase the selection captured by the Run palette.
+    if (activeLens === 'data' && (isExplorerTab(activeTab) || isSingleCollectionTab(activeTab))
+      && explorerDetail !== null) {
+      explorerLiveRefreshPending = true;
+      return;
+    }
     // Import publishes a warehouse event before its receipt reaches this UI.
     // Keep that event (and unrelated writes) from retiring the active handoff.
     // A remote page walk or search also stays stable until an explicit refresh.
@@ -15225,6 +15495,36 @@ export const bootstrapDataRoute = (
 
   return {
     currentView,
+    getRunPageContext: () => {
+      if (disposed || activeLens !== 'data') return null;
+      let selected: ReturnType<typeof runPageObject> | null = null;
+      if (activeTab === 'records') {
+        const { detail, selectedNamespace, selectedKind } = recordsState;
+        if (!recordsState.loading && recordsState.error === undefined
+          && detail && selectedNamespace && selectedKind) {
+          selected = runPageObject(selectedKind, detail.id, detail, selectedNamespace.owner);
+        }
+      } else if (activeTab === 'contact' && contactDetail?.contact && !loadingContactDetail) {
+        const contact = contactDetail.contact;
+        selected = runPageObject('contact', contact.contact_id || contact._id || contact.email, { ...contact });
+      } else if (isReceivedTab(activeTab) && formResponseDetail && formResponseDetailId
+        && formResponseDetailError === null) {
+        selected = runPageObject('form_response', formResponseDetailId, { ...formResponseDetail });
+      } else if (activeTab === 'booking' && bookingDetailId && bookingDetail?.entity) {
+        selected = runPageObject('booking', bookingDetailId, { ...bookingDetail.entity });
+      } else if ((isExplorerTab(activeTab) || isSingleCollectionTab(activeTab))
+        && !explorerLoading && !explorerError && !explorerDetail?.loading
+        && !explorerDetail?.error && explorerDetail && explorerCollection) {
+        const detail = explorerDetail;
+        const loaded = detail.record ?? (isSingleCollectionTab(activeTab)
+          ? explorerRecords.find(row => row.record_id === detail.record_id) : undefined);
+        if (loaded) selected = runPageObject(explorerCollection, loaded.record_id, {
+          ...loaded.hot_fields, ...loaded,
+          ...(explorerSelectedSlug === null ? {} : { collection_slug: explorerSelectedSlug }),
+        });
+      }
+      return selected ? { label: selected.label, objects: [selected] } : null;
+    },
     bindSavedView: (view) => { savedViewBinding = view; savedViewLinked = true; syncDataHash(); },
     detachSavedView: () => { savedViewLinked = false; syncDataHash(); },
     getRecoveryContextFreshness: () => {
@@ -15312,6 +15612,7 @@ export const bootstrapDataRoute = (
     },
     contactImport: () => contactImport,
     dispose: () => {
+      sphereControl?.dispose();
       if (disposed) return;
       disposed = true;
       remindersSurface.dispose();

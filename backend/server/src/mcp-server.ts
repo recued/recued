@@ -1,3 +1,4 @@
+import { createReadScope, SPHERE_READ_REFUSAL } from './situations/read-scope.js';
 /** MCP server — expose recued-server as tools over stdio.
  *
  *  Any AI agent (Claude Desktop, Cursor, OpenClaw, custom agents) can
@@ -668,6 +669,7 @@ const buildMcpContractSnapshot = (
     allowed_tools,
     approval_required: [],
     scope_restrictions: resolveMcpDoorScopeRestrictions(deps),
+    ...(deps.contractOverlay?.resolveContractReadSpheres ? { read_spheres: deps.contractOverlay.resolveContractReadSpheres(source) } : {}),
     resolved_at: Date.now(),
     ...(standing_closure_operation_ids === undefined
       ? {}
@@ -1228,8 +1230,9 @@ const rawOpContractGrant = (deps: McpDeps, toolName: string): boolean | null => 
  *    - BOUND door (a real `boundContractId`) — a delegated AI → the contracted LOW
  *      default (`read`): native reads admit, but `recued_saveRecipe` (write) SURFACES —
  *      it `ask`s, which this synchronous direct-return path cannot approval-resume, so it
- *      REFUSES (the owner raises the door's trust or saves through an approval-capable
- *      surface). This is the "AI writes surface" posture for a door's direct MCP path.
+ *      REFUSES (the owner saves it in Recued instead; no setting raises a door's ceiling,
+ *      the D-209 #1 amendment). This is the "AI writes surface" posture for a door's
+ *      direct MCP path.
  *
  *  - `admit` ⇒ PROCEED.  - `deny` ⇒ REFUSE (unreachable for a native tool; defensive).
  *  - `ask`  ⇒ REFUSE (a synchronous direct-return tools/call can't checkpoint + resume).
@@ -1318,12 +1321,17 @@ const admitMcpDirectDispatch = (
     };
   }
   if (decision.verdict === 'ask') {
+    // ⛔ IT NAMES NO SETTING TO CHANGE. It said "raise the door's trust or call it through
+    // an approval-capable surface". No setting raises a door's ceiling (the D-209 #1
+    // amendment pins it at `read`), and an owner's own "Always" on the tool refuses their
+    // own client here too, where trust is not the reason at all. What is true in every
+    // case: only the owner can approve it, this call cannot wait, retrying changes nothing.
     return {
       ok: false,
       message:
-        `Tool '${toolName}' requires preflight approval under the active door's trust and `
-        + `cannot be approved on the direct MCP path — raise the door's trust or call it `
-        + `through an approval-capable surface.`,
+        `Tool '${toolName}' needs approval from the owner of this Recued server, and a `
+        + 'direct tool call cannot wait for approval, so it did not run. Server policy, not a '
+        + 'transient failure; do not retry. The owner can do this in Recued instead.',
     };
   }
   return { ok: true };
@@ -1841,6 +1849,7 @@ export interface McpDeps extends ExecuteHandlerDeps {
    *  channel-isolation invariant (§ A.1.1) keeps the two callers from
    *  conflating contexts. */
   internalRegistry?: InternalToolRegistry;
+  situationAccess?: import('./situations/access.js').SituationAccess;
   /** D-137 Trio #D — per-MCP-connection bearer token id. For stdio
    *  transport (single-user, no bearer), leave undefined — the adapter
    *  falls back to `STDIO_MCP_TOKEN_ID` so the channel-isolation
@@ -3117,6 +3126,10 @@ const handleToolCall = async (
     recordMcpDirectDispatchUse(deps, params.name);
   }
 
+  if (/^recued_(?:data|memory|recall|contact|search|vector|annotation|enrichment|getAudit)/u.test(params.name) && deps.situationAccess) {
+    try { if (createReadScope(deps.situationAccess, buildMcpExecutionSource(deps)).limited) return err(SPHERE_READ_REFUSAL); }
+    catch (error) { return err(error instanceof Error ? error.message : SPHERE_READ_REFUSAL); }
+  }
   switch (params.name) {
     // ── same-token attended-run stop ───────────────────────
     case MCP_STOP_RECIPE_TOOL_NAME: {

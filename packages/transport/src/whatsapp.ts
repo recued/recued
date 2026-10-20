@@ -48,6 +48,7 @@ import {
   classifyHttpError,
   downloadToFile,
   getJson,
+  notSentMark,
   postJson,
   type HttpPostOutcome,
 } from './http.js';
@@ -173,7 +174,7 @@ const handleWhatsAppOutcome = (outcome: HttpPostOutcome): TransportSendResult =>
       outcome.kind === 'http_error'
         ? `${describeGraphError(outcome.json)} [http ${outcome.status}]`
         : outcome.detail;
-    return { ok: false, error: { kind, detail: `WhatsApp: ${detail}` } };
+    return { ok: false, error: { kind, detail: `WhatsApp: ${detail}`, ...notSentMark(outcome) } };
   }
   const env = (outcome.json ?? {}) as WhatsAppSendEnvelope;
   const id = env.messages?.[0]?.id;
@@ -409,7 +410,7 @@ export const createWhatsAppTransport = (
           },
         };
       }
-      const id = encodeChoice(prompt.correlation_id, opt.id);
+      const id = encodeChoice(opt.correlation_id ?? prompt.correlation_id, opt.id);
       if (id.length > WHATSAPP_BUTTON_ID_MAX) {
         return {
           ok: false,

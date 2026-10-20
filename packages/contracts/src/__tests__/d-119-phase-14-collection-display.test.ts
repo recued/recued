@@ -35,6 +35,7 @@ const ALL_CANONICAL_NAMES: CanonicalCollectionName[] = [
   'project',
   // D-210 — booking.
   'booking',
+  'asset',
   'form_response',
 ];
 

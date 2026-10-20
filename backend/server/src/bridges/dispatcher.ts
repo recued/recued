@@ -70,6 +70,7 @@ import {
 } from '@recued/contracts';
 import type { AuditLogStore } from '@recued/storage';
 import { assertPreapprovalOrdinaryRun } from '../preapproval-io-context.js';
+import { captureProviderHandoffFence } from '../execution/provider-handoff.js';
 import type { BridgeConnectionRecord, BridgeRegistry } from './registry.js';
 
 export interface BridgeSendResult {
@@ -478,6 +479,7 @@ export const createBridgeDispatcher = (options: DispatcherOptions): BridgeDispat
     bridge_client_token_id: string,
     command_template: Omit<BridgeCommand, 'command_id'>,
     timeout_ms: number,
+    assertHandoff: () => void,
     beforeSend?: () => Promise<void>,
   ): Promise<SingleBridgeOutcome> => {
     const command_id = generateCommandId();
@@ -488,7 +490,12 @@ export const createBridgeDispatcher = (options: DispatcherOptions): BridgeDispat
     while (attempt < max_attempts) {
       attempt++;
 
-      try { if (beforeSend) await beforeSend(); assertPreapprovalOrdinaryRun(); }
+      try {
+        assertHandoff();
+        if (beforeSend) await beforeSend();
+        assertPreapprovalOrdinaryRun();
+        assertHandoff();
+      }
       catch (error) { options.listener.cancelAwait?.(command_id); inflight.delete(command_id); throw error; }
 
       // Register a fresh waiter BEFORE every send. A remote queue_full
@@ -496,6 +503,10 @@ export const createBridgeDispatcher = (options: DispatcherOptions): BridgeDispat
       // synchronously on a same-host transport.
       const result_p = options.listener.awaitResult(command_id, timeout_ms + 5_000);
       inflight.set(command_id, bridge_client_token_id);
+      // Keep admission failures outside transport-error mapping. The listener
+      // is already registered, so refuse with its slot and ownership retired.
+      try { assertHandoff(); }
+      catch (error) { options.listener.cancelAwait?.(command_id); inflight.delete(command_id); throw error; }
       let send_result: BridgeSendResult;
       try {
         send_result = await options.transport.send(bridge_client_token_id, {
@@ -589,6 +600,10 @@ export const createBridgeDispatcher = (options: DispatcherOptions): BridgeDispat
       return candidates.length === 1 ? candidates[0]! : null;
     },
     async dispatch(request, reviewed) {
+      // Capture per dispatch: one pooled dispatcher serves independent runs.
+      // This admits new commands only; already-sent commands keep draining.
+      const assertHandoff = captureProviderHandoffFence();
+      assertHandoff();
       // Resolve the target domain pattern first — a missing /
       // out-of-allowlist pattern short-circuits before any bridge
       // selection (Codex P2 #5 fold; D-169 P0 Slice 2A — was
@@ -629,7 +644,7 @@ export const createBridgeDispatcher = (options: DispatcherOptions): BridgeDispat
             throw new RpcError('preapproval_stale', 'The reviewed browser document changed or disconnected.', 409);
           }
         };
-        const out = await dispatchToBridge(binding.client_token_id, command_template, timeout_ms, beforeSend);
+        const out = await dispatchToBridge(binding.client_token_id, command_template, timeout_ms, assertHandoff, beforeSend);
         if (out.kind === 'send_failed') return { kind: 'capacity_gap', capacity_gap: { kind: 'bridge_online' },
           reason: 'bridge_online', attempts: out.attempts };
         if (out.kind === 'timeout') return { kind: 'timeout', command_id: out.command_id, attempts: out.attempts };
@@ -658,6 +673,7 @@ export const createBridgeDispatcher = (options: DispatcherOptions): BridgeDispat
           labeled.client_token_id,
           command_template,
           timeout_ms,
+          assertHandoff,
         );
         if (out.kind === 'send_failed') {
           return {
@@ -719,6 +735,7 @@ export const createBridgeDispatcher = (options: DispatcherOptions): BridgeDispat
           bridge.client_token_id,
           command_template,
           timeout_ms,
+          assertHandoff,
         );
         total_attempts += out.attempts;
         if (out.kind === 'send_failed') {

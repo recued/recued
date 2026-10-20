@@ -83,6 +83,9 @@ export interface CollectionRetentionDeps {
    *  29). A hook that throws never fails the prune: the rows are already gone,
    *  and reporting the prune as failed would invite a caller to retry it. */
   onPruned?: (record_ids: readonly string[]) => void;
+  /** Durable derived-history candidates must be captured before deletion.
+   * A failure blocks this prune; the after-prune hook cannot recover bytes. */
+  beforePrune?: (cutoff: number) => void | Promise<void>;
 }
 
 export interface CollectionRetention {
@@ -127,6 +130,7 @@ export const createCollectionRetention = (
     }
 
     const cutoff = started - retentionDays * MS_PER_DAY;
+    if (deps.beforePrune) await deps.beforePrune(cutoff);
     const { pruned_count, bytes_freed, blob_hashes_freed, record_ids } =
       deps.table.pruneOlderThan(cutoff);
     if (deps.onPruned && record_ids !== undefined && record_ids.length > 0) {

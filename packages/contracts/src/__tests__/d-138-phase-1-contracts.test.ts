@@ -586,6 +586,9 @@ describe('D-138 P1 — MCP catalog ratchet (Reviewer #12)', () => {
       // event-triggers / auto-run arm-disarm) are owner-surface
       // autonomous-execution policy.
       'auto_run.',
+      // Fixture rehearsals and the reviewed configuration writes they lead to
+      // are the paired owner's.
+      'automation.rehearsal.',
       'bridge.',
       // D-214 — owner-only explicit execution feedback.
       'chat.deliveries.',
@@ -620,6 +623,9 @@ describe('D-138 P1 — MCP catalog ratchet (Reviewer #12)', () => {
       // Grant-foundation slice 3 (D-187 amendment) — the unified (contract × grant)
       // matrix CRUD (operator-only; an agent must never self-widen its grants).
       'contract.grant.',
+      // Permission tests and the reviewed grant activation they gate: an agent
+      // that could reach them could activate a grant for itself.
+      'contract.regression.',
       // D-139 P5 — the `data.contact.engagements.list` WS-rpc returns the
       // FULL engagement-row shape (body included) for the owner's own paired
       // clients; external agents reach engagement evidence only through the
@@ -699,6 +705,9 @@ describe('D-138 P1 — MCP catalog ratchet (Reviewer #12)', () => {
       // D-324 — the owner's reminders list.
       'reminder.',
       'schedules.',
+      // Backup delivery, history, verification and restore are paired-owner
+      // controls.
+      'server.archive.',
       // D-196 S2 — seller cockpit read model (owner-only; exposes customer
       // roster, seller settings, readiness, and usage rollups).
       'server.seller.',
@@ -731,6 +740,7 @@ describe('D-138 P1 — MCP catalog ratchet (Reviewer #12)', () => {
       // D-201 Slice 1 — ingress/credential lifecycle is owner control-plane
       // state; future webhook profile surfaces inherit this reservation.
       'webhook.',
+      'yours.',
     ]);
   });
 });

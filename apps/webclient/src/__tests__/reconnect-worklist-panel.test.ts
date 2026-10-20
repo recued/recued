@@ -6,10 +6,11 @@ class Element {
   children: Element[] = [];
   attrs = new Map<string, string>();
   listeners = new Map<string, () => void>();
-  textContent = ''; className = ''; type = ''; disabled = false;
+  textContent = ''; className = ''; type = ''; disabled = false; open = false;
   get firstChild(): Element | null { return this.children[0] ?? null; }
   appendChild(child: Element): void { this.children.push(child); }
   removeChild(child: Element): void { this.children.splice(this.children.indexOf(child), 1); }
+  contains(node: unknown): boolean { return node === this || this.children.some(child => child.contains(node)); }
   setAttribute(key: string, value: string): void { this.attrs.set(key, value); }
   addEventListener(key: string, fn: () => void): void { this.listeners.set(key, fn); }
   click(): void { if (!this.disabled) this.listeners.get('click')?.(); }
@@ -17,6 +18,10 @@ class Element {
   all(key: string): Element[] { return [...(this.attrs.has(key) ? [this] : []), ...this.children.flatMap(child => child.all(key))]; }
   find(key: string, value: string): Element | undefined {
     return this.attrs.get(key) === value ? this : this.children.map(child => child.find(key, value)).find(Boolean);
+  }
+  querySelector(selector: string): Element | null {
+    const match = /^\[([^=]+)="([^"]+)"\]$/.exec(selector);
+    return match ? this.find(match[1]!, match[2]!) ?? null : null;
   }
 }
 const deferred = <T>() => {

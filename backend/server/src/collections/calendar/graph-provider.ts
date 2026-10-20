@@ -143,9 +143,37 @@ export interface GraphCalAttendee {
 }
 
 export interface GraphCalRecurrence {
-  pattern?: { type?: string; interval?: number };
-  range?: { startDate?: string; endDate?: string; type?: string };
+  pattern?: { type?: string; interval?: number; month?: number; dayOfMonth?: number; daysOfWeek?: string[]; index?: string };
+  range?: { startDate?: string; endDate?: string; type?: string; numberOfOccurrences?: number };
 }
+
+const GRAPH_FREQ: Readonly<Record<string, string>> = { daily: 'DAILY', weekly: 'WEEKLY', absoluteMonthly: 'MONTHLY',
+  relativeMonthly: 'MONTHLY', absoluteYearly: 'YEARLY', relativeYearly: 'YEARLY' };
+const GRAPH_DAY: Readonly<Record<string, string>> = { sunday: 'SU', monday: 'MO', tuesday: 'TU', wednesday: 'WE',
+  thursday: 'TH', friday: 'FR', saturday: 'SA' };
+const GRAPH_WEEK_INDEX: Readonly<Record<string, string>> = { first: '1', second: '2', third: '3', fourth: '4', last: '-1' };
+
+/** Graph's `patternedRecurrence` as the RRULE `recurrence_rule` promises.
+ *  Inspection only: dates still come from Graph's expanded instances. */
+export const graphRecurrenceRule = (recurrence: GraphCalRecurrence | null | undefined): string | undefined => {
+  const pattern = recurrence?.pattern;
+  const freq = pattern?.type ? GRAPH_FREQ[pattern.type] : undefined;
+  if (!pattern || !freq) return undefined;
+  const relative = pattern.type === 'relativeMonthly' || pattern.type === 'relativeYearly';
+  const days = (pattern.daysOfWeek ?? []).flatMap(day => GRAPH_DAY[day] ? [GRAPH_DAY[day]] : []);
+  const parts = [`FREQ=${freq}`];
+  if (pattern.interval && pattern.interval > 1) parts.push(`INTERVAL=${pattern.interval}`);
+  if (freq === 'YEARLY' && pattern.month) parts.push(`BYMONTH=${pattern.month}`);
+  if (!relative && freq !== 'DAILY' && freq !== 'WEEKLY' && pattern.dayOfMonth) parts.push(`BYMONTHDAY=${pattern.dayOfMonth}`);
+  if (days.length && (pattern.type === 'weekly' || relative)) {
+    const index = relative ? GRAPH_WEEK_INDEX[pattern.index ?? 'first'] ?? '1' : '';
+    parts.push(`BYDAY=${days.map(day => `${index}${day}`).join(',')}`);
+  }
+  const range = recurrence?.range;
+  if (range?.type === 'numbered' && range.numberOfOccurrences) parts.push(`COUNT=${range.numberOfOccurrences}`);
+  if (range?.type === 'endDate' && range.endDate) parts.push(`UNTIL=${range.endDate.replace(/-/gu, '')}`);
+  return `RRULE:${parts.join(';')}`;
+};
 
 export interface GraphCalEvent {
   id: string;
@@ -186,6 +214,9 @@ export interface GraphCalListEntry {
   name?: string;
   isDefaultCalendar?: boolean;
   canEdit?: boolean;
+  /** Who the calendar belongs to: on the default calendar, the signed-in
+   *  account. Returned with the calendar's default properties. */
+  owner?: { name?: string; address?: string };
 }
 
 interface GraphListResponse<T> {
@@ -295,10 +326,7 @@ export const canonicalizeGraphEvent = (
   const conferenceUrl = event.onlineMeeting?.joinUrl;
   const reminders = mapReminders(event);
 
-  const recurrenceRule =
-    event.recurrence && event.recurrence.pattern?.type
-      ? `GRAPH:${event.recurrence.pattern.type}`
-      : undefined;
+  const recurrenceRule = graphRecurrenceRule(event.recurrence);
 
   const canonical: CanonicalEvent = {
     source_id: event.id,
@@ -331,8 +359,10 @@ const buildPayload = (
   event: GraphCalEvent,
   calendarId: string,
   calendarName?: string,
+  seriesRule?: string,
 ): ProviderEventPayload => {
-  const canonical = canonicalizeGraphEvent(event, calendarId, calendarName);
+  const own = canonicalizeGraphEvent(event, calendarId, calendarName);
+  const canonical = seriesRule && !own.recurrence_rule ? { ...own, recurrence_rule: seriesRule } : own;
   const descriptionBytes = canonical.description
     ? Buffer.byteLength(canonical.description, 'utf8')
     : 0;
@@ -497,6 +527,10 @@ export const createGraphCalProvider = (
     return (await res.json()) as T;
   };
 
+  // The account's address: the default calendar's owner, read with the list at
+  // every sync (`CalendarProvider.accountEmail`). A calendar shared with the
+  // account has another owner, so only the default one counts.
+  let accountEmail = '';
   const listCalendars = async (): Promise<GraphCalListEntry[]> => {
     const out: GraphCalListEntry[] = [];
     let url: string | undefined = `${GRAPH_API_BASE}/me/calendars?$top=250`;
@@ -514,6 +548,8 @@ export const createGraphCalProvider = (
         'graph calendar list',
       );
     }
+    const owner = out.find((entry) => entry.isDefaultCalendar === true)?.owner?.address;
+    if (typeof owner === 'string' && owner.includes('@')) accountEmail = owner;
     return out;
   };
 
@@ -525,11 +561,34 @@ export const createGraphCalProvider = (
     return all.filter((c) => allow.has(c.id));
   };
 
+  // calendarView occurrences carry `recurrence: null`; only the series master
+  // has the pattern. One read per series per sync pass puts it on the
+  // occurrences, so a yearly event can become an occasion (D-325 P16). A failed
+  // read leaves the occurrence as listed.
+  let seriesRules = new Map<string, Promise<string | undefined>>();
+  const seriesRule = (calendarId: string, event: GraphCalEvent): Promise<string | undefined> => {
+    const master = event.seriesMasterId;
+    if (!master || event.recurrence?.pattern?.type) return Promise.resolve(undefined);
+    const key = JSON.stringify([calendarId, master]);
+    let rule = seriesRules.get(key);
+    if (!rule) {
+      const url = new URL(`${GRAPH_API_BASE}/me/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(master)}`);
+      url.searchParams.set('$select', 'recurrence');
+      rule = graphGet<Pick<GraphCalEvent, 'recurrence'>>(url.toString(), 'events.get')
+        .then(found => graphRecurrenceRule(found.recurrence), () => undefined);
+      seriesRules.set(key, rule);
+    }
+    return rule;
+  };
+  const payloadOf = async (event: GraphCalEvent, calendarId: string, calendarName?: string): Promise<ProviderEventPayload> =>
+    buildPayload(event, calendarId, calendarName, await seriesRule(calendarId, event));
+
   // ── initial scan ────────────────────────────────────────────
   const runInitialScan = async (
     scanOpts: InitialScanOptions,
     calendars: GraphCalListEntry[],
   ): Promise<void> => {
+    seriesRules = new Map();
     const now = nowOf();
     const startDateTime = new Date(now - scanOpts.backfill_days * 86_400_000)
       .toISOString();
@@ -559,7 +618,7 @@ export const createGraphCalProvider = (
         for (const event of page.value ?? []) {
           if (event['@removed'] || event.isCancelled) continue;
           try {
-            const payload = buildPayload(event, cal.id, cal.name);
+            const payload = await payloadOf(event, cal.id, cal.name);
             const cont = await scanOpts.onEvent(payload);
             lastSuccessfulSyncAt = nowOf();
             if (!cont) {
@@ -593,7 +652,7 @@ export const createGraphCalProvider = (
       if (event['@removed'] || event.isCancelled) {
         await cb({ kind: 'deleted', source_id: event.id });
       } else {
-        const payload = buildPayload(event, calendar.id, calendar.name);
+        const payload = await payloadOf(event, calendar.id, calendar.name);
         await cb({
           kind: 'updated',
           source_id: event.id,
@@ -670,6 +729,7 @@ export const createGraphCalProvider = (
     // Clean until a failure is swallowed: only a tick that read every calendar
     // and delivered every change says the calendar is synced.
     let clean = true;
+    seriesRules = new Map();
     const calendars = await selectedCalendars();
     const now = nowOf();
     const startDateTime = new Date(
@@ -920,6 +980,7 @@ export const createGraphCalProvider = (
   return {
     kind: 'graph',
     slug: opts.slug,
+    get accountEmail() { return accountEmail; },
 
     async connect() {
       try {
@@ -1010,7 +1071,7 @@ export const createGraphCalProvider = (
           'graph events.insert: empty response',
         );
       }
-      return buildPayload(data, calendarId);
+      return payloadOf(data, calendarId);
     },
 
     async updateEvent(input) {
@@ -1033,7 +1094,7 @@ export const createGraphCalProvider = (
           'graph events.patch: empty response',
         );
       }
-      return buildPayload(data, input.calendar_id);
+      return payloadOf(data, input.calendar_id);
     },
 
     async deleteEvent(input) {
@@ -1074,7 +1135,7 @@ export const createGraphCalProvider = (
       // body — fetch the event back so the dispatcher gets a verified
       // canonical payload to write into the warehouse.
       const refreshed = await fetchEvent(input.source_id);
-      return buildPayload(refreshed, input.calendar_id);
+      return payloadOf(refreshed, input.calendar_id);
     },
   };
 };

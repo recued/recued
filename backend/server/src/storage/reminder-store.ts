@@ -46,6 +46,12 @@ export const ensureReminderSchema = (db: Database.Database): void => {
       at      INTEGER NOT NULL
     );
   `);
+  const columns = new Set((db.prepare('PRAGMA table_info(reminders)').all() as { name: string }[]).map(row => row.name));
+  for (const name of ['clock_occurrence_id', 'clock_point_key', 'clock_ask_id']) {
+    if (!columns.has(name)) db.exec(`ALTER TABLE reminders ADD COLUMN ${name} TEXT`);
+  }
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS reminder_clock_point ON reminders(clock_occurrence_id,clock_point_key) WHERE clock_occurrence_id IS NOT NULL');
+  db.exec('CREATE INDEX IF NOT EXISTS reminder_clock_ask ON reminders(clock_ask_id) WHERE clock_ask_id IS NOT NULL');
 };
 
 /** Refused: too many reminders already wait (`REMINDER_PENDING_MAX`). */
@@ -66,6 +72,7 @@ export interface ReminderCreateInput {
   origin: ReminderOrigin;
   /** D-324 §6 — the D-193 task this reminder was moved from, once. */
   from_task_id?: string;
+  clock?: NonNullable<Reminder['clock']>;
 }
 
 /** D-324 §6 — what became of one D-193 reminder task. */
@@ -77,7 +84,10 @@ export interface ReminderStore {
    *  set those already, and leaving the overflow behind as tasks would leave it
    *  unrung. */
   create(input: ReminderCreateInput, now: number, opts?: { uncapped?: boolean }): Reminder;
+  /** Idempotent built-in clock point; not exposed as a recipe argument. */
+  ensureClock(input: ReminderCreateInput & { clock: NonNullable<Reminder['clock']> }, now: number): Reminder;
   get(reminder_id: string): Reminder | null;
+  clockForAsk(ask_id: string): Reminder | null;
   countPending(): number;
   /** Waiting reminders, soonest first. */
   listPending(limit: number): Reminder[];
@@ -116,6 +126,9 @@ interface Row {
   origin_channel: string | null;
   origin_vendor: string | null;
   origin_recipe_id: string | null;
+  clock_occurrence_id: string | null;
+  clock_point_key: string | null;
+  clock_ask_id: string | null;
   state: string;
   created_at: number;
   updated_at: number;
@@ -143,6 +156,9 @@ const toReminder = (row: Row): Reminder => ({
     ...(row.origin_vendor !== null ? { vendor: row.origin_vendor } : {}),
     ...(row.origin_recipe_id !== null ? { recipe_id: row.origin_recipe_id } : {}),
   },
+  ...(row.clock_occurrence_id && row.clock_point_key && row.clock_ask_id ? { clock: {
+    occurrence_id: row.clock_occurrence_id, point_key: row.clock_point_key, ask_id: row.clock_ask_id,
+  } } : {}),
   // A row this server wrote holds one of the three; anything else reads as
   // cancelled, which is never sent.
   state: isReminderState(row.state) ? row.state : 'cancelled',
@@ -160,9 +176,11 @@ export const createReminderStore = (db: Database.Database): ReminderStore => {
     INSERT INTO reminders (
       reminder_id, text, at, time_zone, origin_channel, origin_vendor, origin_recipe_id,
       state, created_at, updated_at, from_task_id
+      ,clock_occurrence_id,clock_point_key,clock_ask_id
     ) VALUES (
       @reminder_id, @text, @at, @time_zone, @origin_channel, @origin_vendor, @origin_recipe_id,
       'pending', @now, @now, @from_task_id
+      ,@clock_occurrence_id,@clock_point_key,@clock_ask_id
     )
   `);
   const getStmt = db.prepare(`SELECT * FROM reminders WHERE reminder_id = ?`);
@@ -174,7 +192,7 @@ export const createReminderStore = (db: Database.Database): ReminderStore => {
     ORDER BY COALESCE(delivered_at, updated_at) DESC, reminder_id ASC LIMIT ?
   `);
   const listDueStmt = db.prepare(`
-    SELECT * FROM reminders WHERE state = 'pending' AND at <= ?
+    SELECT * FROM reminders WHERE state = 'pending' AND at <= ? AND clock_occurrence_id IS NULL
     ORDER BY COALESCE(last_attempt_at, 0) ASC, at ASC, reminder_id ASC LIMIT ?
   `);
   const updateTextStmt = db.prepare(`
@@ -225,6 +243,9 @@ export const createReminderStore = (db: Database.Database): ReminderStore => {
       origin_recipe_id: input.origin.recipe_id ?? null,
       now,
       from_task_id: input.from_task_id ?? null,
+      clock_occurrence_id: input.clock?.occurrence_id ?? null,
+      clock_point_key: input.clock?.point_key ?? null,
+      clock_ask_id: input.clock?.ask_id ?? null,
     });
     return get(reminder_id)!;
   });
@@ -241,7 +262,20 @@ export const createReminderStore = (db: Database.Database): ReminderStore => {
 
   return {
     create: (input, now, opts) => create(input, now, opts?.uncapped === true),
+    ensureClock: db.transaction((input, now) => {
+      const old = db.prepare('SELECT * FROM reminders WHERE clock_occurrence_id=? AND clock_point_key=?')
+        .get(input.clock.occurrence_id, input.clock.point_key) as Row | undefined;
+      if (old) {
+        if (old.clock_ask_id !== input.clock.ask_id) throw new Error('The clock point already has a different question');
+        return toReminder(old);
+      }
+      return create(input, now, true);
+    }),
     get,
+    clockForAsk(ask_id) {
+      const row = db.prepare('SELECT * FROM reminders WHERE clock_ask_id=?').get(ask_id) as Row | undefined;
+      return row ? toReminder(row) : null;
+    },
     countPending,
     listPending: (limit) => (listPendingStmt.all(limit) as Row[]).map(toReminder),
     listHistory: (limit) => (listHistoryStmt.all(limit) as Row[]).map(toReminder),

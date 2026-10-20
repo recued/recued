@@ -1,5 +1,6 @@
 export { executeRecipe } from './execute.js';
 export { simulateRecipe, type RecipeSimulationInput, type RecipeSimulationResult, type SimulatedStep } from './recipe-simulation.js';
+export { runRecipeRegression, normalizeRecipeRegressionSuite, normalizeRegressionRecipe } from './recipe-regression.js';
 // D-157 Part C — held-action idempotency resolves a recipe's variable defaults
 // the SAME way the engine does (the audit `config_snapshot` carries resolved
 // defaults; the dedup key must match) via the canonical extractor.
@@ -123,3 +124,5 @@ export {
   resolveCatalogRecordsPath,
 } from './catalog-gateway.js';
 export type { CatalogDispatchDescription } from './catalog-gateway.js';
+
+export * from './recipe-run-capture.js';

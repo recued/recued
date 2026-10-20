@@ -23,6 +23,7 @@ export type ContractSnapshotAuthority = Pick<
   | 'allowed_tools'
   | 'approval_required'
   | 'scope_restrictions'
+  | 'read_spheres'
   | 'max_risk_without_approval'
   // ⛔ THIS `Pick` IS THE DECLARATION OF WHAT COUNTS AS AUTHORITY, so a field
   // hashed below but missing here is a compile error, not a silent omission.
@@ -51,6 +52,7 @@ export const deriveContractSnapshotVersion = (
     allowed_tools: canonicalStringSet(authority.allowed_tools),
     approval_required: canonicalStringSet(authority.approval_required),
     scope_restrictions: canonicalStringSet(authority.scope_restrictions),
+    ...(authority.read_spheres === undefined ? {} : { read_spheres: canonicalStringSet(authority.read_spheres) }),
     max_risk_without_approval: authority.max_risk_without_approval ?? null,
     // ⛔⛔ IN THE DIGEST, NOT BESIDE IT. The standing closure IS authority — it
     // decides which ops admit without asking. Two doors whose closures differ
@@ -76,6 +78,7 @@ export const buildVersionedContractSnapshot = (
     allowed_tools: Object.freeze([...new Set(input.allowed_tools)]),
     approval_required: Object.freeze([...new Set(input.approval_required)]),
     scope_restrictions: Object.freeze([...new Set(input.scope_restrictions)]),
+    ...(input.read_spheres === undefined ? {} : { read_spheres: Object.freeze([...new Set(input.read_spheres)]) }),
     ...(input.max_risk_without_approval !== undefined
       ? { max_risk_without_approval: input.max_risk_without_approval }
       : {}),
@@ -93,6 +96,7 @@ export const buildVersionedContractSnapshot = (
     allowed_tools: authority.allowed_tools,
     approval_required: authority.approval_required,
     scope_restrictions: authority.scope_restrictions,
+    ...(authority.read_spheres === undefined ? {} : { read_spheres: authority.read_spheres }),
     resolved_at: input.resolved_at,
     ...(authority.max_risk_without_approval !== undefined
       ? { max_risk_without_approval: authority.max_risk_without_approval }

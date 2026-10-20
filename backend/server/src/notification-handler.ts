@@ -60,6 +60,8 @@ export interface NotificationDeps {
 }
 
 export interface NotificationSendArgs {
+  /** Local address for the in-app surface only. */
+  ui_link_url?: string;
   /** Omitted means fan out to every channel the owner has SET UP (in-app is
    *  always set up; D-312): a channel with nothing enrolled is left out of both
    *  lists. Named channels are the owner's own choice, so a named one that is
@@ -153,7 +155,9 @@ export const handleNotificationSend = async (
           channel,
           text: withAttribution(args.text, args.source_recipe_id),
           ...(args.title !== undefined ? { title: args.title } : {}),
-          ...(args.link_url !== undefined ? { link_url: args.link_url } : {}),
+          ...(channel === 'in_app' && args.ui_link_url !== undefined
+            ? { link_url: args.ui_link_url }
+            : args.link_url !== undefined ? { link_url: args.link_url } : {}),
         });
         return { channel, ok: out.ok, notSetUp: !out.ok && out.reason === 'NO_CONNECTION_BOUND' };
       } catch {

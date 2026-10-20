@@ -33,6 +33,10 @@ const KEEP_MODULES = new Set([
   'preflight',
   // Fixture-only deterministic execution; the host owns transport/lifecycle.
   'recipe-simulation',
+  // Pure fixture-suite validation and comparison over the same simulator.
+  'recipe-regression',
+  // A reviewed run captured as a fixture draft over the same simulator.
+  'recipe-run-capture',
   // Shared in-process checkpoint derivation (also carries D-261 phases).
   'resume-from-approval',
   'run-mode',
@@ -74,6 +78,13 @@ const EXPECTED_RUNTIME_EXPORTS = [
   'createDryRunExecutor',
   'generateMockData',
   'simulateRecipe',
+  'runRecipeRegression',
+  'normalizeRecipeRegressionSuite',
+  'normalizeRegressionRecipe',
+  'buildRecipeRunCaptureDraft',
+  'capturedRecipeDigest',
+  'copyRecipeCaptureJson',
+  'redactRecipeCapture',
   'preflight',
   'resumeFromApproval',
   'findMissingVariables',

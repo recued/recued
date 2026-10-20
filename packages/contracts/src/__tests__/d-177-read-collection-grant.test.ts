@@ -18,6 +18,7 @@ describe('D-177 read fence — vocabulary', () => {
     // `service` / `shared` / `annotation` / `link` / `memory` stay excluded.
     expect([...READABLE_COLLECTIONS].sort()).toEqual(
       [
+        'asset',
         'booking',
         'calendar',
         'commitment',

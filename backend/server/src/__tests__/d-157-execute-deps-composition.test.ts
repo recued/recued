@@ -43,6 +43,8 @@ import {
   type ComposeExecuteDepsDeps,
 } from '../composition/bin/wire-execute-deps.js';
 import { createSettledRunResults } from '../settled-run-results.js';
+import { createSituationAccess } from '../situations/access.js';
+import { createSituationQuery } from '../situations/query.js';
 import type {
   ComposeNotificationBlockDeps,
   NotificationBlockBundle,
@@ -89,6 +91,10 @@ const conditionalExecuteDepKeys = [
   'db',
   'enrichmentStore',
   'preflightNotifier',
+  // The same block, read for where a raised approval ask went: the held
+  // response names its channels, so the agent can say "reply to the approval
+  // email" as well as "the bell".
+  'approvalAskChannels',
   // R2 step 6 — the same notification block, threaded as the torn-saga
   // notifier (rides the identical conditional spread as preflightNotifier).
   'sagaNotifier',
@@ -333,6 +339,12 @@ afterEach(() => {
 });
 
 describe('composeExecuteDeps bundle shape', () => {
+  it('forwards the live situation access fence to ordinary and resumed execution', () => {
+    const situationAccess = createSituationAccess({ contracts: createContractStore(makeDb()),
+      query: createSituationQuery({ sources: [], sourceForCollection: () => undefined }), isVaultUnlocked: () => true });
+    expect(composeExecuteDeps(buildDeps({ situationAccess })).executeDeps.situationAccess).toBe(situationAccess);
+    expect(composeExecuteDeps(buildDeps()).executeDeps.situationAccess).toBeUndefined();
+  });
   it('returns exactly executeDeps and an undefined notificationBlock on the dbless path', () => {
     const bundle = composeExecuteDeps(buildDeps());
 
@@ -767,6 +779,21 @@ describe('composeExecuteDeps preflight notifier identity', () => {
 
     expect(bundle.notificationBlock).toBeDefined();
     expect(bundle.executeDeps.preflightNotifier).toBe(bundle.notificationBlock);
+  });
+});
+
+describe('composeExecuteDeps approval ask channels', () => {
+  it('reads where a raised ask went from the composed block itself', async () => {
+    const { executeDeps, notificationBlock } = composeExecuteDeps(buildDeps(notificationPrereqs()));
+    const { ask_id } = await notificationBlock!.ask(
+      { title: 'Approve mail-send (write)', text: 'Send one email?' },
+      [{ id: 'approve', label: 'Approve' }, { id: 'deny', label: 'Deny' }],
+      { kind: 'gateway.preflight', payload: { run_id: 'run-1', checkpoint_id: 'cp-1' } },
+    );
+    const stored = await notificationBlock!.getAsk(ask_id);
+    expect(stored?.fanout_channels).toContain('ui');
+    await expect(executeDeps.approvalAskChannels!(ask_id)).resolves.toEqual(stored!.fanout_channels);
+    await expect(executeDeps.approvalAskChannels!('ask-none')).resolves.toBeUndefined();
   });
 });
 

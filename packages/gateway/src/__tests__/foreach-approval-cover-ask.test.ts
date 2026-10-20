@@ -47,7 +47,7 @@ describe('the ask for a held foreach', () => {
         items: [item('dana@x.example'), item('priya@x.example'), item('omar@x.example')],
       },
     });
-    expect(title).toContain('Approve 3 ×');
+    expect(title).toBe('Approve: mail-send, 3 items');
     expect(text).toContain('for 3 items (step send). One approval covers them all.');
     for (const to of ['dana@x.example', 'priya@x.example', 'omar@x.example']) {
       expect(text).toContain(to);
@@ -59,7 +59,7 @@ describe('the ask for a held foreach', () => {
 
   it('without the list, the count is an upper bound and is worded as one', () => {
     const { title, text } = ask({ foreach_cover: { total: 5 } });
-    expect(title).toContain('Approve up to 5 ×');
+    expect(title).toBe('Approve: mail-send, up to 5 items');
     expect(text).toContain('for up to 5 items (step send). One approval covers them all.');
     expect(text.trimEnd().endsWith('Approve all of them?')).toBe(true);
   });
@@ -95,5 +95,21 @@ describe('the ask for a held foreach', () => {
       },
     });
     expect(text).not.toContain('items (step');
+  });
+
+  it('a batch of several is titled by how many actions it approves', () => {
+    const { title, text } = ask({
+      batch: {
+        batch_id: 'b2',
+        payload_version: 1,
+        items: [
+          { member_id: 'm1', canonical_payload_hash: 'h1', summary: 'to: dana@x.example' },
+          { member_id: 'm2', canonical_payload_hash: 'h2', summary: 'to: priya@x.example' },
+        ],
+        unit: { kind: 'run', id: 'run-1' },
+      },
+    });
+    expect(title).toBe('Approve: mail-send, 2 actions');
+    expect(text.trimEnd().endsWith('Approve all 2?')).toBe(true);
   });
 });

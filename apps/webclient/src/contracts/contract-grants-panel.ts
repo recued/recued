@@ -44,6 +44,8 @@ import {
   WORK_ENTITY_KINDS,
   type OpEntity,
   READABLE_COLLECTIONS,
+  SITUATION_HISTORY_COLLECTIONS,
+  situationHistoryGrantEntry,
   TIER1_TOOL_DESCRIPTORS,
   TIER1_TOOL_ENTITY,
   TIER1_TOOL_NAMES,
@@ -323,6 +325,12 @@ const buildUniverse = (
       // report mail/calendar/etc as un-granted while the gate admitted them.
       authorDefault: true,
     });
+  }
+  // D-325 P17 — read only through the situation query, but a contract can be
+  // given them here. The owner-only default leaves every door off until then.
+  for (const collection of SITUATION_HISTORY_COLLECTIONS) {
+    entries.push({ entry_key: situationHistoryGrantEntry(collection), kind: 'collection', label: collection,
+      group: 'Episodes & occasions', authorDefault: true });
   }
 
   for (const t of registry?.topics ?? []) {

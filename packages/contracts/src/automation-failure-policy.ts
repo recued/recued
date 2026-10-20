@@ -116,6 +116,7 @@ export const ENVIRONMENT_RETRY_POLICY: Readonly<Record<string, 'retry' | 'stop'>
   CHECKPOINT_WRITE_FAILED: 'retry',
   ARCHIVE_IMPORT_IN_PROGRESS: 'retry',
   RECIPE_BUDGET_EXCEEDED: 'retry',
+  run_killed: 'retry',
 
   // ── AI: nondeterministic, so the same input can pass next time ───────────
   AI_LLM_UNAVAILABLE: 'retry',

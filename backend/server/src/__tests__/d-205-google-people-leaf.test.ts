@@ -148,6 +148,38 @@ describe('D-205 #4c — People is multi-valued; a contact is not flat', () => {
     return out.records[0]!;
   };
 
+  it('D-325 preserves full and yearless birthdays, without rolling invalid days', async () => {
+    for (const [date, expected] of [
+      [{ year: 1980, month: 3, day: 4 }, '1980-03-04'],
+      [{ month: 2, day: 29 }, '--02-29'],
+      [{ year: 0, month: 12, day: 1 }, '--12-01'],
+      [{ year: 2023, month: 2, day: 29 }, null],
+      [{ month: 0, day: 1 }, null],
+      [{ month: 2, day: 30 }, null],
+    ] as const) {
+      expect((await listOne(person({ birthdays: [{ date }] }))).attributes.birthday).toBe(expected);
+    }
+    expect(runSourceMirrorFetch.mock.calls.at(-1)![1].args['query.personFields']).toContain('birthdays');
+  });
+
+  it('D-325 reads the anniversary from the `events` typed anniversary, and no other event', async () => {
+    for (const [events, expected] of [
+      [[{ type: 'anniversary', date: { year: 2004, month: 6, day: 15 } }], '2004-06-15'],
+      // The same word typed as a custom type, and a yearless one.
+      [[{ type: 'Anniversary', date: { month: 6, day: 15 } }], '--06-15'],
+      // People's `other` and a custom "Graduation" have no field on a contact.
+      [[{ type: 'other', date: { year: 2015, month: 6, day: 1 } }, { type: 'Graduation', date: { month: 6, day: 1 } }], null],
+      [[{ type: 'anniversary', date: { month: 2, day: 30 } }], null],
+      // Primary first, as for every other multi-valued field.
+      [[{ type: 'anniversary', date: { year: 2001, month: 1, day: 1 } },
+        { type: 'anniversary', metadata: { primary: true }, date: { year: 2004, month: 6, day: 15 } }], '2004-06-15'],
+      [undefined, null],
+    ] as const) {
+      expect((await listOne(person(events === undefined ? {} : { events }))).attributes.anniversary, JSON.stringify(events)).toBe(expected);
+    }
+    expect(runSourceMirrorFetch.mock.calls.at(-1)![1].args['query.personFields']).toContain('events');
+  });
+
   it('emits EVERY supplied kind on every record — the anti-silence promise', async () => {
     const rec = await listOne(person());
     // `[]` / `null` = "I looked and this person has none". A MISSING key = "I never
@@ -155,7 +187,7 @@ describe('D-205 #4c — People is multi-valued; a contact is not flat', () => {
     // device: a leaf that quietly stopped emitting `address` would drain D-138's
     // blocking key rather than error.
     expect(Object.keys(rec.aliases).sort()).toEqual(['email_alias', 'phone_alias']);
-    expect(Object.keys(rec.attributes).sort()).toEqual(['address', 'name', 'org', 'photo']);
+    expect(Object.keys(rec.attributes).sort()).toEqual(['address', 'anniversary', 'birthday', 'name', 'org', 'photo']);
     expect(rec.attributes.org).toBeNull();
     expect(rec.aliases.phone_alias).toEqual([]);
   });
@@ -272,10 +304,10 @@ describe('D-205 #4c — the declaration', () => {
   it('promises only what the pack can actually produce', () => {
     // `supplies` is a PROMISE the runner verifies per record — promising a field no
     // code emits fails EVERY record on the FIRST cycle. The People API carries
-    // birthdays and job titles; the PACK's `entities.person` field map declares
-    // neither, so neither is promised. A statement, not a gap.
-    expect([...GOOGLE.supplies.attributes].sort()).toEqual(['address', 'name', 'org', 'photo']);
-    expect(GOOGLE.supplies.attributes).not.toContain('birthday');
+    // birthdays and anniversaries, requested and projected by D-325; job titles
+    // are still absent.
+    expect([...GOOGLE.supplies.attributes].sort()).toEqual(['address', 'anniversary', 'birthday', 'name', 'org', 'photo']);
+    expect(GOOGLE.supplies.attributes).toContain('birthday');
     expect(GOOGLE.supplies.attributes).not.toContain('title');
 
     // Phones are imported but are NOT a join key — the runner has no phone→contact

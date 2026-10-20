@@ -14,6 +14,13 @@ const MAX_SAMPLE_BYTES = 2_000_000;
 const bytes = (value: unknown): number => new TextEncoder().encode(JSON.stringify(value) ?? 'null').byteLength;
 const resultTooLarge = (): Error => new Error('Sample results exceed 2 MB. Use fewer steps or smaller mock outputs.');
 
+export const recipeSimulationNeedsMock = (raw: Record<string,unknown>,stores: NamespaceStores): boolean => {
+  const transform = typeof raw.transform === 'string' ? raw.transform : undefined;
+  return typeof raw.op === 'string' || raw.ingredient !== undefined || transform === 'wait' || transform === 'enrichment-or-fetch'
+    || transform !== undefined && /^(mail_received|file_changed|calendar_|attendee_diff|recipe_succeeded_since|time_|http_changed)/.test(transform)
+    || transform === 'map' && ['wait','enrichment-or-fetch'].includes(String(resolveValue(raw.apply,stores)));
+};
+
 /** Runs real step/condition/transform semantics with a closed fixture executor.
  * No connection, catalog, network, warehouse, or exchange dispatcher is accepted.
  * External calls are replaced BEFORE entering runStep, including catalog-fetch.
@@ -132,13 +139,9 @@ export const simulateRecipe = async (
       for (const authored of list) {
         signal?.throwIfAborted();
         const raw = authored as unknown as Record<string, unknown>;
-        const transform = typeof raw.transform === 'string' ? raw.transform : undefined;
         // These transforms depend on runtime state or deliberate time delays. Fixtures
         // keep tests bounded and avoid presenting missing runtime state as a success.
-        const runtimeTransform = transform === 'wait' || transform === 'enrichment-or-fetch'
-          || (transform !== undefined && /^(mail_received|file_changed|calendar_|attendee_diff|recipe_succeeded_since|time_|http_changed)/.test(transform))
-          || (transform === 'map' && ['wait', 'enrichment-or-fetch'].includes(String(resolveValue(raw.apply, stores))));
-        const mocked = typeof raw.op === 'string' || raw.ingredient !== undefined || runtimeTransform;
+        const mocked = recipeSimulationNeedsMock(raw,stores);
         const operation = String(raw.op ?? raw.ingredient ?? raw.transform ?? 'guard');
         const trace: SimulatedStep = {
           id: authored.id, phase, operation, mocked, status: stopped ? 'blocked' : 'passed',

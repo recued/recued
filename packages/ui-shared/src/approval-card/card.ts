@@ -1,3 +1,4 @@
+import { renderResourceReview } from '@recued/contracts';
 /** D-169 P2 Slice 3 — shared approval (D-158 `ask`) card.
  *
  *  ONE interactive primitive both the webclient and the bridge side panel
@@ -44,6 +45,7 @@ export interface AskCardOption {
 /** The renderable subset of a pending ask. Satisfied by the bridge
  *  side-panel store's approval row and the contracts `ServerPendingAsk`. */
 export interface AskCardModel {
+  resource_review?: import('@recued/contracts').ResourceReview;
   ask_id: string;
   title?: string;
   text: string;
@@ -100,6 +102,12 @@ export interface AskCardModel {
    *  Mirrors `ServerPendingAsk.details` structurally, like every other field
    *  here. */
   details?: ReadonlyArray<{ label: string; value: string }>;
+  /** The held action's name as the owner knows it ("Send mail"), resolved by
+   *  the server. Mirrors `ServerPendingAsk.action_name`. The "Action" row shows
+   *  it, and the action's id moves to the technical bits. Absent ⇒ an ask in the
+   *  owner's words keeps the id in the technical bits only, and an older
+   *  server's ask shows it in the row as before. */
+  action_name?: string;
   /** Unix-ms the ask was raised — `PendingAsk.created_at`, already carried on
    *  `ServerPendingAsk` and forwarded by the `notification.pending_asks`
    *  projection. Rendered as a compact age so a decision that has been waiting
@@ -137,6 +145,12 @@ export interface AskCardOptions {
    *  Injectable so a test can assert a rendered age deterministically —
    *  asserting against `Date.now()` is how an age test flakes at a boundary. */
   now?: number;
+  /** Show what "Allow this session" lets happen, above the buttons
+   *  ({@link splitSessionGrantTerms}). The #approvals page does; the compact
+   *  surfaces leave it off. The owner, 2026-10-19: "its okay for the
+   *  #approvals (full view one) to show the explanation, but for the popover
+   *  … maybe not necessary because it takes too much attention away". */
+  showSessionGrantTerms?: boolean;
 }
 
 /** Stable hook on the card root — the value is the `ask_id` so a host can
@@ -160,6 +174,45 @@ export const ASK_CARD_SUMMARY_ATTR = 'data-recued-ask-summary';
 export const ASK_CARD_DETAILS_ATTR = 'data-recued-ask-details';
 /** Deliberate second-step prompt for an externally mutating answer. */
 export const ASK_CARD_CONFIRM_ATTR = 'data-recued-ask-confirm';
+/** What "Allow this session" lets happen (`showSessionGrantTerms`); the value
+ *  is the `ask_id`. */
+export const ASK_CARD_GRANT_ATTR = 'data-recued-ask-grant';
+
+/** The terms of "Allow this session" as the composer wrote them
+ *  (`renderOpenGrantBlock`, `@recued/gateway`): its opening sentence, one item
+ *  per input it keeps fixed or lets follow a source, and its closing line. */
+export interface SessionGrantTerms {
+  readonly lead: string;
+  readonly items: readonly string[];
+  readonly closing: readonly string[];
+}
+
+/** Take the composer's "Allow this session" paragraph out of an ask's text.
+ *
+ *  ⛔ ONLY THE PARAGRAPH RIGHT BEFORE THE QUESTION. The composer writes it there,
+ *  with nothing after it but the question. It strips blank lines from the one
+ *  raw string the body carries (`Reason:`) and collapses whitespace in every
+ *  value it lists, so no other text can open a paragraph in that place. Text
+ *  that only starts the same way anywhere else is not taken. */
+export const splitSessionGrantTerms = (
+  text: string,
+): { readonly text: string; readonly terms: SessionGrantTerms | null } => {
+  const paragraphs = text.split(/\r?\n\r?\n/);
+  const question = paragraphs.at(-1)?.trim() ?? '';
+  const block = paragraphs.length >= 3 ? paragraphs.at(-2)! : '';
+  if (!/^Approve(?: all [^?\n]+)?\?$/.test(question) || !block.startsWith("'Allow this session' lets ")) {
+    return { text, terms: null };
+  }
+  const [lead, ...rest] = block.split(/\r?\n/);
+  return {
+    text: [...paragraphs.slice(0, -2), paragraphs.at(-1)!].join('\n\n'),
+    terms: {
+      lead: lead!.trim(),
+      items: rest.filter((line) => line.startsWith('- ')).map((line) => line.slice(2).trim()),
+      closing: rest.filter((line) => !line.startsWith('- ') && line.trim() !== '').map((line) => line.trim()),
+    },
+  };
+};
 /** The waiting-age element on an ask card. */
 export const ASK_CARD_AGE_ATTR = 'data-recued-ask-age';
 
@@ -226,6 +279,9 @@ interface ProjectedApprovalAsk {
   /** What the action changes, in the composer's words — see
    *  {@link askConsequence}. Null ⇒ the card states no consequence. */
   consequence: string | null;
+  /** The ask opens in the owner's words and its ids sit on the `Technical:`
+   *  line. False for an older server's first line, which was the ids. */
+  ownerWords: boolean;
 }
 
 /** The composer's "why it was held" clause — line 2 of a generated ask
@@ -244,7 +300,7 @@ interface ProjectedApprovalAsk {
  *  would let a reason supply the sentence the owner reads as Recued's. */
 const askConsequence = (text: string): string | null => {
   const lines = text.split(/\r?\n/);
-  if (!/^(?:Recipe .+ wants to run |An AI agent wants to run )/.test(lines[0]?.trim() ?? '')) {
+  if (!/^(?:Recipe .+ wants to run |An AI agent wants to run |".+" is waiting for your approval)/.test(lines[0]?.trim() ?? '')) {
     return null;
   }
   const held = (lines[1] ?? '').trim().match(/^(.+), so Recued held (?:it|them) for you\.$/);
@@ -254,13 +310,34 @@ const askConsequence = (text: string): string | null => {
 /** The notification block's generated approval prose has a stable first line
  *  followed by an indented key/value payload. Project it conservatively; an
  *  arbitrary/custom ask that does not match keeps its original text verbatim. */
+/** The ids of a generated ask. The first line carried them ("Recipe X wants to
+ *  run Y (step Z)."), and an older server still writes it that way. A first line
+ *  in the owner's words ("\"Send a composed email\" is waiting for your
+ *  approval.") moves them to the `Technical:` line, line 3: read from exactly
+ *  there, a position nothing but the composer writes. */
+const askIdentity = (
+  lines: readonly string[],
+): { recipe: string; operation: string; target: string | null; step: string; ownerWords: boolean } | null => {
+  const first = lines[0]?.trim() ?? '';
+  const old = first.match(/^Recipe (.+?) wants to run (.+?)(?: on (.+?))? \(step (.+?)\)\.$/);
+  if (old !== null) {
+    return { recipe: old[1]!, operation: old[2]!, target: old[3] ?? null, step: old[4]!, ownerWords: false };
+  }
+  if (!/^".+" is waiting for your approval\b/.test(first)) return null;
+  const technical = (lines[2]?.trim() ?? '')
+    .match(/^Technical: recipe (.+?), step (.+?), action (.+?)(?: on (.+?))?\.$/);
+  return technical === null
+    ? null
+    : {
+      recipe: technical[1]!, step: technical[2]!, operation: technical[3]!, target: technical[4] ?? null,
+      ownerWords: true,
+    };
+};
+
 const projectGeneratedApprovalAsk = (text: string): ProjectedApprovalAsk | null => {
   const lines = text.split(/\r?\n/);
-  const first = lines[0]?.trim() ?? '';
-  const operation = first.match(
-    /^Recipe (.+?) wants to run (.+?)(?: on (.+?))? \(step (.+?)\)\.$/,
-  );
-  if (operation === null) return null;
+  const identity = askIdentity(lines);
+  if (identity === null) return null;
 
   const fields: Array<{ key: string; value: string }> = [];
   let reason: string | null = null;
@@ -339,10 +416,7 @@ const projectGeneratedApprovalAsk = (text: string): ProjectedApprovalAsk | null 
   }
 
   return {
-    recipe: operation[1]!,
-    operation: operation[2]!,
-    target: operation[3] ?? null,
-    step: operation[4]!,
+    ...identity,
     reason,
     origin,
     fields,
@@ -365,11 +439,29 @@ const askOptionIntent = (option: AskCardOption): AskOptionIntent => {
   return 'neutral';
 };
 
+/** The tier an older server put at the end of an approval's title:
+ *  "Approve mail-send (write)". */
 const askRisk = (title: string | undefined): 'write' | 'admin' | 'destructive' | null => {
   const match = title?.match(/\((write|admin|destructive)\)\s*$/i);
   return match === undefined || match === null
     ? null
     : match[1]!.toLocaleLowerCase() as 'write' | 'admin' | 'destructive';
+};
+
+/** The tier a generated approval states on its second line ("Write actions …",
+ *  "Admin actions …", "Destructive actions …"; {@link askConsequence}).
+ *
+ *  ⛔ THE TITLE NO LONGER CARRIES IT. Approvals are titled by the recipe in the
+ *  owner's words since 2026-10-19 ("Approve: Send a composed email"), so the
+ *  tier that arms the two-step approve is read where the composer states it in
+ *  full. A read-tier or custom ask states none. */
+const consequenceRisk = (text: string): 'write' | 'admin' | 'destructive' | null => {
+  const consequence = askConsequence(text);
+  if (consequence === null) return null;
+  if (/^Write actions\b/.test(consequence)) return 'write';
+  if (/^Admin actions\b/.test(consequence)) return 'admin';
+  if (/^Destructive actions\b/.test(consequence)) return 'destructive';
+  return null;
 };
 
 /** Render one pending ask as an interactive card. Returns a detached
@@ -386,9 +478,12 @@ export const renderAskCard = (
   const actionSubject = askActionSubject(model);
 
   const projected = projectGeneratedApprovalAsk(model.text);
-  const risk = askRisk(model.title);
-  const title = projected !== null && risk !== null
-    ? `Approve ${risk} action`
+  const titledRisk = askRisk(model.title);
+  const risk = titledRisk ?? consequenceRisk(model.text);
+  // An older server's title names the operation and its tier, so the card says
+  // the tier in words instead. A title in the owner's words is shown as it is.
+  const title = projected !== null && titledRisk !== null
+    ? `Approve ${titledRisk} action`
     : nonBlankAskTitle(model.title);
   if (title !== undefined) {
     const heading = doc.createElement('div');
@@ -441,7 +536,15 @@ export const renderAskCard = (
       row.appendChild(value);
       summary.appendChild(row);
     };
-    appendSummaryRow('Action', projected.operation);
+    // ⛔ THE ACTION BY ITS NAME, NOT ITS ID. The row read "mail-send" under a
+    // title in the owner's words (owner, 2026-10-19). The server names the
+    // action when it can ("Send mail"); otherwise an ask in the owner's words
+    // keeps the id with the other ids, in the technical bits. Only an older
+    // server's ask, whose first line was its ids, still shows it here.
+    const actionName = model.action_name?.trim() || undefined;
+    const idInSummary = actionName === undefined && !projected.ownerWords;
+    if (actionName !== undefined) appendSummaryRow('Action', actionName);
+    else if (idInSummary) appendSummaryRow('Action', projected.operation);
     if (projected.target !== null) appendSummaryRow('Target', projected.target);
     // D-161 Part B — ABOVE the highlights, not inside Technical details. The
     // highlights are the values the call would send; who supplied them changes
@@ -476,6 +579,7 @@ export const renderAskCard = (
     const detailsSummary = doc.createElement('summary');
     const technicalDetailCount = projected.fields.length
       + 2
+      + (idInSummary ? 0 : 1)
       + (projected.target === null ? 0 : 1)
       + (projected.reason === null ? 0 : 1);
     detailsSummary.textContent = `The technical bits (${technicalDetailCount})`;
@@ -498,6 +602,7 @@ export const renderAskCard = (
     };
     appendDetail('Recipe', projected.recipe);
     appendDetail('Step', projected.step);
+    if (!idInSummary) appendDetail('Action', projected.operation);
     if (projected.target !== null) appendDetail('Target', projected.target);
     if (projected.reason !== null) appendDetail('Reason', projected.reason);
     for (const field of projected.fields) {
@@ -505,6 +610,17 @@ export const renderAskCard = (
     }
     details.appendChild(detailsList);
     card.appendChild(details);
+  }
+
+  if (model.resource_review) {
+    const review = doc.createElement('pre');
+    review.className = 'rx-ask-card-resource-review';
+    review.setAttribute('data-resource-review', '');
+    review.setAttribute('role', 'region');
+    review.setAttribute('aria-label', 'Reviewed changes');
+    review.setAttribute('tabindex', '0');
+    review.textContent = renderResourceReview(model.resource_review);
+    card.appendChild(review);
   }
 
   // D-234 § 234.3 — the READ affordance, between the body and the buttons.
@@ -755,6 +871,36 @@ export const renderAskCard = (
   // then explain, then decide.
   if (model.body !== undefined && model.body !== '') card.appendChild(bodyWrap);
   if (model.note_prompt !== undefined) card.appendChild(noteWrap);
+  // Right above the buttons, because it explains one of them. `allow_session`
+  // is the option id the gateway offers it under (`ALLOW_SESSION_ASK_OPTION`).
+  const terms = options.showSessionGrantTerms === true
+    && projected !== null
+    && model.options.some((option) => option.id === 'allow_session')
+    ? splitSessionGrantTerms(model.text).terms
+    : null;
+  if (terms !== null) {
+    const grant = doc.createElement('div');
+    grant.className = 'rx-ask-card-grant';
+    grant.setAttribute(ASK_CARD_GRANT_ATTR, model.ask_id);
+    const lead = doc.createElement('p');
+    lead.textContent = terms.lead;
+    grant.appendChild(lead);
+    if (terms.items.length > 0) {
+      const list = doc.createElement('ul');
+      for (const item of terms.items) {
+        const entry = doc.createElement('li');
+        entry.textContent = item;
+        list.appendChild(entry);
+      }
+      grant.appendChild(list);
+    }
+    for (const line of terms.closing) {
+      const closing = doc.createElement('p');
+      closing.textContent = line;
+      grant.appendChild(closing);
+    }
+    card.appendChild(grant);
+  }
   card.appendChild(actions);
   card.appendChild(errorEl);
   return card;
@@ -1115,6 +1261,7 @@ export const renderApprovalCard = (
 /** Renderable subset of a pending chat write-plan (D-137). Structural so the
  *  webclient's `PendingChatPlan` satisfies it without importing chat types. */
 export interface ChatPlanCardModel {
+  resource_review?: import('@recued/contracts').ResourceReview;
   plan_id: string;
   /** Server-stamped lineage for a fresh approval after an uncertain action. */
   retry_of_plan_id?: string;
@@ -1236,6 +1383,13 @@ export const renderChatPlanCard = (
     ? formatPlanArgs(model.args)
     : 'Reviewed arguments unavailable.';
   card.appendChild(input);
+  if (payloadAvailable && model.resource_review) {
+    const review = doc.createElement('pre');
+    review.className = 'rx-approval-card-input';
+    review.setAttribute('data-resource-review', '');
+    review.textContent = renderResourceReview(model.resource_review);
+    card.appendChild(review);
+  }
 
   if (options.chatHref !== undefined) {
     const links = doc.createElement('div');
@@ -1361,6 +1515,19 @@ export const renderChatPlanCard = (
  *  global CSS custom properties each host shell defines, with neutral
  *  fallbacks so the card is legible even with no theme variables present. */
 export const ASK_CARD_STYLES = `
+.rx-ask-card-resource-review {
+  max-width: 100%;
+  max-height: 24rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.rx-ask-card-resource-review:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
 .rx-ask-card {
   box-sizing: border-box;
   min-width: 0;
@@ -1412,6 +1579,19 @@ export const ASK_CARD_STYLES = `
 .rx-ask-card-consequence--local {
   color: var(--fg);
 }
+.rx-ask-card-grant {
+  min-width: 0;
+  margin: 10px 0 0;
+  padding: 2px 0 2px 10px;
+  border-left: 3px solid var(--border);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--fg-muted, var(--fg));
+  overflow-wrap: anywhere;
+}
+.rx-ask-card-grant p { margin: 0; }
+.rx-ask-card-grant ul { margin: 6px 0; padding-left: 18px; }
+.rx-ask-card-grant li { margin: 2px 0; }
 .rx-ask-card-summary,
 .rx-ask-card-details dl {
   display: grid;

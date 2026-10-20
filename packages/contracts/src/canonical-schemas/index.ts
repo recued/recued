@@ -21,6 +21,7 @@ import { NOTE_SCHEMA } from './note.js';
 import { COMMITMENT_SCHEMA } from './commitment.js';
 import { PROJECT_SCHEMA } from './project.js';
 import { BOOKING_SCHEMA } from './booking.js';
+import { ASSET_SCHEMA } from './asset.js';
 import { MAIL_MESSAGE_SCHEMA } from './mail-message.js';
 import type { CanonicalSchema } from './shape.js';
 
@@ -38,6 +39,7 @@ export { NOTE_SCHEMA } from './note.js';
 export { COMMITMENT_SCHEMA } from './commitment.js';
 export { PROJECT_SCHEMA } from './project.js';
 export { BOOKING_SCHEMA } from './booking.js';
+export { ASSET_SCHEMA } from './asset.js';
 export { MAIL_MESSAGE_SCHEMA } from './mail-message.js';
 
 /** Closed registry of canonical schemas — keyed on `WorkEntityKind`.
@@ -51,6 +53,7 @@ export const CANONICAL_SCHEMAS: Readonly<Record<WorkEntityKind, CanonicalSchema>
   commitment: COMMITMENT_SCHEMA,
   project: PROJECT_SCHEMA,
   booking: BOOKING_SCHEMA,
+  asset: ASSET_SCHEMA,
 };
 
 export const getCanonicalSchema = (kind: WorkEntityKind): CanonicalSchema =>
