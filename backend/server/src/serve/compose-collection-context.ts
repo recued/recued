@@ -964,26 +964,39 @@ export const composeCollectionContext = (
     : undefined;
 
   const startCollectionAdapters = async (): Promise<void> => {
+    // ⛔ Boot does not wait for a first scan. Each reads all that came while the
+    // server was down, and the listener binds only after this resolves, so a
+    // server whose mailboxes and calendar took 254 s to catch up answered
+    // nothing for that long after an update (2026-10-20). What a scan finds
+    // still reaches the triggers: the boot recorder keeps what comes before
+    // the dispatcher subscribes, and the dispatcher hears the rest
+    // (`triggers/boot-events.ts`).
     if (calendarStack) {
-      await calendarStack.startAll();
+      await calendarStack.startAll('background');
       registerCalendarCollections(calendarStack, collectionRegistry);
     }
 
     if (mailStack) {
-      await mailStack.startAll();
+      await mailStack.startAll('background');
       registerMailCollections(mailStack, collectionRegistry);
-      // D-315 §4.3 — now the mailboxes are live: resume the AI calls a
-      // restart left queued.
-      mailFactAi?.kick();
-      // D-315 §5.3 — and drop the facts of emails a live mailbox no longer
-      // holds: a delete or move hook that failed is never run again.
-      if (mailFactWriter) {
-        void sweepGoneEmails(
+      // After the first scans, as when boot waited for them: a scan runs the
+      // delete and move hooks for what changed while the server was down, so
+      // the sweep drops only what they missed.
+      void mailStack.firstScans().then(() => {
+        // D-315 §4.3 — the mailboxes have caught up: resume the AI calls a
+        // restart left queued.
+        mailFactAi?.kick();
+        // D-315 §5.3 — and drop the facts of emails a live mailbox no longer
+        // holds: a delete or move hook that failed is never run again.
+        if (!mailFactWriter) return undefined;
+        return sweepGoneEmails(
           mailFactWriter,
           collectionRegistry.list().filter((collection): collection is MailCollection => collection.platform === 'mail'),
           mailFactLogger,
         );
-      }
+      }).catch((error: unknown) => {
+        mailFactLogger.warn('mail fact: the work after the first scans stopped', { error });
+      });
     }
 
     // R21.1 parity — keep the mail/calendar poll loops in step with the vault

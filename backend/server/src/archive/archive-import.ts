@@ -45,7 +45,7 @@ import {
 import {
   createArchiveHmac,
   createRecordDecipher,
-  deriveArchiveKeys,
+  deriveArchiveImportKeys,
   type ArchiveHmac,
   type ArchiveKeys,
   type RecordDecipher,
@@ -598,9 +598,10 @@ export const streamImportArchive = async (
     const parsed = parseManifest(headBuf);
     manifest = parsed.manifest;
     checkManifestCompat(manifest, opts.consumerVersion, opts.allowFutureVersion ?? false);
-    const salt = Buffer.from(manifest.encryption.salt_hex, 'hex');
-    if (salt.length === 0) throw new Error('ARCHIVE_INVALID: encryption.salt_hex missing');
-    keys = deriveArchiveKeys(opts.recoveryKey, salt);
+    if (manifest.encryption.delegation_salt_hex !== undefined && manifest.archive_format_version < 4) {
+      throw new Error('ARCHIVE_INVALID: backup capability requires archive format 4');
+    }
+    keys = deriveArchiveImportKeys(opts.recoveryKey, manifest.encryption);
     hmac = createArchiveHmac(keys.hmac);
     keysReady = true;
     // Seed the HMAC with the head (magic + len + manifest), then feed any

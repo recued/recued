@@ -63,6 +63,10 @@ const KNOWN_SUBCOMMANDS = new Set([
   // packaged binary takes no `node -e`, so the server starts it as this. Internal,
   // so not in the help.
   'watch-host',
+  'restore-drill-worker',
+  // The outer supervisor `recued start` runs on Windows, from its own copy of the
+  // binary (`launcher/outer-supervisor.ts`). Internal, so not in the help.
+  'supervise',
 ]);
 
 const args = process.argv.slice(2);
@@ -484,6 +488,12 @@ const dispatch = async (): Promise<void> => {
       await runReportBootFailureProfile({ args, bootTrace });
       return;
     }
+    case 'supervise': {
+      bootTrace.markImport('./cli-context/supervise.js');
+      const { runSuperviseProfile } = await import('./cli-context/supervise.js');
+      await runSuperviseProfile({ args, bootTrace });
+      return;
+    }
     case 'revert-release': {
       bootTrace.markImport('./cli-context/revert-release.js');
       const { runRevertReleaseProfile } = await import('./cli-context/revert-release.js');
@@ -512,6 +522,12 @@ const dispatch = async (): Promise<void> => {
       bootTrace.markImport('./cli-context/release-floor.js');
       const { runReleaseFloorProfile } = await import('./cli-context/release-floor.js');
       await runReleaseFloorProfile({ args, bootTrace });
+      return;
+    }
+    case 'restore-drill-worker': {
+      bootTrace.markImport('./archive/restore-drill-child.js');
+      const { runRestoreDrillChild } = await import('./archive/restore-drill-child.js');
+      runRestoreDrillChild();
       return;
     }
     case 'watch-host': {

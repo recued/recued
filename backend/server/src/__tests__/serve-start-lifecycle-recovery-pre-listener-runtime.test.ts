@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { stripSourceComments } from './helpers/source-guards.js';
+import { composeArchiveRpcDeps } from '../archive/archive-runtime.js';
 
 const bridgeMocks = vi.hoisted(() => ({
   composeServeLifecycle: vi.fn(),
@@ -140,6 +141,26 @@ const makeOptions = (
   }) as unknown as StartLifecycleRecoveryPreListenerRuntimeOptions;
 
 describe('startLifecycleRecoveryPreListenerRuntime', () => {
+  it('persists backup alerts before channel fan-out and leaves rejected delivery pending', async () => {
+    bridgeMocks.composeServeLifecycle.mockResolvedValue({ tag: 'lifecycle' });
+    bridgeMocks.startBootRecoveryAndAdapters.mockResolvedValue(undefined);
+    bridgeMocks.startPreListenerRuntime.mockResolvedValue({ runtime: { schedulersBundle: undefined } });
+    const options = makeOptions();
+    const logActivity = vi.fn(async () => {}), notifyWithResult = vi.fn(async () => ({ attempted: 1, accepted: 1 }));
+    Object.assign(options.lifecycle.auditLog!, { logActivity });
+    Object.assign(options.preListener.execution, { notificationBlock: { notifyWithResult } });
+    await startLifecycleRecoveryPreListenerRuntime(options);
+    const notify = vi.mocked(composeArchiveRpcDeps).mock.calls.at(-1)![0].notifyBackupFailure!;
+    const message = { title: 'Backup needs attention', text: 'The copy could not be confirmed.', link_url: '#settings/backup' };
+    logActivity.mockRejectedValueOnce(new Error('disk unavailable'));
+    await expect(notify(message, 'fixture-operation')).rejects.toThrow('disk unavailable');
+    expect(notifyWithResult).not.toHaveBeenCalled();
+    expect(await notify(message, 'fixture-operation')).toBe(true);
+    expect(logActivity).toHaveBeenLastCalledWith(expect.objectContaining({ activity_id: 'backup-alert-fixture-operation', action: 'notification_fired', detail: JSON.stringify(message) }));
+    expect(notifyWithResult).toHaveBeenCalledWith(message, undefined, { persisted_activity_id: 'backup-alert-fixture-operation' });
+    notifyWithResult.mockResolvedValueOnce({ attempted: 1, accepted: 0 });
+    expect(await notify(message, 'fixture-operation')).toBe(false);
+  });
   it('orders lifecycle, locked recovery, and pre-listener runtime while keeping refs live', async () => {
     const order: string[] = [];
     const lifecycle = { tag: 'lifecycle' };

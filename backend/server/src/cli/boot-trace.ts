@@ -15,6 +15,10 @@ export type BootCommandProfile =
   /** D-178 — the outer supervisor's verdict. Its own profile because it must run
    *  when the LIVE binary cannot start at all; `recued.old` executes it. */
   | 'report-boot-failure'
+  /** The outer supervisor `recued start` runs on Windows. Its own profile for
+   *  the same reason: it outlives every update, so it must load nothing from
+   *  the install directory beyond its own executable. */
+  | 'supervise'
   | 'revert-release'
   | 'self-test'
   /** Owner-facing diagnosis of an install that will not start or will not pair.
@@ -26,6 +30,7 @@ export type BootCommandProfile =
   /** The server's folder-watch process (`collections/file/watch-host.ts`). Its
    *  own profile because it must open nothing: it only watches folders. */
   | 'watch-host'
+  | 'restore-drill-worker'
   | 'mcp'
   | 'serve'
   | 'command';
@@ -99,6 +104,7 @@ export const classifyBootProfile = (input: BootProfileInput): BootCommandProfile
   if (input.subcommand === 'recover-keyfile') return 'recover-keyfile';
   if (input.subcommand === 'rotate-passphrase') return 'rotate-passphrase';
   if (input.subcommand === 'report-boot-failure') return 'report-boot-failure';
+  if (input.subcommand === 'supervise') return 'supervise';
   // The `docker-thin` launcher's half of the same supervisor pair — see
   // `cli-context/revert-release.ts`. Its own profile rather than `command`
   // because, like its sibling, it must open nothing and boot nothing.
@@ -111,6 +117,7 @@ export const classifyBootProfile = (input: BootProfileInput): BootCommandProfile
   if (input.subcommand === 'update-lease') return 'update-lease';
   if (input.subcommand === 'release-floor') return 'release-floor';
   if (input.subcommand === 'watch-host') return 'watch-host';
+  if (input.subcommand === 'restore-drill-worker') return 'restore-drill-worker';
   return 'command';
 };
 

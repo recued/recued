@@ -16,13 +16,24 @@ export const createPackRemovalReview = (options: { document: Document;packSlug: 
   const canApply = () => !disposed && !busy && !applying && (!!pendingApply || !!plan && !spent && !plan.blockers.length
     && plan.expires_at > Date.now() && ack && (!plan.unknown_dependencies.length || unknown) && (!plan.prior_attempt_unconfirmed || incomplete));
   const refreshConfirm = () => { const button = root.querySelector<HTMLButtonElement>('[data-recued-packs-row-delete-confirm]');if (button) button.disabled = !applying && !canApply(); };
-  const action = (text: string,run: () => void) => {
+  // Every render here replaces these controls, and every panel render
+  // re-attaches this section, so the focused control loses focus either way.
+  // Each control has a key; one that is gone or disabled hands focus to the
+  // status, which says what happens next (as `pack-repair-panel.ts` does).
+  const focusKey = (): string | null => root.contains(doc.activeElement) ? doc.activeElement?.getAttribute('data-pack-removal-focus') ?? null : null;
+  const restoreFocus = (key: string | null): void => {
+    if (!key) return;
+    const target = [...root.querySelectorAll<HTMLElement>('[data-pack-removal-focus]')].find(el => el.getAttribute('data-pack-removal-focus') === key);
+    if (target && !target.matches(':disabled')) target.focus();
+    else root.querySelector<HTMLElement>('[data-pack-removal-status]')?.focus();
+  };
+  const action = (text: string,key: string,run: () => void) => {
     const button = node('button',text);button.type = 'button';button.className = 'rx-btn rx-btn-secondary rx-btn-sm';button.disabled = busy || applying;
-    button.style.cssText = 'max-width:100%;white-space:normal';button.onclick = run;return button;
+    button.style.cssText = 'max-width:100%;white-space:normal';button.setAttribute('data-pack-removal-focus',key);button.onclick = run;return button;
   };
   const check = (text: string,key: string,checked: boolean,set: (value: boolean) => void) => {
     const label = node('label');label.style.cssText = 'display:block;max-width:100%';const input = node('input');input.type = 'checkbox';input.checked = checked;
-    input.setAttribute(key,'');input.disabled = busy || applying;input.onchange = () => { set(input.checked);refreshConfirm(); };
+    input.setAttribute(key,'');input.setAttribute('data-pack-removal-focus',key);input.disabled = busy || applying;input.onchange = () => { set(input.checked);refreshConfirm(); };
     label.append(input,doc.createTextNode(' '+text));root.append(label);
   };
   const list = (title: string,values: string[]) => {
@@ -31,14 +42,14 @@ export const createPackRemovalReview = (options: { document: Document;packSlug: 
   };
   const packName = (pack: PackRemovalPack) => `${pack.pack_slug}${pack.publisher ? ' · '+pack.publisher : ''}${pack.version !== undefined ? ' · v'+pack.version : ''}`;
   const render = () => {
-    if (disposed) return;root.replaceChildren(node('h4','Review pack removal'));
+    if (disposed) return;const focus = focusKey();root.replaceChildren(node('h4','Review pack removal'));
     const status = node('p',error || (applying ? 'Removing the reviewed pack…' : busy ? 'Loading removal impact…' : message));
-    status.setAttribute('data-pack-removal-status','');status.setAttribute('role',error ? 'alert' : 'status');status.tabIndex = -1;root.append(status);
-    root.append(action(pendingReview ? 'Retry loading removal review' : 'Review current installation',() => { void reload(); }));
+    status.setAttribute('data-pack-removal-status','');status.setAttribute('data-pack-removal-focus','status');status.setAttribute('role',error ? 'alert' : 'status');status.tabIndex = -1;root.append(status);
+    root.append(action(pendingReview ? 'Retry loading removal review' : 'Review current installation','review',() => { void reload(); }));
     if (plan) {
       root.append(node('p',`Remove ${packName(plan.pack)}. Review valid until ${new Date(plan.expires_at).toLocaleTimeString()}.`));
       if (plan.publisher_choices.length > 1) {
-        const label = node('label','Installed publisher '),select = node('select');select.style.cssText = 'min-width:0;max-width:100%';select.setAttribute('data-pack-removal-publisher','');select.disabled = busy || applying;
+        const label = node('label','Installed publisher '),select = node('select');select.style.cssText = 'min-width:0;max-width:100%';select.setAttribute('data-pack-removal-publisher','');select.setAttribute('data-pack-removal-focus','publisher');select.disabled = busy || applying;
         const choose = node('option','Choose publisher');choose.value = '';select.append(choose);
         for (const value of plan.publisher_choices) { const option = node('option',value);option.value = value;select.append(option); }
         select.value = publisher ?? '';select.onchange = () => { publisher = select.value || undefined;pendingReview = undefined;void reload(); };label.append(select);root.append(label);
@@ -63,10 +74,10 @@ export const createPackRemovalReview = (options: { document: Document;packSlug: 
       }
       check('I reviewed this pack’s removal impact.','data-pack-removal-ack',ack,value => { ack = value; });
     }
-    const confirm = action(pendingApply ? 'Recover removal receipt' : 'Confirm reviewed removal',options.confirm);confirm.className = 'rx-btn rx-btn-danger rx-btn-sm';
+    const confirm = action(pendingApply ? 'Recover removal receipt' : 'Confirm reviewed removal','confirm',options.confirm);confirm.className = 'rx-btn rx-btn-danger rx-btn-sm';
     confirm.setAttribute('data-recued-packs-row-delete-confirm',options.packSlug);
     if (applying) { confirm.setAttribute('aria-disabled','true');confirm.setAttribute('aria-busy','true');confirm.disabled = false; }
-    else confirm.disabled = !canApply();root.append(confirm);
+    else confirm.disabled = !canApply();root.append(confirm);restoreFocus(focus);
   };
   const reload = async () => {
     if (busy || applying || disposed) return;busy = true;error = '';ack = false;unknown = false;incomplete = false;spent = false;pendingApply = undefined;
@@ -82,7 +93,7 @@ export const createPackRemovalReview = (options: { document: Document;packSlug: 
     } }
   };
   render();queueMicrotask(() => { if (!disposed) void reload(); });
-  return { element: root,canApply,hasPendingRetry: () => !!pendingApply,hasInFlightWork: () => busy || applying,
+  return { element: root,canApply,focusKey,restoreFocus,hasPendingRetry: () => !!pendingApply,hasInFlightWork: () => busy || applying,
     async apply(): Promise<PackRemovalApplyResult | undefined> {
       if (!canApply()) return;pendingApply ??= { review_id: plan!.review_id,request_id: crypto.randomUUID(),
         ...(unknown ? { acknowledge_unknown_dependencies: true } : {}),...(incomplete ? { acknowledge_incomplete_attempt: true } : {}) };

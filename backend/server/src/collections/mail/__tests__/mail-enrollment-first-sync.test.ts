@@ -77,7 +77,7 @@ const setup = (opts: { vaultLocked?: boolean; emptyFirstPage?: boolean; backfill
     }
     throw new Error(`Unexpected fixture request: ${url}`);
   };
-  const stack = composeMailStack(db, {
+  const compose = () => composeMailStack(db, {
     blobs: { async put() { return 'blob:fixture'; }, async get() { return null; }, async delete() {} } as never,
     getGate: () => createStorageGate({ quota: 1024 * 1024, reservePct: 0, surface: 'mail:work' }),
     bus,
@@ -88,6 +88,17 @@ const setup = (opts: { vaultLocked?: boolean; emptyFirstPage?: boolean; backfill
     oauthConfig: () => ({ clientId: 'fixture-client', clientSecret: 'fixture-secret', tokenUrl: 'https://oauth2.googleapis.com/token' }),
     fetcher,
   });
+  const stack = compose();
+  /** The server stops and boots again over the same database, its vault
+   *  unlocked: the next boot's stack, with the mailboxes the first one saved. */
+  const restart = async () => {
+    await stack.disposeAll();
+    vaultUnlocked = true;
+    const next = compose();
+    // Before the database closes, and with the scan let go: a held scan holds its stop.
+    cleanups.unshift(async () => { releaseScan(200); await next.disposeAll(); });
+    return next;
+  };
   const enroll = () => handleCollectionEnrollOAuth({ registry, mailEnroll: stack.enrollDeps }, {
     provider: 'gmail', account_slug: 'work', code: 'fixture-code', redirect_uri: 'https://fixture.example/oauth',
     ...(opts.backfillDays !== undefined ? { backfill_days: opts.backfillDays } : {}),
@@ -119,7 +130,7 @@ const setup = (opts: { vaultLocked?: boolean; emptyFirstPage?: boolean; backfill
     bus.dispose();
     db.close();
   });
-  return { stack, registry, credentials, conn, enroll, scanQueries,
+  return { stack, registry, credentials, conn, enroll, scanQueries, restart,
     releaseScan, unlock: () => { vaultUnlocked = true; },
     counts: () => ({ scanRequests, historyRequests, exchanges }),
   };
@@ -290,5 +301,47 @@ describe('Mail enrollment does not wait for the first sync', () => {
     h.releaseScan(200);
     await resuming;
     expect(h.stack.instances.get('mail', 'work')?.backfill_complete).toBe(true);
+  });
+});
+
+// The server answers nothing until its boot is done, and a first scan reads all
+// that came while it was down: an owner's update waited 254 s for its mailboxes
+// and calendar (2026-10-20).
+describe('Boot does not wait for the first scan either', () => {
+  it('starts each mailbox and returns while its first scan runs; firstScans waits for the scan', async () => {
+    const h = setup({ vaultLocked: true });
+    await h.enroll();
+    expect(h.counts().scanRequests).toBe(0);
+    const next = await h.restart();
+    await next.startAll('background');
+    let scanned = false;
+    void next.firstScans().then(() => { scanned = true; });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(h.counts().scanRequests).toBe(1);
+    expect(h.registry.get('mail', 'work')).toBe(next.listLive()[0]);
+    await vi.advanceTimersByTimeAsync(90_000);
+    expect(scanned).toBe(false);
+    expect(next.instances.get('mail', 'work')?.backfill_complete).toBe(false);
+
+    h.releaseScan(200);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(scanned).toBe(true);
+    expect(next.instances.get('mail', 'work')?.backfill_complete).toBe(true);
+  });
+
+  it('with no argument waits for the first scan, as before', async () => {
+    const h = setup({ vaultLocked: true });
+    await h.enroll();
+    const next = await h.restart();
+    let started = false;
+    const starting = next.startAll().then(() => { started = true; });
+    await vi.advanceTimersByTimeAsync(90_000);
+    expect(h.counts().scanRequests).toBe(1);
+    expect(started).toBe(false);
+
+    h.releaseScan(200);
+    await starting;
+    expect(next.instances.get('mail', 'work')?.backfill_complete).toBe(true);
   });
 });

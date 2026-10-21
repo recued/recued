@@ -12,7 +12,7 @@
  */
 
 import type { RpcMethodSpec } from './types.js';
-import type { ArchiveRemoteBackup, ArchiveRemoteDestination, ArchiveRemoteTarget } from '../archive-remote.js';
+import type { ArchiveRemoteBackup, ArchiveRemoteDestination, ArchiveRemoteTarget, ArchiveUnattendedSettings, ArchiveUnattendedStatus, ArchiveRestoreDrill, ArchiveBackupHealthPolicy, ArchiveBackupHealthStatus } from '../archive-remote.js';
 import type {
   MailWorkCreateRequest, MailWorkDeleteRequest, MailWorkDeleteResult, MailWorkDetail, MailWorkListRequest, MailWorkListResult,
   MailWorkSearchResult, MailWorkUpdateRequest,
@@ -6887,6 +6887,14 @@ export type ServerRpcRegistry = {
   /** Owner-only storage choices and durable remote delivery history. */
   'server.archive.destinations': RpcMethodSpec<Record<string, never>, { destinations: ArchiveRemoteDestination[] }>;
   'server.archive.backups': RpcMethodSpec<Record<string, never>, { backups: ArchiveRemoteBackup[] }>;
+  'server.archive.health.get': RpcMethodSpec<Record<string, never>, ArchiveBackupHealthStatus>;
+  'server.archive.health.save': RpcMethodSpec<{ policy: ArchiveBackupHealthPolicy }, ArchiveBackupHealthStatus>;
+  'server.archive.drills': RpcMethodSpec<Record<string, never>, { drills: ArchiveRestoreDrill[] }>;
+  'server.archive.drill.start': RpcMethodSpec<{ operation_id: string; backup_operation_id: string; recoveryKey: string }, ArchiveRestoreDrill>;
+  'server.archive.drill.cancel': RpcMethodSpec<{ operation_id: string }, ArchiveRestoreDrill>;
+  'server.archive.drill.cleanup': RpcMethodSpec<{ operation_id: string }, ArchiveRestoreDrill>;
+  'server.archive.unattended.get': RpcMethodSpec<Record<string, never>, ArchiveUnattendedStatus>;
+  'server.archive.unattended.save': RpcMethodSpec<{ settings: ArchiveUnattendedSettings; recoveryKey?: string }, ArchiveUnattendedStatus>;
   /** Reconcile an interrupted delivery; never export or upload another archive. */
   'server.archive.backup.check': RpcMethodSpec<{ operation_id: string }, ArchiveRemoteBackup>;
   /** Read and verify ciphertext into the existing restore staging area. No import. */
@@ -8984,6 +8992,14 @@ export const SERVER_RPC_METHODS = [
   'server.archive.export',
   'server.archive.destinations',
   'server.archive.backups',
+  'server.archive.health.get',
+  'server.archive.health.save',
+  'server.archive.drills',
+  'server.archive.drill.start',
+  'server.archive.drill.cancel',
+  'server.archive.drill.cleanup',
+  'server.archive.unattended.get',
+  'server.archive.unattended.save',
   'server.archive.backup.check',
   'server.archive.backup.retrieve',
   'server.archive.status',

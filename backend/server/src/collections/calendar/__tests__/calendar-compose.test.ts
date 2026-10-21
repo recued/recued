@@ -211,6 +211,19 @@ describe('composeCalendarStack — lifecycle', () => {
     } finally { release(); await restarting; await stopping; await h.stack.disposeAll(); h.cleanup(); }
   });
 
+  it('starts each calendar at boot and returns while its first scan runs', async () => {
+    // The server answers nothing until its boot is done (the mail stack's `startAll` says why).
+    let release!: () => void; let scanning = false;
+    const scan = new Promise<void>(resolve => { release = resolve; });
+    const h = buildHarness({ isVaultUnlocked: () => true, initialScan: async () => { scanning = true; await scan; } });
+    try {
+      enrollRow(h, 'work');
+      await h.stack.startAll('background');
+      await vi.waitFor(() => { expect(scanning).toBe(true); });
+      expect(h.stack.listLive().map((c) => c.slug)).toEqual(['work']);
+    } finally { release(); await h.stack.disposeAll(); h.cleanup(); }
+  });
+
   it('disposeAll closes every live collection', async () => {
     enrollRow(harness, 'work', 'caldav');
     await harness.stack.startAll();

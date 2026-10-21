@@ -1096,7 +1096,7 @@ export interface ExecutionCaseCard {
 export const PII_ALIAS_NOTICE =
   'Some values here are privacy aliases — shaped like `pii.PersonN` or'
   + ' `mN@dN.invalid`, where N is a number. They stand in for real people,'
-  + ' emails, phones and orgs from the'
+  + ' emails, phones, orgs and places from the'
   + " owner's own data, which you are not shown.\n"
   + 'Use an alias EXACTLY as written. Passing one into a tool argument works —'
   + ' it becomes the real value after it leaves you, and the owner sees the real'
@@ -1106,7 +1106,10 @@ export const PII_ALIAS_NOTICE =
   + ' value.\n'
   + '⛔ Never rebuild a real value from those fragments. A reconstructed address'
   + ' or name is wrong even when it looks right, and it will not resolve — pass'
-  + ' the alias instead.';
+  + ' the alias instead.\n'
+  + 'A place alias (`pii.AddressN`) hides which place a record names, so it may be'
+  + ' the very place the owner names in their message. Never say it is a different'
+  + ' place; say you cannot see which place the record names.';
 
 export const EXECUTION_CASE_CARD_NOTICE =
   'Historical evidence only. Judge applicability to the current request.\n'

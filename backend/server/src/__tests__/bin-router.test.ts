@@ -706,6 +706,38 @@ describe('production router', () => {
       .toBe(true);
   }, 30_000);
 
+  it('supervises on Node\'s own modules: no SQLite, no database, no serve runtime, no update graph', () => {
+    // ⛔ The Windows supervisor outlives every update of a session, and whatever
+    // it loads from the install directory it holds open: an addon it held would
+    // make a later update unable to replace that file (`launcher/outer-supervisor.ts`).
+    const dir = makeTmp();
+    const binDir = join(dir, 'bin');
+    const tracePath = join(dir, 'supervise-modules.jsonl');
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(join(binDir, 'recued'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+
+    const result = runBin(['supervise', '--bin-dir', binDir, '--', '--db', join(dir, 'recued.db')], {
+      env: { RECUED_BOOT_TRACE: '1' },
+      loaderTracePath: tracePath,
+    });
+    const loaded = readModuleLoads(tracePath);
+    const forbidden = loaded.filter((entry) =>
+      forbiddenLoadedModule(entry)
+      || serveRuntimeLoadedModule(entry)
+      || loadedModuleMatches(entry, (value) =>
+        value.includes('/backend/server/src/open-database.')
+        || value.includes('/backend/server/src/update/')));
+
+    expect(result.status).toBe(0);
+    // Not vacuous: the trace saw the supervisor itself load.
+    expect(loaded.some((entry) => loadedModuleMatches(entry, (value) =>
+      value.includes('/backend/server/src/cli-context/supervise.')))).toBe(true);
+    expect(forbidden).toEqual([]);
+    const events = parseBootTrace(result.stderr);
+    expect(events.some((event) => event.profile === 'supervise')).toBe(true);
+    expect(events.every((event) => event.db_open_attempted === false)).toBe(true);
+  }, 30_000);
+
   it('traces --version as profile none with no DB-open attempt', () => {
     const result = runBin(['--version'], {
       env: { RECUED_BOOT_TRACE: '1' },

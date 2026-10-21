@@ -3164,7 +3164,7 @@ export const mountPacksPanel = (
     const cancel = doc.createElement('button');cancel.type = 'button';cancel.className = 'rx-btn rx-btn-secondary rx-btn-sm';cancel.textContent = COPY.cancel_label;
     cancel.setAttribute(PACKS_ROW_DELETE_CANCEL_BTN_ATTR,slug);if (deleting) cancel.setAttribute('aria-disabled','true');
     cancel.onclick = () => cancelDeleteConfirm(slug);parent.append(cancel);
-    if (deleteError) { const error = doc.createElement('p');error.setAttribute(PACKS_ROW_DELETE_ERROR_ATTR,'');error.setAttribute('role','alert');error.textContent = deleteError;parent.append(error); }
+    if (deleteError) { const error = doc.createElement('p');error.className = 'packs-row-delete-error';error.setAttribute(PACKS_ROW_DELETE_ERROR_ATTR,'');error.setAttribute('role','alert');error.textContent = deleteError;parent.append(error); }
   };
 
   const openDeleteConfirm = (slug: string): void => {
@@ -4673,6 +4673,13 @@ export const mountPacksPanel = (
 
   const render = (): void => {
     if (disposed) return;
+    // A removal review is re-attached below, which drops the focus inside it,
+    // and one the owner closed is disposed first, which takes the focus with it.
+    // Read it before either. The focus chain hands it back to the review; once
+    // a removal has closed the review, the delete-action fallbacks take over:
+    // Install after a removal, Retry if the relist failed.
+    let removalFocus: { slug: string; key: string } | null = null;
+    for (const [slug,review] of removalReviews) { const key = review.focusKey(); if (key !== null) removalFocus = { slug,key }; }
     for (const [slug,review] of updateReviews) if (slug !== dialogOpenFor) {
       review.panel.hide(); if (!review.panel.hasUnsavedChanges()) { review.panel.dispose(); updateReviews.delete(slug); }
     }
@@ -4757,6 +4764,7 @@ export const mountPacksPanel = (
     if (restoreResourceAccess === null && focusLost) restoreResourceAccess = pendingResourceAccessFocus;
     pendingResourceAccessFocus = null;
     const repairFocus = installationRepair?.focusKey() ?? null;
+    if (removalFocus !== null && restoreDeleteAction === null) restoreDeleteAction = { kind: 'confirm', slug: removalFocus.slug };
     clearChildren();
     switch (state) {
       case 'loading':
@@ -4798,6 +4806,9 @@ export const mountPacksPanel = (
       pendingInstallDialogFocus = restoreInstallDialogFocus(restoreInstallDialog)
         ? null
         : restoreInstallDialog;
+    } else if (removalFocus !== null && removalReviews.get(removalFocus.slug)?.element.isConnected) {
+      removalReviews.get(removalFocus.slug)!.restoreFocus(removalFocus.key);
+      pendingDeleteActionFocus = null;
     } else if (restoreDeleteAction !== null) {
       pendingDeleteActionFocus = restoreDeleteActionFocus(restoreDeleteAction)
         ? null

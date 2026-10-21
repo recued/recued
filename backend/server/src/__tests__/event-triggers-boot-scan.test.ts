@@ -464,8 +464,9 @@ afterEach(() => {
 
 interface GmailMessage { readonly id: string; readonly at: number }
 
-/** The mailbox's current messages, served as the Gmail REST API would. */
-const scriptGmail = (mailbox: GmailMessage[]): void => {
+/** The mailbox's current messages, served as the Gmail REST API would. A
+ *  `listed` gate holds the listing, and with it the scan, until it resolves. */
+const scriptGmail = (mailbox: GmailMessage[], listed?: Promise<void>): void => {
   const json = (body: unknown): Response =>
     new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
   vi.stubGlobal('fetch', async (input: string | URL | Request): Promise<Response> => {
@@ -474,6 +475,7 @@ const scriptGmail = (mailbox: GmailMessage[]): void => {
     if (path === '/profile') return json({ emailAddress: OWNER, historyId: '100' });
     if (path === '/history') return json({ historyId: '100' });
     if (path === '/messages') {
+      if (listed) await listed;
       return json({ messages: mailbox.map((m) => ({ id: m.id, threadId: m.id })), resultSizeEstimate: mailbox.length });
     }
     const one = /^\/messages\/([^/]+)$/.exec(path);
@@ -581,7 +583,11 @@ const bootToAdapters = async () => {
     await mailStack.disposeAll();
     storage.db?.close();
   };
-  return { mailStack, composeListenersPart, runs, close };
+  return {
+    mailStack, composeListenersPart, runs, close,
+    startCollectionAdapters: () => collection.startCollectionAdapters(),
+    mailFacts: storage.mailFactStoreRef!,
+  };
 };
 
 describe('D-124 — mail a boot scan finds, over the server composition in its boot order', () => {
@@ -642,6 +648,37 @@ describe('D-124 — mail a boot scan finds, over the server composition in its b
     }
   }, 60_000);
 
+  it('boots on while a scan runs: mail it finds after the dispatcher subscribed runs once, and the gone-mail sweep waits for the scan', async () => {
+    const server = await bootToAdapters();
+    let triggers: { dispatcher: { dispose(): void; drained(): Promise<void> } } | undefined;
+    let release: (() => void) | undefined;
+    try {
+      server.mailStack.instances.markBackfillComplete('mail', 'work');
+      // An email the facts knew of, gone from the mailbox while the server was down.
+      server.mailFacts.markEmailNews({ slug: 'work', record_id: 'gone-while-down' });
+      scriptGmail([{ id: 'g1', at: Date.now() - 60_000 }], new Promise<void>((resolve) => { release = resolve; }));
+      // The listener binds once this resolves, so it does not wait for the scan.
+      await server.startCollectionAdapters();
+      const composed = await server.composeListenersPart();
+      triggers = composed.triggers;
+      await composed.replay();
+      expect(await server.runs()).toEqual([]);
+      // The sweep waits for the scan: its delete and move hooks come first.
+      expect(server.mailFacts.emailIdsOf('work', null, 10)).toEqual(['gone-while-down']);
+
+      release!();
+      await server.mailStack.firstScans();
+      await composed.triggers.dispatcher.drained();
+      expect(await server.runs()).toMatchObject([{ detail: 'completed' }]);
+      await vi.waitFor(() => {
+        expect(server.mailFacts.emailIdsOf('work', null, 10)).not.toContain('gone-while-down');
+      });
+    } finally {
+      release?.();
+      await server.close(triggers);
+    }
+  }, 60_000);
+
   it('is wired so by the server: sealed as the dispatcher composes, replayed once the pre-approval driver is there', () => {
     const source = readFileSync(
       resolve(dirname(fileURLToPath(import.meta.url)), '..', 'serve/compose-listeners.ts'),
@@ -654,6 +691,13 @@ describe('D-124 — mail a boot scan finds, over the server composition in its b
     // Nothing between them waits: no event can come in the gap and be heard
     // twice, or not at all.
     expect(source.slice(composed, sealed)).not.toContain('await ');
+    // Nor between the seal and the pre-approval driver, which the first await
+    // after it finds composed: a boot scan runs on past the seal
+    // (`startAll('background')`), and an event the dispatcher heard before the
+    // driver was there would skip its capture.
+    const firstWait = source.indexOf('if (preapproval && await storage.preapprovalStorage!.recover())');
+    expect(firstWait).toBeGreaterThan(source.indexOf('const preapproval = storage.preapprovalStorage'));
+    expect(source.slice(sealed, firstWait)).not.toMatch(/\bawait\b/);
     const replayed = source.indexOf('void collection.bootEvents.replay(');
     expect(replayed).toBeGreaterThan(source.indexOf('await storage.preapprovalStorage!.recover()'));
     expect([...source.matchAll(/collection\.bootEvents\.(seal|replay)\(/g)]).toHaveLength(2);

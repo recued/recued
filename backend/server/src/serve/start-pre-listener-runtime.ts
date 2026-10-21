@@ -258,6 +258,9 @@ export const startPreListenerRuntime = async (
       eventBus: options.storage.eventBus,
     },
     runtime: {
+      ...(options.archiveDeps?.unattendedBackups ? { unattendedBackups: options.archiveDeps.unattendedBackups } : {}),
+      ...(options.archiveDeps?.backupHealth ? { backupHealth: options.archiveDeps.backupHealth } : {}),
+      ...(options.archiveDeps?.restoreDrills ? { restoreDrills: options.archiveDeps.restoreDrills } : {}),
       dbPath: options.dbPath,
       runtimeConfig: options.runtimeConfig,
       backgroundServices: options.backgroundServices,

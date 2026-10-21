@@ -24,7 +24,8 @@ import {
   type TransparencyMultiTurnRoundOutcome,
 } from '@recued/contracts';
 
-import { runChatTurn, type RunChatTurnDeps } from '../chat-turn-executor.js';
+import { ESTIMATED_BYTES_PER_TOKEN } from '@recued/llm';
+import { CHAT_MAIN_TURN_SYSTEM_PROMPT, runChatTurn, type RunChatTurnDeps } from '../chat-turn-executor.js';
 import { deriveExecutionFlowPattern } from '../execution-case-core.js';
 
 /** Big enough that any workable preview threshold elides it whole. */
@@ -35,6 +36,13 @@ const BIG = { rows: Array.from({ length: 400 }, (_, i) => `row-${i}-payload-payl
  *  took my answer" from "the trim shortened how my request is displayed". */
 const resultFor = (args: unknown): unknown =>
   JSON.stringify(args ?? '').length > 4_000 ? { ok: true } : BIG;
+
+/** These turns run at budgets just above their floor, and the core system prompt
+ *  is most of that floor. The budgets were set against a 2,914-byte prompt, so
+ *  `sized` moves them with the prompt's size instead of breaking whenever the
+ *  prompt grows (2026-10-20: 359 more bytes left 31 of these tests red). */
+const sized = (budget: number) => budget
+  + Math.ceil((Buffer.byteLength(CHAT_MAIN_TURN_SYSTEM_PROMPT, 'utf8') - 2_914) / ESTIMATED_BYTES_PER_TOKEN);
 
 /** Drive one turn whose model re-issues `calls[i]` on round i. Returns the
  *  livelock warnings AND how many rounds the model was actually asked for, so a
@@ -185,7 +193,7 @@ const expectRoundLifecycle = (
 describe('context-trim refetch loop detector', () => {
   it('🔑 fires when the SAME call is re-issued after its result was elided', async () => {
     // Round 1 fetches n1; the trim elides it. Rounds 2 and 3 fetch n1 again.
-    const { loops } = await runTurn(2_000, [[READ('n1')], [READ('n1')], [READ('n1')]]);
+    const { loops } = await runTurn(sized(2_000), [[READ('n1')], [READ('n1')], [READ('n1')]]);
     expect(loops).toHaveLength(1);
     expect(loops[0]).toMatch(/2 tool result\(s\) re-fetched/);
     expect(loops[0]).toMatch(/Ending the turn instead of looping/);
@@ -193,7 +201,7 @@ describe('context-trim refetch loop detector', () => {
 
   it('emits one valid context-limit stop event after repeated re-read loss', async () => {
     const { transparencyEvents, rounds } = await runTurn(
-      2_000, [[READ('n1')], [READ('n1')], [READ('n1')]],
+      sized(2_000), [[READ('n1')], [READ('n1')], [READ('n1')]],
     );
     const stops = transparencyEvents.filter((event) =>
       event !== null && typeof event === 'object'
@@ -214,7 +222,7 @@ describe('context-trim refetch loop detector', () => {
     { label: 'batched rounds', batch: [READ('n1'), READ('n2')], outcomes: ['continue', 'aborted'] },
   ] as const)('closes the stopped round before loop termination for $label', async ({ batch, outcomes }) => {
     const { transparencyEvents, loops, rounds } = await runTurn(
-      2_000, Array.from({ length: 4 }, () => batch),
+      sized(2_000), Array.from({ length: 4 }, () => batch),
     );
 
     expect(loops).toHaveLength(1);
@@ -229,7 +237,7 @@ describe('context-trim refetch loop detector', () => {
     { label: 'an empty reply retry', options: { responses: { 2: '' } }, outcome: 'completed', reason: 'completed' },
   ] as const)('closes one round once after $label', async ({ options, outcome, reason }) => {
     const { transparencyEvents, loops } = await runTurn(
-      2_000, [[READ('n1')]], () => SMALL_READ_RESULT, undefined, options,
+      sized(2_000), [[READ('n1')]], () => SMALL_READ_RESULT, undefined, options,
     );
 
     expect(loops).toHaveLength(0);
@@ -240,7 +248,7 @@ describe('context-trim refetch loop detector', () => {
     const batch = [READ('n1'), READ('n2'), READ('n3')];
     let reads = 0;
     const { transparencyEvents, loops, rounds, shipped } = await runTurn(
-      2_000, [batch, batch], () => ++reads <= batch.length ? BIG : SMALL_READ_RESULT,
+      sized(2_000), [batch, batch], () => ++reads <= batch.length ? BIG : SMALL_READ_RESULT,
       undefined, { responses: { 3: '' } },
     );
 
@@ -258,7 +266,7 @@ describe('context-trim refetch loop detector', () => {
     let reads = 0;
     let critiques = 0;
     const { transparencyEvents, loops, rounds, shipped } = await runTurn(
-      2_000, [batch, batch, batch], () => ++reads <= batch.length ? BIG : SMALL_READ_RESULT,
+      sized(2_000), [batch, batch, batch], () => ++reads <= batch.length ? BIG : SMALL_READ_RESULT,
       undefined, {
         critiqueProposal: async () => ++critiques !== 3 ? null : ({
           critique: {
@@ -285,7 +293,7 @@ describe('context-trim refetch loop detector', () => {
       const batch = [READ('n1'), READ('n2'), READ('n3')];
       let reads = 0;
       const { transparencyEvents, loops, rounds, shipped } = await runTurn(
-        2_000, [batch, batch], () => ++reads <= batch.length ? BIG : SMALL_READ_RESULT,
+        sized(2_000), [batch, batch], () => ++reads <= batch.length ? BIG : SMALL_READ_RESULT,
         undefined, { responses: { 3: 'Draft answer. '.repeat(20) } },
       );
 
@@ -305,7 +313,7 @@ describe('context-trim refetch loop detector', () => {
   ] as const)('reports zero rounds when critique $label before any dispatch', async ({ failedPackets, reason }) => {
     let reads = 0;
     const { transparencyEvents, loops, rounds } = await runTurn(
-      2_000, [[READ('n1')]], () => { reads += 1; return SMALL_READ_RESULT; },
+      sized(2_000), [[READ('n1')]], () => { reads += 1; return SMALL_READ_RESULT; },
       undefined, {
         failedPackets,
         critiqueProposal: async () => ({
@@ -329,7 +337,7 @@ describe('context-trim refetch loop detector', () => {
     // and its tokens and exits at `max_rounds_exhausted` with no answer anyway:
     // the user waits longer for the same nothing, and pays for it.
     const many = Array.from({ length: 20 }, () => [READ('n1')]);
-    const { loops, rounds } = await runTurn(2_000, many);
+    const { loops, rounds } = await runTurn(sized(2_000), many);
     expect(loops).toHaveLength(1);
     // Stopped early — nowhere near the twenty rounds the model asked for.
     expect(rounds).toBeLessThanOrEqual(4);
@@ -339,7 +347,7 @@ describe('context-trim refetch loop detector', () => {
     // An identical retry re-enters the same loop: same budget, same too-large
     // result, same elision. The remedies that change the outcome are a narrower
     // request or a bigger window, and the copy has to say so.
-    const { result } = await runTurn(2_000, [[READ('n1')], [READ('n1')], [READ('n1')]]);
+    const { result } = await runTurn(sized(2_000), [[READ('n1')], [READ('n1')], [READ('n1')]]);
     const text = JSON.stringify(result ?? '');
     expect(text).toMatch(/fewer or smaller items/);
     expect(text).toMatch(/larger context window/);
@@ -349,13 +357,13 @@ describe('context-trim refetch loop detector', () => {
   it('⛔ ONE re-fetch is not a loop — a model may legitimately redo a lost call', async () => {
     // The threshold is >= 2 on purpose. A single retry after losing a result is
     // ordinary recovery; flagging it would make the signal useless.
-    expect((await runTurn(2_000, [[READ('n1')], [READ('n1')]])).loops).toHaveLength(0);
+    expect((await runTurn(sized(2_000), [[READ('n1')], [READ('n1')]])).loops).toHaveLength(0);
   });
 
   it('⛔ DIFFERENT calls are not a loop, however many are elided', async () => {
     // Progress through a large corpus elides a lot and re-fetches nothing. If
     // this fired, the detector would just be measuring "the trim is working".
-    expect((await runTurn(2_000, [
+    expect((await runTurn(sized(2_000), [
       [READ('n1')], [READ('n2')], [READ('n3')], [READ('n4')],
     ])).loops).toHaveLength(0);
   });
@@ -372,13 +380,13 @@ describe('context-trim refetch loop detector', () => {
     // differs must collide, or the counter reads zero on a real loop.
     const a = { tool: 'work.read', args: { kind: 'note', id: 'n1' } };
     const b = { tool: 'work.read', args: { id: 'n1', kind: 'note' } };
-    const { loops } = await runTurn(2_000, [[a], [b], [a]]);
+    const { loops } = await runTurn(sized(2_000), [[a], [b], [a]]);
     expect(loops).toHaveLength(1);
   });
 
   it('does not stop when args are elided but the full result survives in its preview', async () => {
     const calls = Array.from({ length: 4 }, () => [PASTE]);
-    const { anyMarker, shipped, loops, rounds, result } = await runTurn(2_000, calls);
+    const { anyMarker, shipped, loops, rounds, result } = await runTurn(sized(2_000), calls);
 
     // This budget forces the real preview search even for a single call. The
     // pasted body is shortened, but the entire {ok:true} answer fits inside
@@ -411,7 +419,7 @@ describe('context-trim refetch loop detector', () => {
     { label: 'backslash', value: '\\'.repeat(300) },
   ])('stops repeated calls whose $label string result was truncated', async ({ label, value }) => {
     const calls = Array.from({ length: 4 }, () => [PASTE]);
-    const { shipped, loops, rounds } = await runTurn(2_500, calls, () => value);
+    const { shipped, loops, rounds } = await runTurn(sized(2_500), calls, () => value);
     const serialized = JSON.stringify(value);
 
     expect(shipped.length).toBeGreaterThan(1);
@@ -443,7 +451,7 @@ describe('context-trim refetch loop detector', () => {
     { label: 'backslash', value: '\\'.repeat(40) },
   ])('completes when the full $label string result remains in its preview', async ({ value }) => {
     const calls = Array.from({ length: 4 }, () => [PASTE]);
-    const { shipped, loops, rounds, result } = await runTurn(2_500, calls, () => value);
+    const { shipped, loops, rounds, result } = await runTurn(sized(2_500), calls, () => value);
 
     for (const packet of shipped.slice(1)) {
       expect(packet).toHaveLength(1);
@@ -462,7 +470,7 @@ describe('context-trim refetch loop detector', () => {
 
   it('stops alternating reads after whole call/result pairs are removed', async () => {
     const calls = ['n1', 'n2', 'n1', 'n2', 'n1', 'n2'].map((id) => [READ(id)]);
-    const { shipped, loops, rounds } = await runTurn(3_000, calls, () => WHOLE_READ_RESULT);
+    const { shipped, loops, rounds } = await runTurn(sized(3_000), calls, () => WHOLE_READ_RESULT);
 
     expect(shipped.length).toBeGreaterThan(2);
     // Every packet keeps only the newest answer, entirely unchanged. The
@@ -479,7 +487,7 @@ describe('context-trim refetch loop detector', () => {
 
   it('allows one reread after a whole call/result pair was removed', async () => {
     const calls = ['n1', 'n2', 'n1'].map((id) => [READ(id)]);
-    const { shipped, loops, rounds, result } = await runTurn(3_000, calls, () => WHOLE_READ_RESULT);
+    const { shipped, loops, rounds, result } = await runTurn(sized(3_000), calls, () => WHOLE_READ_RESULT);
 
     expect(shipped[2]).toEqual([{ tool: 'work.read', args: READ('n2').args, result: WHOLE_READ_RESULT }]);
     expect(loops).toHaveLength(0);
@@ -489,7 +497,7 @@ describe('context-trim refetch loop detector', () => {
 
   it('allows distinct reads while whole call/result pairs are removed', async () => {
     const calls = ['n1', 'n2', 'n3', 'n4'].map((id) => [READ(id)]);
-    const { shipped, loops, rounds, result } = await runTurn(3_000, calls, () => WHOLE_READ_RESULT);
+    const { shipped, loops, rounds, result } = await runTurn(sized(3_000), calls, () => WHOLE_READ_RESULT);
 
     for (const [i, packet] of shipped.slice(1).entries()) {
       const call = calls[i]![0]!;
@@ -502,7 +510,7 @@ describe('context-trim refetch loop detector', () => {
 
   it('keeps going when a new copy of a wholly removed call still has its answer', async () => {
     const calls = Array.from({ length: 4 }, () => [READ('n1')]);
-    const { shipped, loops, rounds, result } = await runTurn(3_000, calls, () => WHOLE_READ_RESULT);
+    const { shipped, loops, rounds, result } = await runTurn(sized(3_000), calls, () => WHOLE_READ_RESULT);
 
     for (const packet of shipped.slice(1)) {
       expect(packet).toEqual([{ tool: 'work.read', args: READ('n1').args, result: WHOLE_READ_RESULT }]);
@@ -530,7 +538,7 @@ describe('context-trim refetch loop detector', () => {
     const calls = ['n1', 'n2', 'n1', 'n2'].map((id) => [{
       ...PASTE, args: { id, ...PASTE.args },
     }]);
-    const { shipped, loops, rounds, result } = await runTurn(3_000, calls, () => undefined);
+    const { shipped, loops, rounds, result } = await runTurn(sized(3_000), calls, () => undefined);
 
     for (const packet of shipped.slice(1)) {
       expect(packet).toHaveLength(1);
@@ -545,7 +553,7 @@ describe('context-trim refetch loop detector', () => {
   it.each([1, 2])('recovers with smaller answers after %i oversized reads', async (largeReads) => {
     const calls = Array.from({ length: 4 }, () => [READ('n1')]);
     let attempts = 0;
-    const { shipped, loops, rounds, result } = await runTurn(2_000, calls, () => {
+    const { shipped, loops, rounds, result } = await runTurn(sized(2_000), calls, () => {
       attempts += 1;
       return attempts <= largeReads ? BIG : SMALL_READ_RESULT;
     });
@@ -570,7 +578,7 @@ describe('context-trim refetch loop detector', () => {
   it('recovers with smaller answers after whole call/result pairs were removed', async () => {
     const calls = ['n1', 'n2', 'n1', 'n2', 'n1', 'n2'].map((id) => [READ(id)]);
     let attempts = 0;
-    const { shipped, loops, rounds, result } = await runTurn(3_000, calls, () => {
+    const { shipped, loops, rounds, result } = await runTurn(sized(3_000), calls, () => {
       attempts += 1;
       return attempts <= 2 ? WHOLE_READ_RESULT : SMALL_READ_RESULT;
     });
@@ -589,7 +597,7 @@ describe('context-trim refetch loop detector', () => {
   it('still stops if recovered answers become oversized and are lost again', async () => {
     const calls = Array.from({ length: 6 }, () => [READ('n1')]);
     let attempts = 0;
-    const { shipped, loops, rounds } = await runTurn(2_000, calls, () => {
+    const { shipped, loops, rounds } = await runTurn(sized(2_000), calls, () => {
       attempts += 1;
       return attempts === 2 ? SMALL_READ_RESULT : BIG;
     });
@@ -604,7 +612,7 @@ describe('context-trim refetch loop detector', () => {
   it('allows a complete newer copy to recover truncated rereads in the same batch', async () => {
     let attempts = 0;
     const { shipped, loops, rounds, result } = await runTurn(
-      5_800, [[READ('n1')], [READ('n1'), READ('n1'), READ('n1')]], () => {
+      sized(5_800), [[READ('n1')], [READ('n1'), READ('n1'), READ('n1')]], () => {
         attempts += 1;
         return attempts === 4 ? SMALL_READ_RESULT : BIG;
       },
@@ -627,7 +635,7 @@ describe('context-trim refetch loop detector', () => {
   it('does not let an older complete copy hide newer truncated rereads', async () => {
     let attempts = 0;
     const { shipped, loops, rounds, result } = await runTurn(
-      5_800, [[READ('n1')], [READ('n1'), READ('n1')], [READ('n1')], [READ('n1')]], () => {
+      sized(5_800), [[READ('n1')], [READ('n1'), READ('n1')], [READ('n1')], [READ('n1')]], () => {
         attempts += 1;
         return attempts === 2 ? SMALL_READ_RESULT : BIG;
       },
@@ -675,7 +683,7 @@ describe('context-trim refetch loop detector', () => {
   ('does not treat a newer $label as recovery of a lost reread', async ({ dispatch }) => {
     let attempts = 0;
     const { shipped, loops, rounds } = await runTurn(
-      5_800, [[READ('n1')], [READ('n1'), READ('n1'), READ('n1')], [READ('n1')], [READ('n1')]],
+      sized(5_800), [[READ('n1')], [READ('n1'), READ('n1'), READ('n1')], [READ('n1')], [READ('n1')]],
       resultFor, async () => {
         attempts += 1;
         if (attempts === 2) return { ok: true, result: SMALL_READ_RESULT };
@@ -698,7 +706,7 @@ describe('context-trim refetch loop detector', () => {
 
   it('counts a reread loss only once when malformed output needs a retry', async () => {
     const { shipped, loops, rounds, result } = await runTurn(
-      2_000, [[READ('n1')], [READ('n1')]], resultFor, undefined, { invalidPackets: [3] },
+      sized(2_000), [[READ('n1')], [READ('n1')]], resultFor, undefined, { invalidPackets: [3] },
     );
 
     expect(loops).toHaveLength(0);
@@ -752,7 +760,7 @@ describe('context-trim refetch loop detector', () => {
     const calls = Array.from({ length: 4 }, () => [READ('n1')]);
     let attempts = 0;
     const { shipped, loops, rounds, result } = await runTurn(
-      2_000, calls, resultFor, async () => {
+      sized(2_000), calls, resultFor, async () => {
         attempts += 1;
         return attempts === 1 ? { ok: true, result: BIG } : dispatch();
       },
@@ -777,7 +785,7 @@ describe('context-trim refetch loop detector', () => {
   it('counts successful rereads across failed and held attempts', async () => {
     const calls = Array.from({ length: 7 }, () => [READ('n1')]);
     let attempts = 0;
-    const { loops, rounds } = await runTurn(2_000, calls, resultFor, async () => {
+    const { loops, rounds } = await runTurn(sized(2_000), calls, resultFor, async () => {
       attempts += 1;
       if (attempts === 2) return { ok: false, reason: 'connection_unavailable' };
       if (attempts === 4) return {

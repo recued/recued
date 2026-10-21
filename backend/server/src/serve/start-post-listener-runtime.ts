@@ -147,6 +147,9 @@ export type PostListenerRuntimeCollectionContext =
   & Pick<CollectionContext, 'channelDispatchers' | 'assetOccurrences' | 'assetReminders' | 'yours' | 'scheduledSituations' | 'episodeRuntime' | 'proactiveLearning' | 'proactiveRetention'>;
 
 export interface StartPostListenerRuntimeOptions {
+  readonly unattendedBackups?: import('../archive/unattended-backups.js').UnattendedBackups;
+  readonly backupHealth?: import('../archive/backup-health.js').BackupHealth;
+  readonly restoreDrills?: import('../archive/restore-drills.js').RestoreDrills;
   readonly dbPath: string;
   readonly runtimeConfig: RuntimeConfigStore;
   readonly backgroundServices: BackgroundServiceRegistry;
@@ -389,6 +392,9 @@ export const startPostListenerRuntime = async (
   missedRunAsk?.register();
 
   const schedulersBundle = startSchedulers({
+    ...(options.unattendedBackups ? { unattendedBackups: options.unattendedBackups } : {}),
+    ...(options.backupHealth ? { backupHealth: options.backupHealth } : {}),
+    ...(options.restoreDrills ? { restoreDrills: options.restoreDrills } : {}),
     // D-269 — the declared server zone for cron schedules that carry none, so
     // `0 9 * * *` means 9am to the OWNER rather than 9am wherever this process
     // runs. Read PER TICK: under `follows_host` the answer is the host clock.

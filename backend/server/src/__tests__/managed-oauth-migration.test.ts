@@ -54,11 +54,16 @@ const world = async () => {
     if (impact.action !== 'account_impact') throw new Error('Fixture impact');
     return { auth: started.auth, impact_fingerprint: impact.impact.fingerprint };
   };
+  // A deadline in TIME, not event-loop turns. The migration runs in the
+  // background (encryption on the thread pool, fixture fetches), and 200 turns
+  // gave up after 85-257 ms in two loaded sweeps, though a quiet run needs a
+  // median of 10 polls and at most 57. Ten seconds stays inside the 30 s test
+  // timeout even for a test that waits twice.
   const wait = async (id: string, phase: 'ready' | 'completed' | 'stopped'): Promise<ManagedOAuthMigrationView> => {
-    for (let i = 0; i < 200; i++) {
+    for (const deadline = Date.now() + 10_000; Date.now() < deadline;) {
       const r = await rpc({ action: 'migration_status', id });
       if (r.action === 'migration_status' && r.migrations[0]?.state === phase) return r.migrations[0];
-      await new Promise<void>(resolve => setImmediate(resolve));
+      await new Promise<void>(resolve => setTimeout(resolve, 5));
     }
     throw new Error('Fixture migration did not settle');
   };

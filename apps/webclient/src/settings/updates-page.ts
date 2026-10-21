@@ -445,7 +445,10 @@ const BASELINE_POSTURE_COPY: Readonly<Record<ReleaseCheckStatus, string>> = {
 const APPLY_STATUS_COPY: Readonly<Record<UpdateApplyResponse['status'], string>> = {
   applying: 'Downloading and verifying the update — this takes a few minutes. You can leave this page.',
   restarting: 'Updating now. The server will restart and be away for a moment.',
-  deferred: "The server is busy, so the update did not start. Try again once it's idle.",
+  // ⚠ Not "busy": the server defers for several reasons (no supervisor to bring it
+  // back, a mismatched installed executable, waiting for idle), and names the one
+  // that applied in the `detail` shown after this.
+  deferred: 'The update did not start, and the server stays on its current version.',
   busy: 'Another update is already in progress.',
   'major-blocked': 'This is a major update — review the notes, then confirm below to proceed.',
   'insufficient-storage': 'Not enough free disk space on the server to apply this update.',

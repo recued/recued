@@ -6,13 +6,13 @@ import type { EntityPromptPart, TurnContext } from '@recued/middleware';
 import { createContractStore, type ContractStore } from '../storage/contract-store.js';
 import { createContractDefinitionStore } from '../storage/contract-definition-store.js';
 import { createContractGrantEntryStore } from '../storage/contract-grant-entry-store.js';
-import { createSituationQuery } from '../situations/query.js';
+import { createSituationQuery, SituationScanBoundError } from '../situations/query.js';
 import { createSituationAccess, type SituationAccess } from '../situations/access.js';
-import { createSituationPrefetch, SITUATION_PREFETCH_MAX_BYTES } from '../situations/prefetch.js';
+import { createSituationPrefetch, renderSituationPrefetch, SITUATION_PREFETCH_MAX_BYTES } from '../situations/prefetch.js';
 import { situationModelProjection } from '../situations/model-projection.js';
 import { createMetaFieldPrivacyResolver } from '../meta-field-privacy-resolver.js';
 import { CANONICAL_PII_ENTITY_PRIVACY_TAGS } from '../canonical-pii-schemas.js';
-import { renderEntityPartsForEgress, type PiiEgressPlan } from '../chat-pii-egress.js';
+import { createPiiEgressPlanForSession, renderEntityPartsForEgress, wrapExecuteAiCallForPii, type PiiEgressPlan } from '../chat-pii-egress.js';
 import { buildChatTier1Handlers, type ChatToolHandlerDeps } from '../chat-tool-handlers.js';
 import { createKernelAdapter } from '@recued/ingredients';
 import { createContactStore } from '../storage/contact-store.js';
@@ -195,6 +195,50 @@ describe('D-325 one situation tool and independent bounded prefetch', () => {
     const parts = await prefetch(access, 'Passport'); expect(parts[0]!.payload.length).toBeLessThanOrEqual(3);
     expect(Buffer.byteLength(JSON.stringify(parts[0]!.payload))).toBeLessThanOrEqual(SITUATION_PREFETCH_MAX_BYTES);
   });
+  it('says how many matching items it left out, so a capped list does not read as all of them', async () => {
+    // D-167: a model given a block stopped calling tools, so three rows of five
+    // read as the five unless the block says otherwise.
+    const rowsOf = (block: string) => block.split('\n').filter(line => line.startsWith('{'));
+    const parts = await prefetch(drive(Array.from({ length: 5 }, (_, i) => fact(`p${i}`, { title: `Passport ${i}` }))).access, 'Passport');
+    const block = parts[0]!.render(parts[0]!.payload); const shown = rowsOf(block).length;
+    expect(shown).toBeGreaterThan(0); expect(shown).toBeLessThan(5);
+    expect(block).toContain(`Shown here: ${shown} of the 5 matching items on file. ${5 - shown} ${5 - shown === 1 ? 'is' : 'are'} not listed.`);
+    const all = await prefetch(drive([fact('a'), fact('b', { title: 'Passport · Child' })]).access, 'Passport');
+    const whole = all[0]!.render(all[0]!.payload);
+    expect(rowsOf(whole)).toHaveLength(2); expect(whole).not.toMatch(/Shown here|not listed|too large/);
+  });
+  it('measures the rows it showed apart from everything the message matched', async () => {
+    const measured: Array<[string, number]> = []; const result = context('Passport');
+    await createSituationPrefetch({ getAccess: () => drive(Array.from({ length: 5 }, (_, i) => fact(`p${i}`, { title: `Passport ${i}` }))).access,
+      measure: (name, value) => { measured.push([name, value]); } }).prompt!(result.ctx);
+    const shown = result.parts[0]!.payload.length; expect(shown).toBeLessThan(5);
+    expect(measured.filter(([name]) => name.endsWith('_items'))).toEqual([['prefetch.shown_items', shown], ['prefetch.matched_items', 5]]);
+  });
+  it('says when a source was too large to search in full', async () => {
+    const query = createSituationQuery({ now: () => at, sources: [
+      { id: 'assets', collection: 'asset', verb_op: 'core.work-entity.read', read: () => [fact('a')] },
+      { id: 'tasks', collection: 'task', verb_op: 'core.work-entity.read', read: () => { throw new SituationScanBoundError('over the bound'); } }],
+    sourceForCollection: collection => ({ verb_op: 'core.work-entity.read', collection }) });
+    const parts = await prefetch(createSituationAccess({ contracts, query, now: () => at, isVaultUnlocked: () => true }), 'Passport');
+    const block = parts[0]!.render(parts[0]!.payload);
+    expect(block).toContain('Some sources were too large to search in full, so more may match.'); expect(block).not.toContain('Shown here');
+  });
+  it('keeps the count line inside the byte cap, counting a row it displaces', () => {
+    const rowsOf = (block: string) => block.split('\n').filter(line => line.startsWith('{'));
+    const header = Buffer.byteLength(renderSituationPrefetch([{ v: '' }], 1, false), 'utf8') - Buffer.byteLength('{"v":""}', 'utf8');
+    // Three rows that fill the cap to within 10 bytes; each line is its JSON plus a newline.
+    const room = SITUATION_PREFETCH_MAX_BYTES - 10 - header; const each = Math.floor(room / 3);
+    const rows = [each, each, room - 2 * each].map(size => ({ v: 'x'.repeat(size - 9) }));
+    expect(rowsOf(renderSituationPrefetch(rows, 3, false))).toHaveLength(3);
+    const block = renderSituationPrefetch(rows, 4, true);
+    expect(Buffer.byteLength(block, 'utf8')).toBeLessThanOrEqual(SITUATION_PREFETCH_MAX_BYTES);
+    expect(rowsOf(block)).toHaveLength(2);
+    expect(block).toContain('Shown here: 2 of the 4 matching items on file. 2 are not listed.');
+    expect(block).toContain('Some sources were too large to search in full');
+    // A row too large for the cap is skipped, and counted as not listed.
+    const skipped = renderSituationPrefetch([{ v: 'a' }, { v: 'x'.repeat(SITUATION_PREFETCH_MAX_BYTES) }, { v: 'b' }], 3, false);
+    expect(rowsOf(skipped)).toHaveLength(2); expect(skipped).toContain('Shown here: 2 of the 3 matching items on file. 1 is not listed.');
+  });
   it('aliases structured values at the real egress gather and drops them without an effective privacy plan', async () => {
     const { access } = drive([fact('passport-private-id', { title: 'Passport for Sam Rivera', people: ['Sam Rivera'],
       place: { key: 'label:14 cedar avenue', name: '14 Cedar Avenue' } })]);
@@ -230,5 +274,64 @@ describe('D-325 one situation tool and independent bounded prefetch', () => {
     const call = { slug: 'situation-query', input, output: {}, risk_tier: 'read', manifest_version: 1, stepMeta: { execution_source: owner } } as never;
     expect(await adapter(call)).toMatchObject({ clusters: [{ items: [{ what: { value: 'Passport' } }] }] });
     expect(read).toHaveBeenCalledWith(input, owner);
+  });
+});
+
+describe('a place the owner typed stays as typed in their own messages', () => {
+  /** One packet through the chat's egress wrapper; returns what the model was sent. */
+  const sendThroughEgress = async (packet: Record<string, unknown>, options: { parts?: readonly EntityPromptPart[];
+    seed?: Record<string, string> } = {}) => {
+    const plan = createPiiEgressPlanForSession({ ledgerStore: piiEgress.createSessionLedgerStore(),
+      resolver: createMetaFieldPrivacyResolver({ getEntitySchemas: () => [], getEntityPrivacyTags: () => CANONICAL_PII_ENTITY_PRIVACY_TAGS }) }, 's', 'chat');
+    // Values a lookup or tool result put in the session ledger earlier: key = privacy kind.
+    if (options.seed) piiEgress.aliasPacketForEgress({ ledger: plan.ledger, packet: options.seed, mode: 'alias',
+      resolver: () => Object.keys(options.seed!).map(kind => ({ path: kind, kind: kind as 'address' })) });
+    let sent = '';
+    await wrapExecuteAiCallForPii(async (_manifest, request) => { sent = String(request['llm.prompt']); return { body: { response: 'ok', events: [], tool_calls: [] } }; },
+      plan, undefined, options.parts ?? [])({} as never, { 'llm.prompt': JSON.stringify(packet) });
+    // No hold mark ever reaches the model.
+    expect(sent).not.toMatch(/[\uE000-\uE003]/u);
+    return JSON.parse(sent) as { user_message: string; chat_tail: Array<{ role: string; content: string }>; prefetch_context?: string[] };
+  };
+
+  it('keeps the place in the question while the lookup block aliases the record\'s place', async () => {
+    // Measured (D-325 bench, 2026-10-21): this went out as "Which country is pii.Address1 the capital of?".
+    const question = 'Which country is Lisbon the capital of?';
+    const parts = await prefetch(drive([fact('insurance', { title: 'Travel insurance', place: { key: 'city:lisbon', name: 'Lisbon' } })]).access, question);
+    expect(parts).toHaveLength(1);
+    const sent = await sendThroughEgress({ chat_tail: [], user_message: question }, { parts });
+    expect(sent.user_message).toBe(question);
+    expect(JSON.stringify(sent.prefetch_context)).not.toContain('Lisbon');
+    expect(JSON.stringify(sent.prefetch_context)).toMatch(/pii\.Address\d/u);
+  });
+
+  it('keeps it when a tool result, not the block, seeded the place in the same request', async () => {
+    // The direct pass seeds the result's place and used to content-scan the
+    // question in the same call, before any hold could see the place.
+    const question = 'Recommend some sights to see in Porto';
+    const sent = await sendThroughEgress({ chat_tail: [], user_message: question, prior_tool_calls: [{ tool_name: 'work.read', tier: 1, status: 'ok',
+      args: { kind: 'asset', id: 'cover' }, started_at: at, completed_at: at,
+      result: { entity: { title: 'Car insurance', anchors: [{ __entity: 'asset_anchor', kind: 'place', name: 'Porto' }] } } }] });
+    expect(sent.user_message).toBe(question);
+    expect(JSON.stringify(sent)).toMatch(/"name":"pii\.Address\d"/u);
+  });
+  it('still aliases every other kind the owner types, and a longer value that contains the place', async () => {
+    const sent = await sendThroughEgress({ chat_tail: [], user_message: 'Email ana@acme.com and Ana Silva at Lisbon Insurance Ltd about Lisbon' },
+      { seed: { email: 'ana@acme.com', name: 'Ana Silva', org: 'Lisbon Insurance Ltd', address: 'Lisbon' } });
+    expect(sent.user_message).not.toMatch(/ana@acme\.com|Ana Silva|Lisbon Insurance Ltd/u);
+    expect(sent.user_message).toMatch(/ about Lisbon$/u);
+  });
+
+  it('keeps it in the owner\'s earlier turns, not in the assistant\'s', async () => {
+    const sent = await sendThroughEgress({ chat_tail: [{ role: 'user', content: 'I fly to Lisbon on Friday.' },
+      { role: 'assistant', content: 'Your travel insurance covers Lisbon.' }], user_message: 'What should I pack?' }, { seed: { address: 'Lisbon' } });
+    expect(sent.chat_tail[0]!.content).toBe('I fly to Lisbon on Friday.');
+    expect(sent.chat_tail[1]!.content).not.toContain('Lisbon');
+  });
+
+  it('leaves a place touching an email to the content pass, so the email is aliased whole', async () => {
+    const sent = await sendThroughEgress({ chat_tail: [], user_message: 'Write to lisbon@acme.com today' },
+      { seed: { email: 'ana@acme.com', address: 'Lisbon' } });
+    expect(sent.user_message).not.toMatch(/acme\.com|lisbon@/iu);
   });
 });

@@ -22,8 +22,8 @@
  *  and characterising it here (rather than asserting it as correct) is what
  *  makes such a change show up as a test edit instead of slipping through. */
 import { describe, expect, it } from 'vitest';
-import { runChatTurn } from '../chat-turn-executor.js';
-import { estimateConservativeMessagesTokens } from '@recued/llm';
+import { CHAT_MAIN_TURN_SYSTEM_PROMPT, runChatTurn } from '../chat-turn-executor.js';
+import { ESTIMATED_BYTES_PER_TOKEN, estimateConservativeMessagesTokens } from '@recued/llm';
 import {
   BRIEFING_MAX_CHARS,
   CONTEXT_OMISSION_NOTICE as NOTICE_FULL,
@@ -37,6 +37,13 @@ const tailOf = (pairs: number) =>
     { role: 'user' as const, content: `question ${i} ${'q'.repeat(400)}` },
     { role: 'assistant' as const, content: `answer ${i} ${'a'.repeat(400)}` },
   ]).flat();
+
+/** These turns run at budgets just above their floor, and the core system prompt
+ *  is most of that floor. The budgets were set against a 2,914-byte prompt, so
+ *  `sized` moves them with the prompt's size instead of breaking whenever the
+ *  prompt grows (2026-10-20: 359 more bytes left the briefing test red). */
+const sized = (budget: number) => budget
+  + Math.ceil((Buffer.byteLength(CHAT_MAIN_TURN_SYSTEM_PROMPT, 'utf8') - 2_914) / ESTIMATED_BYTES_PER_TOKEN);
 
 /** One turn at one budget. No tools at all, so the ONLY thing the ladder can
  *  shed is the tail — which is what isolates this rung. */
@@ -181,7 +188,7 @@ describe('tail eviction', () => {
     // data source or tool that contains information about rings 09-12" while
     // the catalog was intact. Naming the loss is half the fix; saying what the
     // absence MEANS is the other half.
-    const { tail } = await runAt(2_000, 6);
+    const { tail } = await runAt(sized(2_000), 6);
     const notice = tail.find((r) => r.content.startsWith(NOTICE));
     expect(notice, 'a briefing was emitted').toBeDefined();
     const text = notice!.content;
@@ -206,7 +213,7 @@ describe('tail eviction', () => {
   it('⛔ defers to the provider when the endpoint compacts its own context', async () => {
     // Summarising here would be a second, worse copy of a job already being
     // done, paid for in the input room the provider is about to reclaim.
-    const { tail } = await runAt(2_000, 6, { providerCompacts: true });
+    const { tail } = await runAt(sized(2_000), 6, { providerCompacts: true });
     const notice = tail.find((r) => r.content.startsWith(NOTICE));
     expect(notice, 'something was still omitted').toBeDefined();
     expect(notice!.content, 'bare notice, no briefing')

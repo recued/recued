@@ -175,10 +175,9 @@ test('Saved view updates preserve a draft and keyboard focus started during the 
 test('Saved view updates preserve task draft text and selection across a pending search repaint', async ({ page }) => {
   await boot(page, { tab: 'task', query: '', source_id: null, booking_lifecycle: 'all' }, true);
   const search = page.getByRole('searchbox', { name: 'Search tasks' });
+  // Held from here on, not from boot: the harness reads `hold_rpc` once (d15ba945d).
   const initialSearches = await page.evaluate(() => {
-    const url = new URL(location.href);
-    url.searchParams.append('hold_rpc', 'work_entity.list');
-    history.replaceState(null, '', url);
+    window.__app.holdRpcResponses?.('work_entity.list');
     return window.__app.rpcCallCount('work_entity.list');
   });
   await search.fill('Task');

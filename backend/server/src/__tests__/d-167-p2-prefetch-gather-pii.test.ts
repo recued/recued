@@ -818,6 +818,12 @@ describe('D-224 — the model is told what an alias IS', () => {
     expect(PII_ALIAS_NOTICE).toContain('EXACTLY as written');
     expect(PII_ALIAS_NOTICE).toContain('Never rebuild');
     expect(PII_ALIAS_NOTICE).toContain('label, not the value');
+    // 2026-10-21: a place the owner types reaches the model as typed while the
+    // record's place stays aliased, so the model cannot link them. Without this
+    // clause it once said a Lisbon record "does not list specific destinations
+    // like Lisbon".
+    expect(PII_ALIAS_NOTICE).toContain('orgs and places');
+    expect(PII_ALIAS_NOTICE).toContain('Never say it is a different place');
     // ⛔⛔ AND IT MUST CONTAIN NO CONCRETE ALIAS. A literal `m1@d1.invalid` here
     // grants restore authority over that slot — a model that merely GUESSED it
     // would get a real address restored into owner-visible output.

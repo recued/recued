@@ -15,8 +15,9 @@ const buildDaemonExtraArgs = (args: string[]): string[] => {
   if (getFlag(args, 'reset-exposure')) extraArgs.push('--reset-exposure');
   // ⛔ `start` DAEMONIZES INTO `serve`, so a flag the child needs must be
   // forwarded HERE or it is silently dropped. The Windows Startup shortcut runs
-  // `start --require-enrolled` (there is no supervisor on Windows, so it cannot
-  // use `serve` the way the systemd/launchd units do); without this line the
+  // `start --require-enrolled` (`start` runs the server under its supervisor;
+  // the shortcut cannot run `serve` itself the way the systemd/launchd units
+  // do, or it would hold a console for the session); without this line the
   // guard would vanish on exactly the platform whose shortcut fires at every
   // login, and an unconfigured server would serve anyway.
   if (getFlag(args, 'require-enrolled')) extraArgs.push('--require-enrolled');

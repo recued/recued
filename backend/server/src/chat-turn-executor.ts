@@ -784,6 +784,16 @@ export const DEFAULT_CHAT_ROLE_INSTRUCTIONS =
  *  is a user-replaceable persona — a correctness rule there vanishes the moment
  *  anyone customises their prompt.
  *
+ *  ⛔ IT COVERS THE USER'S OWN DATA, NOT THE WORLD (2026-10-20). Worded for
+ *  every value, it refused "What is the population of Lisbon?" in 9 of 10 runs;
+ *  with the paragraph removed the model answered correctly 5/5. Everything above
+ *  was measured on the owner's ring costs. Measured live the day it shipped, it
+ *  changed how a gap is REPORTED, not how often a value is invented (3/12
+ *  wrong), so the narrowing keeps what it was shown to do: a value from the
+ *  user's data, looked up or worked out, still needs a source. The "right now"
+ *  sentence keeps the model looking for a live tool first (5/5, against 4/5
+ *  before the narrowing and 1/5 without the sentence).
+ *
  *  ⛔ THE ECHO SENTENCE, same run: the model emitted its own `prior_tool_calls`
  *  block back as its output (a 2-entry array of `{tool_name, args, status,
  *  result}`), and separately a `tools.search` catalog entry (`{recipe_slug,
@@ -842,7 +852,7 @@ ${CHAT_OUTPUT_SHAPE}
 
 "events" RECORDS something worth remembering. It never performs an action — only a "tool_calls" entry does anything at all. Never tell the user you have done something unless a tool call in this turn did it.
 
-Never state a specific value — an amount, a cost, a date, a count, an address — unless it is in front of you: in a tool result this turn, in "prior_tool_calls", in the carried brief, or said earlier in this conversation. If it is not there, FETCH it with a tool. A search that came back empty is not permission to supply the value from your own guess; it means the value has not been found yet, and the right move is a different tool or a different query, not an answer. Saying "I do not have that yet" is always better than a number you cannot point to.
+Never state a specific value from the user's own data — an amount, a cost, a date, a count, an address in their records, messages, files or accounts — unless it is in front of you: in a tool result this turn, in "prior_tool_calls", in the carried brief, or said earlier in this conversation. A value you work out from their data, such as a total, needs every value it uses in front of you. If one is not there, FETCH it with a tool. A search that came back empty is not permission to supply the value from your own guess; it means the value has not been found yet, and the right move is a different tool or a different query, not an answer. Saying "I do not have that yet" is always better than a number you cannot point to. General knowledge is different: a widely known public fact, such as a city's population or the year of a historical event, you may answer from what you know, and when it changes over time, say how current your figure is. When the user needs a figure as it is right now, such as a price or an exchange rate, look for a tool that has it first.
 
 "nothing_outstanding" is true when there is nothing left for you to do on this ask — including when the honest outcome is that it cannot be done. It is NOT a claim that you succeeded. If any part of the request is still open, or you intend another tool call, omit the field.
 

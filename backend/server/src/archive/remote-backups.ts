@@ -39,7 +39,7 @@ export const createRemoteBackups = (options: {
 }) => {
   const dbPath = resolve(options.dbPath), dataPath = dirname(dbPath), scratch = remoteBackupScratchPath(dbPath);
   const now = options.now ?? Date.now, store = createRemoteBackupStore(dbPath, { now });
-  const running = new Set<string>(), fetching = new Map<string, Promise<{ staged_name: string }>>();
+  const running = new Set<string>(), fetching = new Map<string, Promise<{ staged_name: string }>>(), drillReads = new Set<string>();
   // A history I/O failure is visible to new backup/status calls, but must not
   // prevent a healthy warehouse from booting or other settings from opening.
   try { store.reconcileBoot(); } catch { /* calls fail closed when they read it */ }
@@ -87,7 +87,7 @@ export const createRemoteBackups = (options: {
       // verified policy may now retain a remaining victim from this snapshot.
       const latest = store.rows().filter(current => current.destination_fingerprint === verified.destination_fingerprint && current.verified_at !== undefined).at(-1);
       if (latest?.operation_id !== verified.operation_id || latest.state !== 'verified') return;
-      if (running.has(row.operation_id) || fetching.has(row.operation_id)) { pending = true; continue; }
+      if (running.has(row.operation_id) || fetching.has(row.operation_id) || drillReads.has(row.operation_id)) { pending = true; continue; }
       try {
         if (!row.etag) { pending = true; continue; }
         store.update(row.operation_id, current => { current.state = 'pruning'; });
@@ -111,7 +111,21 @@ export const createRemoteBackups = (options: {
   };
   const service = {
     destinations: options.destinations,
+    receipt(id: string): ArchiveRemoteBackup { return remoteBackupView(requireRow(id)); },
     list(): ArchiveRemoteBackup[] { return store.rows().slice(-100).reverse().map(remoteBackupView); },
+    /** Internal only: the caller owns a private directory and its cleanup.
+     * Bypass the export cache so a drill tests today's remote bytes, even when
+     * an earlier retrieval is cached. Retention yields until this read ends. */
+    async retrieveForDrill(id: string, path: string, signal?: AbortSignal): Promise<void> {
+      const row = requireRow(id);
+      if (row.state !== 'verified' || drillReads.has(row.operation_id)) throw new RpcError('conflict', 'Verify this backup before testing recovery.', 409);
+      drillReads.add(row.operation_id);
+      try {
+        const context = await resolveRow(row);
+        signal?.throwIfAborted();
+        await context.transport.retrieve(row.object_key, path, rowBytes(row), row, signal);
+      } finally { drillReads.delete(row.operation_id); }
+    },
     reserve(target: ArchiveRemoteTarget, jobId: string): void {
       const id = archiveImportOperationId(target?.operation_id);
       if (!id || typeof target.connection_name !== 'string' || typeof target.destination_id !== 'string'

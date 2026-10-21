@@ -389,7 +389,7 @@ export const RUNTIME_SCHEMA = [
     default: 'auto',
     enum: ['auto', 'native', 'systemd', 'launchd', 'docker', 'dev'] as const,
     description:
-      'Process supervisor type. "auto" detects from env signatures (INVOCATION_ID, XPC_SERVICE_NAME, /.dockerenv, RECUED_LAUNCHER). Change takes effect on restart.',
+      'Process supervisor type. "auto" detects from env signatures (INVOCATION_ID, XPC_SERVICE_NAME, /.dockerenv, RECUED_LAUNCHER) and, on macOS, from running under the install\'s recued-supervise. Change takes effect on restart.',
   },
   {
     key: 'lifecycle.drain_timeout_s',

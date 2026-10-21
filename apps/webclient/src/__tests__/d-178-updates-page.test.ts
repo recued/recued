@@ -883,8 +883,11 @@ describe('mountUpdatesPage', () => {
     expect(continuity.read()?.phase).toBe('guide');
     expect(find(h.el, UPDATES_TAB_PROGRESS_ATTR)?.hasAttribute('hidden'))
       .toBe(true);
+    // The server's own reason, after a line that claims no cause of its own:
+    // `deferred` also means "no supervisor would bring the server back".
     expect(find(h.el, UPDATES_APPLY_RESULT_ATTR)?.textContent)
-      .toMatch(/busy.*did not start.*try again.*idle/i);
+      .toMatch(/did not start.*\(waiting for idle\)$/i);
+    expect(find(h.el, UPDATES_APPLY_RESULT_ATTR)?.textContent).not.toMatch(/busy/i);
 
     mount.dispose();
     continuity.dispose();

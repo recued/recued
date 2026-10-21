@@ -692,17 +692,21 @@ describe('D-315 slice 3, live — what the screens read', () => {
       'utf-8',
     );
     expect(post).toContain('privateAiCall: app.privateAiCall');
-    // What a restart left queued is resumed only once the mailboxes are live:
-    // any sooner, every job would find its email "gone".
+    // What a restart left queued is resumed only once the mailboxes are live
+    // and their first scans are done: any sooner, every job would find its
+    // email "gone". Boot no longer waits for those scans, so this waits itself.
     const collectionSource = readFileSync(
       resolve(dirname(fileURLToPath(import.meta.url)), '..', 'serve/compose-collection-context.ts'),
       'utf-8',
     );
     const started = collectionSource.indexOf('registerMailCollections(mailStack, collectionRegistry);');
-    const resume = collectionSource.indexOf('mailFactAi?.kick();', started);
+    const scanned = collectionSource.indexOf('void mailStack.firstScans().then(() => {', started);
+    const resume = collectionSource.indexOf('mailFactAi?.kick();', scanned);
     expect(started).toBeGreaterThan(0);
-    expect(resume - started).toBeGreaterThan(0);
-    expect(resume - started).toBeLessThan(300);
+    expect(scanned - started).toBeGreaterThan(0);
+    expect(scanned - started).toBeLessThan(400);
+    expect(resume - scanned).toBeGreaterThan(0);
+    expect(resume - scanned).toBeLessThan(300);
     // The only other kick is the writer's, after a commit that queued a call.
     expect([...collectionSource.matchAll(/mailFactAi\??\.kick\(\)/g)]).toHaveLength(2);
     expect(collectionSource).toContain('onAiQueued: () => mailFactAi?.kick()');
@@ -712,9 +716,9 @@ describe('D-315 slice 3, live — what the screens read', () => {
     expect(collectionSource).toContain('emit: mailFactEvents.emit,');
     expect(collectionSource).not.toMatch(/createMailFactWriter\(\{[^}]*emit: \(event\) => warehouseBus\.emit/);
     // The sweep of emails a live mailbox no longer holds runs then too.
-    const sweep = collectionSource.indexOf('void sweepGoneEmails(', started);
-    expect(sweep - started).toBeGreaterThan(0);
-    expect(sweep - started).toBeLessThan(600);
+    const sweep = collectionSource.indexOf('return sweepGoneEmails(', scanned);
+    expect(sweep - scanned).toBeGreaterThan(0);
+    expect(sweep - scanned).toBeLessThan(600);
     // Slice 5: a row made here is checked against every kind here, the owner's included.
     expect(source).toContain('mailFactTypes: () => storage.mailFactStoreRef!.listCustomTypes()');
     expect(source).toContain('...(app.privateAiCall ? { privateAiCall: app.privateAiCall } : {})');

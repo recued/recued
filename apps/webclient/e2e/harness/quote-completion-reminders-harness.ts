@@ -1,6 +1,8 @@
 /** Production jobs, follow-up editor and mail composer; deterministic local RPCs. */
 import type { CustomerJob,QuoteSignoffSummary,QuoteCompletionSummary,QuoteCompletionReminder,MailDraft,MailDraftContent } from '@recued/contracts';
-import { mountCustomerJobsPanel,type CustomerJobsConn } from '../../src/reception/customer-jobs-panel.js';
+import { customerJobCloseoutBlockers,type CustomerJobCloseoutReport } from '@recued/contracts';
+import type { CustomerJobsConn } from '../../src/reception/customer-jobs-panel.js';
+import { mountCustomerWorkHarness } from './customer-work-harness.js';
 import type { MailComposeDeps } from '../../src/mail/mail-compose-host.js';
 const NOW = Date.parse('2026-10-14T12:00:00Z');
 const agreement: QuoteSignoffSummary = { signoff_id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',quote_id: 'Q1',quote_version: 2,quote_revision: 1,
@@ -23,10 +25,19 @@ const calls: Array<{ method: string;payload: unknown }> = [];
 const record = (method: string,payload: unknown) => { calls.push({ method,payload: structuredClone(payload) }); };
 let draft: MailDraft | undefined;let failMail = false;let deferred: (() => void) | undefined;let deferGet = false;
 const clone = <T>(value: T): T => structuredClone(value);
+// The job page reads its one job through the closeout report (c63d5b076).
+const closeoutReport = (): CustomerJobCloseoutReport => {
+  const blockers = customerJobCloseoutBlockers(job);
+  return { job_id: job.job_id,captured_at: NOW,job: clone(job),archive: { job_id: job.job_id,revision: 0,archived_at: null,updated_at: null },
+    can_archive: !blockers.length,blockers,snapshot_hash: null,reminders: { saved_schedules: 0,uncertain_sends: 0 },events: [],has_older_events: false };
+};
 const conn = (async (method: string,payload?: unknown) => {
   record(method,payload);
   const input = payload as { completion_id?: string;expected_revision?: number;due_at?: number | null;sender_mail_instance?: string;recipient_email?: string;share_url?: string;remember_link_for_reminders?: boolean };
   if (method === 'reception.jobs.list') return { captured_at: NOW,jobs: [clone(job)] };
+  if (method === 'reception.jobs.closeout.get') return closeoutReport();
+  // The other groups in Reception → Follow-ups, which this fixture has nothing for.
+  if (method === 'reception.signoff.reminders.list' || method === 'reception.accounts.payment.reminders.list') return { reminders: [] };
   if (method === 'reception.signoff.completion.reminders.list') return { reminders: ['due','scheduled'].includes(reminder.status) ? [{ completion: clone(completion),reminder: clone(reminder) }] : [] };
   if (method === 'reception.signoff.completion.reminders.get') {
     if (deferGet) { deferGet = false;await new Promise<void>(resolve => { deferred = resolve; }); }
@@ -69,7 +80,7 @@ const mail: MailComposeDeps = {
     openReview: id => { record('preapproval.open',{ proposal_id: id }); },
   },
 };
-const board = mountCustomerJobsPanel({ host: document.getElementById('root')!,document,conn,reminders: { mail,now: () => NOW } });
+const board = mountCustomerWorkHarness({ host: document.getElementById('root')!,document,conn,reminders: { mail,now: () => NOW } });
 export interface CompletionRemindersFixture {
   calls: typeof calls;update(): void;dispose(): void;due(): void;reply(): void;failMail(): void;deferGet(): void;release(): void;hasUnsavedChanges(): boolean;hasInFlightWork(): boolean;
 }

@@ -29,7 +29,10 @@ import {
   recipeSpendsPerRun,
   spreadsheetImportOf,
   type RecipeDefinition,
+  type RecipeReleaseView,
 } from '@recued/contracts';
+import { canonicalJSONStringifyStrict, sha256Hex } from '@recued/crypto';
+import { hasNonEmptyWebhookDeclarations } from '../../../../backend/server/src/webhook-declaration-gate.js';
 
 type Row = Record<string, unknown> & { recipe_id?: unknown; recipe?: unknown };
 
@@ -71,6 +74,38 @@ export const createRecipeBodyMemory = () => {
     },
     get(recipeId: unknown): Row | null {
       return typeof recipeId === 'string' ? byId.get(recipeId) ?? null : null;
+    },
+  };
+};
+
+/** `recipe.release.get` for a recipe with no release history, as the server's
+ *  `recipe-release-store.ts` answers it.
+ *
+ *  ⛔ The editor awaits this read before it renders anything (66217a045), and
+ *  every current server answers it. This harness did not, so four Kitchen
+ *  journeys sat on "Loading recipe…" until they timed out.
+ *
+ *  As on the server, a stored recipe can start reviewed releases, a bundled
+ *  one must be forked first, a recipe declaring webhooks is not supported
+ *  yet, and one the harness never served is unavailable. A list row does not
+ *  say which pack owns a stored recipe, so every stored row counts as the
+ *  owner's own. The digest is the server's (`recipeReleaseDigest`). */
+export const unreleasedRecipeView = (recipeId: string, row: Row | null): RecipeReleaseView => {
+  const history = { recipe_id: recipeId, managed: false, revision: 0, draft: null, drafts: [], releases: [], qualification: null };
+  const unsupported = (reason: string): RecipeReleaseView => ({ ...history, supported: false, reason, active: null });
+  if (row === null || !hasBody(row.recipe)) return unsupported('Open a saved local recipe to use reviewed releases.');
+  if (row.source === 'bundled') return unsupported('Fork this pack or bundled recipe to a new local recipe id first.');
+  if (hasNonEmptyWebhookDeclarations(row.recipe)) {
+    return unsupported('Reviewed releases currently support local recipes without webhook declarations.');
+  }
+  return {
+    ...history,
+    supported: true,
+    active: {
+      sequence: 0,
+      digest: 'sha256:' + sha256Hex(canonicalJSONStringifyStrict(row.recipe)),
+      created_at: 0,
+      recipe: structuredClone(row.recipe),
     },
   };
 };

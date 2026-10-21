@@ -137,10 +137,10 @@ export const SUPERVISOR_MODES_THAT_RESPAWN: ReadonlySet<ResolvedSupervisorMode> 
   'docker-thin',
   // ⛔ `native` IS SUPERVISED — resolved 2026-08-31 by the owner, against D-188's
   // original "bare process" reading. `native` is not "no launcher": it resolves
-  // ONLY from `RECUED_LAUNCHER=1`, exported by exactly one thing —
-  // `backend/server/scripts/recued-server-launcher.sh` — and that script is a
-  // `while true` loop whose exit-3 branch prints "restart requested (3).
-  // Respawning."
+  // ONLY from `RECUED_LAUNCHER=1`, exported by two loops that start the server
+  // again on exit 3 — `backend/server/scripts/recued-server-launcher.sh`, whose
+  // exit-3 branch prints "restart requested (3). Respawning.", and on Windows
+  // `recued supervise` (`launcher/outer-supervisor.ts`), which `recued start` runs.
   //
   // ⚠ Excluding it cost twice: the webclient Restart button was hidden from
   // installs where it works, and once `update.apply` began gating on this list,

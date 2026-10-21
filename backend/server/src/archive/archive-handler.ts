@@ -39,6 +39,9 @@ import { archiveSchemaTooNew } from './archive-import.js';
 import { archiveImportOperationId } from './archive-import-receipts.js';
 import { ArchiveRestoreCleanupError } from './archive-restore.js';
 import type { RemoteBackups } from './remote-backups.js';
+import type { BackupHealth } from './backup-health.js';
+import type { RestoreDrills } from './restore-drills.js';
+import type { ArchiveBackupCapability, UnattendedBackups, ArchiveOperationGate } from './unattended-backups.js';
 import type { ClientKind } from '../pairing/client-tokens.js';
 import {
   resolveGatedClientInstanceId,
@@ -104,6 +107,8 @@ export interface ArchiveRuntime {
     bytes_written: number;
     expires_at: number;
   }>;
+  prepareUnattendedExport?(recoveryKey: string): Promise<ArchiveBackupCapability>;
+  runUnattendedExport?(capability: ArchiveBackupCapability): ReturnType<ArchiveRuntime['runExport']>;
   /** Read the manifest of an archive at `path` WITHOUT restoring.
    *  Decrypts with the recovery-key-derived key (so it also validates
    *  the key before any destructive import). */
@@ -153,6 +158,10 @@ export interface ArchiveRuntime {
 export interface ArchiveRpcDeps {
   runtime: ArchiveRuntime;
   remoteBackups?: RemoteBackups;
+  unattendedBackups?: UnattendedBackups;
+  restoreDrills?: RestoreDrills;
+  backupHealth?: BackupHealth;
+  operationGate?: ArchiveOperationGate;
   auditLog?: AuditLogStore;
   /** The data folder (`dirname(dbPath)`) — used purely for resolving relative
    *  user-supplied paths in `server.archive.import`. */
@@ -208,6 +217,14 @@ export type ArchiveMethods =
   | 'server.archive.destinations'
   | 'server.archive.backups'
   | 'server.archive.backup.check'
+  | 'server.archive.unattended.get'
+  | 'server.archive.unattended.save'
+  | 'server.archive.health.get'
+  | 'server.archive.health.save'
+  | 'server.archive.drills'
+  | 'server.archive.drill.start'
+  | 'server.archive.drill.cancel'
+  | 'server.archive.drill.cleanup'
   | 'server.archive.backup.retrieve';
 
 export const makeArchiveHandlers = (
@@ -281,6 +298,7 @@ export const makeArchiveHandlers = (
     // tracks whether we handed ownership of the latch to the background
     // export's `finally`; if we bail before that (preflight refusal, etc.)
     // the outer `finally` releases it so a failure never wedges all exports.
+    const releaseOperation = deps.operationGate?.acquire();
     exportInFlight = true;
     let dispatched = false;
     let remoteReserved = false;
@@ -355,6 +373,7 @@ export const makeArchiveHandlers = (
           };
         } finally {
           exportInFlight = false;
+          releaseOperation?.();
         }
       })();
       // The background export now owns the latch (released in its `finally`).
@@ -366,6 +385,7 @@ export const makeArchiveHandlers = (
       // never leaves the latch stuck closed.
       if (!dispatched) {
         exportInFlight = false;
+        releaseOperation?.();
         if (remoteReserved) deps.remoteBackups!.failed(remote!.operation_id.toLowerCase(), 'export_failed');
       }
     }
@@ -572,6 +592,7 @@ export const makeArchiveHandlers = (
           409,
         );
       }
+      const releaseOperation = deps.operationGate?.acquire();
       importInFlight = true;
       await deps.auditLog?.logActivity({
         activity_id: '',
@@ -628,6 +649,7 @@ export const makeArchiveHandlers = (
         // Ordinary staging failures release the latch. An incomplete unwind
         // keeps it closed until boot, even if its receipt could not be saved.
         importInFlight = err instanceof ArchiveRestoreCleanupError;
+        if (!importInFlight) releaseOperation?.();
         // M5 S3.0 — a newer-schema archive onto this (older) binary is refused at
         // the staging stream (checkManifestCompat); map it to an actionable wire
         // error so the client can tell the user to upgrade the server first. (The
@@ -648,7 +670,9 @@ export const makeArchiveHandlers = (
 
   const slice: HandlerSlice<ServerRpcRegistry, ArchiveMethods, WsClient> = {
     methods: ['server.archive.export', 'server.archive.status', 'server.archive.import', 'server.archive.import_status',
-      'server.archive.destinations', 'server.archive.backups', 'server.archive.backup.check', 'server.archive.backup.retrieve'],
+      'server.archive.destinations', 'server.archive.backups', 'server.archive.backup.check', 'server.archive.backup.retrieve',
+      'server.archive.unattended.get', 'server.archive.unattended.save', 'server.archive.drills', 'server.archive.drill.start',
+      'server.archive.drill.cancel', 'server.archive.drill.cleanup', 'server.archive.health.get', 'server.archive.health.save'],
     handlers: {
       'server.archive.export': async (args) =>
         handleExport(args as Parameters<typeof handleExport>[0]),
@@ -663,6 +687,35 @@ export const makeArchiveHandlers = (
       },
       'server.archive.destinations': async () => ({ destinations: deps.remoteBackups?.destinations() ?? [] }),
       'server.archive.backups': async () => ({ backups: deps.remoteBackups?.list() ?? [] }),
+      'server.archive.health.get': async () => {
+        if (!deps.backupHealth) throw new RpcError('not_configured', 'Backup health checks are unavailable.', 503);
+        return deps.backupHealth.status();
+      },
+      'server.archive.health.save': async args => {
+        if (!deps.backupHealth) throw new RpcError('not_configured', 'Backup health checks are unavailable.', 503);
+        return deps.backupHealth.save(args?.policy);
+      },
+      'server.archive.drills': async () => ({ drills: deps.restoreDrills?.list() ?? [] }),
+      'server.archive.drill.start': async args => {
+        if (!deps.restoreDrills) throw new RpcError('not_configured', 'Recovery drills are unavailable.', 503);
+        return deps.restoreDrills.start(args);
+      },
+      'server.archive.drill.cancel': async args => {
+        if (!deps.restoreDrills) throw new RpcError('not_configured', 'Recovery drills are unavailable.', 503);
+        return deps.restoreDrills.cancel(args);
+      },
+      'server.archive.drill.cleanup': async args => {
+        if (!deps.restoreDrills) throw new RpcError('not_configured', 'Recovery drills are unavailable.', 503);
+        return deps.restoreDrills.retryCleanup(args);
+      },
+      'server.archive.unattended.get': async () => {
+        if (!deps.unattendedBackups) throw new RpcError('not_configured', 'Unattended backups are unavailable.', 503);
+        return deps.unattendedBackups.status();
+      },
+      'server.archive.unattended.save': async args => {
+        if (!deps.unattendedBackups) throw new RpcError('not_configured', 'Unattended backups are unavailable.', 503);
+        return deps.unattendedBackups.save(args.settings, args.recoveryKey);
+      },
       'server.archive.backup.check': async args => {
         const id = archiveImportOperationId(args?.operation_id);
         if (!id) throw new RpcError('invalid_args', 'operation_id must be a UUID', 400);

@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { HARNESS_URL, LIST_PREVIEW, SHARED_REFERENCE_ID, installFullAppHooks } from './helpers/full-app.js';
 
 /** Packs browser journeys against the deterministic full-app harness. */
@@ -8,6 +8,24 @@ const LIST_PREVIEW_CLOSE = 'data-recued-list-preview-close';
 const LIST_PREVIEW_OPEN = 'data-recued-list-preview-open';
 
 installFullAppHooks();
+
+/** Delete opens a reviewed removal (e72489a86): the impact loads into the
+ *  strip and its status takes focus, and Confirm stays disabled until the owner
+ *  acknowledges that impact. Acknowledges by keyboard and returns Confirm,
+ *  focused. */
+const acknowledgeRemoval = async (page: Page, slug: string) => {
+  const review = page.locator('[data-pack-removal-review]');
+  await expect(review.locator('[data-pack-removal-status]')).toBeFocused();
+  const acknowledge = review.locator('[data-pack-removal-ack]');
+  await acknowledge.focus();
+  await page.keyboard.press('Space');
+  await expect(acknowledge).toBeChecked();
+  await page.keyboard.press('Tab');
+  const confirm = page.locator(`[data-recued-packs-row-delete-confirm="${slug}"]`);
+  await expect(confirm).toHaveText('Confirm reviewed removal');
+  await expect(confirm).toBeFocused();
+  return confirm;
+};
 
 test('Packs Add preserves a slug while its IME composition is active', async ({ page }) => {
   await page.evaluate(() => window.__app.setHash('#packs'));
@@ -735,13 +753,8 @@ test('Packs hands a failed post-uninstall relist to Retry', async ({ page }) => 
   await remove.focus();
   await page.keyboard.press('Enter');
 
-  const confirm = page.locator(
-    '[data-recued-packs-row-delete-confirm="installed-mail"]',
-  );
-  await expect(confirm).toHaveText('Confirm delete');
-  await expect(confirm).toBeFocused();
+  const confirm = await acknowledgeRemoval(page, 'installed-mail');
   await page.keyboard.press('Enter');
-  await expect(confirm).toHaveText('Deleting…');
   await expect(confirm).toHaveAttribute('aria-disabled', 'true');
   await expect(confirm).toHaveAttribute('aria-busy', 'true');
   await expect(confirm).not.toHaveAttribute('disabled');
@@ -754,8 +767,10 @@ test('Packs hands a failed post-uninstall relist to Retry', async ({ page }) => 
   );
   await expect(retry).toBeFocused();
   await expect.poll(
-    () => page.evaluate(() => window.__app.rpcCallCount('packs.uninstall')),
+    () => page.evaluate(() => window.__app.rpcCallCount('packs.removal.apply')),
   ).toBe(1);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('packs.uninstall')))
+    .toBe(0);
 
   await page.keyboard.press('Enter');
   await expect(retry).toHaveText('Retrying…');
@@ -880,9 +895,24 @@ test('Packs contains long removal disclosure and retains keyboard ownership', as
   const panel = surface.locator('[data-recued-packs-panel]');
   await panel.locator('[data-recued-packs-row-delete="installed-mail"]').click();
   const footer = panel.locator('.packs-row-footer');
+  // Before anything is removed, the review states the long impact, every list
+  // opened, inside the 280px strip.
+  const review = footer.locator('[data-pack-removal-review]');
+  await expect(review.locator('[data-pack-removal-ack]')).toBeVisible();
+  await expect(review).toContainText('publisher-identity');
+  for (const summary of await review.locator('summary').all()) await summary.click();
+  await expect(review.getByText(/^dependent-identity/)).toBeVisible();
+  await expect(review.getByText(/^optional-capability/)).toBeVisible();
+  expect(await review.locator(':scope, :scope *').evaluateAll((elements) => elements.every(
+    (element) => element.scrollWidth <= element.clientWidth + 1,
+  ))).toBe(true);
   expect(await footer.evaluate(
     (element) => element.scrollWidth <= element.clientWidth + 1,
   )).toBe(true);
+  // ⚠ Named, not counted: this pinned two buttons, and the review added one.
+  for (const name of ['Review current installation', 'Confirm reviewed removal', 'Cancel']) {
+    await expect(footer.getByRole('button', { name, exact: true })).toHaveCount(1);
+  }
   const confirmActions = footer.getByRole('button');
   const confirmSizes = await confirmActions.evaluateAll((buttons) =>
     buttons.map((button) => {
@@ -890,12 +920,13 @@ test('Packs contains long removal disclosure and retains keyboard ownership', as
       return { width: rect.width, height: rect.height };
     })
   );
-  expect(confirmSizes).toHaveLength(2);
+  expect(confirmSizes.length).toBeGreaterThanOrEqual(3);
   expect(Math.min(...confirmSizes.map(({ width }) => width)))
     .toBeGreaterThanOrEqual(36);
   expect(Math.min(...confirmSizes.map(({ height }) => height)))
     .toBeGreaterThanOrEqual(40);
 
+  await review.locator('[data-pack-removal-ack]').check();
   await panel.locator(
     '[data-recued-packs-row-delete-confirm="installed-mail"]',
   ).click();
@@ -950,18 +981,22 @@ test('Packs keeps long uninstall failures readable and retry-owned', async ({ pa
   const surface = route.locator('[data-recued-packs-surface]');
   const panel = surface.locator('[data-recued-packs-panel]');
   await panel.locator('[data-recued-packs-row-delete="installed-mail"]').click();
-  const confirm = panel.locator(
-    '[data-recued-packs-row-delete-confirm="installed-mail"]',
-  );
-  await confirm.focus();
+  const confirm = await acknowledgeRemoval(page, 'installed-mail');
   await page.keyboard.press('Enter');
 
   const footer = panel.locator('.packs-row-footer');
+  const status = footer.locator('[data-pack-removal-status]');
   const error = panel.locator('[data-recued-packs-row-delete-error]');
   await expect(error).toContainText('has to stay so it can tidy up');
   await expect(error).toContainText('no proof that has happened');
   await expect(error).toHaveAttribute('role', 'alert');
-  await expect(confirm).toBeFocused();
+  // A failed reviewed removal is spent: Confirm stays disabled until the owner
+  // reviews the installation again, so focus lands on the status that says
+  // so. ⛔ It used to fall to the page: the review redrew the focused button
+  // away and nothing put focus back (`focusKey` in `pack-removal-review.ts`).
+  await expect(confirm).toBeDisabled();
+  await expect(status).toContainText('Review the remaining installation');
+  await expect(status).toBeFocused();
   expect(await footer.evaluate(
     (element) => element.scrollWidth <= element.clientWidth + 1,
   )).toBe(true);
@@ -979,13 +1014,16 @@ test('Packs keeps long uninstall failures readable and retry-owned', async ({ pa
   expect(footerGeometry.errorWidth).toBeGreaterThanOrEqual(
     footerGeometry.footerWidth - 1,
   );
+  for (const name of ['Review current installation', 'Confirm reviewed removal', 'Cancel']) {
+    await expect(footer.getByRole('button', { name, exact: true })).toHaveCount(1);
+  }
   const actionSizes = await footer.getByRole('button').evaluateAll((buttons) =>
     buttons.map((button) => {
       const rect = button.getBoundingClientRect();
       return { width: rect.width, height: rect.height };
     })
   );
-  expect(actionSizes).toHaveLength(2);
+  expect(actionSizes.length).toBeGreaterThanOrEqual(3);
   expect(Math.min(...actionSizes.map(({ width }) => width)))
     .toBeGreaterThanOrEqual(36);
   expect(Math.min(...actionSizes.map(({ height }) => height)))
@@ -998,12 +1036,24 @@ test('Packs keeps long uninstall failures readable and retry-owned', async ({ pa
     )).toBe(true);
   }
 
+  // The retry is a fresh review, acknowledged again, then one more request.
+  await page.keyboard.press('Tab');
+  await expect(footer.getByRole('button', {
+    name: 'Review current installation',
+    exact: true,
+  })).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(status).toBeFocused();
+  await expect(footer.locator('[data-pack-removal-ack]')).not.toBeChecked();
+  await acknowledgeRemoval(page, 'installed-mail');
   await page.keyboard.press('Enter');
   await expect.poll(
-    () => page.evaluate(() => window.__app.rpcCallCount('packs.uninstall')),
+    () => page.evaluate(() => window.__app.rpcCallCount('packs.removal.apply')),
   ).toBe(2);
   await expect(error).toBeVisible();
-  await expect(confirm).toBeFocused();
+  await expect(status).toBeFocused();
+  expect(await page.evaluate(() => window.__app.rpcCallCount('packs.uninstall')))
+    .toBe(0);
 });
 
 test('Packs contains marketplace resolve retry and preserves keyboard ownership', async ({ page }) => {

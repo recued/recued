@@ -1028,9 +1028,36 @@ test('a rejected mailbox enrollment keeps the busy and retry actions focused', a
   expect(await password.evaluate((element: HTMLInputElement) => element.selectionStart)).toBe(4);
 });
 
-test('a successful IMAP enrollment confirms the connected account in focus', async ({ page }) => {
+test('the first mailbox enrolment ends by opening Proposals', async ({ page }) => {
+  // D-325 §15.5: the first session ends on Yours → Proposals, where what was
+  // read from that mailbox is proposed. A later mailbox stays on Connections
+  // (the next two tests).
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?connection=imap-success`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#connections'));
+
+  const route = page.locator(`[${CONNECTIONS_ROUTE}]`);
+  await route.getByRole('button', { name: 'Connect mailbox' }).click();
+  await route.getByRole('button', { name: /IMAP \/ SMTP/ }).click();
+  await route.getByRole('textbox', { name: 'Name', exact: true }).fill('fastmail');
+  await route.getByRole('textbox', { name: 'IMAP Host', exact: true })
+    .fill('imap.fastmail.com');
+  await route.getByRole('textbox', { name: 'Username', exact: true })
+    .fill('me@example.com');
+  await route.getByLabel('Password', { exact: true }).fill('app-password');
+  await route.getByRole('button', { name: 'Connect account' }).click();
+
+  await expect(page).toHaveURL(/#yours\/proposals$/);
+  await expect(route).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Yours', level: 1 })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'What is read' })).toBeVisible();
+});
+
+test('a successful IMAP enrollment confirms the connected account in focus', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  // A second mailbox: the first one's enrolment ends on Proposals instead.
+  await page.goto(`${HARNESS_URL}?connection=imap-success&mail_existing=1`);
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#connections'));
 
@@ -1067,7 +1094,8 @@ test('a successful IMAP enrollment confirms the connected account in focus', asy
 
 test('a connected mailbox hands its first useful question into Chat', async ({ page, context }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(`${HARNESS_URL}?connection=first-sync`);
+  // A second mailbox: the first one's enrolment ends on Proposals instead.
+  await page.goto(`${HARNESS_URL}?connection=first-sync&mail_existing=1`);
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#connections'));
 

@@ -1,5 +1,10 @@
+import { spawn } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import {
+  childOfInstallSupervisor,
   resolveSupervisorMode,
   createSupervisor,
   nativeSupervisor,
@@ -187,6 +192,77 @@ describe('resolveSupervisorMode — environment detection', () => {
       }),
     ).toBe('launchd');
   });
+});
+
+describe('resolveSupervisorMode — the install supervisor on macOS', () => {
+  // launchd gives every LaunchAgent `XPC_SERVICE_NAME=0`, which is what a real
+  // macOS install's server sees.
+  const env = { XPC_SERVICE_NAME: '0' };
+
+  it('a child of the install\'s recued-supervise is launchd on macOS', () => {
+    expect(resolveSupervisorMode('auto', {
+      env, dockerEnvExists: () => false, platform: 'darwin', childOfInstallSupervisor: () => true,
+    })).toBe('launchd');
+  });
+
+  it('is dev without that parent: XPC_SERVICE_NAME=0 says nothing', () => {
+    expect(resolveSupervisorMode('auto', {
+      env, dockerEnvExists: () => false, platform: 'darwin', childOfInstallSupervisor: () => false,
+    })).toBe('dev');
+  });
+
+  it('is not consulted off macOS, where systemd names itself', () => {
+    expect(resolveSupervisorMode('auto', {
+      env: {}, dockerEnvExists: () => false, platform: 'linux', childOfInstallSupervisor: () => true,
+    })).toBe('dev');
+    expect(resolveSupervisorMode('auto', {
+      env: { INVOCATION_ID: 'abcd' }, dockerEnvExists: () => false, platform: 'linux',
+      childOfInstallSupervisor: () => true,
+    })).toBe('systemd');
+  });
+});
+
+describe('childOfInstallSupervisor', () => {
+  const install = '/Users/owner/.local/lib/recued';
+  const probe = (command: string | null, execPath = `${install}/recued`,
+    realpath: (path: string) => string = (path) => path) =>
+    childOfInstallSupervisor({ execPath, parentPid: 4242, readCommand: () => command, realpath });
+
+  it('matches the script beside the running binary, as /bin/sh runs it', () => {
+    expect(probe(`/bin/sh ${install}/recued-supervise serve --require-enrolled`)).toBe(true);
+  });
+
+  it('matches through spaces and symlinks in the install path', () => {
+    expect(probe('/bin/sh /Users/o/My Apps/recued/recued-supervise serve',
+      '/Users/o/My Apps/recued/recued')).toBe(true);
+    expect(probe('/bin/sh /opt/link/recued-supervise serve', '/opt/real/recued',
+      (path) => path.replace('/opt/link', '/opt/real'))).toBe(true);
+  });
+
+  it('refuses another install\'s supervisor, a look-alike name, launchd itself or an unreadable parent', () => {
+    expect(probe('/bin/sh /opt/other/recued-supervise serve')).toBe(false);
+    expect(probe(`/bin/sh ${install}/recued-supervise-old serve`)).toBe(false);
+    expect(probe('/sbin/launchd')).toBe(false);
+    expect(probe(null)).toBe(false);
+  });
+
+  it.runIf(process.platform === 'darwin' || process.platform === 'linux')(
+    'reads a real parent through ps',
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'recued-supervise-probe-'));
+      const script = join(dir, 'recued-supervise');
+      writeFileSync(script, '#!/bin/sh\nsleep 30\n', { mode: 0o755 });
+      const parent = spawn(script, [], { stdio: 'ignore' });
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        expect(childOfInstallSupervisor({ parentPid: parent.pid!, execPath: join(dir, 'recued') })).toBe(true);
+        expect(childOfInstallSupervisor({ parentPid: parent.pid!, execPath: join(tmpdir(), 'recued') })).toBe(false);
+      } finally {
+        parent.kill();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 describe('createSupervisor', () => {

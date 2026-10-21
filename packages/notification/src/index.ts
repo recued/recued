@@ -314,6 +314,14 @@ export interface NotificationBlock {
     extras?: PersistedNotifyExtras,
   ): Promise<void>;
 
+  /** Host flows with a durable retry queue may observe successful channel
+   * acceptance. This is not proof that a human read the notification. */
+  notifyWithResult?(
+    message: NotificationMessage,
+    channels?: ChannelSelector,
+    extras?: PersistedNotifyExtras,
+  ): Promise<{ attempted: number; accepted: number }>;
+
   /** Interactive. Mints a durable `ask_id`, persists the pending ask
    *  BEFORE any delivery, fans the ask out, and resolves IMMEDIATELY
    *  with `{ ask_id }` — never with the user's answer (I-3). The answer
@@ -870,6 +878,38 @@ export const createNotificationBlock = (
       });
     }
   };
+  const deliverNotify = async (message: NotificationMessage, channels?: ChannelSelector, extras?: PersistedNotifyExtras): Promise<{ attempted: number; accepted: number }> => {
+    let attempted = 0, accepted = 0;
+    const { channels: targets, bridgeNotify } =
+      await resolveNotifyChannels(channels);
+    for (const channel of targets) {
+      attempted++;
+      try {
+        if (channel.name === 'ui' && extras) await channel.deliverNotify(message, extras);
+        else await channel.deliverNotify(message);
+        accepted++;
+      } catch {
+        // best-effort — `notify` collects no reply and never throws.
+      }
+    }
+    // D-169 Slice 4 — per-bridge notify fan-out: one `deliverNotify`
+    // per notification-mode-ON paired bridge over the single bridge
+    // adapter (see the block-top note on the inert-pending-transport
+    // bridge sink — the production delivery is the D-121 bus).
+    if (bridgeChannel) {
+      for (let i = 0; i < bridgeNotify; i += 1) {
+        attempted++;
+        try {
+          await bridgeChannel.deliverNotify(message);
+          accepted++;
+        } catch {
+          // best-effort — same contract as the channel loop above.
+        }
+      }
+    }
+    return { attempted, accepted };
+  };
+
   const block: NotificationBlock = {
     registerReminderReconciler(reconciler) {
       if (reminderReconciler) throw new Error('The reminder reconciler is already installed');
@@ -947,31 +987,8 @@ export const createNotificationBlock = (
      *  be exempted FIRST and explicitly. A silence window that can swallow the
      *  one message proving the automation is dead is the correction destroying
      *  the detector. */
-    async notify(message, channels, extras) {
-      const { channels: targets, bridgeNotify } =
-        await resolveNotifyChannels(channels);
-      for (const channel of targets) {
-        try {
-          if (channel.name === 'ui' && extras) await channel.deliverNotify(message, extras);
-          else await channel.deliverNotify(message);
-        } catch {
-          // best-effort — `notify` collects no reply and never throws.
-        }
-      }
-      // D-169 Slice 4 — per-bridge notify fan-out: one `deliverNotify`
-      // per notification-mode-ON paired bridge over the single bridge
-      // adapter (see the block-top note on the inert-pending-transport
-      // bridge sink — the production delivery is the D-121 bus).
-      if (bridgeChannel) {
-        for (let i = 0; i < bridgeNotify; i += 1) {
-          try {
-            await bridgeChannel.deliverNotify(message);
-          } catch {
-            // best-effort — same contract as the channel loop above.
-          }
-        }
-      }
-    },
+    async notify(message, channels, extras) { await deliverNotify(message, channels, extras); },
+    notifyWithResult: deliverNotify,
 
     async ask(message, options, handler, channels, extras) {
       if (extras?.resource_review !== undefined && (!isResourceReview(extras.resource_review)

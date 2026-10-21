@@ -45,21 +45,20 @@ test('History searches messages across chats, shows safe snippets, and jumps to 
   expect(errors).toEqual([]);
 });
 
-test('message navigation carries the exact target through the unsent draft guard', async ({ page }) => {
+test('message navigation carries the exact target and keeps the unsent draft', async ({ page }) => {
   await page.goto(`${URL}#chat/new`);
   await ready(page);
   await input(page).fill('Keep this unsent draft');
   await search(page).fill('secret needle');
+  // Since 04844efda a typed draft stays with the chat it was written in, so opening a message asks nothing.
   await result(page, 'a-m020').click();
-  await expect(page.getByRole('button', { name: 'Throw it away and open', exact: true })).toBeVisible();
-  expect((await requests(page)).filter(request => request.method === 'chat.session.get')).toHaveLength(0);
-  await page.getByRole('button', { name: 'Keep writing', exact: true }).click();
-  await expect(input(page)).toHaveValue('Keep this unsent draft');
-  await expect(input(page)).toBeFocused();
-  await result(page, 'a-m020').click();
-  await page.getByRole('button', { name: 'Throw it away and open', exact: true }).click();
+  await expect(page.locator('[data-recued-chat-route-history-draft-guard]')).toHaveCount(0);
   await expect(message(page, 'a-m020')).toBeFocused();
   await expect(input(page)).toHaveValue('');
+  const newChat = page.getByRole('button', { name: 'New chat', exact: true });
+  await expect(newChat).toContainText('Draft');
+  await newChat.click();
+  await expect(input(page)).toHaveValue('Keep this unsent draft');
 });
 
 test('searching within the open chat preserves the draft while loading an earlier target', async ({ page }) => {

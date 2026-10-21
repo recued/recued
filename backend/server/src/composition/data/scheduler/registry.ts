@@ -42,6 +42,9 @@ import type { RecipeStore } from '../../../recipe-store.js';
 import type { BackgroundServiceRegistry } from '../../bin/wire-background-services.js';
 import { bootCronScheduler, CRON_SCHEDULER_NAME } from './cron/boot.js';
 import { bootAutoRunScheduler, AUTO_RUN_SCHEDULER_NAME } from './auto-run/boot.js';
+import { bootUnattendedBackups, UNATTENDED_BACKUP_SCHEDULER_NAME } from './unattended-backups/boot.js';
+import { bootBackupHealth, BACKUP_HEALTH_SCHEDULER_NAME } from './backup-health/boot.js';
+import { bootRestoreDrills, RESTORE_DRILL_SERVICE_NAME } from './restore-drills/boot.js';
 import {
   bootHousekeepingRegistration,
   HOUSEKEEPING_SCHEDULER_NAME,
@@ -52,6 +55,9 @@ import {
  *  prerequisites (e.g., no `scheduleStore` for cron, no `db` for
  *  auto-run) return `undefined` from `boot()` so the slot is skipped. */
 export interface SchedulerBootContext {
+  readonly backupHealth?: import('../../../archive/backup-health.js').BackupHealth;
+  readonly unattendedBackups?: import('../../../archive/unattended-backups.js').UnattendedBackups;
+  readonly restoreDrills?: import('../../../archive/restore-drills.js').RestoreDrills;
   /** D-269 — the server's declared IANA zone, for cron schedules that carry
    *  none. Absent ⇒ host-local, the pre-D-269 behaviour. */
   serverTimeZone?: () => string | undefined;
@@ -140,6 +146,9 @@ export interface SchedulerEntry {
  *  background-services registry walks its own reverse-registration order
  *  at stopAll time, independent of this array. */
 export const SCHEDULER_REGISTRY: readonly SchedulerEntry[] = [
+  { name: BACKUP_HEALTH_SCHEDULER_NAME, boot: bootBackupHealth },
+  { name: RESTORE_DRILL_SERVICE_NAME, boot: bootRestoreDrills },
+  { name: UNATTENDED_BACKUP_SCHEDULER_NAME, boot: bootUnattendedBackups },
   {
     name: CRON_SCHEDULER_NAME,
     boot: (ctx) => bootCronScheduler(ctx),

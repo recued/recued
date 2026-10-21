@@ -31,7 +31,7 @@ const seed = async (fixture: ReturnType<typeof createFixture>) => {
   }
 };
 
-test('vendor filters constrain rows and real message hits, and exact jumps protect drafts', async ({ page }) => {
+test('vendor filters constrain rows and real message hits, and exact jumps keep drafts', async ({ page }) => {
   const fixture = createFixture({ emit: () => {} });
   const requests: ChatMessageSearchRequest[] = [];
   try {
@@ -55,12 +55,11 @@ test('vendor filters constrain rows and real message hits, and exact jumps prote
     await expect(page.locator('[data-recued-chat-history-messages]')).toContainText('No matching messages');
     expect(requests.at(-1)).toMatchObject({ session_id: 's', filters: { vendor: 'telegram' } });
     await filter(page, 'scope').selectOption('all');
+    // Since 04844efda a typed draft stays with the chat it was written in, so an exact jump asks nothing.
     await expect(hits(page)).toHaveCount(1); await hits(page).click();
-    await expect(page.locator('[data-recued-chat-route-history-draft-guard]')).toBeVisible();
-    await page.getByRole('button', { name: 'Keep writing', exact: true }).click();
-    await expect(page.locator('[data-recued-chat-route-input]')).toHaveValue('Keep my draft');
-    await hits(page).click(); await page.getByRole('button', { name: 'Throw it away and open', exact: true }).click();
+    await expect(page.locator('[data-recued-chat-route-history-draft-guard]')).toHaveCount(0);
     await expect(page.locator('[data-recued-chat-route-message="hit-telegram-chat"]')).toBeVisible();
+    await expect(page.locator('[data-recued-chat-route-input]')).toHaveValue('');
     await filter(page, 'scope').selectOption('current');
     await expect(hits(page)).toHaveCount(1);
     expect(requests.at(-1)).toMatchObject({ session_id: 'telegram-chat' });
@@ -68,6 +67,9 @@ test('vendor filters constrain rows and real message hits, and exact jumps prote
     await page.getByRole('button', { name: 'New chat', exact: true }).click();
     await expect(page.locator('[data-recued-chat-history-messages]')).toContainText('Open a chat first, then you can search inside it');
     await expect(hits(page)).toHaveCount(0); expect(requests.length).toBe(searchesBeforeDraft);
+    // The draft is still with the chat it was written in.
+    await filter(page, 'clear').click(); await search(page).fill(''); await row(page, 's').click();
+    await expect(page.locator('[data-recued-chat-route-input]')).toHaveValue('Keep my draft');
   } finally { await page.unrouteAll({ behavior: 'wait' }); fixture.close(); }
 });
 

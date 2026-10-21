@@ -126,25 +126,25 @@ test('an acknowledgement preserves a newly selected reply and its draft', async 
   } finally { releaseAck(); await f.close(); }
 });
 
-test('a quote-only draft is protected during navigation and fits a narrow composer', async ({ browser }, testInfo) => {
+test('a quote-only draft is kept through navigation and fits a narrow composer', async ({ browser }, testInfo) => {
   const f = await setup(browser); const [a] = f.pages;
   try {
     await a.setViewportSize({ width: 390, height: 844 });
     await a.emulateMedia({ colorScheme: 'dark' });
     await a.locator('[data-chat-reply-action="question-2"]').click();
-    // A phone shows the conversation list as its own pane.
-    await openChatHistory(a);
-    await a.getByRole('button', { name: /Another conversation.*0 messages/ }).click();
-    await expect(a.locator('[data-recued-chat-route-history-draft-guard]')).toContainText('What you were writing will be lost');
-    await a.getByRole('button', { name: 'Keep writing', exact: true }).click();
     await expect(a.locator('[data-chat-reply-draft="question-2"]')).toBeVisible();
     await expect(input(a)).toBeFocused(); await expect(input(a)).toHaveValue('');
     expect(await a.locator('[data-chat-reply-draft]').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
     await a.locator('.chat-composer').screenshot({ path: testInfo.outputPath('quoted-reply-mobile.png') });
+    // Since 04844efda a typed draft stays with the chat it was written in, so switching asks nothing, a quote with no text included.
+    // A phone shows the conversation list as its own pane.
     await openChatHistory(a);
     await a.getByRole('button', { name: /Another conversation.*0 messages/ }).click();
-    await a.getByRole('button', { name: 'Throw it away and open', exact: true }).click();
+    await expect(a.locator('[data-recued-chat-route-history-draft-guard]')).toHaveCount(0);
     await expect(a.locator('[data-chat-reply-draft]')).toHaveCount(0);
     await expect(row(a, 'question-2')).toHaveCount(0);
+    await openChatHistory(a);
+    await a.getByRole('button', { name: /Shared conversation/ }).click();
+    await expect(a.locator('[data-chat-reply-draft="question-2"]')).toBeVisible();
   } finally { await f.close(); }
 });

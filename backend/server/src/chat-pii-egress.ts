@@ -265,6 +265,107 @@ const chatTailContentFieldTags = (packet: PiiAliasableData): PiiFieldTag[] => {
   return tags;
 };
 
+/** ⛔ A PLACE THE OWNER TYPED REACHES THE MODEL AS TYPED, in the owner's own
+ *  messages: `user_message` and the owner's `chat_tail` turns.
+ *
+ *  The content pass replaces every ledger-known value wherever it appears. A
+ *  record's place seeded by the lookup block or a tool result was therefore
+ *  rewritten in the owner's own question as well. Measured on the D-325
+ *  qualification bench (2026-10-21, qwen3.7-plus): with a block holding the
+ *  Lisbon travel insurance, "Which country is Lisbon the capital of?" went out
+ *  as "Which country is pii.Address1 the capital of?". All 3 such questions
+ *  (Lisbon twice, Porto once) went unanswered, though each was answered with
+ *  no block. The owner disclosed the place by typing it, and the same words go
+ *  out raw whenever no record matches, so the alias protected nothing and cost
+ *  the answer.
+ *
+ *  Narrow by design: only `address` values, only in the owner's own messages.
+ *  The block, tool results and the assistant's earlier replies keep a record's
+ *  place aliased, and an email, phone or name the owner types is still aliased.
+ *  A place inside a longer known value (an organisation named "Lisbon
+ *  Insurance Ltd") or touching an `@` (`lisbon@acme.com`) is left to the
+ *  content pass, so that value is still aliased whole. The span finder uses
+ *  `scanContent`'s match and its longest-value-first order.
+ *
+ *  ⚠ Not covered: the cross-session recall reharvest
+ *  (`aliasReharvestCandidatesInPlace`), which aliases recalled candidate values
+ *  across the packet, the owner's prose included, before the hold runs. */
+const OWNER_PLACE_KIND = 'address';
+// Private-use characters: neither `\w` nor a letter, so no pattern in the
+// content pass can match or extend across them.
+const CLAIM_OPEN = '';
+const CLAIM_CLOSE = '';
+const HOLD_OPEN = '';
+const HOLD_CLOSE = '';
+const MARK_BASE = 0xE100;
+// Marks stay inside the private-use area (U+E100 to U+F8FF).
+const MARK_LIMIT = 0xF8FF - MARK_BASE;
+const escapeRegExpLiteral = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const ownerTextSlots = (packet: unknown, withUserMessage: boolean): Array<[Record<string, unknown>, string]> => {
+  if (packet === null || typeof packet !== 'object' || Array.isArray(packet)) return [];
+  const record = packet as Record<string, unknown>;
+  const slots: Array<[Record<string, unknown>, string]> = [];
+  if (withUserMessage && typeof record[CHAT_USER_MESSAGE_PATH] === 'string') slots.push([record, CHAT_USER_MESSAGE_PATH]);
+  const tail = record['chat_tail'];
+  if (Array.isArray(tail)) {
+    for (const message of tail) {
+      if (message !== null && typeof message === 'object' && (message as Record<string, unknown>)['role'] === 'user'
+        && typeof (message as Record<string, unknown>)['content'] === 'string') slots.push([message as Record<string, unknown>, 'content']);
+    }
+  }
+  return slots;
+};
+interface OwnerPlaceHold {
+  /** Swap each place the owner typed for a mark the content pass cannot match. */
+  hold(packet: unknown): void;
+  /** Put every held place back into the copy of the packet about to be sent. */
+  release(packet: unknown): void;
+}
+/** `userMessageIsIdentifier`: the resolver tagged the whole `user_message` as
+ *  one identifier, which this leaves to the identifier pass unchanged. */
+const createOwnerPlaceHold = (ledger: SessionLedger, userMessageIsIdentifier: boolean): OwnerPlaceHold => {
+  const held: string[] = [];
+  const holdIn = (text: string): string => {
+    // A message already carrying a mark character is left to the passes unchanged.
+    if (/[\uE000-\uE003]/u.test(text)) return text;
+    const entries = [...ledger.byKindRealValue.values()]
+      .filter((entry) => entry.kind !== 'email_local' && entry.kind !== 'domain' && entry.real_value.length > 0)
+      .sort((a, b) => b.real_value.length - a.real_value.length);
+    if (!entries.some((entry) => entry.kind === OWNER_PLACE_KIND)) return text;
+    // Claim spans in the content pass's order (`@` values first, then longest
+    // first), then keep only the places' claims.
+    const claims: Array<{ original: string; place: boolean }> = [];
+    let working = text;
+    for (const entry of [...entries.filter((e) => e.real_value.includes('@')), ...entries.filter((e) => !e.real_value.includes('@'))]) {
+      const place = entry.kind === OWNER_PLACE_KIND;
+      const pattern = new RegExp(`(?<![\\w.@-])${escapeRegExpLiteral(entry.real_value)}(?![\\w-])${place ? '(?!@)' : '(?!@d\\d+\\.invalid)'}(?!\\.[\\w-])`, 'gi');
+      working = working.replace(pattern, (match: string) => {
+        if (claims.length >= MARK_LIMIT) return match;
+        claims.push({ original: match, place });
+        return `${CLAIM_OPEN}${String.fromCharCode(MARK_BASE + claims.length - 1)}${CLAIM_CLOSE}`;
+      });
+    }
+    return working.replace(new RegExp(`${CLAIM_OPEN}(.)${CLAIM_CLOSE}`, 'gu'), (_mark: string, code: string) => {
+      const claim = claims[code.charCodeAt(0) - MARK_BASE]!;
+      if (!claim.place) return claim.original;
+      held.push(claim.original);
+      return `${HOLD_OPEN}${String.fromCharCode(MARK_BASE + held.length - 1)}${HOLD_CLOSE}`;
+    });
+  };
+  return {
+    hold(packet) {
+      for (const [owner, key] of ownerTextSlots(packet, !userMessageIsIdentifier)) owner[key] = holdIn(owner[key] as string);
+    },
+    release(packet) {
+      if (held.length === 0) return;
+      for (const [owner, key] of ownerTextSlots(packet, true)) {
+        owner[key] = (owner[key] as string).replace(new RegExp(`${HOLD_OPEN}(.)${HOLD_CLOSE}`, 'gu'),
+          (mark: string, code: string) => held[code.charCodeAt(0) - MARK_BASE] ?? mark);
+      }
+    },
+  };
+};
+
 /** Merge one egress packet's redaction summary into the turn accumulator.
  *  Sums per-kind counts. A value re-sent across the tool loop's reinvokes is
  *  counted per egress packet (each reinvoke is a distinct cloud egress) —
@@ -1442,17 +1543,28 @@ const aliasChatAiInputData = async (
       plan.retainedCandidates.value = [];
     }
   }
+  // A place the owner typed stays as typed in their own messages: held before
+  // the content pass that scans them, released in whichever copy is sent. See
+  // `createOwnerPlaceHold`.
+  const typedMessage = (packet as Record<string, unknown>)[CHAT_USER_MESSAGE_PATH];
+  const ownerPlaces = createOwnerPlaceHold(plan.ledger, typeof typedMessage === 'string'
+    && !isFreeTextChatUserMessage(typedMessage)
+    && rawFields.some((field) => field.path === CHAT_USER_MESSAGE_PATH && field.kind !== 'content'));
   // Mandatory exact-path protection runs while the resolver's paths still
   // address the raw structure. The candidate pass below is intentionally
   // key-aware inside dynamic data; running it first could rename a nested key
   // and make a schema path miss its value. User prose is normalized to a
   // content field here so a resolver cannot allocate one malformed whole-value
   // identifier for a sentence.
+  // ⛔ Without the owner's prose. Its content scan would run in the same call
+  // as the identifier pass that seeds a tool result's place, so no hold could
+  // come between them. The final content pass below scans the prose against
+  // the fuller ledger, after the hold.
   const directFields = normalizeChatUserMessagePiiFields(
     packet as PiiAliasableData,
     rawFields,
     false,
-  );
+  ).filter((field) => !(field.path === CHAT_USER_MESSAGE_PATH && field.kind === 'content'));
   let directlyProtected = false;
   if (directFields.length > 0) {
     const direct = piiEgress.aliasPacketForEgress({
@@ -1608,6 +1720,8 @@ const aliasChatAiInputData = async (
   // via `preScanEscaped` instead.
   const scanContent =
     directlyProtected || plan.ledger.byKindRealValue.size > 0;
+  // After every pass that seeds the ledger, before the one that scans the prose.
+  ownerPlaces.hold(packet);
   const userMessageFields = normalizeChatUserMessagePiiFields(
     packet as PiiAliasableData,
     [],
@@ -1648,6 +1762,7 @@ const aliasChatAiInputData = async (
     // `prefetchInjected` ⇒ the prefetch block was added to `packet` above (an
     // empty user_message + chat_tail can leave `fields` empty even with prefetch
     // seeding), so it too forces the re-serialize.
+    ownerPlaces.release(packet);
     return withSystem(
       removed
         || scanned
@@ -1668,6 +1783,7 @@ const aliasChatAiInputData = async (
     resolver: () => fields,
     mode: 'alias',
   });
+  ownerPlaces.release(aliased);
   plan.summary.value = mergeRedactionSummary(plan.summary.value, summary);
   // Data-field aliasing AFTER the identifier pass seeded the ledger from this
   // packet's tagged result fields, so a first reinvoke whose own round-0 result

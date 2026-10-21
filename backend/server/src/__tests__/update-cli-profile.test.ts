@@ -23,21 +23,17 @@ import { acquireUpdateLease, updateLeasePathFor } from '../update/update-lease.j
 describe('recued update platform guidance', () => {
   const unusedCheck = {} as ReleaseCheckResponse;
 
-  it('routes Windows binary owners to the stopped updater', () => {
-    const check = buildUpdateApplyGuidance('binary', unusedCheck, 'win32');
-    const running = runningServerUpdateRemedy('apply', 'win32');
-
-    expect(check).toMatch(/Stop the Windows daemon/);
+  it('offers Settings and the stopped CLI on every platform, Windows included', () => {
+    // Windows was routed to the stopped CLI alone while its Startup shortcut
+    // could not respawn the server. `recued start` now runs it under `recued
+    // supervise` (D-178 amendment 2026-10-20), so Settings restarts it there too.
+    const check = buildUpdateApplyGuidance('binary', unusedCheck);
+    expect(check).toMatch(/Settings → Updates/);
+    expect(check).toMatch(/recued update apply/);
+    const running = runningServerUpdateRemedy('rollback');
+    expect(running).toMatch(/supervised server/);
     expect(running).toMatch(/recued stop/);
-    expect(running).toMatch(/recued update apply/);
-    expect(`${check}\n${running}`).not.toMatch(/Settings/);
-  });
-
-  it('keeps the supervised webclient route on macOS and Linux', () => {
-    expect(buildUpdateApplyGuidance('binary', unusedCheck, 'darwin'))
-      .toMatch(/Settings → Updates/);
-    expect(runningServerUpdateRemedy('rollback', 'linux'))
-      .toMatch(/supervised server/);
+    expect(running).toMatch(/recued update rollback/);
   });
 });
 

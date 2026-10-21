@@ -3150,7 +3150,7 @@ export const bootstrapWebclient = async (
   // whichever screen called it (`webhook-door-notices.ts`). The toast stack
   // mounts further down; it is read when a result arrives.
   const rpcConn: WebclientRpcConn<ServerRpcRegistry> = withWebhookDoorNotices(
-    createWebclientRpcConn({ ws, connectionStatus, nonReplayMethods: new Set(['server.archive.import', 'server.archive.export']) }),
+    createWebclientRpcConn({ ws, connectionStatus, nonReplayMethods: new Set(['server.archive.import', 'server.archive.export', 'server.archive.unattended.save', 'server.archive.drill.start', 'server.archive.drill.cancel', 'server.archive.drill.cleanup', 'server.archive.health.save']) }),
     (toast) => presentWebhookDoor(toast),
   );
   // A self-`pair.revoke` intentionally closes this session. Keep that known
@@ -6617,6 +6617,36 @@ export const bootstrapWebclient = async (
         return rpcConn.call('server.archive.export', args);
       };
   const archiveRemoteBackups: RemoteBackupsPorts | undefined = archiveBackupOff ? undefined : {
+    health: {
+      get: async () => {
+        await assertArchivePair(); const result = await rpcConn.call('server.archive.health.get', {}); await assertArchivePair(); return result;
+      },
+      save: async args => {
+        await assertArchivePair(); const result = await rpcConn.call('server.archive.health.save', args); await assertArchivePair(); return result;
+      },
+    },
+    drills: {
+      list: async () => {
+        await assertArchivePair(); const result = await rpcConn.call('server.archive.drills', {}); await assertArchivePair(); return result;
+      },
+      start: async args => {
+        await assertArchivePair(); const result = await rpcConn.call('server.archive.drill.start', args); await assertArchivePair(); return result;
+      },
+      cancel: async args => {
+        await assertArchivePair(); const result = await rpcConn.call('server.archive.drill.cancel', args); await assertArchivePair(); return result;
+      },
+      cleanup: async args => {
+        await assertArchivePair(); const result = await rpcConn.call('server.archive.drill.cleanup', args); await assertArchivePair(); return result;
+      },
+    },
+    unattended: {
+      get: async () => {
+        await assertArchivePair(); const result = await rpcConn.call('server.archive.unattended.get', {}); await assertArchivePair(); return result;
+      },
+      save: async args => {
+        await assertArchivePair(); const result = await rpcConn.call('server.archive.unattended.save', args); await assertArchivePair(); return result;
+      },
+    },
     destinations: async () => {
       await assertArchivePair(); const result = await rpcConn.call('server.archive.destinations', {}); await assertArchivePair(); return result;
     },

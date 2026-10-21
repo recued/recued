@@ -97,7 +97,9 @@ test('shows specific corrections as text and links the separate owner review',as
   await page.goto(BASE);await publish(page);
   await page.evaluate(() => window.__quoteSignoff.completionResponse('corrections_requested','Correct scale. <script>alert(1)</script>'));
   await expect(queue(page)).toContainText('Customer requested corrections.');await expect(queue(page)).toContainText('Correct scale. <script>alert(1)</script>');
-  await expect(queue(page).locator('script')).toHaveCount(0);await expect(queue(page).getByRole('link',{ name: 'Review completion in Reception Inbox' })).toHaveAttribute('href','#reception/inbox');
+  await expect(queue(page).locator('script')).toHaveCount(0);
+  // The link opens this completion's own review item (c63d5b076), not the Inbox's front page.
+  await expect(queue(page).getByRole('link',{ name: 'Review completion in Reception Inbox' })).toHaveAttribute('href','#reception/inbox/b1fecd4e-42ce-42a2-b7e7-731ce51a01b2');
   await page.getByLabel('Completion requests',{ exact: true }).selectOption('review');
   await expect.poll(async () => page.evaluate(() => window.__quoteSignoff.calls.filter(call => call.method === 'reception.signoff.completion.list').at(-1)?.payload)).toEqual({ limit: 50,review_only: true });
 });
@@ -120,7 +122,7 @@ test('retries a failed preparation without publishing the failed preview',async 
 });
 test('exports completion decision and owner action while omitting corrections and escaping the delivery',async ({ page }) => {
   await page.goto(BASE);await publish(page);await page.evaluate(() => window.__quoteSignoff.completionResponse('corrections_requested','PRIVATE correction','reopen'));
-  await expect(queue(page)).toContainText('Owner reopened work');await page.getByRole('button',{ name: 'View receipt' }).click();
+  await expect(queue(page)).toContainText('Owner reopened work');await page.getByRole('button',{ name: 'View sign-off receipt',exact: true }).click();
   const view = page.getByRole('region',{ name: 'Sign-off receipt' });await expect(view).toContainText('Delivery completion');await expect(view).toContainText('Customer requested corrections');
   await expect(view).toContainText('Owner reopened work');await expect(view).not.toContainText('PRIVATE correction');
   const pending = page.waitForEvent('download');await view.getByRole('button',{ name: 'Download receipt' }).click();

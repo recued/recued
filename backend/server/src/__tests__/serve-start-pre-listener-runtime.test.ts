@@ -168,6 +168,7 @@ describe('startPreListenerRuntime', () => {
       return result;
     });
     const options = makeOptions({
+      archiveDeps: { restoreDrills: { tag: 'restore-drills' }, backupHealth: { tag: 'backup-health' } } as never,
       publishUpstreamMergeRegistry: vi.fn(() => {
         order.push('publish-upstream');
       }),
@@ -259,6 +260,8 @@ describe('startPreListenerRuntime', () => {
         publishExposureMachine: options.publishExposureMachine,
       }),
       runtime: expect.objectContaining({
+        restoreDrills: options.archiveDeps?.restoreDrills,
+        backupHealth: options.archiveDeps?.backupHealth,
         dbPath: options.dbPath,
         executorConfig: options.executorConfig,
         certStack: clientSecurity.certStack,

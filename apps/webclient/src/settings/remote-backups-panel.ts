@@ -2,12 +2,18 @@
  * adjacent recovery-word/file form. Polling never repaints those inputs. */
 import type { ArchiveRemoteBackup, ArchiveRemoteDestination, ArchiveRemoteTarget } from '@recued/contracts';
 import { formatClientDateTime } from '@recued/ui-shared';
+import { mountUnattendedBackups, type UnattendedBackupsPorts } from './unattended-backups-panel.js';
+import { mountRestoreDrills, type RestoreDrillsPorts } from './restore-drills-panel.js';
+import { mountBackupHealth, type BackupHealthPorts } from './backup-health-panel.js';
 
 export interface RemoteBackupsPorts {
   destinations(): Promise<{ destinations: ArchiveRemoteDestination[] }>;
   list(): Promise<{ backups: ArchiveRemoteBackup[] }>;
   check(input: { operation_id: string }): Promise<ArchiveRemoteBackup>;
   retrieve(input: { operation_id: string }): Promise<{ staged_name: string }>;
+  unattended?: UnattendedBackupsPorts;
+  drills?: RestoreDrillsPorts;
+  health?: BackupHealthPorts;
   onConnected?: (listener: () => void) => () => void;
 }
 const ACTIVE = new Set(['preparing', 'uploading', 'verifying']);
@@ -45,10 +51,16 @@ export const mountRemoteBackups = (options: {
   const refreshButton = make('button', 'Refresh storage and history'); refreshButton.type = 'button'; refreshButton.className = 'rx-btn rx-btn-secondary';
   refreshButton.setAttribute('data-remote-backups-refresh', ''); host.appendChild(refreshButton);
   const status = make('p'); status.setAttribute('role', 'status'); host.appendChild(status);
+  const healthHost = make('div'); host.appendChild(healthHost);
+  const health = ports.health ? mountBackupHealth({ host: healthHost, document: doc, ports: ports.health }) : undefined;
+  const unattendedHost = make('div'); host.appendChild(unattendedHost);
+  const unattended = ports.unattended ? mountUnattendedBackups({ host: unattendedHost, document: doc, ports: ports.unattended }) : undefined;
+  const drillsHost = make('div'); host.appendChild(drillsHost);
+  const drills = ports.drills ? mountRestoreDrills({ host: drillsHost, document: doc, ports: ports.drills }) : undefined;
   const historyHeading = make('h3', 'Remote backup history'); host.appendChild(historyHeading);
   const history = make('ul'); history.setAttribute('data-remote-backup-history', ''); host.appendChild(history);
   type Row = { node: HTMLLIElement; summary: HTMLParagraphElement; note: HTMLParagraphElement; check: HTMLButtonElement;
-    prepare: HTMLButtonElement; location: HTMLParagraphElement; checksum: HTMLParagraphElement;
+    prepare: HTMLButtonElement; drill?: HTMLButtonElement; location: HTMLParagraphElement; checksum: HTMLParagraphElement;
     receipt: ArchiveRemoteBackup; busy: boolean; prepared?: { name: string; at: number } };
   const rows = new Map<string, Row>();
   const renderRow = (row: Row): void => {
@@ -61,6 +73,7 @@ export const mountRemoteBackups = (options: {
     row.check.setAttribute('aria-disabled', String(row.busy || ACTIVE.has(data.state) || data.state === 'pruned' || data.state === 'pruning' || data.sha256 === undefined));
     row.prepare.textContent = row.prepared ? 'Open restore preview' : 'Prepare a restore';
     row.prepare.setAttribute('aria-disabled', String(row.busy || (!row.prepared && data.state !== 'verified')));
+    row.drill?.setAttribute('aria-disabled', String(row.busy || data.state !== 'verified'));
   };
   const schedule = (delay = options.pollMs ?? 5000): void => {
     if (timer !== undefined) clearTimeout(timer);
@@ -81,8 +94,14 @@ export const mountRemoteBackups = (options: {
         check.type = prepare.type = 'button'; check.className = prepare.className = 'rx-btn rx-btn-secondary';
         node.setAttribute('data-remote-backup-id', receipt.operation_id); check.setAttribute('data-remote-backup-check', ''); prepare.setAttribute('data-remote-backup-restore', '');
         node.appendChild(summary); node.appendChild(details); node.appendChild(check); node.appendChild(prepare); node.appendChild(feedback);
-        row = { node, summary, note: feedback, check, prepare, location, checksum, receipt, busy: false }; rows.set(receipt.operation_id, row);
+        const drill = drills ? make('button', 'Test recovery') : undefined;
+        if (drill) { drill.type = 'button'; drill.className = 'rx-btn rx-btn-secondary'; drill.setAttribute('data-remote-backup-drill', ''); node.appendChild(drill); }
+        row = { node, summary, note: feedback, check, prepare, drill, location, checksum, receipt, busy: false }; rows.set(receipt.operation_id, row);
         const current = row;
+        drill?.addEventListener('click', () => {
+          if (drill.getAttribute('aria-disabled') === 'true') return;
+          current.note.textContent = drills?.choose(current.receipt) ? 'Selected for a recovery test. Enter its words in Test recovery above.' : 'Wait for the current test request to finish.';
+        });
         check.addEventListener('click', () => {
           if (check.getAttribute('aria-disabled') === 'true') return;
           current.busy = true; current.note.textContent = 'Checking the stored copy…'; renderRow(current);
@@ -125,6 +144,7 @@ export const mountRemoteBackups = (options: {
     const signature = JSON.stringify(values);
     if (signature === choicesSignature) return;
     choicesSignature = signature;
+    unattended?.destinations(values);
     destinations = new Map(values.map(value => [value.connection_name, value]));
     while (select.firstChild) select.removeChild(select.firstChild);
     const localOption = make('option', 'This server — download a copy afterward'); localOption.value = ''; select.appendChild(localOption);
@@ -141,10 +161,13 @@ export const mountRemoteBackups = (options: {
     if (disposed) return;
     if (loading) { queuedRefresh = true; return; }
     loading = true; const ownGeneration = ++generation; refreshButton.setAttribute('aria-disabled', 'true');
+    void health?.refresh();
     try {
       const [choices, receipts] = await Promise.all([ports.destinations(), ports.list()]);
       if (disposed || generation !== ownGeneration) return;
       renderDestinations(choices.destinations); renderHistory(receipts.backups);
+      await unattended?.refresh();
+      await drills?.refresh();
     } catch { if (!disposed && generation === ownGeneration) status.textContent = 'Storage choices and history could not be checked. Reconnect and refresh.'; }
     finally {
       loading = false;
@@ -168,6 +191,6 @@ export const mountRemoteBackups = (options: {
       return { operation_id: globalThis.crypto.randomUUID(), connection_name: value.connection_name, destination_id: value.destination_id, keep_last: count };
     },
     refresh,
-    dispose() { disposed = true; generation++; if (timer !== undefined) clearTimeout(timer); detach?.(); },
+    dispose() { health?.dispose(); unattended?.dispose(); drills?.dispose(); disposed = true; generation++; if (timer !== undefined) clearTimeout(timer); detach?.(); },
   };
 };

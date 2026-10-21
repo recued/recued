@@ -465,10 +465,27 @@ describe('value grounding lives in the CORE text', () => {
     expect(RECUED_CORE_TEXT).toMatch(/not permission to supply the value/);
   });
 
+  // ⛔ SCOPED TO THE USER'S OWN DATA (2026-10-20). Worded for every value, it
+  //   refused "What is the population of Lisbon?" in 9 of 10 runs; without the
+  //   paragraph the model answered correctly 5/5. The bench above measured the
+  //   owner's ring costs only.
+  it('covers the user\'s own data, looked up or worked out, and not general knowledge', () => {
+    expect(RECUED_CORE_TEXT).toMatch(/Never state a specific value from the user's own data/);
+    // A total is grounded only when every value it adds is: the bench's "184
+    // units" was an input the model never found.
+    expect(RECUED_CORE_TEXT).toMatch(/such as a total, needs every value it uses in front of you/);
+    expect(RECUED_CORE_TEXT).toMatch(/General knowledge is different/);
+    expect(RECUED_CORE_TEXT).toMatch(/say how current your figure is/);
+    // Without it the model stopped looking for a live tool: 1/5, against 4/5.
+    expect(RECUED_CORE_TEXT).toMatch(/as it is right now, .* look for a tool that has it first/);
+  });
+
   it('⛔ is NOT in the user-replaceable persona', () => {
     // `DEFAULT_CHAT_ROLE_INSTRUCTIONS` is a persona any surface may replace. A
     // correctness rule there disappears the moment someone customises it.
     expect(DEFAULT_CHAT_ROLE_INSTRUCTIONS).not.toMatch(/Never state a specific value/);
+    // Nor its scope: a persona without it would refuse world facts again.
+    expect(DEFAULT_CHAT_ROLE_INSTRUCTIONS).not.toMatch(/General knowledge is different/);
   });
 
   it('survives every catalog mode, since fabrication is mode-independent', () => {

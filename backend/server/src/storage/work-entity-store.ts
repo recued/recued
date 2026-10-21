@@ -116,6 +116,13 @@ export const COMMITMENT_TABLE = 'data_commitment';
 export const PROJECT_TABLE = 'data_project';
 export const BOOKING_TABLE = 'data_booking';
 export const ASSET_TABLE = 'data_asset';
+const CLASS_UPDATE_ASSET_WHERE = `class_id IS NOT NULL AND class_id<>'' AND status IN ('active','lent')
+  AND deleted_at IS NULL AND sync_state IN ('live','stale_unreachable')`;
+const WALKABLE_ASSET_WHERE = "deleted_at IS NULL AND sync_state IN ('live','stale_unreachable')";
+const EVIDENCE_ASSET_WHERE = `${WALKABLE_ASSET_WHERE} AND status IN ('active','lent') AND EXISTS (
+  SELECT 1 FROM json_each(data_blob,'$.observations') observation
+  WHERE json_extract(observation.value,'$.active')=1
+    AND json_extract(data_blob,'$.field_sources.' || json_quote('observations.' || observation.key) || '.kind')='observation')`;
 export const NOTE_ACCESS_LEDGER_TABLE = 'note_access_ledger';
 export const NOTE_FTS_TABLE = 'data_note_fts';
 /** D-145 — the searchable index behind `work.search`, across ALL FIVE kinds.
@@ -636,6 +643,8 @@ export const ensureWorkEntitySchema = (db: Database.Database): void => {
     ${sourceRowIdentityIndexes('asset', ASSET_TABLE)}
     CREATE INDEX IF NOT EXISTS idx_asset_parent ON ${ASSET_TABLE}(belongs_to);
     CREATE INDEX IF NOT EXISTS idx_asset_holder ON ${ASSET_TABLE}(holder_contact, status);
+    CREATE INDEX IF NOT EXISTS idx_asset_class_updates ON ${ASSET_TABLE}(id)
+      WHERE ${CLASS_UPDATE_ASSET_WHERE};
     CREATE TABLE IF NOT EXISTS asset_observation_binding (
       id TEXT PRIMARY KEY, asset_id TEXT NOT NULL, actor_ref TEXT NOT NULL,
       source_ref TEXT NOT NULL, fields TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
@@ -2248,6 +2257,13 @@ export interface WorkEntityStore {
   countAssets(query?: WorkEntityListQuery): number;
   deleteAsset(id: string, opts?: { tombstone?: boolean; now?: number }): boolean;
   walkByAssetId(after_id: string, batch_size: number): Asset[];
+  /** ID-ordered active/lent assets with an assigned class, using the ordinary
+   * walk's deleted and sync-state visibility. Reads fresh candidates per call. */
+  walkAssetsForClassUpdates(after_id: string, batch_size: number): Asset[];
+  /** Hydrate only active source observations. The cursor retains the ordinary
+   * walk's page boundary so later pages are read after any annotation await.
+   * Binding availability is checked separately and can change during a page. */
+  walkAssetsForEvidenceRefresh(after_id: string, batch_size: number): { assets: Asset[]; cursor: string };
   bindAssetObservations(binding: AssetObservationBinding): void;
   /** P33 merge — the duplicate's observation bindings and reading history move to
    * the kept asset (whose own binding for the same feed wins). Not a reassignment
@@ -2265,6 +2281,9 @@ export interface WorkEntityStore {
   writeAssetObservations(input: { binding_id: string; actor_ref: string; recipe_hash?: string;
     readings?: Record<string, AssetReading>; observations?: Record<string, Omit<AssetCondition, 'source'>> }, now?: number): { asset: Asset; changed_fields: string[]; prior?: Asset };
   assetReadingHistory(asset_id: string, field: string, limit?: number): AssetReading[];
+  /** Fresh histories for distinct asset/field pairs, including empty results.
+   * Each pair keeps the individual read's newest-first order and limit. */
+  assetReadingHistories(requests: readonly { asset_id: string; field: string }[], limit?: number): Map<string, Map<string, AssetReading[]>>;
   /** Latest actual sample known at an owner action, independent of retention
    * windows used by trend queries. Never substitutes a later reading. */
   assetReadingAt(asset_id: string, field: string, at: number): AssetReading | null;
@@ -2972,6 +2991,27 @@ export const createWorkEntityStore = (
   const walkByAssetId: WorkEntityStore['walkByAssetId'] = (after, limit) =>
     (db.prepare(`SELECT * FROM ${ASSET_TABLE} WHERE id>? AND deleted_at IS NULL AND sync_state IN ('live','stale_unreachable') ORDER BY id LIMIT ?`)
       .all(after, Math.min(MAX_LIST_LIMIT, Math.max(1, limit))) as AssetRow[]).map(rowToAsset);
+  const walkAssetsForClassUpdates: WorkEntityStore['walkAssetsForClassUpdates'] = (after, limit) =>
+    (db.prepare(`SELECT * FROM ${ASSET_TABLE} WHERE id>? AND ${CLASS_UPDATE_ASSET_WHERE} ORDER BY id LIMIT ?`)
+      .all(after, Math.min(MAX_LIST_LIMIT, Math.max(1, limit))) as AssetRow[]).map(rowToAsset);
+  const walkAssetsForEvidenceRefresh: WorkEntityStore['walkAssetsForEvidenceRefresh'] = (after, limit) => {
+    // Skip empty pages, but keep the next candidate's original raw page. Packing
+    // candidates from later pages together would freeze their facts too early.
+    const rows = db.prepare(`WITH evidence_first AS (
+      SELECT id FROM ${ASSET_TABLE} WHERE id>@after AND ${EVIDENCE_ASSET_WHERE} ORDER BY id LIMIT 1
+    ), evidence_skipped AS (
+      SELECT COUNT(*) AS n FROM ${ASSET_TABLE}
+        WHERE id>@after AND id<(SELECT id FROM evidence_first) AND ${WALKABLE_ASSET_WHERE}
+    ), evidence_end AS (
+      SELECT COALESCE(
+        (SELECT id FROM ${ASSET_TABLE} WHERE id>=(SELECT id FROM evidence_first) AND ${WALKABLE_ASSET_WHERE}
+          ORDER BY id LIMIT 1 OFFSET (@size-1-(SELECT n FROM evidence_skipped)%@size)),
+        (SELECT id FROM ${ASSET_TABLE} WHERE ${WALKABLE_ASSET_WHERE} ORDER BY id DESC LIMIT 1)) AS id
+    ) SELECT *, (SELECT id FROM evidence_end) AS evidence_page_end FROM ${ASSET_TABLE}
+      WHERE id>=(SELECT id FROM evidence_first) AND id<=(SELECT id FROM evidence_end) AND ${EVIDENCE_ASSET_WHERE}
+      ORDER BY id`).all({ after, size: Math.min(MAX_LIST_LIMIT, Math.max(1, limit)) }) as Array<AssetRow & { evidence_page_end: string }>;
+    return { assets: rows.map(rowToAsset), cursor: rows[0]?.evidence_page_end ?? after };
+  };
   if (!(db.prepare('PRAGMA table_info(asset_observation_binding)').all() as { name: string }[]).some(row => row.name === 'recipe_hash')) db.exec('ALTER TABLE asset_observation_binding ADD COLUMN recipe_hash TEXT');
   const bindAssetObservations: WorkEntityStore['bindAssetObservations'] = binding => {
     const asset = readAsset(binding.asset_id);
@@ -3102,9 +3142,30 @@ export const createWorkEntityStore = (
     if (!changed_fields.length) return { asset: written, changed_fields };
     return { asset: written, changed_fields, prior: asset };
   })();
+  const readingHistoryLimit = (limit: number) => Math.min(10000, Math.max(1, limit));
   const assetReadingHistory: WorkEntityStore['assetReadingHistory'] = (id, field, limit = 100) =>
     (db.prepare('SELECT value FROM asset_reading_history WHERE asset_id=? AND field=? ORDER BY as_of DESC LIMIT ?')
-      .all(id, field, Math.min(10000, Math.max(1, limit))) as Array<{ value: string }>).map(row => JSON.parse(row.value) as AssetReading);
+      .all(id, field, readingHistoryLimit(limit)) as Array<{ value: string }>).map(row => JSON.parse(row.value) as AssetReading);
+  const assetReadingHistories: WorkEntityStore['assetReadingHistories'] = (requests, limit = 100) => {
+    const result = new Map<string, Map<string, AssetReading[]>>(); const keys: Array<{ asset_id: string; field: string }> = [];
+    for (const { asset_id, field } of requests) {
+      let fields = result.get(asset_id); if (!fields) { fields = new Map(); result.set(asset_id, fields); }
+      if (!fields.has(field)) { fields.set(field, []); keys.push({ asset_id, field }); }
+    }
+    for (let offset = 0; offset < keys.length; offset += 200) {
+      const page = keys.slice(offset, offset + 200);
+      // Limit each indexed pair lookup before reading values; a long history
+      // must not be scanned in full merely to rank its newest samples.
+      const rows = db.prepare(`WITH reading_requested(asset_id,field) AS (VALUES ${page.map(() => '(?,?)').join(',')})
+        SELECT wanted.asset_id,wanted.field,history.value FROM reading_requested wanted CROSS JOIN asset_reading_history history
+        WHERE history.rowid IN (SELECT rowid FROM asset_reading_history
+          WHERE asset_id=wanted.asset_id AND field=wanted.field ORDER BY as_of DESC LIMIT ?)
+        ORDER BY wanted.asset_id,wanted.field,history.as_of DESC`)
+        .all(...page.flatMap(({ asset_id, field }) => [asset_id, field]), readingHistoryLimit(limit)) as Array<{ asset_id: string; field: string; value: string }>;
+      for (const row of rows) result.get(row.asset_id)!.get(row.field)!.push(JSON.parse(row.value) as AssetReading);
+    }
+    return result;
+  };
   const assetReadingAt: WorkEntityStore['assetReadingAt'] = (id, field, at) => {
     const row = db.prepare('SELECT value FROM asset_reading_history WHERE asset_id=? AND field=? AND as_of<=? ORDER BY as_of DESC LIMIT 1')
       .get(id, field, at) as { value: string } | undefined;
@@ -4421,9 +4482,9 @@ export const createWorkEntityStore = (
     findCommitment,
     deleteCommitment,
     countCommitments,
-    writeAsset, ensureAsset, readAsset, readAssetEffective, readAssetsEffective, listAssets, countAssets, deleteAsset, walkByAssetId,
+    writeAsset, ensureAsset, readAsset, readAssetEffective, readAssetsEffective, listAssets, countAssets, deleteAsset, walkByAssetId, walkAssetsForClassUpdates, walkAssetsForEvidenceRefresh,
     listAssetChildren: id => (db.prepare(`SELECT * FROM ${ASSET_TABLE} WHERE belongs_to=? AND deleted_at IS NULL ORDER BY id`).all(id) as AssetRow[]).map(rowToAsset),
-    bindAssetObservations, moveAssetObservations, listAssetObservationBindings, listAssetObservationBindingsForAssets, allowAssetAutomaticUpdates, assetObservationHandoffs, writeAssetObservations, assetReadingHistory, assetReadingAt,
+    bindAssetObservations, moveAssetObservations, listAssetObservationBindings, listAssetObservationBindingsForAssets, allowAssetAutomaticUpdates, assetObservationHandoffs, writeAssetObservations, assetReadingHistory, assetReadingHistories, assetReadingAt,
     pendingAssetRetirements, acknowledgeAssetRetirement,
     writeBooking,
     ensureBooking,

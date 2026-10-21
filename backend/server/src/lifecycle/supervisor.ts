@@ -23,11 +23,15 @@
  *    1. `RECUED_SUPERVISOR_MODE` env var (explicit override).
  *    2. `INVOCATION_ID` → systemd (journald sets this).
  *    3. `XPC_SERVICE_NAME` matches com.recued.* → launchd.
- *    4. `/.dockerenv` exists OR `container=docker` env → docker.
- *    5. `RECUED_LAUNCHER=1` env → native.
- *    6. Fallback → dev. */
+ *    4. On macOS, a child of this install's `recued-supervise` → launchd.
+ *    5. `/.dockerenv` exists OR `container=docker` env → docker.
+ *    6. `RECUED_LAUNCHER=1` env → native (a launcher loop: the launcher script,
+ *       and on Windows the `recued supervise` that `recued start` runs).
+ *    7. Fallback → dev. */
 
-import { existsSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, realpathSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import type {
   ResolvedSupervisorMode,
   SupervisorMode,
@@ -140,7 +144,55 @@ export interface DetectSupervisorDeps {
   env?: NodeJS.ProcessEnv;
   /** Defaults to `existsSync('/.dockerenv')`. Injected for tests. */
   dockerEnvExists?: () => boolean;
+  /** Defaults to `process.platform`. Injected for tests. */
+  platform?: NodeJS.Platform;
+  /** Defaults to `childOfInstallSupervisor()`. Injected for tests. */
+  childOfInstallSupervisor?: () => boolean;
 }
+
+export interface InstallSupervisorProbe {
+  /** Defaults to `process.execPath`: the installed `recued`. */
+  execPath?: string;
+  /** Defaults to `process.ppid`. */
+  parentPid?: number;
+  /** The parent's command line, or null when it cannot be read. */
+  readCommand?: (pid: number) => string | null;
+  realpath?: (path: string) => string;
+}
+
+const SUPERVISE_SCRIPT = 'recued-supervise';
+
+const commandLineOf = (pid: number): string | null => {
+  const probe = spawnSync('/bin/ps', ['-o', 'command=', '-p', String(pid)], {
+    encoding: 'utf8',
+    timeout: 2_000,
+  });
+  if (probe.status !== 0 || probe.error) return null;
+  return probe.stdout.trim() || null;
+};
+
+/** Is this process the payload of its own install's `recued-supervise`? That
+ *  script lives beside the binary (`$BIN_DIR/recued-supervise` runs
+ *  `$BIN_DIR/recued`) and respawns it on exit 3 whatever started the script.
+ *  Its command line is `/bin/sh <script> serve …`, since `/bin/sh` runs it. */
+export const childOfInstallSupervisor = (probe: InstallSupervisorProbe = {}): boolean => {
+  const realpath = probe.realpath ?? realpathSync;
+  const command = (probe.readCommand ?? commandLineOf)(probe.parentPid ?? process.ppid);
+  if (command === null) return false;
+  // The script's own name ends an argument; a folder may merely start with it.
+  const found = new RegExp(`/${SUPERVISE_SCRIPT}(?= |$)`).exec(command);
+  if (found === null) return false;
+  const end = found.index + found[0].length;
+  // The script's path starts after the interpreter's (` /…`).
+  const start = command.lastIndexOf(' /', found.index);
+  const script = command.slice(start + 1, end);
+  try {
+    return realpath(dirname(script))
+      === realpath(dirname(probe.execPath ?? process.execPath));
+  } catch {
+    return false;
+  }
+};
 
 const VALID_MODES: ReadonlySet<string> = new Set([
   'native', 'systemd', 'launchd', 'docker', 'docker-thin', 'dev',
@@ -192,6 +244,17 @@ export const resolveSupervisorMode = (
   // 3. Environment signatures.
   if (env.INVOCATION_ID) return 'systemd';
   if (env.XPC_SERVICE_NAME && env.XPC_SERVICE_NAME.startsWith('com.recued.')) {
+    return 'launchd';
+  }
+  // ⛔⛔ THE LINE ABOVE MATCHES NO INSTALL ON CURRENT macOS. launchd gives every
+  // LaunchAgent `XPC_SERVICE_NAME=0` (probed 2026-10-20 under `launchctl load` and
+  // `bootstrap` alike), so every macOS autostart install resolved `dev`: the
+  // webclient's update was refused as "not supervised" and Restart was hidden.
+  // The LaunchAgent runs `recued-supervise`, which respawns this binary on exit 3,
+  // so being that script's child is the signal. Not on Linux, where the same
+  // script runs under systemd and `INVOCATION_ID` already says so.
+  if ((deps.platform ?? process.platform) === 'darwin'
+    && (deps.childOfInstallSupervisor ?? childOfInstallSupervisor)()) {
     return 'launchd';
   }
   if (dockerEnvExists() || env.container === 'docker') return 'docker';

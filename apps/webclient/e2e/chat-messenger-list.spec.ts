@@ -78,7 +78,7 @@ test('two independent webclients retain Messenger identity after renaming and se
   } finally { for (const context of contexts) await context.close(); fixture.close(); }
 });
 
-test('row recovery protects drafts, focuses the existing delivery panel, and retries the retained answer', async ({ page }) => {
+test('row recovery keeps drafts, focuses the existing delivery panel, and retries the retained answer', async ({ page }) => {
   const fixture = createFixture({ emit: event => { void page.evaluate(event => {
     (window as unknown as { queueTestEvent(e: unknown): void }).queueTestEvent?.(event);
   }, { ...event, cursor: Date.now() }).catch(() => {}); } });
@@ -91,19 +91,18 @@ test('row recovery protects drafts, focuses the existing delivery panel, and ret
     await expect(row(page, 'slack-chat')).toContainText('1 that Recued cannot account for unknown');
     await page.locator('[data-recued-chat-route-input]').fill('My draft');
     await menu(page, 'slack-chat').locator('summary').click();
+    // Since 04844efda a typed draft stays with the chat it was written in, so opening another chat's delivery asks nothing.
     await page.locator('[data-chat-messenger-delivery="slack-chat"]').click();
-    await expect(page.locator('[data-recued-chat-route-history-draft-guard]')).toBeVisible();
-    await page.getByRole('button', { name: 'Keep writing', exact: true }).click();
-    await expect(page.locator('[data-recued-chat-route-input]')).toHaveValue('My draft');
-    await menu(page, 'slack-chat').locator('summary').click();
-    await page.locator('[data-chat-messenger-delivery="slack-chat"]').click();
-    await page.getByRole('button', { name: 'Throw it away and open', exact: true }).click();
+    await expect(page.locator('[data-recued-chat-route-history-draft-guard]')).toHaveCount(0);
     const panel = page.locator('[data-chat-delivery]');
     await expect(panel).toBeFocused(); await expect(panel).toContainText('Recued does not know if it arrived');
     await panel.getByRole('button', { name: 'Send again. It may arrive twice', exact: true }).click();
     await expect(row(page, 'slack-chat')).toContainText('Send: All sent');
     expect(fixture.sends()).toBe(2);
     await expect(page.locator('[data-role="assistant"]')).toContainText('The retained answer');
+    // The draft is still with the chat it was written in.
+    await page.locator('[data-recued-chat-route-session-row="s"]').click();
+    await expect(page.locator('[data-recued-chat-route-input]')).toHaveValue('My draft');
   } finally { await page.unrouteAll({ behavior: 'wait' }); fixture.close(); }
 });
 

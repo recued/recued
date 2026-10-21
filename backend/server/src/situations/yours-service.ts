@@ -192,9 +192,8 @@ export const createYoursService = (deps: YoursServiceDeps) => {
   };
   const refreshEvidence = async () => {
     for (let cursor = ''; ;) {
-      const page = deps.work.walkByAssetId(cursor, 500); if (!page.length) break;
-      const candidates = page.filter(current => ['active', 'lent'].includes(current.status)
-        && Object.entries(current.observations).some(([field, observation]) => observation?.active && current.field_sources[`observations.${field}`]?.kind === 'observation'));
+      const page = deps.work.walkAssetsForEvidenceRefresh(cursor, 500); if (!page.assets.length) break;
+      const candidates = page.assets;
       let prefetched: ReturnType<WorkEntityStore['listAssetObservationBindingsForAssets']> | undefined = deps.work.listAssetObservationBindingsForAssets(candidates.map(current => current.id));
       for (const current of candidates) {
         const bindings = prefetched?.get(current.id) ?? deps.work.listAssetObservationBindings(current.id);
@@ -227,7 +226,7 @@ export const createYoursService = (deps: YoursServiceDeps) => {
           }
         }
       }
-      cursor = page.at(-1)!.id;
+      cursor = page.cursor;
     }
   };
   const refreshTrips = () => {
@@ -265,12 +264,17 @@ export const createYoursService = (deps: YoursServiceDeps) => {
       }
     }
   };
+  // An offer belongs to the asset's current class and live lifecycle. Recheck
+  // when accepting too: an owner need not open another snapshot after editing.
+  const classUpdateApplies = (current: Asset | null, class_id: string, version: number): boolean => !!current
+    && current.deleted_at == null && current.class_id === class_id && ['active', 'lent'].includes(current.status)
+    && ['live', 'stale_unreachable'].includes(current.sync_state) && !(Number(current.settings.class_version ?? 0) >= version);
   const refreshClassUpdates = () => {
     for (let cursor = ''; ;) {
-      const page = deps.work.walkByAssetId(cursor, 100); if (!page.length) break;
+      const page = deps.work.walkAssetsForClassUpdates(cursor, 100); if (!page.length) break;
       for (const current of page) {
         if (!current.class_id || !['active', 'lent'].includes(current.status)) continue;
-        const preset = classes.get(current.class_id); if (!preset || preset.version <= Number(current.settings.class_version ?? 0)) continue;
+        const preset = classes.get(current.class_id); if (!preset || !classUpdateApplies(current, preset.id, preset.version)) continue;
         const payload = { asset_id: current.id, class_id: preset.id, preset_version: preset.version, apply_class: true, proposal_class: `class-update:${preset.id}` };
         if (!proposals.allows({ kind: 'rule', payload })) continue;
         const pinned = current.rules.filter(rule => rule.pinned).length;
@@ -285,7 +289,7 @@ export const createYoursService = (deps: YoursServiceDeps) => {
     for (const proposal of proposals.list({ state: 'proposed', kind: 'rule', limit: 10000 })) {
       if (proposal.payload.apply_class !== true) continue;
       const current = deps.work.readAsset(String(proposal.payload.asset_id)); const preset = classes.get(String(proposal.payload.class_id));
-      if (!current || !preset || preset.version !== proposal.payload.preset_version || Number(current.settings.class_version ?? 0) >= preset.version) proposals.outcome(proposal.id, 'retracted', now());
+      if (!preset || preset.version !== proposal.payload.preset_version || !classUpdateApplies(current, preset.id, preset.version)) proposals.outcome(proposal.id, 'retracted', now());
     }
   };
   const lastDone = async (id: string, on: string | null): Promise<void> => {
@@ -407,7 +411,8 @@ export const createYoursService = (deps: YoursServiceDeps) => {
       }
       const id = text(payload.asset_id, 'Asset'); const current = asset(id);
       if (payload.apply_class === true) {
-        const preset = classes.get(text(payload.class_id, 'Class')); if (!preset || preset.version !== payload.preset_version) throw new Error('This preset offer has changed; review the current version');
+        const preset = classes.get(text(payload.class_id, 'Class'));
+        if (!preset || preset.version !== payload.preset_version || !classUpdateApplies(current, preset.id, preset.version)) throw new Error('This preset offer has changed; review the current version');
         await applyClass(id, preset.id, owner); return { collection: 'asset', id };
       }
       const next = proposal.kind === 'rule' ? record(payload.rule) as unknown as AssetRule
@@ -811,8 +816,8 @@ export const createYoursService = (deps: YoursServiceDeps) => {
     if (input.asset_id && (input.asset_filter || input.asset_sphere)) throw new Error('Asset filters apply to the asset list');
     const searchQuery = input.search ? { search: input.search } : {};
     const summaryAt = now(); const summaryZone = deps.timeZone?.() ?? 'UTC';
-    const summarize = (asset: Asset): YoursAssetSummary | undefined => {
-      try { return summarizeYoursAsset(asset, { work: deps.work, occurrences: rows.byAsset(asset.id), now: summaryAt, timeZone: summaryZone }); }
+    const summarize = (asset: Asset, occurrences?: readonly AssetOccurrence[], summaryWork?: Pick<WorkEntityStore, 'readCommitment' | 'assetReadingHistory'>): YoursAssetSummary | undefined => {
+      try { return summarizeYoursAsset(asset, { work: summaryWork ?? deps.work, occurrences: occurrences ?? rows.byAsset(asset.id), now: summaryAt, timeZone: summaryZone }); }
       catch (error) { console.warn('[yours] Asset summary unavailable', asset.id, error); return undefined; }
     };
     let assets: Asset[]; let total_assets: number; let unavailable = 0;
@@ -825,13 +830,27 @@ export const createYoursService = (deps: YoursServiceDeps) => {
       for (let scanOffset = 0; ; scanOffset += 200) {
         const batch = deps.work.listByKind('asset', { ...searchQuery, limit: 200, offset: scanOffset });
         const placements = input.asset_sphere ? spheres.resolveAssets(batch.filter(asset => asset._kind === 'asset').map(asset => asset.id)) : undefined;
-        for (const asset of batch) {
-          if (asset._kind !== 'asset') continue;
+        const candidates = batch.filter((asset): asset is Asset & { _kind: 'asset' } => asset._kind === 'asset'
+          && (!input.asset_sphere || (placements?.get(asset.id)?.sphere ?? 'unsorted') === input.asset_sphere));
+        let occurrenceBatch: ReturnType<typeof rows.byAssets> | undefined;
+        let summaryWork: Pick<WorkEntityStore, 'readCommitment' | 'assetReadingHistory'> | undefined;
+        if (input.asset_filter) {
+          try { occurrenceBatch = rows.byAssets(candidates.map(asset => asset.id)); }
+          catch { /* Keep the guarded individual reads and per-asset unavailable counts. */ }
+          try {
+            const histories = deps.work.assetReadingHistories(candidates.flatMap(asset => asset.deleted_at == null
+              && ['live', 'stale_unreachable'].includes(asset.sync_state) && ['active', 'lent'].includes(asset.status)
+              ? asset.rules.flatMap(rule => rule.enabled && rule.when.kind === 'objective' ? [{ asset_id: asset.id, field: rule.when.field }] : []) : []));
+            summaryWork = { readCommitment: deps.work.readCommitment, assetReadingHistory: (id, field, limit) =>
+              (limit === undefined || limit === 100 ? histories.get(id)?.get(field) : undefined) ?? deps.work.assetReadingHistory(id, field, limit) };
+          } catch { /* Preserve individual history errors within the guarded summary. */ }
+        }
+        // No await between this page's receipt/history reads and its summaries.
+        for (const asset of candidates) {
           const placement = placements?.get(asset.id);
-          if (input.asset_sphere && (placement?.sphere ?? 'unsorted') !== input.asset_sphere) continue;
           let summary: YoursAssetSummary | undefined;
           if (input.asset_filter) {
-            summary = summarize(asset);
+            summary = summarize(asset, occurrenceBatch?.get(asset.id), summaryWork);
             if (!summary) { unavailable++; continue; }
             if (!(input.asset_filter === 'missing_facts' ? summary.missing.length > 0 : summary.next_due?.state === 'overdue')) continue;
           }
@@ -926,7 +945,15 @@ export const createYoursService = (deps: YoursServiceDeps) => {
       ...shown.flatMap(row => row.subject ?? row.sources[0] ? [row.subject ?? row.sources[0]!] : [])];
     // Delivery reads above can yield to an owner placement change. Keep the
     // displayed asset's placement from the same selection that counted it.
-    const placements = [...new Map(placementRefs.map(ref => [JSON.stringify(ref), ref])).values()].map(ref => ({ ref,
+    const uniquePlacementRefs = [...new Map(placementRefs.map(ref => [JSON.stringify(ref), ref])).values()];
+    const remainingAssetIds = uniquePlacementRefs.flatMap(ref => ref.collection === 'asset' && !assetPlacements.has(ref.id) ? [ref.id] : []);
+    if (remainingAssetIds.length) {
+      try {
+        const current = spheres.resolveAssets(remainingAssetIds);
+        for (const [id, placement] of current) assetPlacements.set(id, placement);
+      } catch { /* Keep ordinary resolution and its error behavior if the batch fails. */ }
+    }
+    const placements = uniquePlacementRefs.map(ref => ({ ref,
       ...((ref.collection === 'asset' ? assetPlacements.get(ref.id) : undefined) ?? spheres.resolve(ref, undefined,
         ref.collection === 'episode' ? derived?.find(row => row.id === ref.id)?.sphere : undefined)) }));
     return { assets, ...(input.asset_id && assets[0]?.holder_contact ? { holder: holderOf(assets[0].holder_contact) } : {}),

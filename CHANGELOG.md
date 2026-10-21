@@ -7,6 +7,73 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.10.21 — 2026-10-21
+
+Settings → Updates can now update a server on macOS and on Windows, and on
+Windows a new version that does not start is put back, as on macOS and Linux.
+A restarted server answers within seconds while its mailboxes and calendars
+catch up. Backups can run on a schedule to Amazon S3, a recovery test restores
+a backup and checks it, and Backup health tells you when either is overdue.
+The chat answers general-knowledge questions.
+
+### Before you update
+
+- **Update from the terminal once on macOS and Windows.** A macOS server that
+  starts by itself, or a Windows server, on 26.10.20 or older still refuses an
+  update from Settings, because what fixes that comes with this release.
+  Install this release from the terminal as the Updates guide shows: run
+  `recued stop`, then `recued update apply`, then start the server the way it
+  usually starts. After that, Settings → Updates works.
+- **A scheduled backup needs this release to restore.** It uses archive format
+  4, which an older server refuses. Manual backups keep their format.
+
+### Added
+
+- **Scheduled encrypted backups.** Settings → Backup & Recovery → Unattended
+  encrypted backups copies your server to S3 each day or each week, at a time
+  in UTC, and keeps 1 to 30 copies. You type the server's 24 secret words
+  once. The server keeps a locked backup key that works only for these
+  backups, and none of your words. Each copy is read back and checked before
+  old copies are removed, and a failed backup sends an alert.
+- **Recovery tests.** Test recovery downloads a verified backup again,
+  restores it into a private, short-lived folder in a separate process, and
+  checks the database, its boot key and every stored file it points to. It
+  removes the folder, then keeps a receipt. You can cancel a test, and clean
+  up after one, without the secret words.
+- **Backup health.** Tells you, from saved receipts, when a verified backup is
+  overdue (36 hours for a daily schedule, eight days for a weekly one) or a
+  passing recovery test is (30 days), and sends an alert. You can change the
+  limits.
+
+### Changed
+
+- **Updates on Windows.** `recued start`, which is what starting at login
+  runs, now runs the server under its own supervisor (`recued supervise`).
+  Settings → Updates can update it, Restart is shown, and after three failed
+  starts of a new version the old one is put back. `recued stop` ends both.
+- **A restart answers sooner.** The server no longer waits for every mailbox
+  and calendar to catch up before it answers. A schedule that falls due as the
+  server starts may run before its mailbox has caught up.
+- **The chat answers general-knowledge questions**, such as a city's
+  population, and says how current a figure is. A value from your own records,
+  messages, files or accounts still needs a source the model can see.
+- **The chat's lookup says what it left out**, for example "Shown here: 2 of
+  the 5 matching items on file."
+- **The Updates page says why an update did not start**, instead of saying
+  that the server is busy.
+
+### Fixed
+
+- **Updates on macOS.** A server that starts by itself on macOS was not
+  recognised as supervised, so Settings refused every update and hid Restart.
+- **A place you type** reaches the model as you typed it, even when a record
+  about that place is in the chat's lookup. The record's own place stays
+  private.
+- **A search of the wrong kind.** When the chat searched, say, notes for your
+  passport and found nothing, it could say the passport was not on file. It
+  is now told which kind the same words match.
+- **Keyboard focus** stays in the pack removal review after Confirm.
+
 ## 26.10.20 — 2026-10-20
 
 Recued now looks after the things you own and the dates that come round. Yours

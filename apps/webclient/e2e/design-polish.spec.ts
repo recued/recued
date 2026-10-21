@@ -29,7 +29,7 @@ const withinViewport = async (page: Page, control: Locator): Promise<void> => {
   }
 };
 
-test('mobile Chat switches history without losing an unsent draft or its navigation guard', async ({ page }) => {
+test('mobile Chat switches history without losing an unsent draft', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await boot(page, '&chat=session', '#chat/new');
   const input = page.getByRole('textbox', { name: 'Message to Recued' });
@@ -49,10 +49,13 @@ test('mobile Chat switches history without losing an unsent draft or its navigat
   await expect(input).toHaveValue('Keep my private draft.');
   await expect(input).toBeFocused();
   await toggle.click();
+  // Since 04844efda a typed draft stays with the chat it was written in, so opening another chat asks nothing.
   await history.locator('[data-recued-chat-route-session-row]').first().click();
-  const guard = history.getByRole('alert');
-  await expect(guard).toContainText('What you were writing will be lost');
-  await guard.getByRole('button', { name: 'Keep writing', exact: true }).click();
+  await expect(history.locator('[data-recued-chat-route-history-draft-guard]')).toHaveCount(0);
+  await expect(history).toBeHidden();
+  await expect(input).toHaveValue('');
+  await toggle.click();
+  await history.getByRole('button', { name: 'New chat', exact: true }).click();
   await expect(history).toBeHidden();
   await expect(input).toHaveValue('Keep my private draft.');
   await expect(input).toBeFocused();
@@ -143,24 +146,25 @@ test('first-run Capture restores focus after closing Create', async ({ page }) =
   await expect(capture).toBeFocused();
 });
 
-test('task Done checkbox keeps its label readable on narrow screens', async ({ page }) => {
+test('task completion stays readable and usable on narrow screens', async ({ page }) => {
+  // The editor's Done checkbox became this Task completion region, with its own
+  // Complete / Reopen action, in bc79a3b7a. Completing a task is a server write,
+  // covered by that commit's own tests; this checks the region fits.
   for (const width of [280, 390]) {
     await page.setViewportSize({ width, height: 844 });
     await boot(page, '&data=work-entities-paged', '#data/task');
     await page.getByText('Task 0', { exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Edit Task', exact: true });
-    const checkbox = dialog.getByRole('checkbox', { name: 'Done', exact: true });
-    await expect(checkbox).toBeVisible();
-    const label = dialog.locator('label[for="form-renderer-done"]');
-    const inputBox = (await checkbox.boundingBox())!;
-    const labelBox = (await label.boundingBox())!;
-    expect(inputBox.width).toBeLessThanOrEqual(44);
-    expect(labelBox.width).toBeGreaterThanOrEqual(35);
-    expect(labelBox.height).toBeLessThanOrEqual(24);
-    await checkbox.check();
-    await expect(checkbox).toBeChecked();
-    await checkbox.uncheck();
-    await expect(checkbox).not.toBeChecked();
+    const region = dialog.getByRole('region', { name: 'Task completion', exact: true });
+    const status = region.getByRole('status');
+    await expect(status).toHaveText('Task unfinished.');
+    const complete = region.getByRole('button', { name: 'Complete', exact: true });
+    // No smaller than the dialog's own Save (the shared dialog's buttons are 32px tall).
+    const target = (await complete.boundingBox())!;
+    const save = (await dialog.getByRole('button', { name: 'Save', exact: true }).boundingBox())!;
+    expect(target.width).toBeGreaterThanOrEqual(36);
+    expect(target.height).toBeGreaterThanOrEqual(save.height);
+    expect(await region.evaluate((node) => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
     await noPageOverflow(page);
   }
 });

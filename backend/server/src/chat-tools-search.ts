@@ -113,7 +113,8 @@ const TOOLS_SEARCH_DOCS_ONLY_GUIDANCE =
   + 'tools.search with reworded queries, and do NOT describe menus, settings or '
   + 'steps that the sections do not actually mention.';
 
-const TOOLS_SEARCH_NO_MATCH_GUIDANCE =
+// Exported for the qualification bench, which answers a search with it.
+export const TOOLS_SEARCH_NO_MATCH_GUIDANCE =
   'No installed recipe tool or action matches this request. Do NOT retry tools.search with reworded queries. Handle it with the core tools already listed, answer the user from your own knowledge, or tell the user that no matching recipe or action is installed.';
 
 /** D-323 — nothing installed matches, and the marketplace has something that

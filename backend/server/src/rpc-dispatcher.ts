@@ -53,6 +53,9 @@ export const AUTO_LOCK_IDLE_EXEMPT = new Set<string>([
   // delivery history is not an owner action that should postpone locking.
   'server.archive.destinations',
   'server.archive.backups',
+  'server.archive.drills',
+  'server.archive.health.get',
+  'server.archive.unattended.get',
   'server.archive.status',
   'server.archive.import_status',
   // D-169 P0 — `bridge.capabilityProfile.push` is automatically fired

@@ -27,12 +27,13 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { daemonStop } from '../daemon.js';
+import { SUPERVISE_STOP_FILE } from '../launcher/outer-supervisor.js';
 
 const children: ChildProcess[] = [];
 
@@ -76,12 +77,12 @@ const realm = (opts: { pid?: number } = {}): string => {
   return dbPath;
 };
 
-const runStop = async (dbPath: string): Promise<string> => {
+const runStop = async (dbPath: string, platform?: NodeJS.Platform): Promise<string> => {
   const lines: string[] = [];
   const log = vi.spyOn(console, 'log').mockImplementation((...a) => { lines.push(a.join(' ')); });
   const err = vi.spyOn(console, 'error').mockImplementation((...a) => { lines.push(a.join(' ')); });
   try {
-    await daemonStop({ dbPath });
+    await daemonStop({ dbPath }, platform);
   } finally {
     log.mockRestore();
     err.mockRestore();
@@ -131,5 +132,63 @@ describe('`recued stop` reaches a server that wrote no pidfile', () => {
 
     expect(await settle(holder.pid!)).toBe(false);
     expect(alive(bystander.pid!)).toBe(true);
+  });
+});
+
+/** On Windows `recued start` runs a supervisor (`launcher/outer-supervisor.ts`):
+ *  the pidfile names it, and the server it started holds the lock. Ending a
+ *  process there is abrupt and does not end its children, so `stop` has to
+ *  reach both — and tell the supervisor first, or it reads the end as a crash
+ *  and starts the server again. */
+describe('on Windows, `recued stop` ends the supervisor and the server it started', () => {
+  /** A stand-in supervisor that records, when it is ended, whether the stop
+   *  request was already there. */
+  const supervisorRecording = (stopFile: string, record: string): ChildProcess => {
+    const child = spawn(process.execPath, ['-e', [
+      "const fs = require('node:fs');",
+      `process.on('SIGTERM', () => { fs.writeFileSync(${JSON.stringify(record)}, String(fs.existsSync(${JSON.stringify(stopFile)}))); process.exit(0); });`,
+      "fs.writeFileSync(" + JSON.stringify(`${record}.ready`) + ", '');",
+      'setInterval(() => {}, 1000);',
+    ].join('\n')], { stdio: 'ignore' });
+    children.push(child);
+    return child;
+  };
+
+  it('leaves the request first, then ends the supervisor in the pidfile and the server holding the lock', async () => {
+    const server = sleeper();
+    const dbPath = realm({ pid: server.pid! });
+    const dir = dirname(dbPath);
+    const stopFile = join(dir, SUPERVISE_STOP_FILE);
+    const record = join(dir, 'supervisor-saw-request');
+    const supervisor = supervisorRecording(stopFile, record);
+    for (let i = 0; i < 100 && !existsSync(`${record}.ready`); i += 1) await new Promise((r) => setTimeout(r, 20));
+    writeFileSync(join(dir, 'recued-server.pid'), String(supervisor.pid));
+
+    await runStop(dbPath, 'win32');
+
+    expect(await settle(supervisor.pid!)).toBe(false);
+    expect(await settle(server.pid!)).toBe(false);
+    expect(readFileSync(record, 'utf8')).toBe('true');
+    expect(existsSync(join(dir, 'recued-server.pid'))).toBe(false);
+  });
+
+  it('leaves the request with no pidfile too, so a supervisor whose server it ends does not start it again', async () => {
+    const server = sleeper();
+    const dbPath = realm({ pid: server.pid! });
+
+    await runStop(dbPath, 'win32');
+
+    expect(await settle(server.pid!)).toBe(false);
+    expect(existsSync(join(dirname(dbPath), SUPERVISE_STOP_FILE))).toBe(true);
+  });
+
+  it('leaves no request elsewhere, where a stop is a clean exit the supervisor reads as one', async () => {
+    const server = sleeper();
+    const dbPath = realm({ pid: server.pid! });
+
+    await runStop(dbPath, 'linux');
+
+    expect(await settle(server.pid!)).toBe(false);
+    expect(existsSync(join(dirname(dbPath), SUPERVISE_STOP_FILE))).toBe(false);
   });
 });

@@ -130,13 +130,16 @@ describe('every program the server starts for others goes through envForOthers',
   const NOT_FOR_OTHERS: Readonly<Record<string, string>> = {
     'daemon.ts': 'the server re-launching itself in the background; it must open its key file',
     'launcher/managed-launcher.ts': 'execs the server binary on the data volume; it must open its key file',
+    'cli-context/supervise.ts': "runs the server's own binary, which must open its key file, and its previous one for the verdict",
     'update/release-config.ts': "asks the downloaded server binary for its --version",
     'mcp-stdio-spawner.ts': "passes PATH, HOME and the connection's own variables, and inherits nothing",
     'execution/resource-progress-source.ts': 'ps',
+    'lifecycle/supervisor.ts': 'ps',
     'keys/machine-secret.ts': 'the OS keychain helpers',
     'network/read-default-route-gateway.ts': 'route',
     'supervision/process-group-kill.ts': 'taskkill',
     'collections/file/watch-host.ts': "a process running the server's own folder-watch program, with an empty environment",
+    'archive/restore-drill-worker.ts': "the server's own recovery worker, with NODE_ENV, explicit source-loader config, and no inherited credentials",
   };
   const FOR_OTHERS = [
     'cli-invocation-executor.ts',

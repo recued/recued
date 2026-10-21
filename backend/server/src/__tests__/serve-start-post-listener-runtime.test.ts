@@ -281,6 +281,8 @@ describe('startPostListenerRuntime', () => {
       order.push('post-tail');
     });
     const options = makeOptions({
+      restoreDrills: { tag: 'restore-drills' } as never,
+      backupHealth: { tag: 'backup-health' } as never,
       publishSchedulersBundle: vi.fn(() => {
         order.push('publish-schedulers');
       }),
@@ -309,6 +311,8 @@ describe('startPostListenerRuntime', () => {
     expect(options.publishSchedulersBundle).toHaveBeenCalledWith(schedulersBundle);
     expect(options.publishVendorRefs).toHaveBeenCalledWith(vendorRefs);
     expect(runtimeMocks.startSchedulers).toHaveBeenCalledWith({
+      restoreDrills: options.restoreDrills,
+      backupHealth: options.backupHealth,
       registry: options.backgroundServices,
       db: options.storage.db,
       scheduleStore: options.scheduleStore,

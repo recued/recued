@@ -58,10 +58,12 @@ describe('owner remote archive RPC lifecycle', () => {
   it('does not count automatic archive status and history refreshes as unlock activity', async () => {
     const touchActivity = vi.fn();
     const dispatch = createRpcDispatcher<ServerRpcRegistry, Record<string, never>>({ 'server.archive.destinations': async () => ({ destinations: [] }),
+      'server.archive.unattended.get': async () => ({ configured: false }),
       'server.archive.backups': async () => ({ backups: [] }),
       'server.archive.status': async () => ({ state: 'running', bytes_written: 0, progress_pct: 0 }),
       'server.archive.import_status': async () => ({ status: 'unknown' }) }, { touchActivity });
     expect((await dispatch('server.archive.destinations', {}, {})).ok).toBe(true);
+    expect((await dispatch('server.archive.unattended.get', {}, {})).ok).toBe(true);
     expect((await dispatch('server.archive.backups', {}, {})).ok).toBe(true);
     expect((await dispatch('server.archive.status', { job_id: 'arx-123456' }, {})).ok).toBe(true);
     expect((await dispatch('server.archive.import_status', { operation_id: '12345678-1234-4234-8234-123456789abc' }, {})).ok).toBe(true);
@@ -97,7 +99,7 @@ describe('owner remote archive RPC lifecycle', () => {
   });
 
   it('keeps every archive control outside the agent MCP channel', () => {
-    for (const method of ['server.archive.export', 'server.archive.destinations', 'server.archive.backups', 'server.archive.backup.check', 'server.archive.backup.retrieve']) {
+    for (const method of ['server.archive.export', 'server.archive.destinations', 'server.archive.backups', 'server.archive.backup.check', 'server.archive.backup.retrieve', 'server.archive.unattended.get', 'server.archive.unattended.save']) {
       expect(isReservedLocalRpc(method)).toBe(true); expect(MCP_TOOL_CATALOG).not.toContain(method);
     }
   });

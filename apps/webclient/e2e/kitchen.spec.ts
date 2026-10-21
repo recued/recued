@@ -16,6 +16,10 @@ test('Kitchen recipe editor contains mobile authoring controls', async ({ page }
   await expect(editor).toBeVisible();
   await expect(editor.getByRole('heading', { name: 'Recipe editor' }))
     .toBeFocused();
+  // The editor waits for the release read before it renders, and its answer
+  // adds this section, which the measurements below then cover.
+  await expect(editor.locator('[data-recipe-release] > summary'))
+    .toHaveText('Reviewed releases');
   await expect.poll(() => page.evaluate(
     () => window.__app.rpcCallCount('webhook.ingress.list'),
   )).toBe(1);

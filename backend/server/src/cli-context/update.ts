@@ -12,9 +12,8 @@
  *  Apply / rollback ARE CLI verbs now, for the STOPPED server only. The old
  *  reasoning — a standalone process cannot restart the running daemon — is
  *  still true, and this does not try: it refuses while a server holds the
- *  instance lock and points at the surface that CAN restart itself. On Windows,
- *  Startup is not a respawning supervisor, so the stopped CLI remains the
- *  supported path.
+ *  instance lock and points at the surface that CAN restart itself — on Windows
+ *  too, where `recued start` runs the server under `recued supervise`.
  *
  *  ⛔ WHY IT HAD TO EXIST. `update.apply` is an rpc, so it rides the WebSocket.
  *  A defect in the socket layer therefore takes the updater with it — and one
@@ -79,12 +78,9 @@ const selfApplies = (channel: DistributionChannel): boolean =>
 export const buildUpdateApplyGuidance = (
   channel: DistributionChannel,
   res: ReleaseCheckResponse,
-  platform: NodeJS.Platform = process.platform,
 ): string => {
   if (selfApplies(channel)) {
-    if (channel === 'binary' && platform === 'win32') {
-      return 'Stop the Windows daemon, then run: recued update apply';
-    }
+    // Windows too, since `recued start` runs the server under `recued supervise`.
     // Both paths, in the order most owners want them. The webclient one is
     // still preferable when the server is up — it restarts itself; the CLI one
     // is what remains when it cannot be reached, which is exactly when an

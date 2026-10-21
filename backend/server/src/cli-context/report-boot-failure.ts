@@ -11,9 +11,10 @@
  *  Exit status is the script's only input: 0 retry now (a revert happened),
  *  10 retry after a backoff, 20 nothing further to try.
  */
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import type { BootTrace } from '../cli/boot-trace.js';
 import { getArg } from '../cli/parse.js';
+import { liveBinaryName } from '../launcher/outer-supervisor.js';
 import { resolveRealmDbPath } from '../realm-db-path.js';
 import {
   exitCodeFor,
@@ -28,6 +29,7 @@ export interface ReportBootFailureProfileOptions {
   /** Overridden in tests; production reads the running binary's own directory,
    *  which is where `recued`, `recued.old` and the counter all live. */
   binaryPath?: string;
+  platform?: NodeJS.Platform;
   exit?: (code: number) => void;
   log?: (message: string) => void;
 }
@@ -50,13 +52,18 @@ export async function runReportBootFailureProfile(
   }
 
   // ⚠ SAME RULE AS `revert-release` AND `resolveUpdateBinaryPath`: with
-  // `--bin-dir` we are the docker-thin launcher and the payload is a linux
-  // `recued`; without it we ARE the binary and `process.execPath` already carries
-  // the real name, including `.exe` on Windows. A directory plus a hard-coded
-  // `recued` looked for a file that never exists on a Windows install.
+  // `--bin-dir` a supervisor is asking about the live binary in that directory —
+  // the shell script, the docker-thin launcher, or Windows' `recued supervise`,
+  // where it is `recued.exe`; without it we ARE the binary and `process.execPath`
+  // already carries the real name. A directory plus a hard-coded `recued` looked
+  // for a file that never exists on a Windows install.
+  // `--binary` names the live binary by full path — Windows' supervisor passes
+  // the one `recued start` ran, whatever it is called — and wins over both.
+  const binaryArg = getArg(options.args, 'binary');
   const binDirArg = getArg(options.args, 'bin-dir');
   const binaryPath = options.binaryPath
-    ?? (binDirArg ? join(binDirArg, 'recued') : process.execPath);
+    ?? (binaryArg !== undefined ? resolve(binaryArg)
+      : binDirArg ? join(binDirArg, liveBinaryName(options.platform ?? process.platform)) : process.execPath);
   const dbPath = resolveRealmDbPath(getArg(options.args, 'db') ?? env.DB_PATH);
 
   const outcome = handleSupervisedBootFailure({

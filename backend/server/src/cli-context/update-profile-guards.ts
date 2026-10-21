@@ -19,39 +19,28 @@ import { createInstanceLock, type LockInfo } from '../lifecycle/instance-lock.js
 // Existing callers keep importing it from here.
 export { liveServerHolding } from '../lifecycle/instance-lock.js';
 
-/** Refuse, and say which restart path this install actually has.
+/** Refuse, and say which restart paths this install has.
  *
- * Windows Startup launches `recued start`; it is login persistence, not a
- * respawning supervisor. Advertising the webclient there sends the owner to an
- * apply that correctly refuses before download, so name the stopped-daemon
- * recovery path directly. */
-export const runningServerUpdateRemedy = (
-  sub: string,
-  platform: NodeJS.Platform = process.platform,
-): string => platform === 'win32'
-  ? 'Windows Startup cannot respawn this daemon after an in-server update restart.\n' +
-    '\n' +
-    `  Stop it with \`recued stop\`, run \`recued update ${sub}\` again, then start Recued again.`
-  // ⚠ NAME THE COMMAND. This used to say "stop the server ... then start it the
-  // same way you started it", which asked the owner for something the tool knows
-  // and they often do not — and pointed at a `recued stop` that could not stop a
-  // `serve`-started server at all, closing the loop. `stop` now falls back to
-  // the instance lock, so the instruction is one the owner can actually follow.
-  : 'Either:\n' +
-    '  · let the supervised server do it — webclient → Settings → Updates, or\n' +
-    `  · \`recued stop\`, run \`recued update ${sub}\` again, then start Recued again.`;
+ * The same on every platform since Windows' `recued start` runs the server under
+ * `recued supervise` (D-178 amendment 2026-10-20). Until then Windows was named
+ * apart: its Startup shortcut could not respawn the server, so Settings refused. */
+// ⚠ NAME THE COMMAND. This used to say "stop the server ... then start it the
+// same way you started it", which asked the owner for something the tool knows
+// and they often do not — and pointed at a `recued stop` that could not stop a
+// `serve`-started server at all, closing the loop. `stop` now falls back to
+// the instance lock, so the instruction is one the owner can actually follow.
+export const runningServerUpdateRemedy = (sub: string): string =>
+  'Either:\n' +
+  '  · let the supervised server do it — webclient → Settings → Updates, or\n' +
+  `  · \`recued stop\`, run \`recued update ${sub}\` again, then start Recued again.`;
 
-export const refuseWhileRunning = (
-  holder: LockInfo,
-  sub: string,
-  platform: NodeJS.Platform = process.platform,
-): void => {
+export const refuseWhileRunning = (holder: LockInfo, sub: string): void => {
   console.error(
     `A Recued server is running on this realm (pid ${holder.pid}, port ${holder.bind_port}).\n` +
       `\`recued update ${sub}\` swaps the binary on disk and cannot restart a live daemon, so it\n` +
       'refuses rather than leaving you on the old process believing it applied.\n' +
       '\n' +
-      runningServerUpdateRemedy(sub, platform),
+      runningServerUpdateRemedy(sub),
   );
   process.exitCode = 2;
 };

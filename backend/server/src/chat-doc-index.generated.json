@@ -4040,6 +4040,54 @@
     "body": "Open **Settings → Backup & Recovery**. It saves the whole server. That\nmeans the database, the settings, the secret keys, and the stored files.\nAll of it goes into one `.recued.archive` file. You download it in your browser. The\nexport streams as it goes. So a warehouse of many gigabytes backs up fine\non a small machine. It does not run out of memory. The server CLI can also\nwrite the archive to a path. Use that for scripted backups.\n\nThe archive is encrypted. Your recovery key is what opens it. The recovery\nkey is 24 secret words. Keep the archive file and the recovery key apart.\nThen you hold a complete restore.\n\nThe archive holds the server as it was at export time. Anything that\nhappened after that is not in it. So back up on a rhythm that matches how\nmuch you are willing to lose."
   },
   {
+    "id": "setup/backup-and-restore#automatic-encrypted-backups",
+    "doc": "Backup and restore",
+    "section": "Automatic encrypted backups",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/backup-and-restore#automatic-encrypted-backups",
+    "body": "Open **Settings → Backup & Recovery**. Add an S3 storage connection first.\nThen open **Unattended encrypted backups**. Choose each day or each week.\nSet a time in UTC. Choose 1 to 30 copies to keep.\nType this server's 24 secret words once. Save the schedule.\nThe form clears the words when it sends them.\nThe server keeps a locked backup key. This key works only for these backups.\nIt keeps none of your secret words. It keeps none of the raw bytes made from them.\n\nThe server must be on. Its vault must be unlocked. You can close your browser.\nIf it misses a time, it runs once when it can.\nIf a run stops midway, its copy is not marked as confirmed. It is not resent.\nYou need no words to change or pause the schedule.\nIf the server vault changes, set it up again.\n\nThe S3 checks stay the same. Recued reads back each new copy.\nIt checks the size and SHA-256 hash.\nOnly a good check lets it remove old copies from its own folder.\nA failed check leaves the old copies in place.\nThis proves that the copy reached S3. Test a restore too.\n\nIf a backup fails, you get an alert. So do you if old copies cannot be cleared.\nIt uses your alert settings. If no route accepts it, it tries each hour.\nAn offline server must start first to send an alert.\nThe panel shows the next run and last result. It also shows alerts still waiting to be sent.\n\nUse your 24 secret words to restore. Open the usual restore preview.\nThese backups need archive format 4. An old server will refuse them.\nUpgrade it first. Manual backups keep their old format."
+  },
+  {
+    "id": "setup/backup-and-restore#backup-health",
+    "doc": "Backup and restore",
+    "section": "Backup health",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/backup-and-restore#backup-health",
+    "body": "Open **Backup health** in **Settings → Backup & Recovery**.\nIt follows the storage used by your enabled backup schedule.\nIt checks saved receipts. It does not read S3 or run a restore.\nIt needs none of your secret words.\n\nFor a daily schedule, a verified backup is due within 36 hours.\nFor a weekly schedule, it is due within eight days.\nA passing recovery test is due within 30 days.\nChoose your own limits, then choose **Save health limits**.\nBackup limits use 1 to 8760 hours. Test limits use 1 to 365 days.\n\nBackup age starts when that backup was made.\nRechecking an old copy does not make its data new.\nA test may be for an older copy, even one since removed.\nIt does not prove the latest copy will restore. Test that copy too.\nFailed or cancelled tests do not count.\n\nIf no proof exists yet, the panel shows that it is waiting.\nIts grace period starts when Recued first watches that storage.\nPausing or changing limits for the same storage does not reset it.\nNew storage starts a new grace period.\nLost history or a wrong clock shows as unknown."
+  },
+  {
+    "id": "setup/backup-and-restore#backup-health-alerts",
+    "doc": "Backup and restore",
+    "section": "Backup health alerts",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/backup-and-restore#backup-health-alerts",
+    "body": "Health checks run once each minute while your server is on.\nYou can close the browser. They use your alert settings.\nPause the backup schedule to pause health alerts too.\nOr turn off **Send health alerts** and save the health limits.\nYou can still check the receipts when alerts are off.\n\nAn alert marks an overdue backup, an old test, or unreadable proof.\nRecued records which alert a route has accepted.\nIt keeps that note through a restart.\nIf no route accepts an alert, it tries each hour.\nAn accepted alert may repeat after a crash before its result is saved.\nA sent alert does not mean a person saw it.\nWhen the cause clears, a later breach can send a new alert.\nAn offline server must start first to check or send alerts."
+  },
+  {
+    "id": "setup/backup-and-restore#test-recovery",
+    "doc": "Backup and restore",
+    "section": "Test recovery",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/backup-and-restore#test-recovery",
+    "body": "Open **Settings → Backup & Recovery**. Find a verified remote backup.\nChoose **Test recovery** on that copy. Enter its 24 secret words.\nThen choose **Run recovery test**. The form clears the words as it sends them.\nThe server saves none of those words. You can leave the page.\n\nRecued fetches that copy from S3 again. It checks the size and hash.\nIt restores the copy in a private, short-lived folder.\nIt opens the database with the new folder's own boot key.\nIt checks the database for damage and broken links between rows.\nIt reads each blob file the database points to. A blob holds stored file data.\nEach blob must open and match its hash.\nRecued removes the test folder before it records a pass.\nYour live data stays in place. Jobs from the test copy never run.\n\nThe panel keeps a receipt with the backup ID and hash.\nIt shows when the test ran, what passed, and any failure.\nThe receipt lasts through a server restart or restore.\nIf a test is cut off, it fails. On restart, Recued removes its test files.\nIt will not run that test again on its own.\nIf cleanup fails, choose **Retry cleanup** on that receipt.\n\nA pass proves that copy could be read and restored then.\nIt does not prove your live services will work after a real move.\nIt does not prove the stored copy is still there today.\nKeep your secret words safe. Keep testing fresh copies."
+  },
+  {
+    "id": "setup/backup-and-restore#cancel-or-clean-up-a-recovery-test",
+    "doc": "Backup and restore",
+    "section": "Cancel or clean up a recovery test",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/backup-and-restore#cancel-or-clean-up-a-recovery-test",
+    "body": "Choose **Cancel test** on the test you want to stop.\nYou can do this after you leave and open the page again.\nYou do not need to enter the secret words again.\nRecued saves the request, then stops the download or worker.\nWait for the receipt to show that the test has ended.\nThe backup slot stays busy until the test and cleanup end.\nA test you cancel cannot pass, even if its checks had finished.\n\nIf test files remain, choose **Retry cleanup** on that receipt.\nThis tries to remove only that test's folder. No restart is needed.\nIt never runs the test again or turns a failed test into a pass.\nThe receipt keeps the first result and shows the later cleanup.\nWait for any old worker to stop before you try cleanup again.\nNew tests stay blocked while cleanup is still due.\nAfter a lost reply, refresh the receipts to check the result."
+  },
+  {
+    "id": "setup/backup-and-restore#recovery-test-worker",
+    "doc": "Backup and restore",
+    "section": "Recovery test worker",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/backup-and-restore#recovery-test-worker",
+    "body": "The test runs in a worker. This is a second process on your server.\nYour server can still take requests while that process checks the copy.\nThe worker gets no saved server or provider secrets.\nIt gets the backup's key through a private link, then clears it.\n\nThe worker has a 30-minute time limit.\nIf it hangs or crashes, the test fails.\nIf your server stops for upkeep, it stops the worker too.\nIt waits for the worker to stop before it removes the test files.\nIt stops an active download and waits for it to close too.\n\nIf an old worker is still alive on restart, its files stay put.\nThe panel shows that cleanup is still due.\nChoose **Retry cleanup** once that worker has stopped.\nThe test still shares your server's disk, CPU, and memory."
+  },
+  {
     "id": "setup/backup-and-restore#restore-onto-a-fresh-server",
     "doc": "Backup and restore",
     "section": "Restore onto a fresh server",
@@ -4741,7 +4789,7 @@
     "section": "Update from the terminal",
     "eyebrow": "Setup",
     "url": "https://recued.com/docs/setup/updates#update-from-the-terminal",
-    "body": "`recued update` only checks. It tells you if a new version is out. It does\nnot install anything.\n\nThe easy way to install is the web app. Open **Settings → Updates**. This\nworks when your server starts by itself on macOS or Linux. The server then\nupdates and starts again by itself. On Windows, or for a server you started\nby hand, use the terminal steps below.\n\nTo install from the terminal, stop the server first:\n\n1. Stop the server: `recued stop`.\n2. Run `recued update apply`. It asks one question, such as\n   `Update 26.10.16 → 26.10.17? [y/N]`. Type `y`. To skip the question, run\n   `recued update apply --yes`.\n3. Start the server again. The update finishes on this first start.\n\nDoes your server start by itself when you log in? Then start it the same\nway:\n\n- macOS: `launchctl kickstart gui/$(id -u)/com.recued.server`\n- Linux: `sudo systemctl start recued`, or `systemctl --user start recued`\n- Windows: `recued start`\n\nRunning the install script again does not update a working server. It stops\nand shows you these steps."
+    "body": "`recued update` only checks. It tells you if a new version is out. It does\nnot install anything.\n\nThe easy way to install is the web app. Open **Settings → Updates**. This\nworks when your server starts by itself on macOS or Linux. On Windows it works\nwhen `recued start` started the server, which is what starting at login does.\nThe server then updates and starts again by itself. For a server you started\nby hand in another way, use the terminal steps below.\n\nTo install from the terminal, stop the server first:\n\n1. Stop the server: `recued stop`.\n2. Run `recued update apply`. It asks one question, such as\n   `Update 26.10.16 → 26.10.17? [y/N]`. Type `y`. To skip the question, run\n   `recued update apply --yes`.\n3. Start the server again. The update finishes on this first start.\n\nDoes your server start by itself when you log in? Then start it the same\nway:\n\n- macOS: `launchctl kickstart gui/$(id -u)/com.recued.server`\n- Linux: `sudo systemctl start recued`, or `systemctl --user start recued`\n- Windows: `recued start`\n\nRunning the install script again does not update a working server. It stops\nand shows you these steps."
   },
   {
     "id": "setup/updates#if-the-new-version-does-not-start",
@@ -4749,7 +4797,7 @@
     "section": "If the new version does not start",
     "eyebrow": "Setup",
     "url": "https://recued.com/docs/setup/updates#if-the-new-version-does-not-start",
-    "body": "On macOS and Linux, a server that starts by itself goes back by itself. After\nthree failed starts, it puts the old version back. It writes down why.\n\nA server you started by hand does not go back by itself. Neither does a\nserver on Windows. Stop it, then run `recued update rollback`. It puts back\nthe old program, its parts and the web app. Did the release change the\ndatabase? Then it also puts back the snapshot from before the change."
+    "body": "A server that starts by itself goes back by itself, and so does a Windows\nserver that `recued start` started. After three failed starts, it puts the old\nversion back. It writes down why.\n\nA server you started by hand in another way does not go back by itself. Stop\nit, then run `recued update rollback`. It puts back\nthe old program, its parts and the web app. Did the release change the\ndatabase? Then it also puts back the snapshot from before the change."
   },
   {
     "id": "setup/updates#see-which-version-runs",

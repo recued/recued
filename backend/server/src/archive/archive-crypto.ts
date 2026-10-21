@@ -36,6 +36,25 @@ export interface ArchiveKeys {
   hmac: Buffer;
 }
 
+/** One-way, purpose-separated capability. It cannot open the realm's recovery
+ * wrap or ordinary archives. Each unattended archive still gets a fresh salt.
+ * HKDF context separation: https://www.rfc-editor.org/rfc/rfc5869#section-3.2 */
+export const deriveArchiveBackupRoot = (entropy: Buffer, setupSalt: Buffer): Buffer => {
+  if (entropy.length !== KEY_LEN || setupSalt.length !== KEY_LEN) throw new Error('archive: invalid backup capability material');
+  return Buffer.from(hkdfSync('sha256', entropy, setupSalt, 'recued-archive-backup-root-v1', KEY_LEN));
+};
+
+export const deriveArchiveImportKeys = (
+  entropy: Buffer, encryption: { salt_hex: string; delegation_salt_hex?: string },
+): ArchiveKeys => {
+  if (!/^(?:[0-9a-f]{2})+$/u.test(encryption.salt_hex)) throw new Error('ARCHIVE_INVALID: encryption salt');
+  if (encryption.delegation_salt_hex === undefined) return deriveArchiveKeys(entropy, Buffer.from(encryption.salt_hex, 'hex'));
+  if (!/^[0-9a-f]{64}$/u.test(encryption.delegation_salt_hex)) throw new Error('ARCHIVE_INVALID: backup setup salt');
+  const root = deriveArchiveBackupRoot(entropy, Buffer.from(encryption.delegation_salt_hex, 'hex'));
+  try { return deriveArchiveKeys(root, Buffer.from(encryption.salt_hex, 'hex')); }
+  finally { root.fill(0); }
+};
+
 /** Derive content + HMAC keys from a recovery-key buffer. `salt` is
  *  the per-archive random salt stored in the manifest. Uses Node's
  *  `hkdfSync` (SHA-256) and returns 32-byte keys for each domain. */

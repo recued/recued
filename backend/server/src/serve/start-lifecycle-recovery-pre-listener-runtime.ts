@@ -169,6 +169,15 @@ export const startLifecycleRecoveryPreListenerRuntime = async (
     exit: options.lifecycle.exit,
     // Resolved at export time (after the deeper layer publishes it below).
     getPassportExport: () => passportExportDepsRef,
+    notifyBackupFailure: async (message, operationId) => {
+      const block = options.preListener.execution.notificationBlock;
+      const audit = options.lifecycle.auditLog;
+      if (!block?.notifyWithResult || !audit) return false;
+      const activity_id = `backup-alert-${operationId ?? Math.floor(Date.now() / 3_600_000)}`;
+      await audit.logActivity({ activity_id, timestamp: Date.now(), action: 'notification_fired', target: '', detail: JSON.stringify(message) });
+      const result = await block.notifyWithResult(message, undefined, { persisted_activity_id: activity_id });
+      return result.accepted > 0;
+    },
   });
 
   const listenerRuntime = await startPreListenerRuntime({

@@ -16,7 +16,9 @@ import { lastStartErrorLines, readLastStartError } from './cli/last-start-error.
 import { SERVER_LOG_FILE } from './cli/server-log.js';
 import { spawn } from 'node:child_process';
 import { createServer as netCreateServer } from 'node:net';
-import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
+import {
+  copyFileSync, existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, renameSync, rmSync, statSync, utimesSync,
+} from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { openSync } from 'node:fs';
 import { readAutoDisabledFromDb, renderAutoDisabledTable } from './cli-status-extras.js';
@@ -26,6 +28,7 @@ import { runningAsPackagedBinary } from './packaged-binary.js';
 // come to disagree about one machine; importing the update profile's copy
 // would instead breach the per-profile module graph `bin-router` ratchets.
 import { liveServerHolding } from './lifecycle/instance-lock.js';
+import { SUPERVISE_STOP_FILE, SUPERVISOR_COPY_NAME } from './launcher/outer-supervisor.js';
 import { compareVersions } from '@recued/release';
 import { SERVER_VERSION } from './server-version.js';
 
@@ -125,14 +128,33 @@ export interface DaemonSpawn { cmd: string; args: string[]; cwd: string }
  *  open a DIFFERENT database. Source keeps the repo root it always used; the
  *  binary gets the realm directory — already the agreed place, since the pidfile
  *  and the log live there. */
-export const buildDaemonSpawn = (opts: DaemonOptions, packaged: boolean): DaemonSpawn => {
+export const buildDaemonSpawn = (
+  opts: DaemonOptions,
+  packaged: boolean,
+  platform: NodeJS.Platform = process.platform,
+  execPath: string = process.execPath,
+): DaemonSpawn => {
   const serverArgs = [
     '--port', String(opts.port),
     '--db', opts.dbPath,
     ...(opts.extraArgs ?? []),
   ];
+  // ⛔ ON WINDOWS THE BINARY STARTS ITS SUPERVISOR, NOT ITSELF. Nothing else
+  // starts the server again after a restart, an update's above all, and the
+  // supervisor runs from its own copy because `recued.exe` is the one file it
+  // must not run from (`launcher/outer-supervisor.ts`).
+  if (packaged && platform === 'win32') {
+    return {
+      cmd: join(dirname(execPath), SUPERVISOR_COPY_NAME),
+      // The binary that ran `start`, by its own name: the build's smoke runs one
+      // called `recued-windows-arm64.exe`, and an update swaps whatever the
+      // running binary is called.
+      args: ['supervise', '--payload', execPath, '--', ...serverArgs],
+      cwd: dirname(resolve(opts.dbPath)),
+    };
+  }
   if (packaged) {
-    return { cmd: process.execPath, args: serverArgs, cwd: dirname(resolve(opts.dbPath)) };
+    return { cmd: execPath, args: serverArgs, cwd: dirname(resolve(opts.dbPath)) };
   }
   const binPath = resolve(import.meta.dirname ?? __dirname, 'bin.ts');
   return {
@@ -140,6 +162,38 @@ export const buildDaemonSpawn = (opts: DaemonOptions, packaged: boolean): Daemon
     args: ['tsx', binPath, ...serverArgs],
     cwd: resolve(import.meta.dirname ?? __dirname, '..', '..', '..'),
   };
+};
+
+/** The copy the Windows supervisor runs from, made from the running binary when
+ *  it is missing or is not this binary. The copy takes the binary's size and
+ *  modification time, and an update replaces `recued.exe` with a new file, so a
+ *  difference in either means it is another binary.
+ *
+ *  ⚠ An older supervisor may still be running from the copy, which Windows will
+ *  not let us replace. It keeps supervising, and the next start refreshes it. */
+export const ensureSupervisorCopy = (execPath: string): string => {
+  const copy = join(dirname(execPath), SUPERVISOR_COPY_NAME);
+  const source = statSync(execPath);
+  try {
+    const existing = statSync(copy);
+    // ⚠ WITHIN TWO SECONDS, NOT EQUAL. Setting a time rounds it (a `Date` goes
+    // through fractional seconds, and FAT keeps two-second times), so an exact
+    // match re-copied an unchanged binary at random. Releases can share a size
+    // (two builds here were both 108,818,944 bytes) but are never written
+    // within two seconds of each other.
+    if (existing.size === source.size && Math.abs(existing.mtimeMs - source.mtimeMs) < 2_000) return copy;
+  } catch { /* none yet */ }
+  // Staged, then renamed into place: a copy cut short must never be the one run.
+  const staged = `${copy}.staged`;
+  try {
+    copyFileSync(execPath, staged);
+    utimesSync(staged, source.atime, source.mtime);
+    renameSync(staged, copy);
+  } catch (error) {
+    rmSync(staged, { force: true });
+    if (!existsSync(copy)) throw error;
+  }
+  return copy;
 };
 
 /** Start the server as a background process. */
@@ -164,8 +218,13 @@ export const daemonStart = async (opts: DaemonOptions): Promise<void> => {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
   // See `buildDaemonSpawn` — the SEA and the source checkout launch differently.
-  const { cmd: childCmd, args: childArgs, cwd: childCwd } =
-    buildDaemonSpawn(opts, runningAsPackagedBinary());
+  const packaged = runningAsPackagedBinary();
+  if (packaged && process.platform === 'win32') {
+    ensureSupervisorCopy(process.execPath);
+    // A request from an earlier `recued stop` is not addressed to this start.
+    rmSync(join(dir, SUPERVISE_STOP_FILE), { force: true });
+  }
+  const { cmd: childCmd, args: childArgs, cwd: childCwd } = buildDaemonSpawn(opts, packaged);
 
   // Open log file for append
   const logFd = openSync(logFile, 'a');
@@ -227,8 +286,16 @@ export const daemonStart = async (opts: DaemonOptions): Promise<void> => {
 // Stop is pidfile + signal driven — it needs only the data path, never the
 // bind port. The narrow type lets the CLI invoke it as a recovery command
 // without resolving the port (which can throw on a malformed config).
-export const daemonStop = async (opts: Pick<DaemonOptions, 'dbPath'>): Promise<void> => {
+export const daemonStop = async (
+  opts: Pick<DaemonOptions, 'dbPath'>,
+  platform: NodeJS.Platform = process.platform,
+): Promise<void> => {
   const { pidFile } = resolvePaths(opts.dbPath);
+  // ⛔ ON WINDOWS THE SUPERVISOR IS TOLD FIRST. Ending a process there is abrupt
+  // and its exit status is a crash's, so a supervisor that saw only the status
+  // would count a boot failure and start the server again
+  // (`launcher/outer-supervisor.ts`).
+  if (platform === 'win32') writeFileSync(join(dirname(pidFile), SUPERVISE_STOP_FILE), '');
   const pid = readPid(pidFile);
 
   if (!pid) {
@@ -267,11 +334,15 @@ export const daemonStop = async (opts: Pick<DaemonOptions, 'dbPath'>): Promise<v
   if (!isAlive(pid)) {
     console.log(`Stale pidfile (pid ${pid} is not running). Cleaning up.`);
     try { unlinkSync(pidFile); } catch {}
-    return;
+  } else {
+    await terminate(pid, `pid ${pid}`);
+    try { unlinkSync(pidFile); } catch {}
   }
-
-  await terminate(pid, `pid ${pid}`);
-  try { unlinkSync(pidFile); } catch {}
+  // On Windows the pidfile names the supervisor, and ending a process there
+  // leaves the processes it started running: the server is found by its lock.
+  if (platform !== 'win32') return;
+  const holder = liveServerHolding(opts.dbPath);
+  if (holder && holder.pid !== pid) await terminate(holder.pid, `pid ${holder.pid}, port ${holder.bind_port}`);
 };
 
 /** SIGTERM, wait, then SIGKILL — the one stop behaviour both routes share, so a

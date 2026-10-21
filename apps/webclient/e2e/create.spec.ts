@@ -59,14 +59,20 @@ test('Create keeps every action target usable on a narrow viewport', async ({ pa
       return { width: rect.width, height: rect.height };
     }),
   );
-  // ⚠ The RELATIONSHIP, not a magic number. This pinned `7` and went stale the
-  // moment a sixth capture target shipped — the same shape as the other count
-  // ratchets this file carries, and it says nothing about what the test is for.
-  // Every target chip is a button, and the overlay adds exactly two more
-  // (Close and Commit); a chip that failed to render as a button still fails.
+  // ⚠ NAME the actions, don't count them. This pinned `7`, went stale when a
+  // sixth capture target shipped, and was replaced by "the chips plus exactly
+  // two more (Close and Commit)" — itself a count, which went red when D-325
+  // (a576e94be) put an Asset button in the header. Every target chip must be a
+  // button, and each other action must be there by name, so one that
+  // disappears still fails while one that is added is measured like the rest.
   const chipCount = await overlay.locator('[data-recued-compose-target]:visible').count();
   expect(chipCount).toBeGreaterThanOrEqual(5);
-  expect(actionSizes).toHaveLength(chipCount + 2);
+  await expect(overlay.locator('button[data-recued-compose-target]:visible'))
+    .toHaveCount(chipCount);
+  await expect(overlay.getByRole('button', { name: 'Asset', exact: true })).toBeVisible();
+  await expect(overlay.getByRole('button', { name: 'Close', exact: true })).toBeVisible();
+  await expect(overlay.getByRole('button', { name: /^Commit / })).toBeVisible();
+  expect(actionSizes.length).toBeGreaterThanOrEqual(chipCount + 3);
   // THE POINT: at 320px every one of them is still a usable tap target.
   expect(Math.min(...actionSizes.map(({ width }) => width)))
     .toBeGreaterThanOrEqual(36);

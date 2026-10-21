@@ -138,7 +138,7 @@ test('a worker that wins the race leaves the original immutable and the composer
   } finally { releaseRequest(); await f.close(); }
 });
 
-test('restores attachment-only input without uploading again and protects it during navigation', async ({ browser }) => {
+test('restores attachment-only input without uploading again and keeps it through navigation', async ({ browser }) => {
   const f = await setup(browser); const [a] = f.pages;
   try {
     await send(a, 'first');
@@ -150,9 +150,12 @@ test('restores attachment-only input without uploading again and protects it dur
     await expect(a.locator('[data-recued-chat-route-attachment="attached"]')).toHaveCount(1);
     await expect(a.locator('[data-chat-reply-draft="question-2"]')).toBeVisible();
     await a.getByRole('button', { name: 'Remove reply', exact: true }).click();
+    // Since 04844efda a typed draft stays with the chat it was written in, so switching asks nothing, attachments included.
     await a.getByRole('button', { name: /Another conversation.*0 messages/ }).click();
-    await expect(a.locator('[data-recued-chat-route-history-draft-guard]')).toBeVisible();
-    await a.getByRole('button', { name: 'Keep writing', exact: true }).click();
+    await expect(a.locator('[data-recued-chat-route-history-draft-guard]')).toHaveCount(0);
+    await expect(a.locator('[data-recued-chat-route-attachment]')).toHaveCount(0);
+    await a.getByRole('button', { name: /Shared conversation/ }).click();
+    await expect(a.locator('[data-recued-chat-route-attachment="attached"]')).toHaveCount(1);
     await a.evaluate(() => (window as unknown as { queueTestRePair(): Promise<void> }).queueTestRePair());
     await expect(a.locator('[data-recued-chat-route-attachment="attached"]')).toHaveCount(1);
     await expect(a.locator('[data-recued-chat-route-send]')).toBeEnabled();

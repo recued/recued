@@ -37,8 +37,11 @@ export const AEAD_TAG_LEN = 16;
  *  (`archive-import.ts`) rather than silently discarding the new record kinds.
  *  v3 (D-212 slice 1): `server-vault-bundle.json` carries the db-adjacent
  *  dual-wrapped Master-DEK sidecar. It must restore alongside the db so a
- *  recovery-key-only disaster recovery can open the restored realm. */
-export const ARCHIVE_FORMAT_VERSION = 3;
+ *  recovery-key-only disaster recovery can open the restored realm.
+ *  v4: optional backup-root HKDF setup salt. Ordinary exports remain v3;
+ *  unattended exports require a v4 consumer to reconstruct the backup root. */
+export const ARCHIVE_FORMAT_VERSION = 4;
+export const RECOVERY_ARCHIVE_FORMAT_VERSION = 3;
 
 /** Compatibility ceiling shared with the stored database migration registry. */
 export { DATABASE_SCHEMA_VERSION as SCHEMA_VERSION } from '../database-schema.js';
@@ -68,6 +71,9 @@ export interface ArchiveManifest {
     key_derivation: 'hkdf-sha-256';
     /** HKDF salt; hex-encoded. */
     salt_hex: string;
+    /** v4 unattended archives: derive a backup-only root from the recovery
+     * entropy with this setup salt before deriving the per-archive keys. */
+    delegation_salt_hex?: string;
     info: 'recued-archive-v1';
   };
 }

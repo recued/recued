@@ -869,10 +869,18 @@ describe('archive rpc', () => {
       'server.archive.backup.retrieve',
       'server.archive.backups',
       'server.archive.destinations',
+      'server.archive.drill.cancel',
+      'server.archive.drill.cleanup',
+      'server.archive.drill.start',
+      'server.archive.drills',
       'server.archive.export',
+      'server.archive.health.get',
+      'server.archive.health.save',
       'server.archive.import',
       'server.archive.import_status',
       'server.archive.status',
+      'server.archive.unattended.get',
+      'server.archive.unattended.save',
     ]);
   });
 });

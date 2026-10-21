@@ -69,6 +69,7 @@ export const SALT_LEN = 16;
  *  / D-168 — chat history stays local to the paired server). */
 export type SubDEKDomain =
   | 'database'
+  | 'archive-backup'
   | 'server-data'
   | 'blob-store'
   | 'ext-cache'

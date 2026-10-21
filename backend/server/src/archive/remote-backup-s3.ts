@@ -18,7 +18,7 @@ export interface RemoteArchiveBytes { bytes: number; sha256: string }
 export interface RemoteBackupTransport {
   upload(key: string, path: string, expected: RemoteArchiveBytes, onMultipart: (id: string | null) => void): Promise<void>;
   verify(key: string, expected: RemoteArchiveBytes, identity?: RemoteObjectIdentity): Promise<RemoteObjectIdentity>;
-  retrieve(key: string, path: string, expected: RemoteArchiveBytes, identity?: RemoteObjectIdentity): Promise<void>;
+  retrieve(key: string, path: string, expected: RemoteArchiveBytes, identity?: RemoteObjectIdentity, signal?: AbortSignal): Promise<void>;
   remove(key: string, identity: RemoteObjectIdentity): Promise<void>;
   abort(key: string, uploadId: string): Promise<void>;
 }
@@ -75,15 +75,16 @@ export const createS3RemoteBackupTransport = (options: {
 }): RemoteBackupTransport => {
   const { config } = options, fetchImpl = options.fetchImpl ?? fetch;
   const request = async (method: string, key: string, args: {
-    query?: Record<string, string>; headers?: Record<string, string>; body?: BodyInit; hash?: string;
+    query?: Record<string, string>; headers?: Record<string, string>; body?: BodyInit; hash?: string; signal?: AbortSignal;
   } = {}): Promise<Response> => {
     options.assertCurrent();
     const url = s3ObjectUrl(config, key);
     if (args.query) url.search = Object.entries(args.query).map(([k, v]) => `${encodeRfc3986(k)}=${encodeRfc3986(v)}`).join('&');
     const signed = signRequest({ access_key: config.access_key, secret_key: config.secret_key, region: config.region,
       service: 's3', method, url, payload: { hashHex: args.hash ?? EMPTY_HASH }, headers: args.headers ?? {}, now: options.now?.() });
+    const deadline = AbortSignal.timeout(options.requestTimeoutMs ?? 30 * 60 * 1000);
     const init: RequestInit & { duplex?: 'half' } = { method, headers: signed.headers, redirect: 'manual',
-      signal: AbortSignal.timeout(options.requestTimeoutMs ?? 30 * 60 * 1000),
+      signal: args.signal ? AbortSignal.any([args.signal, deadline]) : deadline,
       ...(args.body === undefined ? {} : { body: args.body, duplex: 'half' }) };
     try { return await fetchImpl(signed.url, init); } catch { return fail(); }
   };
@@ -100,9 +101,10 @@ export const createS3RemoteBackupTransport = (options: {
     const response = await request('DELETE', key, { query: { uploadId } });
     const ok = response.ok || response.status === 404; await discard(response); if (!ok) fail();
   };
-  const readObject = async (key: string, expected: RemoteArchiveBytes, identity: RemoteObjectIdentity = {}, path?: string): Promise<RemoteObjectIdentity> => {
+  const readObject = async (key: string, expected: RemoteArchiveBytes, identity: RemoteObjectIdentity = {}, path?: string, signal?: AbortSignal): Promise<RemoteObjectIdentity> => {
+    signal?.throwIfAborted();
     const response = await request('GET', key, { ...(identity.version_id ? { query: { versionId: identity.version_id } } : {}),
-      ...(identity.etag ? { headers: { 'if-match': identity.etag } } : {}) });
+      ...(identity.etag ? { headers: { 'if-match': identity.etag } } : {}), ...(signal ? { signal } : {}) });
     if (response.status !== 200 || !response.body) { await discard(response); return fail('verification_failed'); }
     const length = response.headers.get('content-length');
     if (length !== null && (!/^\d+$/u.test(length) || Number(length) !== expected.bytes)) { await discard(response); return fail('verification_failed'); }
@@ -164,7 +166,7 @@ export const createS3RemoteBackupTransport = (options: {
       }
     },
     verify: (key, expected, identity) => readObject(key, expected, identity),
-    async retrieve(key, path, expected, identity) { await readObject(key, expected, identity, path); },
+    async retrieve(key, path, expected, identity, signal) { await readObject(key, expected, identity, path, signal); },
     async remove(key, identity) {
       if (!strongEtag(identity.etag ?? null)) return fail();
       const response = await request('DELETE', key, { headers: { 'if-match': identity.etag! },

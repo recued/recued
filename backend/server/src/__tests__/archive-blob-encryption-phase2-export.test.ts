@@ -23,7 +23,7 @@ import { deriveArchiveKeys, decryptRecord } from '../archive/archive-crypto.js';
 import {
   BLOB_NAME_PREFIX,
   CACHE_BLOB_NAME_PREFIX,
-  ARCHIVE_FORMAT_VERSION,
+  RECOVERY_ARCHIVE_FORMAT_VERSION,
   MAGIC_LEN,
   UINT32_LEN,
   HMAC_LEN,
@@ -93,7 +93,7 @@ describe('Phase 2 export — plaintext across postures', () => {
     expect(res.blob_count).toBe(2);
     // blob_bytes is the PLAINTEXT total (not the encrypted on-disk size).
     expect(res.manifest.blob_bytes).toBe(9000 + 3000);
-    expect(res.manifest.archive_format_version).toBe(ARCHIVE_FORMAT_VERSION);
+    expect(res.manifest.archive_format_version).toBe(RECOVERY_ARCHIVE_FORMAT_VERSION);
 
     const records = readArchiveRecords(destPath, recoveryKey);
     // The encrypted source's blob is stored as PLAINTEXT under cache-blobs/.

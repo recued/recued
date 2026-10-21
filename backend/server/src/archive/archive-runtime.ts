@@ -6,8 +6,8 @@
  *  server's handles (db, blob store, lifecycle) and maps the on-disk
  *  archive manifest onto the wire `ArchiveManifest` the ext renders.
  *
- *  Recovery key: every method takes the user's 24-word mnemonic (sent
- *  transiently over the rpc, same posture as `pair.registerRecoveryKey`).
+ *  Manual exports, restore, and unattended setup take the user's mnemonic
+ *  transiently over the rpc. Scheduled exports use a sealed backup-only root.
  *  The server holds only the Master DEK after unlock — never the raw
  *  recovery key — so the archive encryption key is derived per call from
  *  the supplied mnemonic via the canonical BIP39 entropy (`@recued/crypto`
@@ -23,6 +23,11 @@
 
 import { closeSync, existsSync, openSync, readSync, statSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { createHash, randomBytes } from 'node:crypto';
+import { deriveArchiveBackupRoot } from './archive-crypto.js';
+import { ArchiveBackupSetupError, createArchiveOperationGate, createUnattendedBackups, type ArchiveBackupCapability } from './unattended-backups.js';
+import { createBackupHealth } from './backup-health.js';
+import { createRestoreDrills } from './restore-drills.js';
 import type Database from 'better-sqlite3';
 import {
   recoveryKeyToEntropy,
@@ -354,8 +359,10 @@ export interface ArchiveRuntimeDeps {
 /** Derive the 32-byte archive key from a 24-word mnemonic. Throws (with a
  *  `@recued/crypto` message) on an invalid mnemonic; the handler maps that
  *  to a `bad_request`. */
-const deriveArchiveKeyBuffer = (mnemonic: string): Buffer =>
-  Buffer.from(recoveryKeyToEntropy(mnemonic));
+const deriveArchiveKeyBuffer = (mnemonic: string): Buffer => {
+  const entropy = recoveryKeyToEntropy(mnemonic);
+  try { return Buffer.from(entropy); } finally { entropy.fill(0); }
+};
 
 /** SQLite stamps these 16 bytes at offset 0 of every plaintext database. The
  *  D-212 cipher covers page 1 along with the rest of the file, so the magic's
@@ -636,6 +643,121 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
     return bundleAccepts && sentinelAccepts ? 'owns' : 'foreign';
   };
 
+  const fingerprintBundle = (bundle: NonNullable<ReturnType<typeof serverBundleStore.load>>): string =>
+    createHash('sha256').update(serverBundleToJSON(bundle)).digest('hex');
+  const verifyLiveDatabase = async (databaseKey: Uint8Array): Promise<void> => {
+    let verify: Database.Database | undefined;
+    try { verify = await openDatabase(dbPath, { databaseKey, readonly: true }); }
+    finally { verify?.close(); }
+  };
+  const proveExportRealm = async (entropy: Buffer, bundle: ReturnType<typeof serverBundleStore.load>): Promise<void> => {
+    if (bundle) {
+      let probe: Uint8Array;
+      try { probe = await deriveDatabaseKeyFromRecoveryEntropy(bundle, entropy); }
+      catch { throw new Error("archive export: that recovery key does not open this server's vault — the backup would not be restorable"); }
+      try { await verifyLiveDatabase(probe); }
+      catch { throw new Error("archive export: this server's vault bundle sidecar no longer opens the running database — the backup would not be restorable"); }
+      finally { probe.fill(0); }
+    } else if (isDatabaseFileEncrypted(dbPath)) {
+      throw new Error('archive export: this realm is encrypted but its vault bundle sidecar is missing — the backup would not be restorable');
+    }
+  };
+  const performExport = async ({ includeBlobs, includePassport, recoveryKey, capability }: {
+    includeBlobs: boolean; includePassport: boolean; recoveryKey?: string; capability?: ArchiveBackupCapability;
+  }): ReturnType<ArchiveRuntime['runExport']> => {
+    const key = capability ? Buffer.from(capability.key) : deriveArchiveKeyBuffer(recoveryKey!);
+    try {
+      const exportBundle = serverBundleStore.load();
+      if (capability) {
+        if (!exportBundle || fingerprintBundle(exportBundle) !== capability.realm_fingerprint) {
+          throw new ArchiveBackupSetupError('archive: unattended setup no longer matches the server vault');
+        }
+        const databaseKey = deps.getKeys?.()?.keyProvider('database')();
+        if (!databaseKey) throw new Error('archive: server vault is locked');
+        try { await verifyLiveDatabase(databaseKey); } finally { databaseKey.fill(0); }
+      } else {
+        await proveExportRealm(key, exportBundle);
+      }
+      const destPath = newExportPath(dataPath, now());
+      // D-212 slice 4 — every production blob root is keyed, including the
+      // historical shared `blobs/` root. A missing/locked KeyManager supplies a
+      // null-returning provider so export fails closed at decrypt rather than
+      // interpreting ciphertext as plaintext.
+      const blobSources = includeBlobs
+        ? buildExportBlobSources(
+            dataPath,
+            db,
+            deps.getKeys?.()?.keyProvider('blob-store') ?? (() => null),
+          )
+        : undefined;
+
+      let vaultBundleJson: string | undefined;
+      try {
+        const bundle = createBundleStore(db).load();
+        if (bundle) vaultBundleJson = bundleToJSON(bundle);
+      } catch { /* no bundle table — pre-D-081 compositions */ }
+      const serverVaultBundleJson = exportBundle
+        ? serverBundleToJSON(exportBundle)
+        : undefined;
+
+      // Mint + embed a signed `migration_full` identity passport (the
+      // default-on "include identity passport" toggle). Best-effort: the
+      // passport is an attestation rider, so ANY failure resolving the
+      // substrate or minting (an unavailable substrate on a db-less /
+      // no-audit boot, a throwing getter, a sign error) downgrades to an
+      // archive WITHOUT the passport rather than failing the whole backup.
+      let passportJson: string | undefined;
+      if (includePassport) {
+        try {
+          const px = deps.getPassportExport?.();
+          if (px) {
+            const signed = await exportServerPassport({
+              providers: px.providers,
+              serverIdentity: px.serverIdentity(),
+              audit: px.audit,
+              exported_by_client_id: ARCHIVE_PASSPORT_EXPORTED_BY,
+              options: { profile: 'migration_full', reason: 'embedded in data archive export' },
+            });
+            passportJson = JSON.stringify(signed);
+          }
+        } catch (err) {
+          console.error('[archive] passport mint failed — exporting without it', err);
+        }
+      }
+
+      const res = await exportArchive({
+        destPath,
+        recoveryKey: key,
+        ...(capability ? { delegationSaltHex: capability.salt_hex } : {}),
+        db,
+        configPath: configPath ?? undefined,
+        vaultBundleJson,
+        serverVaultBundleJson,
+        ...(passportJson !== undefined ? { passportJson } : {}),
+        ...(blobSources ? { blobSources } : {}),
+        // The export rpc always writes a fresh, uniquely-stamped file, so
+        // there is never a pre-existing target to guard against.
+        force: true,
+        producerVersion: serverVersion,
+      });
+      // Single-latest slot: the fresh archive evicts any prior export so the
+      // GB-sized files never accumulate (the leak the in-memory-only prune
+      // left behind). Eviction is age-bounded — it never deletes a file
+      // newer than the one just written.
+      evictOtherExports(dataPath, res.path);
+      return {
+        path: res.path,
+        bytes_written: res.bytes_written,
+        // The file is GC-eligible at write-time + TTL; the mtime-based
+        // sweep uses the same window, so the reported expiry matches.
+        expires_at: now() + EXPORT_TTL_MS,
+      };
+    } finally {
+      // Wipe the transient recovery entropy or backup-only root on every exit.
+      key.fill(0);
+    }
+  };
+
   return {
     reserveImportOperation: id => importReceipts.reserve(id),
     refuseImportOperation: id => importReceipts.refused(id),
@@ -647,9 +769,8 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
         : result;
     },
     canExport() {
-      // The runtime is only constructed when the warehouse db exists
-      // (gated at the wiring site). The recovery key arrives per call, so
-      // there's nothing else to pre-flight here.
+      // The db exists at composition; each export proves its live vault
+      // binding before it snapshots any bytes.
       return { ok: true };
     },
 
@@ -723,145 +844,18 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
       return { deleted: pruneExpiredExports(dataPath, EXPORT_TTL_MS, now()) };
     },
 
-    async runExport({ includeBlobs, includePassport, recoveryKey }) {
-      const key = deriveArchiveKeyBuffer(recoveryKey);
+    runExport: performExport,
+    async prepareUnattendedExport(recoveryKey) {
+      const entropy = deriveArchiveKeyBuffer(recoveryKey);
       try {
-      // Prove this phrase actually opens THIS realm before writing a backup
-      // with it. The rpc layer validates BIP39 well-formedness only, and this
-      // path — unlike the CLI, which must derive the key to open the db at all
-      // — reuses the already-open boot handle, so a different-but-valid
-      // mnemonic would seal the outer archive under key B while the embedded
-      // database and bundle still need key A. Restore accepts one key, so the
-      // archive is unrestorable; without this check the only signal arrives at
-      // disaster-recovery time, which is the one moment it is worthless.
-      const exportBundle = serverBundleStore.load();
-      if (exportBundle) {
-        let probe: Uint8Array | undefined;
-        try {
-          probe = await deriveDatabaseKeyFromRecoveryEntropy(exportBundle, key);
-        } catch (err) {
-          throw new Error(
-            'archive export: that recovery key does not open this server\'s vault — ' +
-              'the backup would not be restorable. ' +
-              `Cause: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
-        // ⛔ …and prove that key opens the LIVE DATABASE, not just the sidecar.
-        // The check above only proves the mnemonic unwraps the sidecar CURRENTLY
-        // on disk. But the server snapshots the already-open boot handle (keyed
-        // under the Master DEK it booted with, A) while embedding the on-disk
-        // sidecar — and if that sidecar has DRIFTED to a different valid bundle
-        // (Master DEK B) since boot, the mnemonic still unwraps it, yet the key
-        // it yields cannot open the archived database bytes. Restore derives
-        // from the embedded sidecar, so the backup is silently unrestorable —
-        // the one signal arriving at disaster-recovery time. The offline CLI is
-        // immune because it OPENS the db with the sidecar-derived key to export
-        // at all; the online path reuses the boot handle, so it must verify
-        // explicitly. A read-only second handle coexists with the live one under
-        // WAL; a mismatched key fails `assertReadable` inside `openDatabase`.
-        let verify: Database.Database | undefined;
-        try {
-          verify = await openDatabase(dbPath, { databaseKey: probe, readonly: true });
-        } catch (err) {
-          throw new Error(
-            'archive export: this server\'s vault bundle sidecar no longer opens the ' +
-              'running database — it has drifted since boot, so the backup would embed a ' +
-              'bundle that cannot decrypt its own database bytes and would not be restorable. ' +
-              `Cause: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        } finally {
-          try { verify?.close(); } catch { /* best effort */ }
-          probe.fill(0);
-        }
-      } else if (isDatabaseFileEncrypted(dbPath)) {
-        // Encrypted realm whose sidecar has gone missing since boot: the keys
-        // are still in RAM so the server runs, but the archive would carry an
-        // encrypted database and nothing able to open it.
-        throw new Error(
-          'archive export: this realm is encrypted but its vault bundle sidecar is ' +
-            'missing — the backup would not be restorable.',
-        );
-      }
-      const destPath = newExportPath(dataPath, now());
-      // D-212 slice 4 — every production blob root is keyed, including the
-      // historical shared `blobs/` root. A missing/locked KeyManager supplies a
-      // null-returning provider so export fails closed at decrypt rather than
-      // interpreting ciphertext as plaintext.
-      const blobSources = includeBlobs
-        ? buildExportBlobSources(
-            dataPath,
-            db,
-            deps.getKeys?.()?.keyProvider('blob-store') ?? (() => null),
-          )
-        : undefined;
-
-      let vaultBundleJson: string | undefined;
-      try {
-        const bundle = createBundleStore(db).load();
-        if (bundle) vaultBundleJson = bundleToJSON(bundle);
-      } catch { /* no bundle table — pre-D-081 compositions */ }
-      const serverBundle = serverBundleStore.load();
-      const serverVaultBundleJson = serverBundle
-        ? serverBundleToJSON(serverBundle)
-        : undefined;
-
-      // Mint + embed a signed `migration_full` identity passport (the
-      // default-on "include identity passport" toggle). Best-effort: the
-      // passport is an attestation rider, so ANY failure resolving the
-      // substrate or minting (an unavailable substrate on a db-less /
-      // no-audit boot, a throwing getter, a sign error) downgrades to an
-      // archive WITHOUT the passport rather than failing the whole backup.
-      let passportJson: string | undefined;
-      if (includePassport) {
-        try {
-          const px = deps.getPassportExport?.();
-          if (px) {
-            const signed = await exportServerPassport({
-              providers: px.providers,
-              serverIdentity: px.serverIdentity(),
-              audit: px.audit,
-              exported_by_client_id: ARCHIVE_PASSPORT_EXPORTED_BY,
-              options: { profile: 'migration_full', reason: 'embedded in data archive export' },
-            });
-            passportJson = JSON.stringify(signed);
-          }
-        } catch (err) {
-          console.error('[archive] passport mint failed — exporting without it', err);
-        }
-      }
-
-      const res = await exportArchive({
-        destPath,
-        recoveryKey: key,
-        db,
-        configPath: configPath ?? undefined,
-        vaultBundleJson,
-        serverVaultBundleJson,
-        ...(passportJson !== undefined ? { passportJson } : {}),
-        ...(blobSources ? { blobSources } : {}),
-        // The export rpc always writes a fresh, uniquely-stamped file, so
-        // there is never a pre-existing target to guard against.
-        force: true,
-        producerVersion: serverVersion,
-      });
-      // Single-latest slot: the fresh archive evicts any prior export so the
-      // GB-sized files never accumulate (the leak the in-memory-only prune
-      // left behind). Eviction is age-bounded — it never deletes a file
-      // newer than the one just written.
-      evictOtherExports(dataPath, res.path);
-      return {
-        path: res.path,
-        bytes_written: res.bytes_written,
-        // The file is GC-eligible at write-time + TTL; the mtime-based
-        // sweep uses the same window, so the reported expiry matches.
-        expires_at: now() + EXPORT_TTL_MS,
-      };
-      } finally {
-        // The recovery-key entropy copied into `key` opens every archive of
-        // this realm; wipe our copy whether we returned or threw.
-        key.fill(0);
-      }
+        const bundle = serverBundleStore.load();
+        if (!bundle || await classifyRealmOwnership(recoveryKey) !== 'owns') throw new Error('Recovery words do not open this server vault.');
+        await proveExportRealm(entropy, bundle);
+        const salt = randomBytes(32);
+        return { key: deriveArchiveBackupRoot(entropy, salt), salt_hex: salt.toString('hex'), realm_fingerprint: fingerprintBundle(bundle) };
+      } finally { entropy.fill(0); }
     },
+    runUnattendedExport: capability => performExport({ includeBlobs: true, includePassport: true, capability }),
 
     async readManifest(path, recoveryKey) {
       const key = deriveArchiveKeyBuffer(recoveryKey);
@@ -1080,6 +1074,7 @@ export interface ComposeArchiveRpcDepsOptions {
   /** Late-bound KeyManager accessor — see `ArchiveRuntimeDeps.getKeys`. */
   getKeys?: () => KeyManager | undefined;
   now?: () => number;
+  notifyBackupFailure?: Parameters<typeof createUnattendedBackups>[0]['notify'];
 }
 
 /** Assemble the `ArchiveRpcDeps` consumed by `makeArchiveHandlers`.
@@ -1170,9 +1165,18 @@ export const composeArchiveRpcDeps = (
     console.error('[archive] boot-time export prune failed', err);
   }
 
+  const remoteBackups = createSqliteRemoteBackups({ db, dbPath: opts.dbPath, getKeys: opts.getKeys, now: opts.now });
+  const operationGate = createArchiveOperationGate();
+  const unattendedBackups = createUnattendedBackups({ dbPath: opts.dbPath, runtime, remoteBackups, gate: operationGate,
+    getEncryptionKey: () => opts.getKeys?.()?.keyProvider('archive-backup')() ?? null,
+    notify: opts.notifyBackupFailure ?? (async () => false),
+    canRun: () => lifecycle.machine.state === 'running', now: opts.now });
+  const restoreDrills = createRestoreDrills({ dbPath: opts.dbPath, remoteBackups, gate: operationGate, serverVersion: opts.serverVersion,
+    canRun: () => lifecycle.machine.state === 'running', now: opts.now });
+  const backupHealth = createBackupHealth({ dbPath: opts.dbPath, schedule: () => unattendedBackups.status(),
+    notify: opts.notifyBackupFailure ?? (async () => false), canRun: () => lifecycle.machine.state === 'running', now: opts.now });
   return {
-    runtime,
-    remoteBackups: createSqliteRemoteBackups({ db, dbPath: opts.dbPath, getKeys: opts.getKeys, now: opts.now }),
+    runtime, remoteBackups, operationGate, unattendedBackups, restoreDrills, backupHealth,
     dataPath,
     now: opts.now,
     ...(opts.auditLog ? { auditLog: opts.auditLog } : {}),

@@ -67,6 +67,17 @@ export const createAssetOccurrenceStore = (db: Database.Database) => {
     const row = db.prepare('SELECT * FROM asset_occurrences WHERE id=?').get(id) as Row | undefined;
     return row ? decode(row) : null;
   };
+  /** Same DTOs and per-asset order as byAsset, with bounded reads and no cache. */
+  const byAssets = (asset_ids: readonly string[]): Map<string, AssetOccurrence[]> => {
+    const keys = [...new Set(asset_ids)]; const result = new Map(keys.map(id => [id, [] as AssetOccurrence[]]));
+    for (let offset = 0; offset < keys.length; offset += 200) {
+      const page = keys.slice(offset, offset + 200);
+      const rows = db.prepare(`SELECT * FROM asset_occurrences WHERE subject_kind='asset' AND asset_id IN (${page.map(() => '?').join(',')})
+        ORDER BY asset_id,created_at DESC,id DESC`).all(...page) as Row[];
+      for (const row of rows) result.get(row.asset_id)!.push(decode(row));
+    }
+    return result;
+  };
   return {
     get,
     byCommitment: (id: string): AssetOccurrence | null => {
@@ -74,6 +85,7 @@ export const createAssetOccurrenceStore = (db: Database.Database) => {
       return row ? decode(row) : null;
     },
     byAsset: (asset_id: string): AssetOccurrence[] => (db.prepare("SELECT * FROM asset_occurrences WHERE subject_kind='asset' AND asset_id=? ORDER BY created_at DESC,id DESC").all(asset_id) as Row[]).map(decode),
+    byAssets,
     byOccasion: (id: string): AssetOccurrence[] => (db.prepare("SELECT * FROM asset_occurrences WHERE subject_kind='occasion' AND asset_id=? ORDER BY created_at DESC,id DESC").all(id) as Row[]).map(decode),
     all: (): AssetOccurrence[] => (db.prepare('SELECT * FROM asset_occurrences ORDER BY created_at,id').all() as Row[]).map(decode),
     questionCommitments: (): string[] => (db.prepare('SELECT commitment_id FROM asset_occurrences WHERE question=1 AND commitment_id IS NOT NULL')

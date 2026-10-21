@@ -48,7 +48,7 @@ import {
 import { createKeyManager } from '../key-manager.js';
 import type { KeyManager } from '../key-manager.js';
 import { exportArchive } from '../archive/archive-export.js';
-import { ARCHIVE_FORMAT_VERSION } from '../archive/archive-format.js';
+import { RECOVERY_ARCHIVE_FORMAT_VERSION } from '../archive/archive-format.js';
 import {
   EXPORT_TTL_MS,
   exportsDir,
@@ -309,7 +309,7 @@ describe('archive online runtime', () => {
     const { path } = await h.runtime.runExport({ includeBlobs: false, includePassport: false, recoveryKey: h.mnemonic });
     const manifest = await h.runtime.readManifest(path, h.mnemonic);
     // D-212 slice 1 adds the server-bundle sidecar record (format v3).
-    expect(manifest.format_version).toBe(ARCHIVE_FORMAT_VERSION);
+    expect(manifest.format_version).toBe(RECOVERY_ARCHIVE_FORMAT_VERSION);
     expect(manifest.includes_blobs).toBe(false);
     expect(manifest.tables.example).toBe(1);
     expect(manifest.record_count).toBeGreaterThanOrEqual(1);

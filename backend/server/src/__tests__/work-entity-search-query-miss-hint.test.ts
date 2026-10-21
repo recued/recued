@@ -341,3 +341,74 @@ describe('work.search — query miss over a LIVE-SOURCE-only corpus', () => {
     expect(empty.hint).toBeUndefined();
   });
 });
+
+describe('work.search — the same words in another kind', () => {
+  // Measured 2026-10-21 (D-325 bench, lookup off): "When does my passport
+  // expire?" was searched as a NOTE, the bare zero came back, and the chat said
+  // it was "not recorded anywhere". The passport was on file as an ASSET.
+  const ASSET_SOURCE = RECUED_BUILTIN_SOURCE_ID('asset');
+  const seedAsset = (id: string, name: string): void => {
+    if (store.listSources('asset').length === 0) {
+      store.registerSource({ id: ASSET_SOURCE, top_tier_kind: 'asset', source_kind: 'builtin', source_label: 'assets',
+        write_capable: true, registered_at: NOW });
+    }
+    store.writeAsset({ id, source_id: ASSET_SOURCE, source: { kind: 'owner', ref: 'owner' }, name }, NOW);
+  };
+  const searchWith = async (override: Partial<WorkEntityReadToolsDeps>, args: Record<string, unknown>): Promise<SearchResult> =>
+    ok(await runWorkEntitySearchTool({ ...deps(), ...override }, { kind: 'note', limit: 20, ...args }, OWNER_CTX));
+
+  it('names the kind that holds the words when the searched kind has none', async () => {
+    seedAsset('passport', 'Passport · Ana');
+    const missed = await search({ query: 'passport' });
+    expect(missed.total).toBe(0);
+    expect(missed.hint).toBe('no note matched query "passport". The same words match 1 asset: '
+      + 'search with kind "asset". Do not tell the user it is not on file.');
+  });
+
+  it('adds it to the query-miss hint when the searched kind has records of its own', async () => {
+    seedKestrelRings();
+    seedAsset('passport', 'Passport · Ana');
+    const missed = await search({ query: 'passport' });
+    expect(missed.hint).toContain('NOT an empty note collection');
+    expect(missed.hint).toMatch(/The same words match 1 asset: search with kind "asset"\.[^]*not on file\.$/u);
+  });
+
+  it('keeps the bare zero when no other kind matches either', async () => {
+    seedAsset('passport', 'Passport · Ana');
+    expect((await search({ query: 'Peregrine' })).hint).toBeUndefined();
+  });
+
+  it('says nothing of a kind the caller may not read', async () => {
+    seedAsset('passport', 'Passport · Ana');
+    const missed = await searchWith({ isCollectionReadGranted: (kind) => kind !== 'asset' }, { query: 'passport' });
+    expect(missed.hint).toBeUndefined();
+  });
+
+  it('tells a sphere-limited reader no counts, and does not search the other kinds at all', async () => {
+    seedAsset('passport', 'Passport · Ana');
+    const limited = { limited: true, allows: () => true, cleanWork: (row: unknown) => row };
+    // A later line replaces a limited reader's hint anyway, so the output alone
+    // cannot show whether other kinds were read; the searched kinds can.
+    const resolver = createWorkEntityResolver(store, {}); const searched: string[] = [];
+    const watched = { ...resolver, searchByText: (kind: Parameters<typeof resolver.searchByText>[0], query: string, limit: number) => {
+      searched.push(kind); return resolver.searchByText(kind, query, limit);
+    } };
+    const missed = await searchWith({ getReadScope: () => limited as never, getResolver: () => watched }, { query: 'passport' });
+    expect(missed.hint ?? '').not.toContain('same words');
+    expect(searched).toEqual(['note']);
+  });
+
+  it('does not look elsewhere when the search was narrowed by done', async () => {
+    seedAsset('passport', 'Passport · Ana');
+    store.registerSource({ id: RECUED_BUILTIN_SOURCE_ID('task'), top_tier_kind: 'task', source_kind: 'builtin',
+      source_label: 'tasks', write_capable: true, registered_at: NOW });
+    const missed = await search({ kind: 'task', query: 'passport', done: false });
+    expect(missed.hint).toBeUndefined();
+  });
+
+  it('does not look elsewhere when the search was narrowed to one source', async () => {
+    seedAsset('passport', 'Passport · Ana');
+    const missed = await search({ query: 'passport', source_id: NOTE_SOURCE });
+    expect(missed.hint).toBeUndefined();
+  });
+});

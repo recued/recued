@@ -39,6 +39,7 @@ import { pipeline } from 'node:stream/promises';
 import {
   AEAD_TAG_LEN,
   ARCHIVE_FORMAT_VERSION,
+  RECOVERY_ARCHIVE_FORMAT_VERSION,
   BLOB_NAME_PREFIX,
   CACHE_BLOB_NAME_PREFIX,
   MEMORY_BLOB_NAME_PREFIX,
@@ -193,6 +194,8 @@ export interface ExportOptions {
   /** 32-byte recovery key derived from the user's recovery phrase.
    *  The same buffer the FileVault unlock path accepts. */
   recoveryKey: Buffer;
+  /** When supplied, recoveryKey is a backup-only root, never recovery entropy. */
+  delegationSaltHex?: string;
   /** Live SQLite database. Export takes a consistent `VACUUM INTO` snapshot;
    *  unlike the fork's `db.backup()`, it preserves the source cipher. */
   db: Database.Database;
@@ -285,6 +288,7 @@ export const uint32BE = (n: number): Buffer => {
 export const exportArchive = async (
   opts: ExportOptions,
 ): Promise<ExportResult> => {
+  if (opts.delegationSaltHex !== undefined && !/^[0-9a-f]{64}$/u.test(opts.delegationSaltHex)) throw new Error('archive: invalid backup setup salt');
   const now = opts.now?.() ?? Date.now();
 
   // Pre-flight: destination writable?
@@ -398,7 +402,7 @@ export const exportArchive = async (
     const manifest: ArchiveManifest = {
       producer_version: opts.producerVersion,
       min_consumer_version: MIN_CONSUMER_VERSION,
-      archive_format_version: ARCHIVE_FORMAT_VERSION,
+      archive_format_version: opts.delegationSaltHex === undefined ? RECOVERY_ARCHIVE_FORMAT_VERSION : ARCHIVE_FORMAT_VERSION,
       schema_version: snapshotSchema.version,
       created_at: now,
       source_host: opts.sourceHost ?? safeHostname(),
@@ -410,6 +414,7 @@ export const exportArchive = async (
         algorithm: 'aes-256-gcm',
         key_derivation: 'hkdf-sha-256',
         salt_hex: salt.toString('hex'),
+        ...(opts.delegationSaltHex === undefined ? {} : { delegation_salt_hex: opts.delegationSaltHex }),
         info: 'recued-archive-v1',
       },
     };

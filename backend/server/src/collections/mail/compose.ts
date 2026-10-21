@@ -209,8 +209,13 @@ export interface MailStack {
    *  `onDeleted` hooks that maintain the live-collection map. */
   enrollDeps: MailEnrollDeps;
   /** Rehydrate every live `MailCollection` from the instance store.
-   *  Call once at boot before `startServer`. */
-  startAll(): Promise<void>;
+   *  Call once at boot before `startServer`. `'background'` resolves once each
+   *  mailbox is live and leaves its first scan running: boot passes it, since
+   *  a scan reads all that came while the server was down, and the server
+   *  answers nothing until its boot is done. */
+  startAll(firstSync?: 'wait' | 'background'): Promise<void>;
+  /** Settles once every first scan started so far has finished or failed. */
+  firstScans(): Promise<void>;
   /** Stop every live collection. Called from the lifecycle drain's
    *  `pause_collections` step. Idempotent. */
   disposeAll(): Promise<void>;
@@ -280,6 +285,7 @@ export const composeMailStack = (
   const instances = createInstanceStore({ db });
   const live = new Map<string, MailCollection>();
   const starts = new Map<string, Promise<void>>();
+  const scansInFlight = new Set<Promise<void>>();
   const authenticationPaused = new Set<string>();
   let closed = false;
   let disposePromise: Promise<void> | null = null;
@@ -538,8 +544,11 @@ export const composeMailStack = (
       // Collection still lives — its `send` rpc still works against the
       // provider, and a future resync can restart the inbound loop.
     });
+    scansInFlight.add(syncing);
+    void syncing.finally(() => { scansInFlight.delete(syncing); });
     // Enrollment acknowledges the saved, registered mailbox. Its first scan
     // can take minutes, well beyond the webclient's 30-second RPC deadline.
+    // Boot does not wait for it either (`startAll('background')`).
     // MailCollection owns this start promise: sync.stop()/close() invalidate
     // its callbacks and drain it before deletion or database teardown. Sync
     // outcomes still update the instance row for the UI's first-sync polling.
@@ -620,16 +629,19 @@ export const composeMailStack = (
     mailboxAccessVerified: (slug) => live.get(slug)?.mailboxAccessVerified,
   };
 
-  const startAll = async (): Promise<void> => {
+  const startAll = async (firstSync: 'wait' | 'background' = 'wait'): Promise<void> => {
     if (closed) return;
     const rows = instances.list('mail');
     for (const row of rows) {
-      try { await startLive(row); }
+      try { await startLive(row, firstSync); }
       catch {
         // startLive logs inline — keep booting.
       }
     }
   };
+
+  // Each scan's own failure is caught where it starts, so none rejects here.
+  const firstScans = async (): Promise<void> => { await Promise.all([...scansInFlight]); };
 
   const disposeAll = (): Promise<void> => {
     if (disposePromise) return disposePromise;
@@ -677,6 +689,7 @@ export const composeMailStack = (
     listLive: () => [...live.values()],
     enrollDeps,
     startAll,
+    firstScans,
     disposeAll,
     resumeSync,
     pauseSync,

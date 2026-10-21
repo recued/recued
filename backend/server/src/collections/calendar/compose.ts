@@ -144,8 +144,10 @@ export interface CalendarStack {
    *  `onDeleted` hooks that maintain the live-collection map. */
   enrollDeps: CalendarEnrollDeps;
   /** Rehydrate every live `CalendarCollection` from the instance
-   *  store. Call once at boot before `startServer`. */
-  startAll(): Promise<void>;
+   *  store. Call once at boot before `startServer`. `'background'` resolves
+   *  once each calendar is live and leaves its first scan running, as boot
+   *  needs (the mail stack's `startAll` says why). */
+  startAll(firstSync?: 'wait' | 'background'): Promise<void>;
   /** Stop every live collection. Called from the lifecycle drain's
    *  `pause_collections` step. Idempotent. */
   disposeAll(): Promise<void>;
@@ -440,11 +442,11 @@ export const composeCalendarStack = (
     },
   };
 
-  const startAll = async (): Promise<void> => {
+  const startAll = async (firstSync: 'wait' | 'background' = 'wait'): Promise<void> => {
     if (closed) return;
     const rows = instances.list('calendar');
     for (const row of rows) {
-      try { await startLive(row); }
+      try { await startLive(row, firstSync); }
       catch {
         // startLive logs inline — keep booting.
       }

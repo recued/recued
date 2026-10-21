@@ -136,6 +136,16 @@ const settingsWith = async (
 };
 
 describe('D-158 P0 NotificationBlock notify', () => {
+  it('reports channel acceptance so durable failure-alert queues can retry total delivery failure', async () => {
+    const failing = createRecordedChannel('ui', { deliverNotify: () => { throw new Error('offline'); } });
+    const block = createNotificationBlock({ askStore: createAskStore(createInMemoryCollection<PendingAsk>()),
+      channels: [failing], settingsStore: await settingsWith() });
+    expect(await block.notifyWithResult!(message)).toEqual({ attempted: 1, accepted: 0 });
+    const accepting = createRecordedChannel('ui');
+    const healthy = createNotificationBlock({ askStore: createAskStore(createInMemoryCollection<PendingAsk>()),
+      channels: [accepting], settingsStore: await settingsWith() });
+    expect(await healthy.notifyWithResult!(message)).toEqual({ attempted: 1, accepted: 1 });
+  });
   it('fans out to ui, emits notification.notify, and stays best-effort over a throwing channel', async () => {
     const events: UiNotificationEvent[] = [];
     const throwing = createRecordedChannel('email', {

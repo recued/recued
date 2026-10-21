@@ -1282,6 +1282,45 @@ const workEntitySearchQueryMissHint = (
   + `or omit \`query\` to list the ${kind}s and pick from them. Do NOT re-send this query `
   + `unchanged, and do not report to the user that they have no ${kind}s.`;
 
+/** The same words match records of OTHER kinds, so the search picked the wrong
+ *  one. A bare zero there reads as "not on file": measured 2026-10-21 (D-325
+ *  qualification bench, qwen3.7-plus, lookup off), "When does my passport
+ *  expire?" was searched as a note, found nothing, and was answered "I don't
+ *  have your passport expiration date recorded anywhere". It was on file as an
+ *  asset.
+ *
+ *  Counts only, and only what this caller could have listed itself: kinds it may
+ *  read, from the local index, never a live (read-through) Source. The caller
+ *  skips this for a sphere-limited reader, which is told no counts at all. */
+const CROSS_KIND_PROBE_CAP = 50;
+const otherKindMatches = (
+  deps: WorkEntityReadToolsDeps,
+  resolver: WorkEntityResolver,
+  kind: WorkEntityKind,
+  query: string,
+  ctx: ChatDispatchContext,
+): Array<{ kind: WorkEntityKind; count: number; capped: boolean }> => {
+  const matches: Array<{ kind: WorkEntityKind; count: number; capped: boolean }> = [];
+  for (const other of WORK_ENTITY_KINDS) {
+    if (other === kind || !deps.isCollectionReadGranted(other, ctx)) continue;
+    const liveOnly = new Set(resolver.listSources(other)
+      .filter((source) => source.sync_posture === 'read_through').map((source) => source.id));
+    let rows: WorkEntity[];
+    try { rows = resolver.searchByText(other, query, CROSS_KIND_PROBE_CAP); }
+    catch { continue; }
+    const count = rows.filter((row) => !liveOnly.has(row.source_id)).length;
+    if (count > 0) matches.push({ kind: other, count, capped: rows.length >= CROSS_KIND_PROBE_CAP });
+  }
+  return matches;
+};
+const otherKindsHint = (matches: ReadonlyArray<{ kind: string; count: number; capped: boolean }>): string => {
+  const list = (items: string[], last: string) => items.length < 2 ? items.join('')
+    : `${items.slice(0, -1).join(', ')} ${last} ${items.at(-1)}`;
+  return `The same words match ${list(matches.map((m) => `${m.capped ? 'at least ' : ''}${m.count} `
+    + `${m.kind}${m.count === 1 ? '' : 's'}`), 'and')}: search with kind `
+    + `${list(matches.map((m) => `"${m.kind}"`), 'or')}. Do not tell the user it is not on file.`;
+};
+
 /** Match live read-through items against `query` USING THE SAME MATCHER the
  *  local half uses — the store's `matchTextsByQuery`, which runs them through a
  *  temp FTS table on its own connection with the same tokenizer and the same
@@ -1664,6 +1703,12 @@ export const runWorkEntitySearchTool = async (
     }
   }
 
+  // The same words in other kinds, only when nothing matched here, and never
+  // for a source- or `done`-narrowed search or a sphere-limited reader.
+  const elsewhere = total === 0 && query !== undefined && source_id === undefined
+    && done === undefined && !scope?.limited
+    ? otherKindMatches(deps, resolver, kind, query, ctx)
+    : [];
   const rowByLocalId = new Map(page.map((row) => [row.id, row]));
   const qualifyLocalId = (localId: string): string => {
     const row = rowByLocalId.get(localId);
@@ -1692,14 +1737,16 @@ export const runWorkEntitySearchTool = async (
       // user. Cheap insurance against a break that would otherwise be silent.
       ...(total === 0 && query !== undefined && queryCandidatePool > 0
         ? {
-            hint: workEntitySearchQueryMissHint(
+            hint: [workEntitySearchQueryMissHint(
               kind,
               rawQuery,
               queryCandidatePool,
               scan_truncated,
-            ),
+            ), ...(elsewhere.length > 0 ? [otherKindsHint(elsewhere)] : [])].join(' '),
           }
-        : {}),
+        : elsewhere.length > 0
+          ? { hint: `no ${kind} matched query "${rawQuery}". ${otherKindsHint(elsewhere)}` }
+          : {}),
       ...(scan_truncated ? { scan_truncated } : {}),
       ...(freshness !== null ? { source_freshness: scope?.limited ? freshness.filter(row => page.some(item => item.source_id === row.source_id)) : freshness } : {}),
       ...(scope?.limited ? { hint: 'Only locally verified records in this contract\'s spheres are included. Live-only sources and related records without a verified sphere are withheld.' } : {}),
