@@ -67,10 +67,12 @@ already running. To pair a browser, run `recued pair`. It prints a pairing
 code and a link to the webclient. Open the link and type in the code. If
 `recued` is not found in that terminal, open a new one.
 
-Do not want it to start at login? Put `RECUED_AUTOSTART=0` in front of the
-command. Then start it yourself with `recued serve`. It prints the pairing
-code. The install location, the release channel, and the rest are in
-[INSTALL.md](./INSTALL.md#options).
+Do not want it to start at login? Put `RECUED_AUTOSTART=0` just before `sh`:
+`curl -fsSL https://recued.com/install.sh | RECUED_AUTOSTART=0 sh`. Put it
+before `curl`, and only `curl` sees it. In PowerShell, run
+`$env:RECUED_AUTOSTART=0` on its own line first. Then start it yourself with
+`recued serve`. It prints the pairing code. The install location, the release
+channel, and the rest are in [INSTALL.md](./INSTALL.md#options).
 
 A **headless Linux** box is one with no screen or desktop. There, starting at
 boot needs root, the admin account. Run the installer with `sudo`, and pair

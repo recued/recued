@@ -23,14 +23,17 @@ signed and notarized with a Developer ID.
 
 ### Options
 
-Set these before the command — `RECUED_AUTOSTART=0 curl -fsSL … | sh`. In
+Put these just before `sh` —
+`curl -fsSL https://recued.com/install.sh | RECUED_AUTOSTART=0 sh`. Put one
+before `curl` instead, and only `curl` sees it: the script runs without it. In
 PowerShell, run `$env:RECUED_AUTOSTART=0` on its own line first.
 
 | Variable | Effect |
 |---|---|
 | `RECUED_AUTOSTART=0` | Do not start at login. On by default. |
-| `RECUED_PREFIX` | Where the payload goes. Default `/usr/local/lib/recued`. |
-| `RECUED_BINDIR` | Where the `recued` command goes. Default `/usr/local/bin`. Set both to install without `sudo`. |
+| `RECUED_PREFIX` | Where the payload goes. Default `/usr/local/lib/recued`; on macOS, when you cannot write there, `~/.local/lib/recued`. On Windows, `%LOCALAPPDATA%\recued\bin`. |
+| `RECUED_BINDIR` | Where the `recued` command goes. Default `/usr/local/bin`; on macOS, when you cannot write there, `~/.local/bin`. On Linux, set both to install without `sudo`. |
+| `RECUED_NO_MODIFY_PATH=1` | Do not add the command's folder to your shell profile. By default the script adds it when that folder is not on your PATH. |
 | `RECUED_CHANNEL=edge` | Follow the edge channel instead of stable. |
 | `RECUED_FORCE=1` | Reinstall even when already on the released version. |
 
