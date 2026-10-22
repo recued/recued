@@ -1,0 +1,57 @@
+name: Bug report
+description: Something in Recued does not work the way the docs say it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting this. For a question, use [Discussions](https://github.com/recued/recued/discussions/categories/q-a). For a security problem, do not open an issue: see [SECURITY.md](https://github.com/recued/recued/blob/main/SECURITY.md).
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: What `recued --version` prints.
+      placeholder: "26.10.21"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+        - Windows
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How you installed it
+      options:
+        - The install script (install.sh or install.ps1)
+        - A binary downloaded by hand
+        - Built from source
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you saw, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to make it happen again
+      placeholder: |
+        1.
+        2.
+        3.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: The lines around the error. Before you paste, take out any line with a pairing code, and any names, email addresses or keys you do not want public.
+      render: shell

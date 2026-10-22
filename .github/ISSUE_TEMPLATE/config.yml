@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Ask a question
+    url: https://github.com/recued/recued/discussions/categories/q-a
+    about: Questions about installing or using Recued.
+  - name: Report a security problem
+    url: https://github.com/recued/recued/security/advisories/new
+    about: Report it privately, not in a public issue.
+  - name: Documentation
+    url: https://recued.com/docs
+    about: Installing, pairing, connections and packs.
