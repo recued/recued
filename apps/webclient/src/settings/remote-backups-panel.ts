@@ -5,8 +5,12 @@ import { formatClientDateTime } from '@recued/ui-shared';
 import { mountUnattendedBackups, type UnattendedBackupsPorts } from './unattended-backups-panel.js';
 import { mountRestoreDrills, type RestoreDrillsPorts } from './restore-drills-panel.js';
 import { mountBackupHealth, type BackupHealthPorts } from './backup-health-panel.js';
+import { mountBackupIntegrity, type BackupIntegrityPorts } from './backup-integrity-panel.js';
+import { mountBackupWatchdog, type BackupWatchdogPorts } from './backup-watchdog-panel.js';
+import type { RestoreReadinessItem } from './post-restore-readiness.js';
 
 export interface RemoteBackupsPorts {
+  assertCurrentPair?: () => Promise<void>;
   destinations(): Promise<{ destinations: ArchiveRemoteDestination[] }>;
   list(): Promise<{ backups: ArchiveRemoteBackup[] }>;
   check(input: { operation_id: string }): Promise<ArchiveRemoteBackup>;
@@ -14,6 +18,8 @@ export interface RemoteBackupsPorts {
   unattended?: UnattendedBackupsPorts;
   drills?: RestoreDrillsPorts;
   health?: BackupHealthPorts;
+  integrity?: BackupIntegrityPorts;
+  watchdog?: BackupWatchdogPorts;
   onConnected?: (listener: () => void) => () => void;
 }
 const ACTIVE = new Set(['preparing', 'uploading', 'verifying']);
@@ -26,10 +32,12 @@ export const mountRemoteBackups = (options: {
   host: HTMLElement; document: Document; ports: RemoteBackupsPorts;
   onRestore(stagedName: string): boolean;
   pollMs?: number;
+  now?: () => number;
 }) => {
   const { host, document: doc, ports } = options;
   host.setAttribute('data-remote-backups', '');
   let disposed = false, generation = 0, loading = false, queuedRefresh = false;
+  let healthPending = false, integrityPending = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let destinations = new Map<string, ArchiveRemoteDestination>();
   let chosen: ArchiveRemoteDestination | undefined;
@@ -48,11 +56,29 @@ export const mountRemoteBackups = (options: {
   keep.setAttribute('data-remote-backup-keep', ''); keepLabel.appendChild(keep); host.appendChild(keepLabel);
   const note = make('p', 'Remote storage gets the encrypted archive. Your recovery words are used for this backup and are not saved. Older copies in Recued’s own folder are removed only after a new copy is verified.'); host.appendChild(note);
   const configure = make('a', 'Add an Amazon S3 backup connection'); configure.href = '#connections/others/enroll/s3'; host.appendChild(configure);
-  const refreshButton = make('button', 'Refresh storage and history'); refreshButton.type = 'button'; refreshButton.className = 'rx-btn rx-btn-secondary';
+  const refreshButton = make('button', 'Refresh backup status'); refreshButton.type = 'button'; refreshButton.className = 'rx-btn rx-btn-secondary';
+  refreshButton.setAttribute('aria-label', 'Refresh backup status');
   refreshButton.setAttribute('data-remote-backups-refresh', ''); host.appendChild(refreshButton);
-  const status = make('p'); status.setAttribute('role', 'status'); host.appendChild(status);
+  const updateRefreshButton = (): void => {
+    if (disposed) return;
+    const pending = loading || healthPending || integrityPending;
+    refreshButton.setAttribute('aria-disabled', String(pending));
+    refreshButton.setAttribute('aria-busy', String(pending));
+    refreshButton.textContent = pending ? 'Refreshing backup status…' : 'Refresh backup status';
+  };
+  const status = make('p'); status.setAttribute('role', 'status'); status.setAttribute('data-remote-backups-status', ''); host.appendChild(status);
+  const integrityHost = make('div'); host.appendChild(integrityHost);
+  const integrity = ports.integrity ? mountBackupIntegrity({ host: integrityHost, document: doc, ports: ports.integrity,
+    ...(options.now ? { now: options.now } : {}),
+    onRefreshPendingChange: pending => { integrityPending = pending; updateRefreshButton(); },
+  }) : undefined;
   const healthHost = make('div'); host.appendChild(healthHost);
-  const health = ports.health ? mountBackupHealth({ host: healthHost, document: doc, ports: ports.health }) : undefined;
+  const health = ports.health ? mountBackupHealth({ host: healthHost, document: doc, ports: ports.health,
+    ...(options.now ? { now: options.now } : {}),
+    onRefreshPendingChange: pending => { healthPending = pending; updateRefreshButton(); },
+  }) : undefined;
+  const watchdogHost = make('div'); host.appendChild(watchdogHost);
+  const watchdog = ports.watchdog ? mountBackupWatchdog({ host: watchdogHost, document: doc, ports: ports.watchdog }) : undefined;
   const unattendedHost = make('div'); host.appendChild(unattendedHost);
   const unattended = ports.unattended ? mountUnattendedBackups({ host: unattendedHost, document: doc, ports: ports.unattended }) : undefined;
   const drillsHost = make('div'); host.appendChild(drillsHost);
@@ -160,8 +186,8 @@ export const mountRemoteBackups = (options: {
   const refresh = async (): Promise<void> => {
     if (disposed) return;
     if (loading) { queuedRefresh = true; return; }
-    loading = true; const ownGeneration = ++generation; refreshButton.setAttribute('aria-disabled', 'true');
-    void health?.refresh();
+    loading = true; const ownGeneration = ++generation; updateRefreshButton();
+    void health?.refresh(); void integrity?.refresh(); void watchdog?.refresh();
     try {
       const [choices, receipts] = await Promise.all([ports.destinations(), ports.list()]);
       if (disposed || generation !== ownGeneration) return;
@@ -172,15 +198,26 @@ export const mountRemoteBackups = (options: {
     finally {
       loading = false;
       if (!disposed) {
-        refreshButton.setAttribute('aria-disabled', 'false');
+        updateRefreshButton();
         if (queuedRefresh) { queuedRefresh = false; schedule(250); }
       }
     }
   };
   select.addEventListener('change', () => { chosen = destinations.get(select.value); });
-  refreshButton.addEventListener('click', () => { if (!loading) void refresh(); });
+  refreshButton.addEventListener('click', () => { if (!loading && !healthPending && !integrityPending) void refresh(); });
   const detach = ports.onConnected?.(() => { void refresh(); }); void refresh();
   return {
+    focusReadinessItem(item: RestoreReadinessItem): void {
+      if (disposed) return;
+      const controls: Record<RestoreReadinessItem, string> = {
+        schedule: 'data-unattended-enabled', backup: 'data-unattended-enabled', recovery: 'data-remote-backups-refresh',
+        integrity: 'data-backup-integrity-enabled', alerts: 'data-backup-health-enabled',
+        monitor: 'data-backup-watchdog-enabled', drill: 'data-backup-watchdog-drill-review',
+      };
+      const selected = host.querySelector<HTMLInputElement | HTMLButtonElement>(`[${controls[item]}]`);
+      const control = selected && !selected.disabled ? selected : host.querySelector<HTMLElement>('[data-remote-backups-refresh]');
+      control?.focus(); control?.scrollIntoView?.({ block: 'center' });
+    },
     target(): ArchiveRemoteTarget | undefined {
       if (disposed) throw new Error('Reload Backup & Recovery before choosing storage.');
       if (select.value === '') return undefined;
@@ -191,6 +228,6 @@ export const mountRemoteBackups = (options: {
       return { operation_id: globalThis.crypto.randomUUID(), connection_name: value.connection_name, destination_id: value.destination_id, keep_last: count };
     },
     refresh,
-    dispose() { health?.dispose(); unattended?.dispose(); drills?.dispose(); disposed = true; generation++; if (timer !== undefined) clearTimeout(timer); detach?.(); },
+    dispose() { disposed = true; generation++; watchdog?.dispose(); integrity?.dispose(); health?.dispose(); unattended?.dispose(); drills?.dispose(); if (timer !== undefined) clearTimeout(timer); detach?.(); },
   };
 };

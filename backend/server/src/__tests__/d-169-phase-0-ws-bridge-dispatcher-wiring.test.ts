@@ -512,6 +512,30 @@ describe('D-169 P0 follow-on - WS bridge dispatcher production wiring', () => {
     expect(frames.some(frame => frame.kind === 'notification.clear')).toBe(true);
   });
 
+  it('names a Bridge legacy from the version its own capability push reports', async () => {
+    const { ws, token_id } = await connectStructured('bridge', 'Store build'); await waitForRegistrySize(1);
+    const port = currentHandlerSet().wsHandle.bridgeReminders; if (!port) throw new Error('Bridge reminders were not composed');
+    const push = async (request_id: string, software_version: string) => {
+      const reply = waitForMessage(ws, msg => msg.type === 'rpc_result' && msg.request_id === request_id);
+      ws.send(JSON.stringify({ type: 'rpc', request_id, method: 'bridge.capabilityProfile.push', args: { profile: { ...BRIDGE_CAPABILITIES, software_version } } }));
+      expect((await reply).error).toBeUndefined();
+    };
+    expect(port.legacyConnected()).toBe(false);
+    await push('profile-store', '0.0.2'); expect(port.legacyConnected()).toBe(true);
+    await push('profile-updated', '0.0.3'); expect(port.legacyConnected()).toBe(false);
+    await push('profile-store-again', '0.0.2'); clientTokens.revoke(token_id, 'test');
+    expect(port.legacyConnected()).toBe(false);
+  });
+
+  it('reports a Bridge connected while its socket is open, and not after it closes', async () => {
+    const port = currentHandlerSet().wsHandle.bridgeReminders; if (!port) throw new Error('Bridge reminders were not composed');
+    expect(port.connectedIds().size).toBe(0);
+    const { ws, token_id } = await connectStructured('bridge', 'Presence laptop'); await waitForRegistrySize(1);
+    expect([...port.connectedIds()]).toEqual([token_id]);
+    await closeWs(ws); await waitForRegistrySize(0);
+    expect(port.connectedIds().size).toBe(0);
+  });
+
   it('ignores a non-bridge client result frame even when it carries a real command_id', async () => {
     const bridge = await connectStructured('bridge', 'Owned bridge');
     const webclient = await connectStructured('webclient', 'Browser');

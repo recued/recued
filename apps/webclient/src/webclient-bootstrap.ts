@@ -655,6 +655,11 @@ import {
 } from './action-receipt-follow.js';
 import { createHeldRunFollower } from './held-run-follow.js';
 import {
+  NOTICE_CATCH_UP_STORAGE_KEY,
+  followNoticeCatchUp,
+  type NoticeCatchUp,
+} from './notice-catch-up.js';
+import {
   mountApprovalAttentionPopover,
   type AttentionInactiveConnectionRecoveryHint,
   type AttentionRecoveryExcursionReturn,
@@ -854,6 +859,7 @@ import type {
   SellerTierUsagePolicyCaller,
   SellerCreatePassTierCaller,
   SellerOfferStateTransitionCaller,
+  SellerOfferCheckoutUrlCaller,
   SellerOverviewCaller,
   SellerSettingsUpdateCaller,
   SellerStripeSynchronizeCaller,
@@ -2539,6 +2545,18 @@ export interface BootstrapWebclientOptions {
    *  (R31 delta D); `notification_fired` audit rows still persist server-side.
    *  Tests opt out by passing `false`. */
   enableNotifyToasts?: boolean;
+  /** When not explicitly `false` (the default is ON, with the toasts), a notice
+   *  the owner was not looking at — the app closed, offline or in a background
+   *  tab — is shown once when they are back (`notice-catch-up.ts`): each
+   *  connect reads `notification.recent`. Tests opt out by passing `false`. */
+  enableNoticeCatchUp?: boolean;
+  /** How many calls the app keeps running on the server at once. Defaults to
+   *  the server's per-socket limit (`RPC_WS_MAX_IN_FLIGHT_PER_CLIENT`); past it
+   *  the app holds calls until one finishes (`realtime/rpc-conn.ts`). Only a
+   *  test server that leaves calls unanswered on purpose sets this: there the
+   *  open calls fill every slot and the app never finishes starting, which no
+   *  real server allows. */
+  rpcMaxInFlight?: number;
   /** Profile-scoped durable suppression + catch-up watermark for terminal
    * gated-action outcomes. Defaults to browser localStorage; null disables
    * persistence while preserving live and reconnect reads. Only opaque action
@@ -2554,6 +2572,12 @@ export interface BootstrapWebclientOptions {
   ) => { cancel: () => void };
   /** Connected durable-action polling cadence. Defaults to five seconds. */
   actionReceiptReconcileIntervalMs?: number;
+  /** One-shot timer seam for the missed-notice catch-up's short waits
+   *  (`notice-catch-up.ts`). Defaults to `setTimeout`; tests inject one. */
+  setNoticeCatchUpTimer?: (
+    handler: () => void,
+    delayMs: number,
+  ) => { cancel: () => void };
   /** Live connection indicator — when not explicitly `false` (the default is
    *  ON), the bootstrap mounts a screen-reader status announcer + the
    *  route-independent offline banner, both driven by the `connection-status`
@@ -3150,7 +3174,7 @@ export const bootstrapWebclient = async (
   // whichever screen called it (`webhook-door-notices.ts`). The toast stack
   // mounts further down; it is read when a result arrives.
   const rpcConn: WebclientRpcConn<ServerRpcRegistry> = withWebhookDoorNotices(
-    createWebclientRpcConn({ ws, connectionStatus, nonReplayMethods: new Set(['server.archive.import', 'server.archive.export', 'server.archive.unattended.save', 'server.archive.drill.start', 'server.archive.drill.cancel', 'server.archive.drill.cleanup', 'server.archive.health.save']) }),
+    createWebclientRpcConn({ ws, connectionStatus, ...(options.rpcMaxInFlight !== undefined ? { max_in_flight: options.rpcMaxInFlight } : {}), nonReplayMethods: new Set(['server.archive.import', 'server.archive.export', 'server.archive.unattended.save', 'server.archive.drill.start', 'server.archive.drill.cancel', 'server.archive.drill.cleanup', 'server.archive.health.save', 'server.archive.integrity.save', 'server.archive.watchdog.save', 'server.archive.watchdog.drill.start', 'server.archive.watchdog.drill.update']) }),
     (toast) => presentWebhookDoor(toast),
   );
   // A self-`pair.revoke` intentionally closes this session. Keep that known
@@ -3252,6 +3276,7 @@ export const bootstrapWebclient = async (
   //      once into <head>, marker-guarded.
   let notifyToasts: NotifyToastsMount | null = null;
   let actionReceiptFollow: ActionReceiptFollow | null = null;
+  let noticeCatchUp: NoticeCatchUp | null = null;
   // D-209 — a webhook door a dish save moved (`webhook-door-notices.ts`): the
   // same accessible stack, kept until dismissed. Read through the binding, so a
   // boot with toasts turned off presents nothing.
@@ -3314,6 +3339,39 @@ export const bootstrapWebclient = async (
         : {}),
       present: (toast) => notifyToasts?.push(toast),
     });
+    if (options.enableNoticeCatchUp !== false) {
+      // A notice the owner was not there to see: shown once when they are back.
+      const visibility = doc as Document & {
+        visibilityState?: string;
+        addEventListener?: Document['addEventListener'];
+        removeEventListener?: Document['removeEventListener'];
+      };
+      noticeCatchUp = followNoticeCatchUp({
+        subscribe: subscriber.on,
+        listRecent: (args) => rpcConn.call('notification.recent', args),
+        present: (toast) => notifyToasts?.push(toast),
+        ...(actionReceiptDeliveryStorage !== undefined
+          ? {
+              storage: actionReceiptDeliveryStorage,
+              storageKey: `${NOTICE_CATCH_UP_STORAGE_KEY}:${encodeURIComponent(
+                bootProfileId ?? pair.serverUrl,
+              )}`,
+            }
+          : {}),
+        ...(options.setNoticeCatchUpTimer !== undefined
+          ? { setTimer: options.setNoticeCatchUpTimer }
+          : {}),
+        isVisible: () => visibility.visibilityState !== 'hidden',
+        onBecameVisible: (listener) => {
+          if (typeof visibility.addEventListener !== 'function') return () => {};
+          const onChange = (): void => {
+            if (visibility.visibilityState !== 'hidden') listener();
+          };
+          visibility.addEventListener('visibilitychange', onChange);
+          return () => visibility.removeEventListener?.('visibilitychange', onChange);
+        },
+      });
+    }
   }
   // A run held for approval, followed to its end so the page that was told
   // "held" shows what it did once the owner approves it anywhere. Route-
@@ -5654,11 +5712,16 @@ export const bootstrapWebclient = async (
       }
     })();
   };
-  const diagnosticClipboard = doc.defaultView?.navigator?.clipboard;
-  const serverUpdateDiagnosticWriter =
-    typeof diagnosticClipboard?.writeText === 'function'
-      ? (summary: string) => diagnosticClipboard.writeText(summary)
-      : undefined;
+  let serverUpdateDiagnosticWriter: ((summary: string) => Promise<void>) | undefined;
+  try {
+    const diagnosticClipboard = doc.defaultView?.navigator?.clipboard;
+    if (typeof diagnosticClipboard?.writeText === 'function') {
+      serverUpdateDiagnosticWriter = (summary) => diagnosticClipboard.writeText(summary);
+    }
+  } catch {
+    // Optional browser APIs can throw from property getters. Keep startup
+    // usable and leave the existing manual diagnostic copy available.
+  }
   if (options.enableConnectionIndicator !== false) {
     // Inject the announcer + banner styles once into <head> (marker-guarded so a
     // re-bootstrap on the same document doesn't stack them) — the same
@@ -6449,6 +6512,11 @@ export const bootstrapWebclient = async (
           // as the crash-halt recovery action.
           runRequestRestart: () =>
             rpcConn.call('server.requestRestart', { reason: 'webclient' }),
+          onOpenBackupRecovery: () => {
+            if (accountMenu?.close() === false) return false;
+            navigateHash('#settings/backup');
+            return true;
+          },
           onControlAvailabilityChange: (available) => {
             accountMenu?.setConnectionDiagnosisControlAvailability(
               bootProfileId,
@@ -6617,12 +6685,37 @@ export const bootstrapWebclient = async (
         return rpcConn.call('server.archive.export', args);
       };
   const archiveRemoteBackups: RemoteBackupsPorts | undefined = archiveBackupOff ? undefined : {
+    assertCurrentPair: assertArchivePair,
+    integrity: {
+      get: async () => {
+        await assertArchivePair(); const result = await rpcConn.call('server.archive.integrity.get', {}); await assertArchivePair(); return result;
+      },
+      save: async args => {
+        await assertArchivePair(); const result = await rpcConn.call('server.archive.integrity.save', args); await assertArchivePair(); return result;
+      },
+    },
     health: {
       get: async () => {
         await assertArchivePair(); const result = await rpcConn.call('server.archive.health.get', {}); await assertArchivePair(); return result;
       },
       save: async args => {
         await assertArchivePair(); const result = await rpcConn.call('server.archive.health.save', args); await assertArchivePair(); return result;
+      },
+    },
+    watchdog: {
+      get: async () => {
+        await assertArchivePair(); const result = await rpcConn.call('server.archive.watchdog.get', {}); await assertArchivePair(); return result;
+      },
+      save: async args => {
+        await assertArchivePair(); const result = await rpcConn.call('server.archive.watchdog.save', args); await assertArchivePair(); return result;
+      },
+      drill: {
+        start: async args => {
+          await assertArchivePair(); const result = await rpcConn.call('server.archive.watchdog.drill.start', args); await assertArchivePair(); return result;
+        },
+        update: async args => {
+          await assertArchivePair(); const result = await rpcConn.call('server.archive.watchdog.drill.update', args); await assertArchivePair(); return result;
+        },
       },
     },
     drills: {
@@ -8232,6 +8325,11 @@ export const bootstrapWebclient = async (
           delete: (args) => switchWorkTracker.track(
             (input: typeof args) => rpcConn.call('collection.mail.delete', input),
           )(args),
+          // Stopping waits for the mailbox's work in flight to wind down, so
+          // it gets the credential update's longer deadline.
+          resync: (args) => switchWorkTracker.track(
+            (input: typeof args) => rpcConn.call('collection.mail.resync', input, { timeout: 60_000 }),
+          )(args),
         };
   // Shared OAuth client-config caller — lane-agnostic (Mail + Calendar
   // sign-in). Forwarded INDEPENDENTLY of the per-lane enroll callers.
@@ -8263,8 +8361,10 @@ export const bootstrapWebclient = async (
           delete: (args) => switchWorkTracker.track(
             (input: typeof args) => rpcConn.call('collection.calendar.delete', input),
           )(args),
+          // Stopping waits for the calendar's work in flight to wind down, so
+          // it gets the credential update's longer deadline.
           resync: (args) => switchWorkTracker.track(
-            (input: typeof args) => rpcConn.call('collection.calendar.resync', input),
+            (input: typeof args) => rpcConn.call('collection.calendar.resync', input, { timeout: 60_000 }),
           )(args),
           reauth: (args) => switchWorkTracker.track(
             (input: typeof args) => rpcConn.call('collection.calendar.reauth', input),
@@ -9370,6 +9470,11 @@ export const bootstrapWebclient = async (
       options.enableSellerPage === false
         ? undefined
         : (args) => rpcConn.call('server.seller.transitionOfferState', args);
+  const sellerOfferCheckoutUrlCaller:
+    SellerOfferCheckoutUrlCaller | undefined =
+      options.enableSellerPage === false
+        ? undefined
+        : (args) => rpcConn.call('server.seller.setOfferCheckoutUrl', args);
   // D-196 §4.7 — the Seller sender chooser owns this caller independently
   // from Connections enrollment, so disabling that route cannot suppress the
   // seller's live send-capable mail choices.
@@ -9461,6 +9566,11 @@ export const bootstrapWebclient = async (
     : undefined;
   const updateRollbackCaller: UpdateRollbackCaller | undefined = updatesEnabled
     ? (args) => rpcConn.call('update.rollback', args)
+    : undefined;
+  // Updates reads the supervisor mode to say up front that a server nothing
+  // restarts installs from the terminal; the server refuses the apply anyway.
+  const serverLifecycleGetCaller = updatesEnabled
+    ? () => rpcConn.call('server.getLifecycleState', undefined)
     : undefined;
   const connectionsCredentialRotationServerUpdateTriageCaller:
     ConnectionsCredentialRotationServerUpdateTriageCaller | undefined =
@@ -12242,6 +12352,13 @@ export const bootstrapWebclient = async (
               ),
             }
           : {}),
+        ...(sellerOfferCheckoutUrlCaller !== undefined
+          ? {
+              sellerOfferCheckoutUrlCaller: switchWorkTracker.track(
+                sellerOfferCheckoutUrlCaller,
+              ),
+            }
+          : {}),
         ...(sellerMailListCaller !== undefined ? { sellerMailListCaller } : {}),
         ...(sellerSettingsUpdateCaller !== undefined
           ? {
@@ -12392,6 +12509,7 @@ export const bootstrapWebclient = async (
                 );
               },
               ...(updateModeGetCaller !== undefined ? { updateModeGetCaller } : {}),
+              ...(serverLifecycleGetCaller !== undefined ? { serverLifecycleGetCaller } : {}),
               ...(updateModeSetCaller !== undefined
                 ? {
                     updateModeSetCaller: switchWorkTracker.track(
@@ -14651,6 +14769,9 @@ export const bootstrapWebclient = async (
     ) return;
     actionReceiptFollow?.setConnected(true);
     void actionReceiptFollow?.reconcile();
+    // After the subscribe, like the receipts: a notice from now on arrives live,
+    // and one from before is in the history the catch-up reads.
+    noticeCatchUp?.setConnected(true);
     // Events missed while away may have been a followed run finishing.
     heldRunFollower.recheck();
   };
@@ -14698,6 +14819,7 @@ export const bootstrapWebclient = async (
     eventsSubscribeRetryDelayMs = eventsSubscribeRetryInitialMs;
     if (status !== 'connected') {
       actionReceiptFollow?.setConnected(false);
+      noticeCatchUp?.setConnected(false);
       return;
     }
     actionReceiptFollow?.prepareReconnect();
@@ -15077,6 +15199,7 @@ export const bootstrapWebclient = async (
       // clear its pending auto-dismiss timers before `detachBroadcast()`
       // stops feeding the subscriber.
       if (actionReceiptFollow !== null) actionReceiptFollow.dispose();
+      if (noticeCatchUp !== null) noticeCatchUp.dispose();
       heldRunFollower.dispose();
       if (notifyToasts !== null) notifyToasts.dispose();
       tokenRotation.dispose();

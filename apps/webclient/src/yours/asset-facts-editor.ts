@@ -11,7 +11,24 @@ export const mountAssetFactsEditor = (host: HTMLElement, own: Partial<Asset>, ch
     input.setAttribute('aria-label', title); input.dataset.yoursFocus = `asset-fact-${nextId++}`; input.addEventListener('input', changed); return input; };
   const choice = (parent: HTMLElement, title: string, values: string[], value: string) => { const label = node('label', parent, title); const input = node('select', label); input.setAttribute('aria-label', title);
     values.forEach(value => { const option = node('option', input, value); option.value = value; }); input.value = value; input.addEventListener('change', changed); return input; };
-  const button = (parent: HTMLElement, title: string, action: () => void) => { const input = node('button', parent, title); input.type = 'button'; input.addEventListener('click', () => { action(); changed(); }); return input; };
+  const rowFocus = new WeakMap<Element, HTMLElement>();
+  const removeRow = (row: HTMLElement, fallback: HTMLElement): HTMLElement => {
+    const rows = Array.from(row.parentElement?.children ?? []).filter(child => rowFocus.has(child));
+    const at = rows.indexOf(row); const neighbor = rows[at + 1] ?? rows[at - 1];
+    row.remove(); return (neighbor && rowFocus.get(neighbor)) || fallback;
+  };
+  const button = (parent: HTMLElement, title: string, action: () => HTMLElement) => {
+    const input = node('button', parent, title); input.type = 'button';
+    input.addEventListener('click', event => {
+      const active = doc.activeElement;
+      // Safari pointer clicks need not focus buttons. A real activation still
+      // owns its new row; a scripted click must respect focus held elsewhere.
+      const owned = active === input || event.isTrusted;
+      const target = action(); changed();
+      if (owned && target.isConnected && host.contains(target) && (doc.activeElement === active || doc.activeElement === doc.body)) target.focus();
+    });
+    return input;
+  };
   const maps: Array<() => AssetPatch> = [];
   for (const [key, title] of [['settings', 'Settings'], ['attributes', 'Attributes']] as const) {
     const root = section(title); const values = { ...own[key] }; const getters: Array<() => [string, unknown] | null> = [];
@@ -41,19 +58,25 @@ export const mountAssetFactsEditor = (host: HTMLElement, own: Partial<Asset>, ch
           return [next, kind.value === 'Number' ? Number(input.value) : kind.value === 'Boolean' ? input.value.toLowerCase() === 'true' : input.value];
         });
       }
-      button(row, `Remove ${key === 'settings' ? 'setting' : 'attribute'}`, () => { removed = true; row.remove(); });
+      const remove = button(row, `Remove ${key === 'settings' ? 'setting' : 'attribute'}`, () => { removed = true; return removeRow(row, addButton); });
+      rowFocus.set(row, nameField.disabled ? remove : nameField);
+      return nameField;
     };
-    Object.entries(values).filter(([name]) => key !== 'settings' || name !== 'nationality').forEach(([key, value]) => add(key, value)); button(root, key === 'settings' ? 'Add setting' : 'Add attribute', () => add());
+    Object.entries(values).filter(([name]) => key !== 'settings' || name !== 'nationality').forEach(([key, value]) => add(key, value));
+    const addButton = button(root, key === 'settings' ? 'Add setting' : 'Add attribute', () => add());
     maps.push(() => { const entries = getters.map(get => get()).filter((row): row is [string, unknown] => row !== null);
       if (new Set(entries.filter(([, value]) => value !== null).map(([key]) => key)).size !== entries.filter(([, value]) => value !== null).length) throw new Error(`Choose distinct ${title.toLowerCase()} field names`);
       return { [key]: { ...values, ...Object.fromEntries(entries) } }; });
   }
   const anchors = section('Anchors'); const anchorGetters: Array<() => AssetAnchor | null> = [];
+  const anchorAdds = new Map<AssetAnchor['kind'], HTMLButtonElement>();
   const addAnchor = (own?: AssetAnchor, kind: AssetAnchor['kind'] = own?.kind ?? 'place') => {
     const row = node('article', anchors); let removed = false; node('h3', row, kind === 'place' ? 'Place' : kind === 'identifier' ? 'Identifier' : 'Financial instrument');
+    let first: HTMLInputElement;
     if (kind === 'place') {
       const value = own?.kind === 'place' ? own : undefined;
       const name = field(row, 'Place name', value?.name); const address = field(row, 'Place address', value?.address);
+      first = name;
       const latitude = field(row, 'Latitude', value?.latitude === undefined ? '' : String(value.latitude), 'number'); latitude.step = 'any'; latitude.min = '-90'; latitude.max = '90';
       const longitude = field(row, 'Longitude', value?.longitude === undefined ? '' : String(value.longitude), 'number'); longitude.step = 'any'; longitude.min = '-180'; longitude.max = '180';
       node('small', row, 'No reminder needs an address or coordinates. AI apps you connect can read them exactly as entered.');
@@ -65,16 +88,19 @@ export const mountAssetFactsEditor = (host: HTMLElement, own: Partial<Asset>, ch
       });
     } else if (kind === 'identifier') {
       const value = own?.kind === kind ? own : undefined; const scheme = field(row, 'Identifier scheme', value?.scheme); const input = field(row, 'Identifier value', value?.value);
+      first = scheme;
       node('small', row, 'AI apps you connect can read this value exactly as entered.');
       anchorGetters.push(() => removed ? null : { kind, scheme: scheme.value.trim(), value: input.value.trim() });
     } else {
       const value = own?.kind === kind ? own : undefined; const identifier = field(row, 'Instrument identifier', value?.identifier); const quantity = field(row, 'Quantity (optional)', value?.quantity === undefined ? '' : String(value.quantity), 'number'); quantity.step = 'any';
+      first = identifier;
       anchorGetters.push(() => removed ? null : { kind, identifier: identifier.value.trim(), ...(quantity.value.trim() ? { quantity: Number(quantity.value) } : {}) });
     }
-    button(row, 'Remove anchor', () => { removed = true; row.remove(); });
+    button(row, 'Remove anchor', () => { removed = true; return removeRow(row, anchorAdds.get(kind)!); });
+    rowFocus.set(row, first); return first;
   };
   own.anchors?.forEach(anchor => addAnchor(anchor));
-  for (const [kind, title] of [['place', 'Add place'], ['identifier', 'Add identifier'], ['instrument', 'Add instrument']] as const) button(anchors, title, () => addAnchor(undefined, kind));
+  for (const [kind, title] of [['place', 'Add place'], ['identifier', 'Add identifier'], ['instrument', 'Add instrument']] as const) anchorAdds.set(kind, button(anchors, title, () => addAnchor(undefined, kind)));
   const values = section('Value history'); const valueGetters: Array<() => AssetValue | null> = [];
   node('p', values, 'Add an entry for a new valuation. Edit an old entry to correct it; the correction is recorded as yours.');
   const addValue = (own?: AssetValue) => {
@@ -89,9 +115,10 @@ export const mountAssetFactsEditor = (host: HTMLElement, own: Partial<Asset>, ch
       const unchanged = own && value.amount === own.amount && value.currency === own.currency && value.as_of === own.as_of && value.basis === own.basis;
       return { ...value, evidence: unchanged ? own.evidence : [] };
     });
-    button(row, 'Remove value', () => { removed = true; row.remove(); });
+    button(row, 'Remove value', () => { removed = true; return removeRow(row, addValueButton); });
+    rowFocus.set(row, amount); return amount;
   };
-  own.values?.forEach(value => addValue(value)); button(values, 'Add value', () => addValue());
+  own.values?.forEach(value => addValue(value)); const addValueButton = button(values, 'Add value', () => addValue());
   return { read(): AssetPatch { return { ...Object.assign({}, ...maps.map(get => get())), anchors: anchorGetters.map(get => get()).filter((row): row is AssetAnchor => row !== null),
     values: valueGetters.map(get => get()).filter((row): row is AssetValue => row !== null) }; } };
 };

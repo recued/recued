@@ -20,6 +20,7 @@ import type { PassportFetchRpcDeps } from '../passport/fetch-handler.js';
 import type { PassportUserRpcDeps } from '../passport/export-handler.js';
 import type { WsServerHandle } from '../ws-server.js';
 import type { ServerConfig } from '../server.js';
+import type { ServerPassportRecoveryBlock } from '@recued/contracts';
 
 export interface ClientSecurityContext {
   readonly clientTokens: ClientTokenStore | undefined;
@@ -53,6 +54,7 @@ export interface ComposeClientSecurityContextOptions {
    *  posture. Optional — when absent, `loadNetwork` falls back to the
    *  conservative `DEFAULT_EXPOSURE_STATE`. */
   readonly getExposureMachine?: () => ExposureStateMachine | undefined;
+  readonly getBackupRecovery?: () => ServerPassportRecoveryBlock;
   readonly env?: NodeJS.ProcessEnv;
 }
 
@@ -68,6 +70,7 @@ export const composeClientSecurityContext = async (
     pairedInstances,
     getWsHandleForLockout,
     getExposureMachine,
+    getBackupRecovery,
     env,
   } = options;
 
@@ -104,6 +107,7 @@ export const composeClientSecurityContext = async (
     auditLog,
     getExposureMachine,
     pairedInstances,
+    ...(getBackupRecovery ? { getBackupRecovery } : {}),
   });
 
   return {

@@ -1,10 +1,11 @@
+import { HARNESS_ORIGIN } from './helpers/harness-origin.js';
 import {openAccountActions} from './customer-work-driver.js';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect,test,type Page } from '@playwright/test';
 import type {} from './harness/customer-accounts-harness.js';
 
-const BASE = `${process.env.E2E_CUSTOMER_ACCOUNTS_HARNESS_URL ?? 'http://127.0.0.1:4319'}/customer-accounts-harness.html`;
+const BASE = `${process.env.E2E_CUSTOMER_ACCOUNTS_HARNESS_URL ?? HARNESS_ORIGIN}/customer-accounts-harness.html`;
 const panel = (page: Page) => page.locator('[data-customer-accounts]:visible');
 const editor = (page: Page) => panel(page).getByRole('form',{ name: 'Edit customer account' });
 const view = (page: Page) => panel(page).locator('[data-customer-account-statement]:visible');

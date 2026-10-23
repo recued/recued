@@ -24,6 +24,8 @@ import {
   LEARNING_PANEL_DRAFT_ERROR_ATTR,
   LEARNING_PANEL_DRAFT_PROMPT_ATTR,
   LEARNING_PANEL_ERROR_ATTR,
+  LEARNING_PANEL_RETRY_ATTR,
+  LEARNING_PANEL_READ_STATUS_ATTR,
   LEARNING_PANEL_FORGET_ATTR,
   LEARNING_PANEL_FORGET_ERROR_ATTR,
   LEARNING_PANEL_HOST_ATTR,
@@ -353,6 +355,169 @@ const mountWithCases = (opts: {
   });
   return { host, doc, panel, runCasesList, runCaseForget };
 };
+
+describe('Settings → Learning — retry the initial settings read', () => {
+  const deferred = <T,>() => {
+    let resolve!: (value: T) => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+    return { promise, resolve, reject };
+  };
+  const mountReads = (cases?: () => Promise<{ cases: ExecutionCaseLearnedEntry[] }>) => {
+    const host = makeFakeElement('div'), doc = makeFakeDocument();
+    const reads: Array<ReturnType<typeof deferred<{ prefs: InstancePrefs }>>> = [];
+    const runPrefsGet = vi.fn(() => {
+      const read = deferred<{ prefs: InstancePrefs }>(); reads.push(read); return read.promise;
+    });
+    const runCasesList = vi.fn(cases ?? (async () => ({ cases: [learned()] })));
+    const runPrefsSet = vi.fn(async () => ({ prefs: prefs() }));
+    const runCaseForget = vi.fn(async () => ({ removed: true, cases_remaining: 0 }));
+    const runDraftRecipe = vi.fn(async () => ({ ok: true, recipe: {}, issues: [] }));
+    const onDraftReady = vi.fn(() => true);
+    const panel = mountLearningPanel({ host: host as unknown as HTMLElement,
+      document: doc as unknown as Document, runPrefsGet, runPrefsSet,
+      runCasesList, runCaseForget, runDraftRecipe, onDraftReady });
+    return { host, doc, panel, reads, runPrefsGet, runPrefsSet, runCasesList,
+      runCaseForget, runDraftRecipe, onDraftReady };
+  };
+  const readOnly = (h: ReturnType<typeof mountReads>) => {
+    for (const call of [h.runPrefsSet, h.runCaseForget, h.runDraftRecipe, h.onDraftReady]) {
+      expect(call).not.toHaveBeenCalled();
+    }
+    expect(h.panel.hasInFlightWork()).toBe(false);
+    expect(h.panel.hasUnsavedChanges()).toBe(false);
+  };
+
+  it('retries repeated failures in place and adopts the recovered authoritative preference', async () => {
+    const h = mountReads();
+    expect(h.reads).toHaveLength(1);
+    expect(findByAttr(h.host, LEARNING_PANEL_RETRY_ATTR)).toBeNull();
+    expect(h.runCasesList).not.toHaveBeenCalled();
+    readOnly(h);
+    const initial = h.panel.whenLoaded();
+    h.reads[0]!.reject(new Error('Temporary settings failure'));
+    await initial;
+    const retry = findByAttr(h.host, LEARNING_PANEL_RETRY_ATTR)!;
+    expect(retry).not.toBeNull();
+    expect(textOf(h.host)).toContain('could not load these settings');
+    retry.focus(); retry.dispatchClick();
+    const second = h.panel.whenLoaded();
+    expect(second).not.toBe(initial);
+    expect(findByAttr(h.host, LEARNING_PANEL_RETRY_ATTR)).toBe(retry);
+    expect(h.doc.activeElement).toBe(retry);
+    expect(retry.disabled).toBe(false);
+    expect(retry.getAttribute('aria-disabled')).toBe('true');
+    expect(retry.getAttribute('aria-busy')).toBe('true');
+    expect(textOf(h.host)).toContain('Retrying Learning settings…');
+    expect(findByAttr(h.host, LEARNING_PANEL_ERROR_ATTR)).toBeNull();
+    retry.dispatchClick(); retry.dispatchClick();
+    expect(h.reads).toHaveLength(2);
+    expect(h.panel.whenLoaded()).toBe(second);
+    readOnly(h);
+    h.reads[1]!.reject(new Error('Still unavailable'));
+    await second;
+    expect(findByAttr(h.host, LEARNING_PANEL_RETRY_ATTR)).toBe(retry);
+    expect(h.doc.activeElement).toBe(retry);
+    expect(retry.getAttribute('aria-disabled')).toBe('false');
+    expect(retry.getAttribute('aria-busy')).toBe('false');
+    expect(findByAttr(h.host, LEARNING_PANEL_READ_STATUS_ATTR)?.getAttribute('role')).toBe('alert');
+    expect(h.runCasesList).not.toHaveBeenCalled();
+    retry.dispatchClick();
+    h.reads[2]!.resolve({ prefs: prefs({ 'chat.execution_case_offer': false }) });
+    await h.panel.whenLoaded();
+    expect(h.panel.getState().phase).toBe('ready');
+    const toggle = findByAttr(h.host, LEARNING_PANEL_TOGGLE_ATTR)!;
+    expect(toggle.checked).toBe(false);
+    expect(h.doc.activeElement).toBe(toggle);
+    expect(findByAttr(h.host, LEARNING_PANEL_RETRY_ATTR)).toBeNull();
+    expect(findByAttr(h.host, LEARNING_PANEL_READ_STATUS_ATTR)).toBeNull();
+    expect(h.runCasesList).toHaveBeenCalledTimes(1);
+    retry.dispatchClick();
+    expect(h.reads).toHaveLength(3);
+    readOnly(h);
+  });
+
+  it('waits for the recovered history read and keeps its failure separate from settings', async () => {
+    const history = deferred<{ cases: ExecutionCaseLearnedEntry[] }>();
+    const h = mountReads(() => history.promise);
+    h.reads[0]!.reject(new Error('Settings unavailable'));
+    await h.panel.whenLoaded();
+    const retry = findByAttr(h.host, LEARNING_PANEL_RETRY_ATTR)!;
+    expect(retry).not.toBeNull(); retry.focus(); retry.dispatchClick();
+    let loaded = false;
+    const load = h.panel.whenLoaded().then(() => { loaded = true; });
+    h.reads[1]!.resolve({ prefs: prefs() });
+    await Promise.resolve();
+    expect(h.panel.getState().phase).toBe('ready');
+    expect(h.runCasesList).toHaveBeenCalledTimes(1);
+    expect(loaded).toBe(false);
+    expect(findByAttr(h.host, LEARNING_PANEL_TOGGLE_ATTR)).not.toBeNull();
+    expect(findByAttr(h.host, LEARNING_PANEL_CASES_EMPTY_ATTR)).toBeNull();
+    retry.dispatchClick(); expect(h.reads).toHaveLength(2);
+    readOnly(h);
+    history.reject(new Error('History unavailable'));
+    await load;
+    expect(loaded).toBe(true);
+    expect(h.panel.getState().phase).toBe('ready');
+    expect(findByAttr(h.host, LEARNING_PANEL_ERROR_ATTR)).toBeNull();
+    expect(findByAttr(h.host, LEARNING_PANEL_CASES_ERROR_ATTR)).not.toBeNull();
+    expect(findByAttr(h.host, LEARNING_PANEL_CASES_EMPTY_ATTR)).toBeNull();
+    expect(h.doc.activeElement).toBe(findByAttr(h.host, LEARNING_PANEL_TOGGLE_ATTR));
+    readOnly(h);
+  });
+
+  it('recovers from a synchronous caller failure without wiring learned history', async () => {
+    const get = vi.fn<() => Promise<{ prefs: InstancePrefs }>>()
+      .mockImplementationOnce(() => { throw new Error('Not connected'); })
+      .mockResolvedValue({ prefs: prefs() });
+    const h = mount({ get });
+    await h.panel.whenLoaded();
+    const retry = findByAttr(h.host, LEARNING_PANEL_RETRY_ATTR)!;
+    expect(retry).not.toBeNull(); retry.focus(); retry.dispatchClick();
+    await h.panel.whenLoaded();
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(h.panel.getState().phase).toBe('ready');
+    expect(h.doc.activeElement).toBe(findByAttr(h.host, LEARNING_PANEL_TOGGLE_ATTR));
+    expect(findByAttr(h.host, LEARNING_PANEL_CASES_ATTR)).toBeNull();
+    expect(h.runPrefsSet).not.toHaveBeenCalled();
+  });
+
+  for (const outcome of ['success', 'error'] as const) {
+    it(`keeps outside focus when a settings retry ends in ${outcome}`, async () => {
+      const h = mountReads();
+      h.reads[0]!.reject(new Error('Settings unavailable')); await h.panel.whenLoaded();
+      const retry = findByAttr(h.host, LEARNING_PANEL_RETRY_ATTR)!;
+      expect(retry).not.toBeNull(); retry.focus(); retry.dispatchClick();
+      const outside = h.doc.createElement('button'); outside.focus();
+      if (outcome === 'success') h.reads[1]!.resolve({ prefs: prefs() });
+      else h.reads[1]!.reject(new Error('Still unavailable'));
+      await h.panel.whenLoaded();
+      expect(h.doc.activeElement).toBe(outside); readOnly(h);
+    });
+
+    for (const retried of [false, true]) {
+      it(`ignores disposed ${retried ? 'retry' : 'initial'} settings ${outcome}`, async () => {
+        const h = mountReads();
+        let retry: FakeElement | null = null;
+        if (retried) {
+          h.reads[0]!.reject(new Error('Settings unavailable')); await h.panel.whenLoaded();
+          retry = findByAttr(h.host, LEARNING_PANEL_RETRY_ATTR)!;
+          expect(retry).not.toBeNull(); retry.dispatchClick();
+        }
+        const current = h.reads.at(-1)!; const state = h.panel.getState();
+        h.panel.dispose(); retry?.dispatchClick();
+        if (outcome === 'success') current.resolve({ prefs: prefs() });
+        else current.reject(new Error('Late failure'));
+        await h.panel.whenLoaded();
+        expect(h.panel.getState()).toBe(state);
+        expect(h.host.children).toHaveLength(0);
+        expect(h.host.hasAttribute(LEARNING_PANEL_HOST_ATTR)).toBe(false);
+        expect(h.reads).toHaveLength(retried ? 2 : 1);
+        expect(h.runCasesList).not.toHaveBeenCalled(); readOnly(h);
+      });
+    }
+  }
+});
 
 describe('Settings → Learning — what Recued has learned', () => {
   it('is absent entirely when the list caller is unwired', async () => {
@@ -1109,5 +1274,146 @@ describe('D-219 — a paid draft survives the owner navigating away', () => {
     release!({ ok: false, issues: ['nope'], reason: 'invalid_recipe' });
     await h.panel.whenDraftSettled();
     expect(h.onDraftReady).not.toHaveBeenCalled();
+  });
+});
+
+// A history retry reads only the failed list, without remounting the controls.
+describe('Learning history read recovery', () => {
+  const retryAttr = 'data-recued-learning-cases-retry';
+  const statusAttr = 'data-recued-learning-cases-read-status';
+  const setup = (list: () => Promise<{ cases: ExecutionCaseLearnedEntry[] }>, save?: (args: { patch: Partial<InstancePrefs> }) => Promise<{ prefs: InstancePrefs }>) => {
+    const host = makeFakeElement('div'), doc = makeFakeDocument();
+    const get = vi.fn(async () => ({ prefs: prefs() }));
+    const set = vi.fn(save ?? (async (args: { patch: Partial<InstancePrefs> }) => ({ prefs: prefs(args.patch) })));
+    const forget = vi.fn(async () => ({ removed: true, cases_remaining: 0 }));
+    const draft = vi.fn<LearningDraftRecipeCaller>(async () => ({ ok: true, recipe: { recipe_id: 'finished-fixture' }, issues: [] }));
+    const handoff = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
+    const panel = mountLearningPanel({ host: host as unknown as HTMLElement, document: doc as unknown as Document,
+      runPrefsGet: get, runPrefsSet: set, runCasesList: list, runCaseForget: forget,
+      runDraftRecipe: draft, onDraftReady: handoff, draftConfirmation: CONFIRMATION });
+    const retry = () => {
+      const button = findByAttr(host, retryAttr);
+      expect(button, 'A failed learned-history read needs an in-place Retry').not.toBeNull();
+      return button!;
+    };
+    return { host, doc, panel, get, set, forget, draft, handoff, retry };
+  };
+
+  it.each(['empty', 'populated'] as const)('recovers a %s list after repeated failures while keeping the toggle and Retry usable', async result => {
+    let fail!: (error: Error) => void;
+    const list = vi.fn<() => Promise<{ cases: ExecutionCaseLearnedEntry[] }>>()
+      .mockRejectedValueOnce(new Error('Initial history unavailable'))
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }))
+      .mockResolvedValue({ cases: result === 'empty' ? [] : [learned()] });
+    const h = setup(list); await h.panel.whenLoaded();
+    const toggle = findByAttr(h.host, LEARNING_PANEL_TOGGLE_ATTR)!;
+    const retry = h.retry(); retry.focus(); retry.dispatchClick(); retry.dispatchClick();
+    expect(list).toHaveBeenCalledTimes(2); expect(h.panel.hasInFlightWork()).toBe(false);
+    expect(h.retry()).toBe(retry); expect(h.doc.activeElement).toBe(retry);
+    expect(retry.getAttribute('aria-disabled')).toBe('true'); expect(retry.getAttribute('aria-busy')).toBe('true');
+    expect(findByAttr(h.host, LEARNING_PANEL_CASES_EMPTY_ATTR)).toBeNull();
+    fail(new Error('History retry unavailable')); await h.panel.whenLoaded();
+    expect(h.retry()).toBe(retry); expect(retry.getAttribute('aria-disabled')).toBe('false');
+    expect(h.doc.activeElement).toBe(retry); expect(findByAttr(h.host, statusAttr)?.getAttribute('role')).toBe('alert');
+    retry.dispatchClick(); await h.panel.whenLoaded();
+    expect(h.panel.getState().casesError).toBeNull(); expect(h.get).toHaveBeenCalledTimes(1);
+    expect(findByAttr(h.host, LEARNING_PANEL_TOGGLE_ATTR)).toBe(toggle);
+    expect(h.doc.activeElement).toBe(findByAttr(h.host, result === 'empty' ? LEARNING_PANEL_CASES_EMPTY_ATTR : LEARNING_PANEL_CASES_ATTR));
+    retry.dispatchClick(); expect(list).toHaveBeenCalledTimes(3);
+    for (const port of [h.set, h.forget, h.draft, h.handoff]) expect(port).not.toHaveBeenCalled();
+    h.panel.dispose();
+  });
+
+  it.each([true, false])('keeps a preference write truthful while the retry settles (read first: %s)', async readFirst => {
+    let finish!: (value: { cases: ExecutionCaseLearnedEntry[] }) => void, failSave!: (error: Error) => void;
+    const list = vi.fn<() => Promise<{ cases: ExecutionCaseLearnedEntry[] }>>()
+      .mockRejectedValueOnce(new Error('History unavailable'))
+      .mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const h = setup(list, () => new Promise((_resolve, reject) => { failSave = reject; })); await h.panel.whenLoaded();
+    h.retry().dispatchClick(); let toggle = findByAttr(h.host, LEARNING_PANEL_TOGGLE_ATTR)!;
+    toggle.focus(); toggle.checked = false; toggle.dispatchChange();
+    toggle = findByAttr(h.host, LEARNING_PANEL_TOGGLE_ATTR)!;
+    if (readFirst) {
+      finish({ cases: [learned()] }); await h.panel.whenLoaded();
+      expect(findByAttr(h.host, LEARNING_PANEL_TOGGLE_ATTR)).toBe(toggle);
+      expect(toggle.checked).toBe(false); expect(toggle.getAttribute('aria-busy')).toBe('true');
+      expect(h.doc.activeElement).toBe(toggle);
+    }
+    failSave(new Error('Preference write unavailable')); await h.panel.whenSaveSettled();
+    toggle = findByAttr(h.host, LEARNING_PANEL_TOGGLE_ATTR)!;
+    if (!readFirst) { finish({ cases: [learned()] }); await h.panel.whenLoaded(); }
+    expect(findByAttr(h.host, LEARNING_PANEL_TOGGLE_ATTR)).toBe(toggle);
+    expect(toggle.checked).toBe(true); expect(h.doc.activeElement).toBe(toggle);
+    expect(h.get).toHaveBeenCalledTimes(1); expect(h.set).toHaveBeenCalledTimes(1); expect(list).toHaveBeenCalledTimes(2);
+    expect(h.panel.hasInFlightWork()).toBe(false); h.panel.dispose();
+  });
+
+  it('keeps a separate preference write visible to the leave guard while handing off a finished draft', async () => {
+    let finishSave!: (value: { prefs: InstancePrefs }) => void;
+    const h = setup(async () => ({ cases: [learned()] }), () => new Promise(resolve => { finishSave = resolve; }));
+    await h.panel.whenLoaded();
+    findByAttr(h.host, LEARNING_PANEL_DRAFT_ATTR)!.dispatchClick(); findByAttr(h.host, LEARNING_PANEL_DRAFT_ATTR)!.dispatchClick();
+    await h.panel.whenDraftSettled(); expect(h.panel.hasUnsavedChanges()).toBe(true);
+    const toggle = findByAttr(h.host, LEARNING_PANEL_TOGGLE_ATTR)!;
+    toggle.checked = false; toggle.dispatchChange(); expect(h.panel.hasInFlightWork()).toBe(true);
+    const guards: Array<{ work: boolean; unsaved: boolean }> = [];
+    h.handoff.mockImplementation(() => { guards.push({ work: h.panel.hasInFlightWork(), unsaved: h.panel.hasUnsavedChanges() }); return true; });
+    findByAttr(h.host, LEARNING_PANEL_DRAFT_ATTR)!.dispatchClick();
+    expect(guards).toEqual([{ work: true, unsaved: false }]);
+    expect(h.panel.hasInFlightWork()).toBe(true); expect(h.panel.hasUnsavedChanges()).toBe(false);
+    expect(h.draft).toHaveBeenCalledTimes(1); expect(h.set).toHaveBeenCalledTimes(1);
+    finishSave({ prefs: prefs({ 'chat.execution_case_offer': false }) }); await h.panel.whenSaveSettled();
+    expect(h.panel.hasInFlightWork()).toBe(false); h.panel.dispose();
+  });
+
+  it('keeps another finished draft visible to the leave guard during a handoff', async () => {
+    const a = learned(), b = learned({ case_id: 'case_two', request: ['another request'] });
+    const h = setup(async () => ({ cases: [a, b] })); h.handoff.mockReturnValue(false); await h.panel.whenLoaded();
+    const action = (id: string) => findAllByAttr(h.host, LEARNING_PANEL_DRAFT_ATTR).find(node => node.getAttribute(LEARNING_PANEL_DRAFT_ATTR) === id)!;
+    for (const entry of [a, b]) { action(entry.case_id).dispatchClick(); action(entry.case_id).dispatchClick(); await h.panel.whenDraftSettled(); }
+    expect(h.panel.hasUnsavedChanges()).toBe(true);
+    const guards: Array<{ work: boolean; unsaved: boolean }> = [];
+    h.handoff.mockImplementation(() => { guards.push({ work: h.panel.hasInFlightWork(), unsaved: h.panel.hasUnsavedChanges() }); return true; });
+    action(a.case_id).dispatchClick(); expect(h.panel.hasUnsavedChanges()).toBe(true);
+    action(b.case_id).dispatchClick(); expect(h.panel.hasUnsavedChanges()).toBe(false);
+    expect(guards).toEqual([{ work: false, unsaved: true }, { work: false, unsaved: false }]);
+    expect(h.draft).toHaveBeenCalledTimes(2); expect(h.handoff).toHaveBeenCalledTimes(4);
+    expect(h.set).not.toHaveBeenCalled(); expect(h.forget).not.toHaveBeenCalled(); h.panel.dispose();
+  });
+
+  it.each(['success', 'failure'] as const)('ignores a disposed %s retry reply and detached Retry activations', async outcome => {
+    let resolve!: (value: { cases: ExecutionCaseLearnedEntry[] }) => void, reject!: (error: Error) => void;
+    const list = vi.fn<() => Promise<{ cases: ExecutionCaseLearnedEntry[] }>>()
+      .mockRejectedValueOnce(new Error('History unavailable'))
+      .mockImplementationOnce(() => new Promise((done, fail) => { resolve = done; reject = fail; }));
+    const h = setup(list); await h.panel.whenLoaded(); const retry = h.retry(); retry.dispatchClick(); const reading = h.panel.whenLoaded();
+    h.panel.dispose(); retry.dispatchClick();
+    if (outcome === 'success') resolve({ cases: [learned()] }); else reject(new Error('Late history failure'));
+    await reading; expect(h.host.children).toHaveLength(0); expect(list).toHaveBeenCalledTimes(2);
+    expect(h.host.hasAttribute(LEARNING_PANEL_HOST_ATTR)).toBe(false);
+    for (const port of [h.set, h.forget, h.draft, h.handoff]) expect(port).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])('keeps a finished draft through failed history and recovery (case retained: %s)', async retainedCase => {
+    const a = learned(), b = learned({ case_id: 'case_two', request: ['another request'] });
+    let finish!: (value: { cases: ExecutionCaseLearnedEntry[] }) => void;
+    const list = vi.fn<() => Promise<{ cases: ExecutionCaseLearnedEntry[] }>>()
+      .mockResolvedValueOnce({ cases: [a, b] }).mockRejectedValueOnce(new Error('History unavailable'))
+      .mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const h = setup(list); await h.panel.whenLoaded();
+    const action = (attribute: string, caseId: string) => findAllByAttr(h.host, attribute).find(node => node.getAttribute(attribute) === caseId)!;
+    action(LEARNING_PANEL_DRAFT_ATTR, a.case_id).dispatchClick(); action(LEARNING_PANEL_DRAFT_ATTR, a.case_id).dispatchClick(); await h.panel.whenDraftSettled();
+    expect(h.panel.hasUnsavedChanges()).toBe(true); expect(h.draft).toHaveBeenCalledTimes(1);
+    action(LEARNING_PANEL_FORGET_ATTR, b.case_id).dispatchClick(); action(LEARNING_PANEL_FORGET_ATTR, b.case_id).dispatchClick(); await h.panel.whenForgetSettled();
+    expect(textOf(action(LEARNING_PANEL_DRAFT_ATTR, a.case_id))).toContain('Open finished draft');
+    h.retry().dispatchClick(); expect(h.panel.hasUnsavedChanges()).toBe(true);
+    finish({ cases: retainedCase ? [a] : [] }); await h.panel.whenLoaded();
+    expect(textOf(h.host)).toContain(a.request[0]);
+    const open = action(LEARNING_PANEL_DRAFT_ATTR, a.case_id); expect(textOf(open)).toContain('Open finished draft');
+    expect(h.handoff).toHaveBeenCalledTimes(1); open.dispatchClick();
+    expect(h.handoff).toHaveBeenCalledTimes(2); expect(h.handoff.mock.calls[1]![0]).toEqual(h.handoff.mock.calls[0]![0]);
+    expect(h.draft).toHaveBeenCalledTimes(1); expect(h.forget).toHaveBeenCalledExactlyOnceWith({ case_id: b.case_id });
+    expect(h.get).toHaveBeenCalledTimes(1); expect(h.set).not.toHaveBeenCalled(); expect(h.panel.hasUnsavedChanges()).toBe(false);
+    h.panel.dispose();
   });
 });

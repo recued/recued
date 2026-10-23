@@ -1,5 +1,5 @@
 import {
-  RECORDS_MAX_PREDICATES, parseRecordsViewSettings,
+  RECORDS_MAX_PREDICATES, parseRecordsViewSettings, recordFieldLabel,
   type RecordsEntitySnapshot, type RecordsFieldSnapshot, type RecordsViewSettings,
 } from '@recued/contracts';
 import { e } from '@recued/ui-shared';
@@ -30,6 +30,8 @@ export const recordsViewHasDraft = (state: RecordsBrowseState): boolean =>
 
 const ordered = (field: RecordsFieldSnapshot): boolean =>
   ['number', 'decimal', 'date', 'datetime', 'boolean'].includes(field.kind);
+export const recordsFieldLabel = (field: RecordsFieldSnapshot): string =>
+  field.label ?? (field.key === 'id' ? 'Record ID' : recordFieldLabel(field.key));
 export const recordsFilterOperators = (field: RecordsFieldSnapshot): string[] => [
   ...(field.kind === 'text' || field.kind === 'id' ? [] : ['eq', 'ne', 'in']),
   ...(ordered(field) && field.kind !== 'boolean' ? ['lt', 'lte', 'gt', 'gte'] : []),
@@ -40,7 +42,7 @@ export const recordsSortFields = (entity: RecordsEntitySnapshot): Array<{ key: s
   { key: 'id', label: 'Record ID' },
   { key: '_record.created_at', label: 'Created' },
   { key: '_record.updated_at', label: 'Updated' },
-  ...entity.fields.filter(ordered).map(field => ({ key: field.key, label: field.label ?? field.key })),
+  ...entity.fields.filter(ordered).map(field => ({ key: field.key, label: recordsFieldLabel(field) })),
 ];
 
 const filterValue = (field: RecordsFieldSnapshot, value: unknown): string | number | boolean | null => {
@@ -98,6 +100,26 @@ const operatorLabels: Record<string, string> = {
 const option = (value: string, label: string, selected: string): string =>
   `<option value="${e(value)}"${selected === value ? ' selected' : ''}>${e(label)}</option>`;
 
+/** Describe the query that was applied, independently of unfinished edits. */
+const renderAppliedView = (view: RecordsViewSettings, entity: RecordsEntitySnapshot): string => {
+  const filters = Object.entries(view.filters ?? {}).map(([key, filter]) => {
+    const field = entity.fields.find(field => field.key === key);
+    const label = field ? recordsFieldLabel(field) : `${recordFieldLabel(key)} (unavailable)`;
+    const op = filter.op === 'is_null' && !filter.value ? 'is_not_null' : filter.op;
+    const value = filter.op === 'is_null' ? '' : ` ${JSON.stringify(filter.value)}`;
+    return `<li><strong>${e(label)}</strong> ${e(operatorLabels[op]!.toLowerCase())}${e(value)}</li>`;
+  });
+  const sort = view.sort ?? 'id';
+  const sortKey = sort.startsWith('-') ? sort.slice(1) : sort;
+  const sortLabel = recordsSortFields(entity).find(field => field.key === sortKey)?.label
+    ?? `${recordFieldLabel(sortKey)} (unavailable)`;
+  return `<section class="records-applied-view" data-records-applied-view aria-label="Applied filters and sorting">
+    <p><strong>Applied filters:</strong>${filters.length ? ' match all' : ' none'}</p>
+    ${filters.length ? `<ul class="records-applied-filters">${filters.join('')}</ul>` : ''}
+    <p>Sort: ${e(sortLabel)} — ${sort.startsWith('-') ? 'descending' : 'ascending'}</p>
+  </section>`;
+};
+
 export const renderRecordsViewControls = (state: RecordsBrowseState, entity: RecordsEntitySnapshot, loading: boolean): string => {
   const fields = entity.fields.filter(field => field.kind !== 'id');
   const disabled = loading ? ' disabled' : '';
@@ -115,7 +137,7 @@ export const renderRecordsViewControls = (state: RecordsBrowseState, entity: Rec
       return `<div class="records-filter-row">
         <label>Field<select data-action="records-filter-field" ${rowAttr} aria-label="Filter ${index + 1} field"${disabled}>
           ${field ? '' : option(row.field, `${row.field} (unavailable)`, row.field)}
-          ${fields.map(field => option(field.key, field.label ?? field.key, row.field)).join('')}</select></label>
+          ${fields.map(field => option(field.key, recordsFieldLabel(field), row.field)).join('')}</select></label>
         <label>Condition<select data-action="records-filter-op" ${rowAttr} aria-label="Filter ${index + 1} condition"${disabled}>
           ${operators.includes(row.op) ? '' : option(row.op, `${row.op} (unavailable)`, row.op)}
           ${operators.map(op => option(op, operatorLabels[op]!, row.op)).join('')}</select></label>
@@ -134,5 +156,5 @@ export const renderRecordsViewControls = (state: RecordsBrowseState, entity: Rec
       <button type="button" data-action="records-reset-view"${loading ? ' aria-disabled="true"' : ''}>Reset filters and sorting</button>
     </div>
     <p class="records-help" data-records-draft-status role="status"${recordsViewHasDraft(state) ? '' : ' hidden'}>Unapplied changes. Apply filters and sorting before saving this view.</p>
-  </form>`;
+  </form>${renderAppliedView(state.view, entity)}`;
 };

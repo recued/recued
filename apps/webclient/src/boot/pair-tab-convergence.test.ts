@@ -124,6 +124,43 @@ const makeBrowser = (withBroadcast = true) => {
 };
 
 describe('pair-tab convergence signal', () => {
+  it.each(['navigator', 'locks', 'request'] as const)(
+    'keeps reconciliation but declines successor election when Web Locks access throws at %s', async blocked => {
+      const browser = makeBrowser();
+      const denied = (): never => { throw new Error('private browser policy detail'); };
+      const locks = Object.defineProperty({}, 'request', { get: denied });
+      const navigator = blocked === 'locks'
+        ? Object.defineProperty({}, 'locks', { get: denied }) : { locks };
+      Object.defineProperty(browser.view, 'navigator',
+        blocked === 'navigator' ? { get: denied } : { value: navigator });
+      const convergence = createBrowserPairTabConvergence({ document: browser.document })!;
+      try {
+        expect(convergence.supportsImmediateSignals).toBe(true);
+        expect(convergence.supportsRecoverySuccessorElection).toBe(false);
+        await expect(convergence.claimPairRecoverySuccessor()).resolves.toBeNull();
+        const listener = vi.fn();
+        convergence.subscribe(listener);
+        browser.focus();
+        expect(listener).toHaveBeenCalledWith('reconcile');
+      } finally { convergence.close(); }
+    },
+  );
+
+  it('declines successor election when an available lock refuses acquisition', async () => {
+    const browser = makeBrowser();
+    const request = vi.fn<PairRecoverySuccessorLockProvider['request']>(
+      () => Promise.reject(new Error('lock request denied')),
+    );
+    const convergence = createBrowserPairTabConvergence({
+      document: browser.document, recoverySuccessorLockProvider: { request },
+    })!;
+    try {
+      expect(convergence.supportsRecoverySuccessorElection).toBe(true);
+      await expect(convergence.claimPairRecoverySuccessor()).resolves.toBeNull();
+      expect(request).toHaveBeenCalledTimes(1);
+    } finally { convergence.close(); }
+  });
+
   it('broadcasts only credential-free pair/state hints and filters messages', () => {
     FakeBroadcastChannel.latest = null;
     const browser = makeBrowser();

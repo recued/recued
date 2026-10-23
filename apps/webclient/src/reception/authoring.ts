@@ -1082,6 +1082,8 @@ export const INTAKE_FORM_CONFIG_ERROR_COPY: Readonly<
   field_enum_values_empty: 'A choice box has no choices. Add at least one.',
   field_enum_values_too_many: 'A choice box has too many choices.',
   field_enum_value_too_long: 'One choice is empty, or too long.',
+  field_enum_value_labels_invalid: 'Recued could not read the text of the choices in a choice box. Load the page again and try once more.',
+  field_enum_choice_text_duplicate: 'Two choices in one choice box read the same. Give each its own text.',
   user_only_field_unknown: 'Recued could not read one of your own box names.',
   user_only_field_overlaps_visible: 'One of your own boxes has the same name as a box visitors see. They have to be different.',
   submission_processing_rule_invalid: 'Recued could not read that rule. Load the page again and try once more.',
@@ -1297,6 +1299,9 @@ export interface IntakeFormFieldRow {
   readonly label: string;
   readonly required: boolean;
   readonly values: ReadonlyArray<string>;
+  /** A choice box's text per value, as a template ships it. The choices cell
+   *  shows it and an edit there keeps it (`authoring-mount.ts`). */
+  readonly value_labels?: Readonly<Record<string, string>>;
 }
 
 const buildFieldNameOptions = (
@@ -1437,6 +1442,12 @@ export const buildIntakeFormFormModel = (
         // on a non-enum field, which the endpoint validator never inspects;
         // the row renderer joins this, so it must be an array.
         values: Array.isArray(f.values) ? f.values : [],
+        // ⛔ Carried, or a template's choice text would be dropped the first
+        // time an owner opened its form: the saved config is rebuilt from
+        // these rows.
+        ...(f.value_labels !== null && typeof f.value_labels === 'object' && !Array.isArray(f.value_labels)
+          ? { value_labels: f.value_labels }
+          : {}),
       })),
       min_rows: 1,
       max_rows: INTAKE_FORM_FIELDS_COUNT_MAX,

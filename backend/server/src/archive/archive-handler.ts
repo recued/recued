@@ -40,6 +40,8 @@ import { archiveImportOperationId } from './archive-import-receipts.js';
 import { ArchiveRestoreCleanupError } from './archive-restore.js';
 import type { RemoteBackups } from './remote-backups.js';
 import type { BackupHealth } from './backup-health.js';
+import type { BackupIntegrity } from './backup-integrity.js';
+import type { BackupWatchdog } from './backup-watchdog.js';
 import type { RestoreDrills } from './restore-drills.js';
 import type { ArchiveBackupCapability, UnattendedBackups, ArchiveOperationGate } from './unattended-backups.js';
 import type { ClientKind } from '../pairing/client-tokens.js';
@@ -161,6 +163,8 @@ export interface ArchiveRpcDeps {
   unattendedBackups?: UnattendedBackups;
   restoreDrills?: RestoreDrills;
   backupHealth?: BackupHealth;
+  backupIntegrity?: BackupIntegrity;
+  backupWatchdog?: BackupWatchdog;
   operationGate?: ArchiveOperationGate;
   auditLog?: AuditLogStore;
   /** The data folder (`dirname(dbPath)`) — used purely for resolving relative
@@ -219,8 +223,14 @@ export type ArchiveMethods =
   | 'server.archive.backup.check'
   | 'server.archive.unattended.get'
   | 'server.archive.unattended.save'
+  | 'server.archive.integrity.get'
+  | 'server.archive.integrity.save'
   | 'server.archive.health.get'
   | 'server.archive.health.save'
+  | 'server.archive.watchdog.drill.start'
+  | 'server.archive.watchdog.drill.update'
+  | 'server.archive.watchdog.get'
+  | 'server.archive.watchdog.save'
   | 'server.archive.drills'
   | 'server.archive.drill.start'
   | 'server.archive.drill.cancel'
@@ -672,7 +682,8 @@ export const makeArchiveHandlers = (
     methods: ['server.archive.export', 'server.archive.status', 'server.archive.import', 'server.archive.import_status',
       'server.archive.destinations', 'server.archive.backups', 'server.archive.backup.check', 'server.archive.backup.retrieve',
       'server.archive.unattended.get', 'server.archive.unattended.save', 'server.archive.drills', 'server.archive.drill.start',
-      'server.archive.drill.cancel', 'server.archive.drill.cleanup', 'server.archive.health.get', 'server.archive.health.save'],
+      'server.archive.drill.cancel', 'server.archive.drill.cleanup', 'server.archive.health.get', 'server.archive.health.save',
+      'server.archive.integrity.get', 'server.archive.integrity.save', 'server.archive.watchdog.get', 'server.archive.watchdog.save', 'server.archive.watchdog.drill.start', 'server.archive.watchdog.drill.update'],
     handlers: {
       'server.archive.export': async (args) =>
         handleExport(args as Parameters<typeof handleExport>[0]),
@@ -687,9 +698,33 @@ export const makeArchiveHandlers = (
       },
       'server.archive.destinations': async () => ({ destinations: deps.remoteBackups?.destinations() ?? [] }),
       'server.archive.backups': async () => ({ backups: deps.remoteBackups?.list() ?? [] }),
+      'server.archive.integrity.get': async () => {
+        if (!deps.backupIntegrity) throw new RpcError('not_configured', 'Scheduled S3 checks are unavailable.', 503);
+        return deps.backupIntegrity.status();
+      },
+      'server.archive.integrity.save': async args => {
+        if (!deps.backupIntegrity) throw new RpcError('not_configured', 'Scheduled S3 checks are unavailable.', 503);
+        return deps.backupIntegrity.save(args?.policy);
+      },
       'server.archive.health.get': async () => {
         if (!deps.backupHealth) throw new RpcError('not_configured', 'Backup health checks are unavailable.', 503);
         return deps.backupHealth.status();
+      },
+      'server.archive.watchdog.drill.start': async args => {
+        if (!deps.backupWatchdog) throw new RpcError('not_configured', 'The external backup monitor is unavailable.', 503);
+        return deps.backupWatchdog.startDrill(args);
+      },
+      'server.archive.watchdog.drill.update': async args => {
+        if (!deps.backupWatchdog) throw new RpcError('not_configured', 'The external backup monitor is unavailable.', 503);
+        return deps.backupWatchdog.updateDrill(args);
+      },
+      'server.archive.watchdog.get': async () => {
+        if (!deps.backupWatchdog) throw new RpcError('not_configured', 'The external backup monitor is unavailable.', 503);
+        return deps.backupWatchdog.status();
+      },
+      'server.archive.watchdog.save': async args => {
+        if (!deps.backupWatchdog) throw new RpcError('not_configured', 'The external backup monitor is unavailable.', 503);
+        return deps.backupWatchdog.save(args);
       },
       'server.archive.health.save': async args => {
         if (!deps.backupHealth) throw new RpcError('not_configured', 'Backup health checks are unavailable.', 503);

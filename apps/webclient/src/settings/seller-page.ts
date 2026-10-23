@@ -38,6 +38,8 @@ import {
   type SellerOfferState,
   type SellerOfferStateTransitionRequest,
   type SellerOfferStateTransitionResponse,
+  type SellerOfferCheckoutUrlUpdateRequest,
+  type SellerOfferCheckoutUrlUpdateResponse,
   type SellerSettingsUpdateRequest,
   type SellerSettingsUpdateResponse,
   type SellerStripeSynchronizeRequest,
@@ -127,6 +129,9 @@ export type SellerRecipeRunCaller = (args: {
 export type SellerOfferStateTransitionCaller = (
   request: SellerOfferStateTransitionRequest,
 ) => Promise<SellerOfferStateTransitionResponse>;
+export type SellerOfferCheckoutUrlCaller = (
+  request: SellerOfferCheckoutUrlUpdateRequest,
+) => Promise<SellerOfferCheckoutUrlUpdateResponse>;
 export interface SellerMailInstanceOption {
   readonly slug: string;
   readonly send_capable: boolean;
@@ -343,6 +348,9 @@ export interface MountSellerPageOptions {
   /** D-200 Slice 6e — owner-only state controls. Narrowed hosts may omit this
    *  caller and keep outcome offers read-only. */
   runTransitionOfferState?: SellerOfferStateTransitionCaller;
+  /** D-207 ruling (C) — owner-only checkout link: where an offer's buyers pay.
+   *  Narrowed hosts may omit this caller and keep the link read-only. */
+  runSetOfferCheckoutUrl?: SellerOfferCheckoutUrlCaller;
   /** D-196 §4.7 — live `collection.mail.list` source for the explicit
    *  send-capable sender chooser. Optional for older paired servers. */
   runListMailInstances?: SellerMailListCaller;
@@ -445,6 +453,13 @@ export const SELLER_OFFER_STATE_ACTION_ATTR =
   'data-recued-seller-offer-state-action';
 export const SELLER_OFFER_STATE_STATUS_ATTR =
   'data-recued-seller-offer-state-status';
+export const SELLER_OFFER_CHECKOUT_ATTR = 'data-recued-seller-offer-checkout';
+export const SELLER_OFFER_CHECKOUT_INPUT_ATTR =
+  'data-recued-seller-offer-checkout-input';
+export const SELLER_OFFER_CHECKOUT_ACTION_ATTR =
+  'data-recued-seller-offer-checkout-action';
+export const SELLER_OFFER_CHECKOUT_STATUS_ATTR =
+  'data-recued-seller-offer-checkout-status';
 export const SELLER_ACCESS_OFFERS_ATTR = 'data-recued-seller-access-offers';
 export const SELLER_CONTRACT_LINK_ATTR = 'data-recued-seller-contract-link';
 export const SELLER_SETTINGS_ATTR = 'data-recued-seller-settings';
@@ -1231,6 +1246,21 @@ const formatOrderCustomer = (customerId: string | null): string =>
 const formatOrderHandle = (handle: string): string =>
   handle.length > 16 ? `${handle.slice(0, 14)}…` : handle;
 
+/** A checkout link as its list cell shows it: where it goes (host and path, no
+ *  scheme or query), cut like the order cells. A whole link squeezed Price and
+ *  State until they broke mid-word ("$29.0 / 0"); the preview and the offer's own
+ *  page show it whole, and the cell keeps it in a title for copy. */
+const formatCheckoutLinkCell = (url: string): string => {
+  let shown = url;
+  try {
+    const parsed = new URL(url);
+    shown = parsed.host + (parsed.pathname === '/' ? '' : parsed.pathname);
+  } catch {
+    // A stored link that does not parse shows as stored, cut like any other.
+  }
+  return shown.length > 24 ? `${shown.slice(0, 24)}…` : shown;
+};
+
 const formatOrderOrigin = (order: SellerOrder): string => {
   const ref = order.origin_ref.length > 24
     ? `${order.origin_ref.slice(0, 24)}…`
@@ -1623,8 +1653,38 @@ const renderSellerOffers = (
         );
       },
     },
-    { label: 'Price', value: formatSellerOfferPrice },
-    { label: 'State', value: (offer) => offer.state },
+    // One short value each: the table scrolls sideways before these wrap.
+    {
+      label: 'Price',
+      render: (offer, td) => {
+        td.className = 'seller-table-nowrap';
+        td.textContent = formatSellerOfferPrice(offer);
+      },
+    },
+    {
+      label: 'State',
+      render: (offer, td) => {
+        td.className = 'seller-table-nowrap';
+        td.textContent = offer.state;
+      },
+    },
+    {
+      label: 'Checkout link',
+      render: (offer, td) => {
+        if (offer.checkout_url === null) {
+          td.textContent = 'Not set';
+          return;
+        }
+        const link = appendText(
+          doc,
+          td,
+          'span',
+          formatCheckoutLinkCell(offer.checkout_url),
+          'seller-offer-checkout-link',
+        );
+        link.setAttribute('title', offer.checkout_url);
+      },
+    },
     {
       label: 'Definition',
       render: (offer, td) => {
@@ -1724,6 +1784,143 @@ const renderSellerOffers = (
       tr.setAttribute(SELLER_OFFER_ROW_ATTR, offer.offer_id),
     columns,
   });
+};
+
+/** D-207 ruling (C) — where this offer's buyers pay. A public selling form can take
+ *  payment ONLY through this link, so it is set here, on the owner's own surface, and
+ *  never by a recipe. */
+const renderSellerOfferCheckoutLink = (
+  doc: Document,
+  parent: HTMLElement,
+  offer: SellerOffer,
+  runSetOfferCheckoutUrl: SellerOfferCheckoutUrlCaller,
+  formMessage: SellerFormMessage | null,
+  applyResult: (
+    response: SellerOfferCheckoutUrlUpdateResponse,
+    message: SellerFormMessage,
+  ) => void,
+): void => {
+  const section = append(doc, parent, 'section', 'seller-section');
+  section.setAttribute(SELLER_OFFER_CHECKOUT_ATTR, offer.offer_id);
+  appendText(doc, section, 'h4', 'Checkout link');
+  appendText(
+    doc,
+    section,
+    'p',
+    'This is where a buyer pays for this offer. Paste the payment link you made with your '
+      + 'payment company, such as a Stripe payment link. Its price must match this offer\u2019s '
+      + 'price. A public form that sells this offer sends each buyer to this link, marked '
+      + 'with their order.',
+    'seller-section-copy',
+  );
+  const status = append(doc, section, 'p', 'seller-form-status');
+  status.setAttribute(SELLER_OFFER_CHECKOUT_STATUS_ATTR, '');
+  if (formMessage !== null) {
+    status.textContent = formMessage.text;
+    status.setAttribute('data-kind', formMessage.kind);
+    if (formMessage.kind === 'error') status.setAttribute('role', 'alert');
+  }
+  if (offer.state === 'archived') {
+    appendText(
+      doc,
+      section,
+      'p',
+      'This offer is put away, so its checkout link cannot change.',
+      'seller-table-detail',
+    );
+    return;
+  }
+
+  const wrap = append(doc, section, 'label', 'seller-form-field seller-form-field-wide');
+  appendText(doc, wrap, 'span', 'Link');
+  const input = doc.createElement('input');
+  input.type = 'url';
+  input.value = offer.checkout_url ?? '';
+  input.placeholder = 'https://buy.stripe.com/...';
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  input.setAttribute(SELLER_OFFER_CHECKOUT_INPUT_ATTR, '');
+  wrap.appendChild(input);
+  appendFieldHelp(doc, wrap, 'A full link that starts with https://.');
+
+  const actions = append(doc, section, 'div', 'seller-offer-actions');
+  let pending = false;
+  const buttons: HTMLButtonElement[] = [];
+  const fail = (text: string): void => {
+    status.setAttribute('role', 'alert');
+    status.setAttribute('data-kind', 'error');
+    status.textContent = text;
+  };
+  const run = (checkout_url: string | null): void => {
+    if (pending) return;
+    // The server applies the full check. This one only catches a blank or partial
+    // paste before it costs a round trip.
+    if (checkout_url !== null && !/^https:\/\/\S+$/i.test(checkout_url)) {
+      fail('Paste a full link that starts with https://.');
+      return;
+    }
+    pending = true;
+    for (const button of buttons) button.disabled = true;
+    status.removeAttribute('role');
+    status.removeAttribute('data-kind');
+    status.textContent = checkout_url === null
+      ? 'Removing the checkout link.'
+      : 'Saving the checkout link.';
+    void Promise.resolve()
+      .then(() => runSetOfferCheckoutUrl({
+        offer_id: offer.offer_id,
+        expected_updated_at: offer.updated_at,
+        checkout_url,
+      }))
+      .then((response) => {
+        const projectedOffers = (response.overview.offers ?? []).filter(
+          (candidate) => candidate.offer_id === offer.offer_id,
+        );
+        if (
+          (response.result !== 'updated' && response.result !== 'unchanged')
+          || response.offer.offer_id !== offer.offer_id
+          || response.offer.checkout_url !== checkout_url
+          || projectedOffers.length !== 1
+          || projectedOffers[0]?.checkout_url !== checkout_url
+        ) {
+          throw new Error('Recued got an answer it did not expect.');
+        }
+        const removed = checkout_url === null;
+        applyResult(response, {
+          kind: 'success',
+          text: response.result === 'unchanged'
+            ? (removed ? 'This offer had no checkout link.' : 'The checkout link was already this one.')
+            : (removed ? 'Checkout link removed.' : 'Checkout link saved.'),
+        });
+      })
+      .catch((err) => {
+        fail(humanizeRpcError(err));
+      })
+      .finally(() => {
+        pending = false;
+        for (const button of buttons) button.disabled = false;
+      });
+  };
+  const save = appendButton(
+    doc,
+    actions,
+    'Save link',
+    () => run(input.value.trim()),
+    [[SELLER_OFFER_CHECKOUT_ACTION_ATTR, 'save']],
+  );
+  save.setAttribute('aria-label', `Save the checkout link for ${offer.display_name}`);
+  buttons.push(save);
+  if (offer.checkout_url !== null) {
+    const remove = appendButton(
+      doc,
+      actions,
+      'Remove link',
+      () => run(null),
+      [[SELLER_OFFER_CHECKOUT_ACTION_ATTR, 'remove']],
+    );
+    remove.setAttribute('aria-label', `Remove the checkout link for ${offer.display_name}`);
+    buttons.push(remove);
+  }
 };
 
 const renderAccessOffersIntro = (
@@ -4314,6 +4511,7 @@ const sellerItemFacts = (
       return [
         { label: 'Price', value: formatSellerOfferPrice(offer) },
         { label: 'State', value: offer.state },
+        { label: 'Checkout link', value: offer.checkout_url ?? 'Not set' },
         ...(offer.description.length > 0 ? [{ label: 'About', value: offer.description }] : []),
         {
           label: 'Definition',
@@ -4650,6 +4848,7 @@ export const mountSellerPage = (
   let ordersError: string | null = null;
   let tierSyncFormMessage: SellerFormMessage | null = null;
   let offerStateFormMessage: SellerFormMessage | null = null;
+  let offerCheckoutFormMessage: SellerFormMessage | null = null;
   let settingsFormMessage: SellerFormMessage | null = null;
   let tierFormMessage: SellerFormMessage | null = null;
   // D-250 § D — its own message slot: a usage-limit save and a tier save are
@@ -4969,6 +5168,19 @@ export const mountSellerPage = (
         ): void => {
           if (disposed) return;
           offerStateFormMessage = message;
+          offerCheckoutFormMessage = null;
+          overview = response.overview;
+          phase = 'ready';
+          error = null;
+          render();
+        };
+        const applyOfferCheckoutResult = (
+          response: SellerOfferCheckoutUrlUpdateResponse,
+          message: SellerFormMessage,
+        ): void => {
+          if (disposed) return;
+          offerCheckoutFormMessage = message;
+          offerStateFormMessage = null;
           overview = response.overview;
           phase = 'ready';
           error = null;
@@ -4989,6 +5201,16 @@ export const mountSellerPage = (
             offerStateFormMessage,
             applyOfferResult,
           );
+          if (opts.runSetOfferCheckoutUrl !== undefined) {
+            renderSellerOfferCheckoutLink(
+              doc,
+              detail,
+              offer,
+              opts.runSetOfferCheckoutUrl,
+              offerCheckoutFormMessage,
+              applyOfferCheckoutResult,
+            );
+          }
           break;
         }
         const paged = localPage(offers);
@@ -5592,6 +5814,7 @@ export const mountSellerPage = (
     tierSyncFormMessage = null;
     settingsFormMessage = null;
     offerStateFormMessage = null;
+    offerCheckoutFormMessage = null;
     tierFormMessage = null;
     passTierFormMessage = null;
     passTierCreatedTemplateId = null;
@@ -6053,6 +6276,12 @@ ${LIST_PREVIEW_STYLES}
 [${SELLER_PAGE_ATTR}] .seller-related-links a:hover {
   background: var(--accent-weak);
   text-decoration: underline;
+}
+[${SELLER_PAGE_ATTR}] .seller-offer-checkout-link {
+  white-space: nowrap;
+}
+[${SELLER_PAGE_ATTR}] .seller-table-nowrap {
+  white-space: nowrap;
 }
 [${SELLER_PAGE_ATTR}] .seller-offer-task-links {
   display: grid;

@@ -804,3 +804,50 @@ describe('composeReceptionSubstrate background service registration', () => {
     );
   });
 });
+
+describe('composeReceptionSubstrate tells the owner a visitor was turned away (D-207)', () => {
+  const EVENT = {
+    endpoint_id: 'ep_kit',
+    submission_id: 'sub_1',
+    form_name: 'Buy the kit',
+    at: 1_792_000_000_000,
+    refusal: { reason: 'no_checkout_link', offer_id: 'client-kit', recipe_id: 'show-order-checkout-link' },
+  } as const;
+  const settle = () => new Promise((done) => setTimeout(done, 0));
+
+  it('hands the port a notice that records the history row and pushes, naming the offer', async () => {
+    const notify = vi.fn(async () => undefined);
+    const { deps, bundle } = await composeDefined({
+      notifier: { notify },
+      sellerOfferStore: {
+        getOffer: vi.fn((id: string) => (id === 'client-kit' ? { display_name: 'Freelance Client Kit' } : null)),
+      },
+      getOwnerBaseUrl: () => 'https://me.example',
+    });
+
+    const notice = bundle.receptionPortDeps.noticeIntakeFormTurnedAway;
+    expect(notice).toEqual(expect.any(Function));
+    // Fire-and-forget: the visitor's request never waits on the owner's channels.
+    expect(notice(EVENT)).toBeUndefined();
+    await settle();
+
+    expect(deps.auditLog.logActivity).toHaveBeenCalledWith(expect.objectContaining({
+      activity_id: 'reception-turned-away:sub_1',
+      action: 'notification_fired',
+      target: 'ep_kit',
+    }));
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'A buyer could not pay for Freelance Client Kit',
+        link_url: 'https://me.example/#settings/seller/offers/detail/client-kit',
+      }),
+      undefined,
+      expect.objectContaining({ ui_link_url: '#settings/seller/offers/detail/client-kit' }),
+    );
+  });
+
+  it('tells nobody when the server has no notification block', async () => {
+    const { bundle } = await composeDefined();
+    expect(bundle.receptionPortDeps.noticeIntakeFormTurnedAway).toBeUndefined();
+  });
+});

@@ -45,6 +45,8 @@ import type {
 import {
   isResolvedRecordColumnsDescriptor, NUMERIC_FIELD_KINDS, tableColumnInputType,
 } from '@recued/contracts';
+import { copyRecipeRunSummary, renderRecipeRunSummary, RUN_SUMMARY_COPY_ATTR } from './recipe-run-summary.js';
+import { parseLogsRunAddress, serializeLogsRunAddress } from '../shell/route.js';
 import {
   formatValue,
   renderAiAnalysisBlock,
@@ -190,6 +192,29 @@ ${REFERENCE_PROVENANCE_STYLES}
   font-size: 12px;
   color: var(--fg);
   font-variant-numeric: tabular-nums;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .recipes-result-run-link {
+  justify-self: start;
+  box-sizing: border-box;
+  min-height: 36px;
+  max-width: 100%;
+  text-align: center;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .recipes-result-run-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .recipes-run-summary { display: grid; gap: 6px; min-width: 0; font-size: 12px; }
+[${RECIPE_RESULT_HOST_ATTR}] .recipes-run-summary > button { justify-self: start; min-height: 36px; max-width: 100%; }
+[${RECIPE_RESULT_HOST_ATTR}] .recipes-run-summary > p { margin: 0; overflow-wrap: anywhere; }
+[${RECIPE_RESULT_HOST_ATTR}] .recipes-run-summary details { min-width: 0; }
+[${RECIPE_RESULT_HOST_ATTR}] .recipes-run-summary summary { cursor: pointer; padding: 8px 0; min-height: 36px; box-sizing: border-box; }
+[${RECIPE_RESULT_HOST_ATTR}] .recipes-run-summary textarea { display: block; box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; margin-top: 6px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--fg); font: 12px/1.5 var(--mono, monospace); resize: vertical; }
+[${RECIPE_RESULT_HOST_ATTR}] .recipes-run-summary :is(button, summary, textarea):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 520px) {
+  [${RECIPE_RESULT_HOST_ATTR}] .recipes-result-run-link,
+  [${RECIPE_RESULT_HOST_ATTR}] .recipes-run-summary > button,
+  [${RECIPE_RESULT_HOST_ATTR}] .recipes-run-summary summary { min-height: 44px; }
 }
 [${RECIPE_RESULT_HOST_ATTR}] .recipes-result-provenance {
   display: flex;
@@ -1078,6 +1103,7 @@ export const copyRecipeResultValue = async (
   target: HTMLElement,
   doc: Document,
 ): Promise<void> => {
+  if (target.getAttribute(RUN_SUMMARY_COPY_ATTR) !== null) return copyRecipeRunSummary(target, doc);
   const value = target.getAttribute('data-value');
   if (value === null) return;
   target.setAttribute('aria-live', 'polite');
@@ -2828,6 +2854,15 @@ export const renderRecipeResultPanel = (
     || runFacts !== null
     ? ''
     : ` · ${e(String(result.duration_ms))} ms · ${e(plural(result.steps.length, 'step'))}`;
+  // Only this response's persisted anchor can identify its run. In particular,
+  // a previous result or the recipe-wide history cannot substitute for it.
+  const runId = result?.run_id;
+  const runAddress = typeof runId === 'string' && runId.trim().length > 0
+    ? parseLogsRunAddress({ surface: 'logs', segments: [runId] })
+    : null;
+  const runLink = runAddress === null
+    ? ''
+    : `<a class="recipes-button recipes-result-run-link" href="${e(serializeLogsRunAddress(runAddress))}">Open this run in Logs</a>`;
   return `
     <section class="recipes-detail-section recipes-result-panel" ${RECIPE_RESULT_HOST_ATTR}${
     presentation.display_mode === true ? ` ${RESULT_DISPLAY_MODE_ATTR}` : ''}
@@ -2844,6 +2879,8 @@ export const renderRecipeResultPanel = (
               : `<p class="recipes-result-reason" ${RECIPES_ROUTE_RESULT_REASON_ATTR}>${e(failureReason)}</p>`}
           </div>`
         : ''}
+      ${runLink}
+      ${result === null ? '' : renderRecipeRunSummary(result)}
       ${refusedNote}
       ${provenance}
       ${returnControl}

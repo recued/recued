@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import {
-  ACCOUNT_MENU_TRIGGER, ARTIFACTS, ATTENTION_CLOSE, ATTENTION_DIALOG,
+  ACCOUNT_MENU_TRIGGER, ATTENTION_CLOSE, ATTENTION_DIALOG,
   GLOBAL_RUN_PALETTE_TRIGGER, HARNESS_URL, installFullAppHooks,
 } from './helpers/full-app.js';
 
@@ -92,7 +92,7 @@ test('the Attention bell is a focused, responsive queue with an exact handoff', 
   expect(geometry.right).toBeLessThanOrEqual(geometry.viewportWidth + 0.5);
   expect(geometry.bottom).toBeLessThanOrEqual(geometry.viewportHeight + 0.5);
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-attention-mobile.png`,
+    path: test.info().outputPath(`full-app-attention-mobile.png`),
     fullPage: false,
   });
 

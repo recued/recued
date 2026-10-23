@@ -287,9 +287,13 @@ const chatTailContentFieldTags = (packet: PiiAliasableData): PiiFieldTag[] => {
  *  content pass, so that value is still aliased whole. The span finder uses
  *  `scanContent`'s match and its longest-value-first order.
  *
- *  ⚠ Not covered: the cross-session recall reharvest
- *  (`aliasReharvestCandidatesInPlace`), which aliases recalled candidate values
- *  across the packet, the owner's prose included, before the hold runs. */
+ *  Two passes rewrite the owner's prose. The cross-session recall reharvest
+ *  (`aliasReharvestCandidatesInPlace`) runs first, on a turn that recalled an
+ *  earlier session, and aliases values read from that session that the ledger
+ *  does not hold yet, so its hold counts those values too. Without that hold,
+ *  a turn that recalled a record anchored to Lisbon still sent "Which country
+ *  is pii.Address1 the capital of?" (probe, 2026-10-21). The final content
+ *  pass is held against the ledger alone. */
 const OWNER_PLACE_KIND = 'address';
 // Private-use characters: neither `\w` nor a letter, so no pattern in the
 // content pass can match or extend across them.
@@ -316,8 +320,9 @@ const ownerTextSlots = (packet: unknown, withUserMessage: boolean): Array<[Recor
   return slots;
 };
 interface OwnerPlaceHold {
-  /** Swap each place the owner typed for a mark the content pass cannot match. */
-  hold(packet: unknown): void;
+  /** Swap each place the owner typed for a mark no later pass can match.
+   *  `candidates`: values the next pass aliases that the ledger does not hold yet. */
+  hold(packet: unknown, candidates?: readonly piiEgress.CandidateValueSeed[]): void;
   /** Put every held place back into the copy of the packet about to be sent. */
   release(packet: unknown): void;
 }
@@ -325,10 +330,14 @@ interface OwnerPlaceHold {
  *  one identifier, which this leaves to the identifier pass unchanged. */
 const createOwnerPlaceHold = (ledger: SessionLedger, userMessageIsIdentifier: boolean): OwnerPlaceHold => {
   const held: string[] = [];
-  const holdIn = (text: string): string => {
-    // A message already carrying a mark character is left to the passes unchanged.
+  const holdIn = (text: string, candidates: readonly piiEgress.CandidateValueSeed[]): string => {
+    // A message already carrying a mark character, typed or from an earlier
+    // hold, is not held again.
     if (/[\uE000-\uE003]/u.test(text)) return text;
-    const entries = [...ledger.byKindRealValue.values()]
+    const entries: Array<{ kind: string; real_value: string }> = [
+      ...[...ledger.byKindRealValue.values()].map(({ kind, real_value }) => ({ kind, real_value })),
+      ...candidates.map(({ kind, value }) => ({ kind, real_value: value })),
+    ]
       .filter((entry) => entry.kind !== 'email_local' && entry.kind !== 'domain' && entry.real_value.length > 0)
       .sort((a, b) => b.real_value.length - a.real_value.length);
     if (!entries.some((entry) => entry.kind === OWNER_PLACE_KIND)) return text;
@@ -353,8 +362,8 @@ const createOwnerPlaceHold = (ledger: SessionLedger, userMessageIsIdentifier: bo
     });
   };
   return {
-    hold(packet) {
-      for (const [owner, key] of ownerTextSlots(packet, !userMessageIsIdentifier)) owner[key] = holdIn(owner[key] as string);
+    hold(packet, candidates = []) {
+      for (const [owner, key] of ownerTextSlots(packet, !userMessageIsIdentifier)) owner[key] = holdIn(owner[key] as string, candidates);
     },
     release(packet) {
       if (held.length === 0) return;
@@ -1586,6 +1595,9 @@ const aliasChatAiInputData = async (
       const contribution = await plan.candidateReharvest.contributor.contribute({
         joined_pieces: plan.candidateReharvest.getJoinedPieces(),
       });
+      // This pass rewrites the owner's prose too, with values the ledger does
+      // not hold yet. See `createOwnerPlaceHold`.
+      ownerPlaces.hold(packet, contribution.candidates);
       reharvestChanged = aliasReharvestCandidatesInPlace(
         packet as Record<string, unknown>,
         plan,
@@ -1721,6 +1733,8 @@ const aliasChatAiInputData = async (
   const scanContent =
     directlyProtected || plan.ledger.byKindRealValue.size > 0;
   // After every pass that seeds the ledger, before the one that scans the prose.
+  // A message the reharvest's hold changed is not held again: that pass added
+  // to the ledger only candidates its hold had counted.
   ownerPlaces.hold(packet);
   const userMessageFields = normalizeChatUserMessagePiiFields(
     packet as PiiAliasableData,

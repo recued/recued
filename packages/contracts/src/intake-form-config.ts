@@ -284,7 +284,30 @@ export interface IntakeFormConfigField {
   readonly required: boolean;
   /** Closed-list values for `enum` fields. Ignored for other types. */
   readonly values?: ReadonlyArray<string>;
+  /** What a person sees for some or all of an `enum` field's `values`, keyed by
+   *  value. The visitor picks "Under $10k" and the form stores `under_10k`, so a
+   *  recipe that reads the value keeps working. A value with no label shows as
+   *  itself ({@link intakeFormChoiceText}). Ignored for other types.
+   *
+   *  ⚠ A separate map, never objects inside `values`: servers older than this
+   *  key ignore it and show the values, but they refuse a `values` entry that is
+   *  not a string, so a template written that way would stop installing. */
+  readonly value_labels?: Readonly<Record<string, string>>;
 }
+
+/** The text a person sees for one of an `enum` field's values: its label, else
+ *  the value itself. Reads only the map's own keys, so a value such as
+ *  `constructor` never shows text inherited from `Object.prototype`. */
+export const intakeFormChoiceText = (
+  field: { readonly value_labels?: unknown },
+  value: string,
+): string => {
+  const labels = field.value_labels;
+  if (labels === null || typeof labels !== 'object' || Array.isArray(labels)) return value;
+  if (!Object.prototype.hasOwnProperty.call(labels, value)) return value;
+  const label: unknown = (labels as Record<string, unknown>)[value];
+  return typeof label === 'string' && label.trim() !== '' ? label.trim() : value;
+};
 
 /** Submission processing rule per spec § A.5.3 line 696-702. */
 export interface IntakeFormSubmissionProcessingRule {
@@ -518,6 +541,10 @@ export type IntakeFormConfigValidationCode =
   | 'field_enum_values_empty'
   | 'field_enum_values_too_many'
   | 'field_enum_value_too_long'
+  // `value_labels` that is not a map of a field's own values to text.
+  | 'field_enum_value_labels_invalid'
+  // Two choices of one labelled field would show the visitor the same text.
+  | 'field_enum_choice_text_duplicate'
   | 'user_only_field_unknown'
   | 'user_only_field_overlaps_visible'
   | 'submission_processing_rule_invalid'
@@ -556,6 +583,55 @@ export interface IntakeFormConfigValidationFailure {
 }
 
 const FIELD_NAME_RE = /^[a-z][a-z0-9_]{0,63}$/;
+
+/** Why an `enum` field's `value_labels` cannot be used, or null when it is
+ *  absent or sound. A label is text for one of the field's own values, at most
+ *  as long as a value may be, and no two choices may then read the same: the
+ *  visitor could not tell them apart, and the form editor maps an owner's edited
+ *  text back to a value by that text. ⚠ No comma: the editor shows a box's
+ *  choices as one comma-separated line, so "Yes, please" would come back from
+ *  the owner's first edit as two choices. */
+const enumValueLabelsFailure = (
+  field: IntakeFormConfigField,
+): IntakeFormConfigValidationFailure | null => {
+  const labels: unknown = field.value_labels;
+  if (labels === undefined) return null;
+  const at = `form_definition.fields['${field.name}'].value_labels`;
+  if (labels === null || typeof labels !== 'object' || Array.isArray(labels)) {
+    return { code: 'field_enum_value_labels_invalid', detail: `${at} must map each choice to its text` };
+  }
+  const values: ReadonlyArray<unknown> = Array.isArray(field.values) ? field.values : [];
+  for (const [value, label] of Object.entries(labels)) {
+    if (!values.includes(value)) {
+      return {
+        code: 'field_enum_value_labels_invalid',
+        detail: `${at} labels '${value}', which is not one of the field's values`,
+      };
+    }
+    if (typeof label !== 'string' || label.trim() === '' || label.length > INTAKE_FORM_FIELD_ENUM_VALUE_MAX) {
+      return {
+        code: 'field_enum_value_labels_invalid',
+        detail: `${at}['${value}'] must be text of 1 to ${INTAKE_FORM_FIELD_ENUM_VALUE_MAX} characters`,
+      };
+    }
+    if (label.includes(',')) {
+      return {
+        code: 'field_enum_value_labels_invalid',
+        detail: `${at}['${value}'] contains a comma, which the form editor puts between choices`,
+      };
+    }
+  }
+  const shown = values
+    .filter((value): value is string => typeof value === 'string')
+    .map((value) => intakeFormChoiceText(field, value));
+  if (new Set(shown).size !== shown.length) {
+    return {
+      code: 'field_enum_choice_text_duplicate',
+      detail: `two choices of form_definition.fields['${field.name}'] read the same`,
+    };
+  }
+  return null;
+};
 
 /** Codex review fold (P2 #3, 2026-05-13) — closed set of substrate-
  *  reserved POST-body keys + URL params. A form field carrying any of
@@ -818,6 +894,8 @@ export const validateIntakeFormConfig = (
               }
             }
           }
+          const labelFailure = enumValueLabelsFailure(f);
+          if (labelFailure !== null) failures.push(labelFailure);
         }
       }
       visibleFieldNames = seen;

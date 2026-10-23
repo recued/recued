@@ -32,6 +32,13 @@ const enrichmentTask = (): HousekeepingTaskStatus => ({
 });
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+};
+type TaskSnapshot = { tasks: HousekeepingTaskStatus[] };
 
 const makeFakeHost = () => {
   let html = '';
@@ -133,9 +140,8 @@ describe('mountMaintenancePanel', () => {
   });
 
   it('a cycle firing mid-load does not stale-drop the load that clears loading', async () => {
-    // Split-generation guard: the cycle refresh must use its own counter,
-    // else the initial load (which clears `loading`) gets invalidated and
-    // the panel can stick on "Loading…".
+    // A newer successful cycle wins, while the foreground read still clears
+    // loading when it settles.
     const fakeHost = makeFakeHost();
     const resolvers: Array<(v: { tasks: HousekeepingTaskStatus[] }) => void> = [];
     const runStatusRead = vi.fn(
@@ -155,8 +161,165 @@ describe('mountMaintenancePanel', () => {
     await flush();
     // The initial load was NOT invalidated by the cycle → loading cleared.
     expect(mount.getState().loading).toBe(false);
-    expect(mount.getState().tasks.length).toBeGreaterThan(0);
+    expect(mount.getState().tasks[0]?.meta.id).toBe('cache-gc');
     mount.dispose();
+  });
+
+  it('retries a failed read, coalesces pending loads, and retires Retry after an empty recovery', async () => {
+    const fakeHost = makeFakeHost();
+    const retry = deferred<TaskSnapshot>();
+    const runStatusRead = vi.fn()
+      .mockRejectedValueOnce(new Error('status unavailable'))
+      .mockRejectedValueOnce(new Error('still unavailable'))
+      .mockReturnValueOnce(retry.promise);
+    const runRunNow = vi.fn();
+    const mount = mountMaintenancePanel({ host: fakeHost.host, runStatusRead, runRunNow });
+    expect(fakeHost.getHtml()).toContain('role="status"');
+    await mount.whenLoaded();
+    expect(fakeHost.getHtml()).toContain('role="alert"');
+    expect(fakeHost.getHtml()).toContain('Retry loading maintenance tasks');
+
+    fakeHost.clickAction('maintenance-status-retry');
+    await mount.whenLoaded();
+    expect(fakeHost.getHtml()).toContain('still unavailable');
+    fakeHost.clickAction('maintenance-status-retry');
+    fakeHost.clickAction('maintenance-status-retry');
+    const coalesced = mount.refresh();
+    expect(runStatusRead).toHaveBeenCalledTimes(3);
+    expect(fakeHost.getHtml()).toContain('Loading maintenance tasks');
+    expect(fakeHost.getHtml()).not.toContain('role="alert"');
+    retry.resolve({ tasks: [] });
+    await coalesced;
+    expect(mount.getState()).toMatchObject({ loading: false, error: null, tasks: [] });
+    expect(fakeHost.getHtml()).toContain('Maintenance</h2>');
+    expect(fakeHost.getHtml()).not.toContain('maintenance-status-retry');
+    fakeHost.clickAction('maintenance-status-retry');
+    expect(runStatusRead).toHaveBeenCalledTimes(3);
+    expect(runRunNow).not.toHaveBeenCalled();
+    mount.dispose();
+  });
+
+  it('a successful cycle clears the initial error and a later failed cycle preserves the table', async () => {
+    const fakeHost = makeFakeHost();
+    const runStatusRead = vi.fn()
+      .mockRejectedValueOnce(new Error('initial failure'))
+      .mockResolvedValueOnce({ tasks: [coreTask('cache-gc', 'recovered')] })
+      .mockRejectedValueOnce(new Error('background failure'));
+    const mount = mountMaintenancePanel({ host: fakeHost.host, runStatusRead, subscribe: fakeHost.subscribe });
+    await mount.whenLoaded();
+    fakeHost.fireCycle();
+    await mount.whenLoaded();
+    expect(mount.getState().error).toBeNull();
+    expect(fakeHost.getHtml()).toContain('recovered');
+    expect(fakeHost.getHtml()).not.toContain('maintenance-status-retry');
+    fakeHost.fireCycle();
+    await mount.whenLoaded();
+    expect(fakeHost.getHtml()).toContain('recovered');
+    expect(fakeHost.getHtml()).not.toContain('background failure');
+    mount.dispose();
+  });
+
+  it.each(['success', 'failure'] as const)('a late foreground %s cannot undo a newer cycle recovery', async (outcome) => {
+    const fakeHost = makeFakeHost();
+    const initial = deferred<TaskSnapshot>();
+    const runStatusRead = vi.fn()
+      .mockReturnValueOnce(initial.promise)
+      .mockResolvedValueOnce({ tasks: [coreTask('cache-gc', 'newer cycle')] });
+    const mount = mountMaintenancePanel({ host: fakeHost.host, runStatusRead, subscribe: fakeHost.subscribe });
+    fakeHost.fireCycle();
+    await mount.whenLoaded();
+    if (outcome === 'success') initial.resolve({ tasks: [coreTask('audit-compaction', 'older load')] });
+    else initial.reject(new Error('older failure'));
+    await mount.refresh(); // joins the still-pending foreground read
+    expect(mount.getState().loading).toBe(false);
+    expect(mount.getState().error).toBeNull();
+    expect(mount.getState().tasks[0]?.meta.id).toBe('cache-gc');
+    mount.dispose();
+  });
+
+  it('a failed cycle during the initial load cannot strand loading', async () => {
+    const fakeHost = makeFakeHost();
+    const initial = deferred<TaskSnapshot>();
+    const runStatusRead = vi.fn()
+      .mockReturnValueOnce(initial.promise)
+      .mockRejectedValueOnce(new Error('cycle failure'));
+    const mount = mountMaintenancePanel({ host: fakeHost.host, runStatusRead, subscribe: fakeHost.subscribe });
+    fakeHost.fireCycle();
+    await mount.whenLoaded();
+    initial.resolve({ tasks: [coreTask('cache-gc', 'initial recovery')] });
+    await mount.refresh();
+    expect(mount.getState().loading).toBe(false);
+    expect(fakeHost.getHtml()).toContain('initial recovery');
+    mount.dispose();
+  });
+
+  it('a newer empty cycle ends loading before an older foreground read settles', async () => {
+    const fakeHost = makeFakeHost();
+    const initial = deferred<TaskSnapshot>();
+    const runStatusRead = vi.fn()
+      .mockReturnValueOnce(initial.promise)
+      .mockResolvedValueOnce({ tasks: [] });
+    const mount = mountMaintenancePanel({ host: fakeHost.host, runStatusRead, subscribe: fakeHost.subscribe });
+    fakeHost.fireCycle();
+    await mount.whenLoaded();
+    expect(mount.getState()).toMatchObject({ loading: false, error: null, tasks: [] });
+    expect(fakeHost.getHtml()).toContain('Maintenance</h2>');
+    initial.reject(new Error('older failure'));
+    await mount.refresh();
+    expect(mount.getState().error).toBeNull();
+    mount.dispose();
+  });
+
+  it.each(['before', 'after'] as const)('an older cycle settling %s Retry cannot replace its snapshot', async (order) => {
+    const fakeHost = makeFakeHost();
+    const cycle = deferred<TaskSnapshot>();
+    const retry = deferred<TaskSnapshot>();
+    const runStatusRead = vi.fn()
+      .mockRejectedValueOnce(new Error('initial failure'))
+      .mockReturnValueOnce(cycle.promise)
+      .mockReturnValueOnce(retry.promise);
+    const mount = mountMaintenancePanel({ host: fakeHost.host, runStatusRead, subscribe: fakeHost.subscribe });
+    await mount.whenLoaded();
+    fakeHost.fireCycle();
+    const pendingCycle = mount.whenLoaded();
+    fakeHost.clickAction('maintenance-status-retry');
+    const pendingRetry = mount.whenLoaded();
+    if (order === 'before') {
+      cycle.resolve({ tasks: [coreTask('audit-compaction', 'older cycle')] });
+      await pendingCycle;
+      expect(mount.getState().tasks).toEqual([]);
+    }
+    retry.resolve({ tasks: [coreTask('cache-gc', 'newer retry')] });
+    await pendingRetry;
+    if (order === 'after') {
+      cycle.resolve({ tasks: [coreTask('audit-compaction', 'older cycle')] });
+      await pendingCycle;
+    }
+    expect(mount.getState().tasks[0]?.meta.id).toBe('cache-gc');
+    expect(mount.getState().error).toBeNull();
+    mount.dispose();
+  });
+
+  it.each(['success', 'failure'] as const)('disposal ignores a pending Retry %s and removes its actions', async (outcome) => {
+    const fakeHost = makeFakeHost();
+    const retry = deferred<TaskSnapshot>();
+    const runStatusRead = vi.fn()
+      .mockRejectedValueOnce(new Error('initial failure'))
+      .mockReturnValueOnce(retry.promise);
+    const mount = mountMaintenancePanel({ host: fakeHost.host, runStatusRead, subscribe: fakeHost.subscribe });
+    await mount.whenLoaded();
+    fakeHost.clickAction('maintenance-status-retry');
+    const pending = mount.whenLoaded();
+    mount.dispose();
+    if (outcome === 'success') retry.resolve({ tasks: [coreTask('cache-gc', 'late result')] });
+    else retry.reject(new Error('late error'));
+    await pending;
+    fakeHost.fireCycle();
+    fakeHost.clickAction('maintenance-status-retry');
+    await mount.refresh();
+    expect(fakeHost.getHtml()).toBe('');
+    expect(fakeHost.listenerCount()).toBe(0);
+    expect(runStatusRead).toHaveBeenCalledTimes(2);
   });
 
   it('omits Run-now buttons when no run-now caller is wired', async () => {

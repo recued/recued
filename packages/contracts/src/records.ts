@@ -53,6 +53,15 @@ export const RECORDS_DEFAULT_BYTE_QUOTA = 5 * 1024 * 1024 * 1024;
 /** Outbox is BACKPRESSURE, not storage — it drains. Raised in step so a bulk
  *  import cannot wedge on the queue while well inside the row/byte budget. */
 export const RECORDS_DEFAULT_OUTBOX_QUOTA = 1_000_000;
+/** A Records limit nobody set. ⚠ The GLOBAL limits (`records.global.*`) have no default: they
+ *  stay unset until an owner sets one, and the store reports an unset one as this, the largest
+ *  integer a JSON number carries exactly. ⛔ It means "no limit", never a size: printed as a
+ *  number it read "0 / 9,007,199,254,740,991" rows and, through the byte formatter,
+ *  "8192.00 TB". Ask `isRecordsQuotaUnlimited` before showing a limit. A namespace's own limits
+ *  always carry a real default (the three above). */
+export const RECORDS_QUOTA_NO_LIMIT = Number.MAX_SAFE_INTEGER;
+export const isRecordsQuotaUnlimited = (limit: number): boolean =>
+  !Number.isFinite(limit) || limit >= RECORDS_QUOTA_NO_LIMIT;
 export const RECORDS_MAX_CAUSAL_DEPTH = 16;
 export const RECORDS_MAX_CAUSAL_FANOUT = 1_000;
 
@@ -758,6 +767,11 @@ export interface RecordsGlobalQuotaSnapshot {
 /** Owner-control-plane projection for one full-ref Records namespace. */
 export interface RecordsNamespaceView {
   owner: RecordsPackRef;
+  /** The owning pack's name as its manifest gives it ("Decision Log"), for the owner to read
+   *  instead of `owner.pack_slug`. Set by `records.namespace.list` when the server knows the
+   *  pack (it is on this server's pack roster, from the same publisher); absent otherwise, and a
+   *  reader falls back to the slug. ⛔ A label only: `owner` stays the identity. */
+  display_name?: string;
   state: RecordsNamespaceState;
   activation_generation: number;
   state_generation: number;

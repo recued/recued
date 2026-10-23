@@ -1006,6 +1006,50 @@ const validateFailKind = (
   }
 };
 
+/** Long enough to say what is missing and where to fix it; the run dialog shows
+ *  400 characters of an error and the engine keeps 500. */
+export const FAIL_REASON_MAX_LENGTH = 300;
+
+/** `fail_reason` — what the person who ran the recipe reads when this step stops
+ *  it (`BaseStep.fail_reason`). Three ways to write one that never reads:
+ *
+ *  ⛔ A `{{ref}}`. It is shown as written, so it prints as braces, and resolving
+ *  it would put a value the run carried, an address, into an error message the
+ *  chat agent and the Logs both read.
+ *
+ *  ⛔ On a step that cannot stop a run. Only a `guard` or a `fail_on` stops one;
+ *  anywhere else the words are never shown, like `fail_kind` without `fail_on`.
+ *
+ *  ⚠ Blank, or not a string: the stop would keep "Guard triggered". */
+const validateFailReason = (
+  s: Record<string, unknown>,
+  path: string,
+  add: AddFn,
+): void => {
+  if (s.fail_reason === undefined) return;
+  const at = `${path}.fail_reason`;
+  if (typeof s.fail_reason !== 'string' || s.fail_reason.trim().length === 0) {
+    add('error', 'fail_reason_invalid', at,
+      'fail_reason must be text: the words the person who ran the recipe reads when this step stops it.');
+    return;
+  }
+  if (s.fail_reason.length > FAIL_REASON_MAX_LENGTH) {
+    add('error', 'fail_reason_too_long', at,
+      `fail_reason is ${s.fail_reason.length} characters; keep it to ${FAIL_REASON_MAX_LENGTH}. `
+      + 'Say what is missing and where to fix it.');
+  }
+  if (s.fail_reason.includes('{{')) {
+    add('error', 'fail_reason_ref', at,
+      'fail_reason is shown as written, so a {{ref}} prints as braces, and a resolved value could put '
+      + 'an address into an error message. Say what is missing in plain words.');
+  }
+  if (!('guard' in s) && s.fail_on === undefined) {
+    add('error', 'fail_reason_without_stop', at,
+      'fail_reason explains why this step stopped the run, but only a guard or a fail_on stops one, '
+      + 'and this step has neither, so the words would never be shown.');
+  }
+};
+
 /** `stop_when` ends the run, as a success, after a SEQUENTIAL step. Refused
  *  where it would silently do nothing: on a prefetch step (the parallel phase
  *  has no "after") and on a trigger step (its `should_run` already decides).
@@ -1134,6 +1178,7 @@ export const validateTriggerSteps = (
       validateConditionField(s.fail_on, `${path}.fail_on`, add);
     }
     validateFailKind(s, path, add);
+    validateFailReason(s, path, add);
     validateStopWhen(s, path, 'trigger_steps', add);
     if ('guard' in s && s.guard !== undefined) {
       validateConditionField(s.guard, `${path}.guard`, add);
@@ -1598,6 +1643,7 @@ export const validateSteps = (r: Record<string, unknown>, add: AddFn): Set<strin
         validateConditionField(s.fail_on, `${path}.fail_on`, add);
       }
       validateFailKind(s, path, add);
+      validateFailReason(s, path, add);
       validateStopWhen(s, path, 'steps', add);
       if ('guard' in s && s.guard !== undefined) {
         validateConditionField(s.guard, `${path}.guard`, add);

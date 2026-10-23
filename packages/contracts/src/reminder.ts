@@ -166,6 +166,33 @@ export const formatReminderWhen = (
   return `${day.weekday} ${day.day} ${day.month}${year} at ${formatReminderTime(at, zone)}`;
 };
 
+/** "3:00 PM" when `at` falls on `now`'s day on that clock, else
+ *  "Friday 16 October at 3:00 PM": the day only when it is not today. */
+export const formatReminderAt = (
+  at: number,
+  timeZone: string | null | undefined,
+  now: number,
+): string => {
+  const zone = zoneOrUtc(timeZone);
+  const a = dayParts(at, zone);
+  const b = dayParts(now, zone);
+  const sameDay = a.year === b.year && a.month === b.month && a.day === b.day;
+  return sameDay ? formatReminderTime(at, zone) : formatReminderWhen(at, zone, now);
+};
+
+/** "Monday 28 September": the day a date-only due names (`due-day.ts`). That day
+ *  is its UTC date, which no zone moves; only "this year" is the owner's clock's,
+ *  as in `formatReminderWhen`. */
+export const formatReminderDay = (
+  day: number,
+  timeZone: string | null | undefined,
+  now: number,
+): string => {
+  const parts = dayParts(day, 'UTC');
+  const year = parts.year !== dayParts(now, zoneOrUtc(timeZone)).year ? ` ${parts.year}` : '';
+  return `${parts.weekday} ${parts.day} ${parts.month}${year}`;
+};
+
 /** The text a reminder rings with. On time it is the owner's own words; late, it
  *  says which time it was for (D-324 P5): "For 3:00 PM: meeting", or with the day
  *  when that was another day. */
@@ -174,12 +201,5 @@ export const reminderDeliveryText = (
   now: number,
 ): string => {
   if (now - reminder.at <= REMINDER_LATE_MS) return reminder.text;
-  const zone = zoneOrUtc(reminder.time_zone);
-  const sameDay = (() => {
-    const a = dayParts(reminder.at, zone);
-    const b = dayParts(now, zone);
-    return a.year === b.year && a.month === b.month && a.day === b.day;
-  })();
-  const when = sameDay ? formatReminderTime(reminder.at, zone) : formatReminderWhen(reminder.at, zone, now);
-  return `For ${when}: ${reminder.text}`;
+  return `For ${formatReminderAt(reminder.at, reminder.time_zone, now)}: ${reminder.text}`;
 };

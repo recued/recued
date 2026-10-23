@@ -570,6 +570,27 @@ describe('renderAccountsPanel', () => {
     }
   });
 
+  it('offers a mailbox Re-sync once its first import is done, and not while it imports', () => {
+    const mailbox = (initial_sync_complete: boolean | undefined) => renderAccountsPanel({
+      state: base({
+        lane: 'mail',
+        stage: 'detail',
+        detailSlug: 'work',
+        rows: [{
+          slug: 'work',
+          adapterType: 'imap',
+          authState: 'healthy',
+          lastSyncedAt: 1_700_000_000_000,
+          ...(initial_sync_complete === undefined ? {} : { mailSync: { access_verified: true, initial_sync_complete } }),
+        }],
+      }),
+    });
+    expect(mailbox(true)).toContain('data-action="accounts-resync"');
+    // Before then a restart would only start the import over.
+    expect(mailbox(false)).not.toContain('data-action="accounts-resync"');
+    expect(mailbox(undefined)).not.toContain('data-action="accounts-resync"');
+  });
+
   it('renders the IMAP form on the form stage', () => {
     const html = renderAccountsPanel({
       state: base({ stage: 'form', providerId: 'imap', values: seedAccountFormValues(imap()) }),

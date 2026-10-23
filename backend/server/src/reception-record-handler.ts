@@ -18,7 +18,8 @@
  *  This projection carries neither the visitor's values NOR the ciphertext to recover them.
  *  Both are structural, and the second matters as much as the first: handing back ciphertext
  *  would move the decrypt decision to the caller, and D-149 § N.6 / D-173 I-3 put it here.
- *  A gated per-record reveal is a DIFFERENT surface and is deliberately not invented here.
+ *  The gated per-record reveal is a DIFFERENT surface — `reception.record.open`, below — and
+ *  the list never borrows from it.
  *
  *  ⚠ The redaction is defended by `toBookingSummary` / `toSubmissionSummary` naming every
  *  field they emit — never a spread of the store row. A spread would carry
@@ -28,16 +29,22 @@
  *  Spec: D-210 §2.2 + Appendix A. */
 
 import {
+  RpcError,
+  intakeFormChoiceText,
   INTAKE_FORM_SUBMISSION_PROCESSING_OUTCOMES,
+  RECEPTION_RECORD_ID_MAX,
   RECEPTION_RECORD_LIST_LIMIT_DEFAULT,
   RECEPTION_RECORD_LIST_LIMIT_MAX,
   SCHEDULING_LINK_BOOKING_PROCESSING_OUTCOMES,
   isReceptionRecordKind,
   type IntakeFormSubmissionProcessingOutcome,
   type ReceptionBookingRecordSummary,
+  type ReceptionRecordAnswer,
   type ReceptionRecordKind,
   type ReceptionRecordListInput,
   type ReceptionRecordListResult,
+  type ReceptionRecordOpenInput,
+  type ReceptionRecordOpenResult,
   type ReceptionRecordResolution,
   type ReceptionRecordSummary,
   type ReceptionSubmissionRecordSummary,
@@ -46,13 +53,14 @@ import {
 
 import type { FormSubmissionStore, FormSubmissionSummary } from './storage/reception-form-store.js';
 
-export class ReceptionRecordRpcError extends Error {
-  constructor(
-    readonly code: string,
-    message: string,
-    readonly status: number,
-  ) {
-    super(message);
+/** ⛔ AN `RpcError`, OR ITS CODE NEVER REACHES THE CLIENT. The dispatcher round-trips
+ *  the code and status of an `RpcError` only and sends anything else as `500 internal`.
+ *  This class extended plain `Error`, which no live server ever showed, because
+ *  `server.ts` dropped this slice's deps until 2026-10-21 (`archive-rpc-wiring.test.ts`). */
+export class ReceptionRecordRpcError extends RpcError {
+  declare readonly status: number;
+  constructor(code: string, message: string, status: number) {
+    super(code, message, status);
     this.name = 'ReceptionRecordRpcError';
   }
 }
@@ -66,6 +74,29 @@ export interface ReceptionRecordDeps {
    *  submissions. */
   readonly getBookingStore?: () => Pick<FormSubmissionStore, 'listForOwner'> | undefined;
   readonly getSubmissionStore?: () => Pick<FormSubmissionStore, 'listForOwner'> | undefined;
+  /** `reception.record.open`. All three or none: absent ⇒ the method is not registered, the
+   *  same posture as the list — a reveal wired without its key would answer with nothing, and
+   *  "this visitor told you nothing" is a claim, not an empty state. */
+  readonly openRecord?: ReceptionRecordOpenDeps;
+  /** Names each listed record's form, so the owner can match a record to the notice that named
+   *  it. Absent or throwing ⇒ the record carries no `form_name`, never a guessed one. */
+  readonly formName?: (endpoint_id: string) => string | null;
+}
+
+/** A record's sealed blob, opened. Both halves exactly as the visitor's submission wrote them. */
+export interface ReceptionSealedRecord {
+  /** The separately sealed address on an intake; `fields.email` on a booking. */
+  readonly visitor_email: string | null;
+  readonly fields: Readonly<Record<string, unknown>>;
+}
+
+export interface ReceptionRecordOpenDeps {
+  readonly find: (record_id: string) => FormSubmissionSummary | null;
+  /** ⚠ THROWS on a row it cannot open (a rotated key, a tampered row). The handler answers that
+   *  as "could not be opened", never as a record with no answers. */
+  readonly open: (row: FormSubmissionSummary) => Promise<ReceptionSealedRecord>;
+  /** The endpoint's name as the owner set it, or null when the endpoint is gone. */
+  readonly formName: (endpoint_id: string) => string | null;
 }
 
 const badRequest = (method: string, code: string, message: string): ReceptionRecordRpcError =>
@@ -260,7 +291,167 @@ export const handleReceptionRecordList = async (
   records.sort((a, b) => b.received_at - a.received_at
     || (a.record_id < b.record_id ? 1 : a.record_id > b.record_id ? -1 : 0));
 
-  return { records, truncated };
+  return { records: withFormNames(records, deps.formName), truncated };
+};
+
+/** One lookup per endpoint, not per record: a busy form lists many records. */
+const withFormNames = (
+  records: ReceptionRecordSummary[],
+  formName: ((endpoint_id: string) => string | null) | undefined,
+): ReceptionRecordSummary[] => {
+  if (formName === undefined) return records;
+  const names = new Map<string, string | null>();
+  const nameOf = (endpoint_id: string): string | null => {
+    if (!names.has(endpoint_id)) {
+      let name: string | null = null;
+      try {
+        const raw = formName(endpoint_id);
+        name = typeof raw === 'string' && raw.trim() !== '' ? raw.trim() : null;
+      } catch {
+        name = null;
+      }
+      names.set(endpoint_id, name);
+    }
+    return names.get(endpoint_id) ?? null;
+  };
+  return records.map((record) => {
+    const form_name = nameOf(record.endpoint_id);
+    return form_name === null ? record : { ...record, form_name };
+  });
+};
+
+/** A booking's visitor fields — the closed vocabulary, in the order the booking page asks for
+ *  them, under the labels the visitor's own receipt uses (`scheduling-link-book.ts`). */
+const BOOKING_FIELD_LABELS: ReadonlyArray<readonly [string, string]> = [
+  ['name', 'Name'],
+  ['email', 'Email'],
+  ['topic', 'Topic'],
+  ['phone', 'Phone'],
+  ['notes', 'Notes'],
+];
+
+/** An answer written out the way the visitor's receipt writes it: a list as "a, b", a tick box
+ *  as Yes / No, a choice as the form showed it ("Under 10k", its label in the frozen form). A
+ *  form stores a tick box as `true`/`false`; an older row may hold the string. */
+const answerText = (value: unknown, type: unknown, choices?: { value_labels?: unknown }): string => {
+  if (value === null || value === undefined) return '';
+  if (Array.isArray(value)) return value.map((entry) => answerText(entry, undefined)).filter((v) => v !== '').join(', ');
+  if (type === 'boolean' || typeof value === 'boolean') {
+    if (value === true || value === 'true') return 'Yes';
+    if (value === false || value === 'false') return 'No';
+  }
+  if (typeof value === 'string') {
+    return (type === 'enum' && choices !== undefined ? intakeFormChoiceText(choices, value) : value).trim();
+  }
+  if (typeof value === 'number' || typeof value === 'bigint') return String(value);
+  return JSON.stringify(value);
+};
+
+/** The form's questions as the visitor saw them: the definition FROZEN onto the record when it
+ *  was sent. ⛔ Never the endpoint's current form — a label edited since would relabel the
+ *  visitor's old answers, the reinterpretation the snapshot exists to prevent. */
+const frozenQuestions = (
+  metadata: Readonly<Record<string, unknown>>,
+): ReadonlyArray<{ name: string; label: string; type: unknown; value_labels: unknown }> => {
+  const snapshot = metadata.definition_snapshot;
+  if (snapshot === null || typeof snapshot !== 'object') return [];
+  const fields = (snapshot as { fields?: unknown }).fields;
+  if (!Array.isArray(fields)) return [];
+  const out: Array<{ name: string; label: string; type: unknown; value_labels: unknown }> = [];
+  for (const field of fields) {
+    if (field === null || typeof field !== 'object') continue;
+    const { name, label, type, value_labels } = field as {
+      name?: unknown; label?: unknown; type?: unknown; value_labels?: unknown;
+    };
+    if (typeof name !== 'string' || name === '') continue;
+    out.push({
+      name,
+      label: typeof label === 'string' && label.trim() !== '' ? label.trim() : name,
+      type,
+      value_labels,
+    });
+  }
+  return out;
+};
+
+const intakeAnswers = (
+  row: FormSubmissionSummary,
+  sealed: ReceptionSealedRecord,
+): ReceptionRecordAnswer[] => {
+  const answers: ReceptionRecordAnswer[] = [];
+  if (sealed.visitor_email !== null && sealed.visitor_email.trim() !== '') {
+    answers.push({ label: 'Email', value: sealed.visitor_email.trim() });
+  }
+  const seen = new Set<string>();
+  for (const question of frozenQuestions(row.metadata)) {
+    seen.add(question.name);
+    const value = answerText(sealed.fields[question.name], question.type, question);
+    if (value !== '') answers.push({ label: question.label, value });
+  }
+  // A field the frozen form does not name (a row from before the snapshot) is still the
+  // visitor's answer. Shown under its field name rather than hidden.
+  for (const [name, raw] of Object.entries(sealed.fields)) {
+    if (seen.has(name)) continue;
+    const value = answerText(raw, undefined);
+    if (value !== '') answers.push({ label: name, value });
+  }
+  return answers;
+};
+
+const bookingAnswers = (sealed: ReceptionSealedRecord): ReceptionRecordAnswer[] => {
+  const answers: ReceptionRecordAnswer[] = [];
+  for (const [name, label] of BOOKING_FIELD_LABELS) {
+    const value = answerText(sealed.fields[name], undefined);
+    if (value !== '') answers.push({ label, value });
+  }
+  return answers;
+};
+
+/** D-149 § N.6 "Open submission detail" — `reception.record.open`.
+ *
+ *  🔑 The gated per-record read. Gated by WHO (a paired admin; the `reception.` prefix keeps it
+ *  off MCP, so the owner's AI cannot read a visitor's answers here) and by SHAPE (one record,
+ *  opened server-side; the caller never holds a ciphertext or a key). It writes nothing: the
+ *  record is write-once evidence (D-210 §4), and reading it changes no outcome. */
+export const handleReceptionRecordOpen = async (
+  deps: ReceptionRecordOpenDeps,
+  args: ReceptionRecordOpenInput | undefined,
+  caller: { instance_id?: string | null | undefined } | undefined,
+): Promise<ReceptionRecordOpenResult> => {
+  const method = 'reception.record.open';
+  requireAdmin(caller, method);
+  const record_id = (args as { record_id?: unknown } | undefined)?.record_id;
+  if (typeof record_id !== 'string' || record_id.length === 0 || record_id.length > RECEPTION_RECORD_ID_MAX) {
+    throw badRequest(method, 'reception_record_invalid', `record_id must be a string of 1 to ${RECEPTION_RECORD_ID_MAX} characters`);
+  }
+  const row = deps.find(record_id);
+  if (row === null) {
+    throw new ReceptionRecordRpcError('reception_record_not_found', `${method}: no record '${record_id}'`, 404);
+  }
+  let sealed: ReceptionSealedRecord;
+  try {
+    sealed = await deps.open(row);
+  } catch {
+    // ⛔ Never a record with no answers: "they told you nothing" is a claim the owner acts on.
+    throw new ReceptionRecordRpcError('reception_record_unreadable', `${method}: record '${record_id}' could not be opened`, 500);
+  }
+  const booking = row.record_kind === 'booking';
+  const answers = booking ? bookingAnswers(sealed) : intakeAnswers(row, sealed);
+  const emailField = booking ? answerText(sealed.fields.email, undefined) : (sealed.visitor_email ?? '').trim();
+  let form_name: string | null = null;
+  try {
+    const name = deps.formName(row.endpoint_id);
+    form_name = typeof name === 'string' && name.trim() !== '' ? name.trim() : null;
+  } catch {
+    form_name = null;
+  }
+  const summary: ReceptionRecordSummary = booking ? toBookingSummary(row) : toSubmissionSummary(row);
+  return {
+    record: form_name === null ? summary : { ...summary, form_name },
+    form_name,
+    visitor_email: emailField === '' ? null : emailField,
+    answers,
+  };
 };
 
 /** The rpc slice. ⛔ Returns `undefined` when the record deps are absent so the method is
@@ -290,6 +481,37 @@ export const makeReceptionRecordHandlers = <C extends { instance_id?: string | n
           // The registry declares `| void` (a no-arg list is the common call, as with
           // `reception.emergency_disable_all`); the handler takes `| undefined`.
           args === undefined ? undefined : args,
+          client ? { instance_id: client.instance_id ?? null } : undefined,
+        ),
+    },
+  };
+};
+
+/** The `reception.record.open` slice — its own, because its deps are its own. ⛔ `undefined`
+ *  unless `openRecord` is wired: a reveal registered without its key would have to answer
+ *  every record as unreadable, where an unregistered method answers `not_configured`. */
+export const makeReceptionRecordOpenHandlers = <C extends { instance_id?: string | null }>(
+  deps: ReceptionRecordDeps | undefined,
+):
+  | {
+      methods: ReadonlyArray<'reception.record.open'>;
+      handlers: {
+        'reception.record.open': (
+          args: ReceptionRecordOpenInput,
+          client: C | undefined,
+        ) => Promise<ReceptionRecordOpenResult>;
+      };
+    }
+  | undefined => {
+  const openRecord = deps?.openRecord;
+  if (openRecord === undefined) return undefined;
+  return {
+    methods: ['reception.record.open'],
+    handlers: {
+      'reception.record.open': async (args, client) =>
+        handleReceptionRecordOpen(
+          openRecord,
+          args,
           client ? { instance_id: client.instance_id ?? null } : undefined,
         ),
     },

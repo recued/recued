@@ -43,6 +43,9 @@ import {
   TLS_CERTS_ISSUE_ATTR,
   TLS_CERTS_RESULT_ATTR,
   TLS_CERTS_ROW_ATTR,
+  TLS_CERTS_UPLOAD_FIELD_ATTR,
+  TLS_CERTS_UPLOAD_FILE_ATTR,
+  TLS_CERTS_UPLOAD_FORM_ATTR,
   TLS_UPLOAD_ISSUE_COPY,
   extractUploadIssues,
   mountTlsCertificatesPanel,
@@ -75,9 +78,11 @@ interface FakeElement {
   placeholder: string;
   children: FakeElement[];
   parent: FakeElement | null;
+  readonly parentNode: FakeElement | null;
   attrs: Map<string, string>;
   listeners: Map<string, Array<(ev: unknown) => void>>;
   setAttribute(k: string, v: string): void;
+  removeAttribute(k: string): void;
   getAttribute(k: string): string | null;
   hasAttribute(k: string): boolean;
   appendChild(el: FakeElement): FakeElement;
@@ -88,9 +93,13 @@ interface FakeElement {
   removeEventListener(name: string, fn: (ev: unknown) => void): void;
   click(): void;
   fire(name: string): void;
+  focus(): void;
+  contains(node: FakeElement | null): boolean;
 }
 
-const makeFakeElement = (tagName: string): FakeElement => {
+interface FakeFocusDocument { activeElement: FakeElement | null }
+
+const makeFakeElement = (tagName: string, doc?: FakeFocusDocument): FakeElement => {
   const listeners = new Map<string, Array<(ev: unknown) => void>>();
   const attrs = new Map<string, string>();
   const children: FakeElement[] = [];
@@ -106,9 +115,11 @@ const makeFakeElement = (tagName: string): FakeElement => {
     placeholder: '',
     children,
     parent: null,
+    get parentNode() { return el.parent; },
     attrs,
     listeners,
     setAttribute: (k, v) => attrs.set(k, v),
+    removeAttribute: (k) => { attrs.delete(k); },
     getAttribute: (k) => attrs.get(k) ?? null,
     hasAttribute: (k) => attrs.has(k),
     appendChild: (next) => {
@@ -119,6 +130,7 @@ const makeFakeElement = (tagName: string): FakeElement => {
     removeChild: (target) => {
       const idx = children.indexOf(target);
       if (idx < 0) throw new Error('removeChild: not a child');
+      if (doc && target.contains(doc.activeElement)) doc.activeElement = null;
       children.splice(idx, 1);
       target.parent = null;
       return target;
@@ -146,11 +158,19 @@ const makeFakeElement = (tagName: string): FakeElement => {
     fire: (name) => {
       for (const fn of listeners.get(name) ?? []) fn({ target: el });
     },
+    focus: () => { if (doc !== undefined) doc.activeElement = el; },
+    contains: (node) => node === el || children.some(child => child.contains(node)),
   };
   return el;
 };
 
-const makeFakeDocument = () => ({ createElement: (tag: string) => makeFakeElement(tag) });
+const makeFakeDocument = () => {
+  const doc: FakeFocusDocument & { createElement(tag: string): FakeElement } = {
+    activeElement: null,
+    createElement: (tag) => makeFakeElement(tag, doc),
+  };
+  return doc;
+};
 
 const findByAttrValue = (
   root: FakeElement,
@@ -234,10 +254,59 @@ const mountHostnames = async (args: {
     runVerifyOwnership: unusedCaller as never,
   });
   await mount.whenLoaded();
-  return { host, mount };
+  return { host, mount, doc };
 };
 
 describe('Hostnames — listener ports control', () => {
+  for (const mode of ['add', 'update'] as const) {
+    it.each(['listener_port_8446', 'method', 'cert_source'] as const)(
+      `returns ${mode} focus to the changed %s control after redrawing its dependent fields`,
+      async (field) => {
+        const { host, mount, doc } = await mountHostnames({ rows: [hostnameRow()] });
+        if (mode === 'add') mount.openAdd(); else mount.openUpdate('example.com');
+        const attr = mode === 'add' ? HOSTNAMES_ADD_FIELD_ATTR : HOSTNAMES_UPDATE_FIELD_ATTR;
+        setText(host, attr, 'verification_token_hash', 'synthetic-proof-draft');
+        const input = findByAttrValue(host, attr, field)!;
+        input.focus();
+        if (field === 'listener_port_8446') input.checked = true;
+        else input.value = field === 'method' ? 'http_token' : 'byo_uploaded';
+        input.fire('change');
+
+        const current = findByAttrValue(host, attr, field)!;
+        expect(doc.activeElement).toBe(current);
+        expect(mount.getState()[mode].values.verification_token_hash).toBe('synthetic-proof-draft');
+        if (field === 'listener_port_8446') {
+          expect(mount.getState()[mode].values.listener_ports).toEqual([443, 8446]);
+          current.checked = false;
+          current.fire('change');
+          expect(doc.activeElement).toBe(findByAttrValue(host, attr, field));
+          expect(mount.getState()[mode].values.listener_ports).toEqual([443]);
+        } else if (field === 'cert_source') {
+          expect(mount.getState()[mode].values.verification_method).toBe('cert_proof');
+          expect(findByAttrValue(host, attr, 'verification_token_hash')).toBeNull();
+        } else {
+          expect(mount.getState()[mode].values.verification_method).toBe('http_token');
+          expect(findByAttrValue(host, attr, 'verification_token_hash')?.value).toBe('synthetic-proof-draft');
+        }
+      },
+    );
+
+    it(`leaves outside focus alone when an unfocused ${mode} choice changes`, async () => {
+      const { host, mount, doc } = await mountHostnames({ rows: [hostnameRow()] });
+      if (mode === 'add') mount.openAdd(); else mount.openUpdate('example.com');
+      const attr = mode === 'add' ? HOSTNAMES_ADD_FIELD_ATTR : HOSTNAMES_UPDATE_FIELD_ATTR;
+      const outside = doc.createElement('button');
+      outside.focus();
+      for (const field of ['listener_port_8446', 'method', 'cert_source']) {
+        const input = findByAttrValue(host, attr, field)!;
+        if (field === 'listener_port_8446') input.checked = true;
+        else input.value = field === 'method' ? 'http_token' : 'byo_uploaded';
+        input.fire('change');
+        expect(doc.activeElement).toBe(outside);
+      }
+    });
+  }
+
   it('the add form renders one checkbox per contract port, 443 pre-checked', async () => {
     const { host, mount } = await mountHostnames({});
     mount.openAdd();
@@ -382,6 +451,7 @@ const certEntry = (
 
 const mountCerts = async (args: {
   entries?: TLSDomainCertListEntry[];
+  runList?: TlsDomainListCaller;
   runUpload?: TlsDomainUploadCaller;
   runRemove?: TlsDomainRemoveCaller;
 }) => {
@@ -392,16 +462,250 @@ const mountCerts = async (args: {
   const mount = mountTlsCertificatesPanel({
     host: host as unknown as HTMLElement,
     document: doc as unknown as Document,
-    runList,
+    runList: args.runList ?? runList,
     runUpload: args.runUpload ?? (unusedCaller as never),
     ...(args.runRemove !== undefined ? { runRemove: args.runRemove } : {}),
     now: () => NOW,
   });
   await mount.whenLoaded();
-  return { host, mount, listed };
+  return { host, doc, mount, listed };
 };
 
+describe('Certificates — inventory read recovery', () => {
+  const retryAttr = 'data-recued-tls-certs-read-retry';
+  const headingAttr = 'data-recued-tls-certs-read-heading';
+  const statusAttr = 'data-recued-tls-certs-status';
+  const removedAttr = 'data-recued-tls-certs-removal-result';
+  const retry = (host: FakeElement) => findByAttrValue(host, retryAttr)!;
+  const deferred = () => {
+    let resolve!: (result: { entries: TLSDomainCertListEntry[] }) => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<{ entries: TLSDomainCertListEntry[] }>((yes, no) => { resolve = yes; reject = no; });
+    return { promise, resolve, reject };
+  };
+
+  it('offers read Retry without claiming an empty inventory after initial failure', async () => {
+    const { host, mount } = await mountCerts({ runList: async () => { throw new Error('Read unavailable'); } });
+    expect(retry(host)?.textContent).toBe('Retry');
+    expect(retry(host)?.getAttribute('aria-label')).toBe('Retry loading certificates');
+    expect(findByAttrValue(host, TLS_CERTS_ERROR_ATTR)?.textContent).toContain('Could not load certificates.');
+    expect(findByAttrValue(host, TLS_CERTS_EMPTY_ATTR)).toBeNull();
+    expect(mount.getState().model).toBeNull();
+  });
+
+  for (const outcome of ['success', 'error'] as const) {
+    for (const owner of ['retry', 'outside', 'blurred'] as const) {
+      it(`Retry ${outcome} respects ${owner} focus and ignores duplicate/stale activation`, async () => {
+        const pending = deferred();
+        const runList = vi.fn<TlsDomainListCaller>()
+          .mockRejectedValueOnce(new Error('Read unavailable')).mockReturnValueOnce(pending.promise);
+        const { host, doc, mount } = await mountCerts({ runList });
+        const oldRetry = retry(host);
+        oldRetry.focus(); oldRetry.click();
+        const completion = mount.whenLoaded();
+        const loading = findByAttrValue(host, statusAttr)!;
+        expect(doc.activeElement).toBe(loading);
+        expect(loading.getAttribute('role')).toBe('status');
+        expect(loading.getAttribute('aria-atomic')).toBe('true');
+        expect(loading.getAttribute('tabindex')).toBe('-1');
+        oldRetry.click(); oldRetry.click();
+        expect(mount.refresh()).toBe(completion);
+        expect(runList).toHaveBeenCalledTimes(2);
+        const outside = doc.createElement('button');
+        if (owner === 'outside') outside.focus();
+        if (owner === 'blurred') doc.activeElement = null;
+        if (outcome === 'success') pending.resolve({ entries: [] });
+        else pending.reject(new Error('Read still unavailable'));
+        await completion;
+        expect(doc.activeElement).toBe(owner === 'outside' ? outside : owner === 'blurred' ? null
+          : findByAttrValue(host, outcome === 'success' ? headingAttr : retryAttr));
+        expect(findByAttrValue(host, TLS_CERTS_EMPTY_ATTR) !== null).toBe(outcome === 'success');
+        oldRetry.click();
+        expect(runList).toHaveBeenCalledTimes(2);
+        expect(runList.mock.calls).toEqual([[], []]);
+      });
+    }
+
+    it(`keeps a draft's controls, values and focus across Retry ${outcome}`, async () => {
+      const pending = deferred();
+      const runList = vi.fn<TlsDomainListCaller>()
+        .mockRejectedValueOnce(new Error('Read unavailable')).mockReturnValueOnce(pending.promise);
+      const runUpload = vi.fn<TlsDomainUploadCaller>();
+      const { host, doc, mount } = await mountCerts({ runList, runUpload });
+      mount.openUpload();
+      const form = findByAttrValue(host, TLS_CERTS_UPLOAD_FORM_ATTR);
+      const fields = findAllByAttr(host, TLS_CERTS_UPLOAD_FIELD_ATTR);
+      const files = findAllByAttr(host, TLS_CERTS_UPLOAD_FILE_ATTR);
+      mount.setUploadField('domain', 'draft.example.test');
+      mount.setUploadField('cert_pem', '-----BEGIN CERTIFICATE----- synthetic');
+      mount.setUploadField('private_key_pem', '-----BEGIN PRIVATE KEY----- synthetic');
+      mount.setUploadField('chain_pem', '-----BEGIN CERTIFICATE----- synthetic chain');
+      retry(host).focus(); retry(host).click();
+      await mount.submitUpload();
+      expect(runUpload).not.toHaveBeenCalled();
+      const key = findByAttrValue(host, TLS_CERTS_UPLOAD_FIELD_ATTR, 'private_key_pem')!;
+      key.focus(); key.value += ' edited'; key.fire('input');
+      if (outcome === 'success') pending.resolve({ entries: [certEntry()] });
+      else pending.reject(new Error('Read unavailable'));
+      await mount.whenLoaded();
+      expect(findByAttrValue(host, TLS_CERTS_UPLOAD_FORM_ATTR)).toBe(form);
+      const currentFields = findAllByAttr(host, TLS_CERTS_UPLOAD_FIELD_ATTR);
+      const currentFiles = findAllByAttr(host, TLS_CERTS_UPLOAD_FILE_ATTR);
+      fields.forEach((field, i) => expect(currentFields[i]).toBe(field));
+      files.forEach((file, i) => expect(currentFiles[i]).toBe(file));
+      expect(doc.activeElement).toBe(key);
+      expect(mount.getState().upload.values.private_key_pem).toBe(key.value);
+      expect(mount.getState().upload.values.domain).toBe('draft.example.test');
+      expect(runUpload).not.toHaveBeenCalled();
+    });
+
+    it(`ignores a late Retry ${outcome} after disposal`, async () => {
+      const pending = deferred();
+      const runList = vi.fn<TlsDomainListCaller>()
+        .mockRejectedValueOnce(new Error('Read unavailable')).mockReturnValueOnce(pending.promise);
+      const { host, doc, mount } = await mountCerts({ runList });
+      const oldRetry = retry(host);
+      oldRetry.focus(); oldRetry.click();
+      const completion = mount.whenLoaded();
+      mount.dispose();
+      const outside = doc.createElement('button'); outside.focus();
+      if (outcome === 'success') pending.resolve({ entries: [] });
+      else pending.reject(new Error('Read unavailable'));
+      await completion;
+      oldRetry.click(); await mount.refresh();
+      expect(host.children).toEqual([]);
+      expect(doc.activeElement).toBe(outside);
+      expect(runList).toHaveBeenCalledTimes(2);
+    });
+  }
+
+  for (const removed of [true, false]) {
+    it(`keeps removal acknowledgment (${removed}) separate from refresh failure`, async () => {
+      const runList = vi.fn<TlsDomainListCaller>().mockResolvedValueOnce({ entries: [certEntry()] })
+        .mockRejectedValueOnce(new Error('Refresh unavailable')).mockResolvedValueOnce({ entries: [] });
+      const runRemove = vi.fn<TlsDomainRemoveCaller>().mockResolvedValue({ removed });
+      const { host, mount } = await mountCerts({ runList, runRemove });
+      mount.openRemove('server.example.com'); await mount.confirmRemove();
+      expect(findByAttrValue(host, removedAttr)?.textContent).toContain(removed ? 'Certificate removed for server.example.com.' : 'No certificate is installed for server.example.com.');
+      expect(findByAttrValue(host, TLS_CERTS_ERROR_ATTR)?.textContent).toContain('Could not refresh certificates.');
+      expect(findAllByAttr(host, TLS_CERTS_ROW_ATTR)).toEqual([]);
+      expect(findByAttrValue(host, TLS_CERTS_EMPTY_ATTR)).toBeNull();
+      expect(mount.getState().remove.error).toBeNull();
+      retry(host).click(); await mount.whenLoaded();
+      expect(findByAttrValue(host, TLS_CERTS_EMPTY_ATTR)).not.toBeNull();
+      expect(findByAttrValue(host, removedAttr)).not.toBeNull();
+      expect(runRemove).toHaveBeenCalledExactlyOnceWith({ domain: 'server.example.com' });
+    });
+  }
+
+  it('keeps upload success and drops the draft key when its refresh fails', async () => {
+    const runList = vi.fn<TlsDomainListCaller>().mockResolvedValueOnce({ entries: [certEntry()] })
+      .mockRejectedValueOnce(new Error('Refresh unavailable')).mockResolvedValueOnce({ entries: [] });
+    const result = { fingerprint: 'synthetic replacement', expires_at: NOW + 90 * DAY, san: ['server.example.com'] };
+    const runUpload = vi.fn<TlsDomainUploadCaller>().mockResolvedValue(result);
+    const { host, mount } = await mountCerts({ runList, runUpload });
+    mount.openUpload('server.example.com');
+    mount.setUploadField('cert_pem', '-----BEGIN CERTIFICATE----- synthetic');
+    mount.setUploadField('private_key_pem', '-----BEGIN PRIVATE KEY----- synthetic');
+    await mount.submitUpload();
+    expect(findByAttrValue(host, TLS_CERTS_RESULT_ATTR)).not.toBeNull();
+    expect(findByAttrValue(host, TLS_CERTS_ERROR_ATTR)?.textContent).toContain('Could not refresh certificates.');
+    expect(findAllByAttr(host, TLS_CERTS_ROW_ATTR)).toEqual([]);
+    expect(mount.getState().upload.values.private_key_pem).toBe('');
+    expect(mount.getState().upload.error).toBeNull();
+    retry(host).click(); await mount.whenLoaded();
+    expect(findByAttrValue(host, TLS_CERTS_RESULT_ATTR)).not.toBeNull();
+    expect(runUpload).toHaveBeenCalledTimes(1);
+  });
+
+  for (const entries of [[], [certEntry()]]) {
+    it(`qualifies a failed refresh of ${entries.length} previously loaded certificates`, async () => {
+      const runList = vi.fn<TlsDomainListCaller>().mockResolvedValueOnce({ entries })
+        .mockRejectedValueOnce(new Error('Refresh unavailable'));
+      const { host, mount } = await mountCerts({ runList });
+      mount.openUpload();
+      const form = findByAttrValue(host, TLS_CERTS_UPLOAD_FORM_ATTR);
+      await mount.refresh();
+      expect(findByAttrValue(host, TLS_CERTS_EMPTY_ATTR)).toBeNull();
+      expect(findAllByAttr(host, TLS_CERTS_ROW_ATTR)).toHaveLength(entries.length);
+      expect(findByAttrValue(host, 'data-recued-tls-certs-stale') !== null).toBe(entries.length > 0);
+      expect(findByAttrValue(host, TLS_CERTS_UPLOAD_FORM_ATTR)).toBe(form);
+      expect(retry(host)).not.toBeNull();
+    });
+  }
+});
+
 describe('Certificates — BYO upload panel', () => {
+  it.each(['domain', 'cert_pem', 'private_key_pem', 'chain_pem'] as const)(
+    'keeps the %s control and its sibling fields mounted during consecutive input events',
+    async (field) => {
+      const { host, mount } = await mountCerts({});
+      mount.openUpload();
+      const form = findByAttrValue(host, TLS_CERTS_UPLOAD_FORM_ATTR);
+      const fields = findAllByAttr(host, TLS_CERTS_UPLOAD_FIELD_ATTR);
+      const files = findAllByAttr(host, TLS_CERTS_UPLOAD_FILE_ATTR);
+      const input = findByAttrValue(host, TLS_CERTS_UPLOAD_FIELD_ATTR, field)!;
+
+      input.value = 'a';
+      input.fire('input');
+      expect(findByAttrValue(host, TLS_CERTS_UPLOAD_FORM_ATTR)).toBe(form);
+      for (const control of [...fields, ...files]) {
+        const attr = control.hasAttribute(TLS_CERTS_UPLOAD_FIELD_ATTR)
+          ? TLS_CERTS_UPLOAD_FIELD_ATTR : TLS_CERTS_UPLOAD_FILE_ATTR;
+        expect(findByAttrValue(host, attr, control.getAttribute(attr)!)).toBe(control);
+      }
+      input.value += 'b';
+      input.fire('input');
+      expect(mount.getState().upload.values[field]).toBe('ab');
+      expect(findByAttrValue(host, TLS_CERTS_UPLOAD_FIELD_ATTR, field)?.value).toBe('ab');
+    },
+  );
+
+  it.each(['local', 'server'] as const)('clears %s validation feedback without replacing the corrected draft', async (kind) => {
+    const runUpload = vi.fn(async () => {
+      throw Object.assign(new Error('validation failed'), {
+        details: { issues: [{ code: 'tls_san_mismatch' }, { code: 'tls_chain_invalid' }] },
+      });
+    });
+    const { host, mount } = await mountCerts({ runUpload });
+    mount.openUpload();
+    if (kind === 'server') {
+      mount.setUploadField('domain', 'server.example.com');
+      mount.setUploadField('cert_pem', CERT_PEM);
+      mount.setUploadField('private_key_pem', KEY_PEM);
+    }
+    await mount.submitUpload();
+    expect(findAllByAttr(host, kind === 'local' ? TLS_CERTS_ERROR_ATTR : TLS_CERTS_ISSUE_ATTR)).not.toHaveLength(0);
+    const input = findByAttrValue(host, TLS_CERTS_UPLOAD_FIELD_ATTR, 'domain')!;
+    input.value = 'edited.example.com';
+    input.fire('input');
+
+    expect(findByAttrValue(host, TLS_CERTS_UPLOAD_FIELD_ATTR, 'domain')).toBe(input);
+    expect(findAllByAttr(host, TLS_CERTS_ERROR_ATTR)).toHaveLength(0);
+    expect(findAllByAttr(host, TLS_CERTS_ISSUE_ATTR)).toHaveLength(0);
+    expect(mount.getState().upload.error).toBeNull();
+    expect(mount.getState().upload.issues).toEqual([]);
+    expect(mount.getState().upload.values.private_key_pem).toBe(kind === 'server' ? KEY_PEM : '');
+    expect(runUpload).toHaveBeenCalledTimes(kind === 'server' ? 1 : 0);
+  });
+
+  it('updates the current mounted draft through the public setter after cancel and reopen', async () => {
+    const { host, mount } = await mountCerts({});
+    mount.openUpload();
+    mount.setUploadField('private_key_pem', KEY_PEM);
+    const oldInput = findByAttrValue(host, TLS_CERTS_UPLOAD_FIELD_ATTR, 'private_key_pem')!;
+    mount.cancelUpload();
+    expect(mount.getState().upload.values.private_key_pem).toBe('');
+    mount.openUpload();
+    const input = findByAttrValue(host, TLS_CERTS_UPLOAD_FIELD_ATTR, 'private_key_pem')!;
+    expect(input.value).toBe('');
+    mount.setUploadField('private_key_pem', 'replacement draft');
+
+    expect(findByAttrValue(host, TLS_CERTS_UPLOAD_FIELD_ATTR, 'private_key_pem')).toBe(input);
+    expect(input.value).toBe('replacement draft');
+    expect(oldInput.value).toBe(KEY_PEM);
+  });
+
   it('renders the installed certs', async () => {
     const { host } = await mountCerts({
       entries: [certEntry(), certEntry({ domain: 'other.example.com' })],

@@ -544,6 +544,8 @@ export const renderCollectionExplorer = (props: CollectionExplorerProps): string
           }</button>`
         : ''}
     </div>`;
+  } else if (!props.singleCollection && props.loading && props.instances.length === 0) {
+    body = '<p class="col-explorer-loading" role="status">Loading sources…</p>';
   } else if (!props.singleCollection && props.instances.length === 0) {
     body = `<p class="col-explorer-empty">Nothing connected for ${e(props.collection)} yet.</p>`;
   } else if (!props.singleCollection && props.selectedSlug === null && props.instances.length > 1) {

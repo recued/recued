@@ -43,6 +43,9 @@ const FAKES: Pick<
   | 'notificationKindPolicyDeps'
   | 'quietHoursDeps'
   | 'reminderDeps'
+  | 'receptionRecordDeps'
+  | 'receptionManageMintDeps'
+  | 'receptionLookupRevokeDeps'
 > = {
   archiveDeps: {
     runtime: {} as never,
@@ -81,6 +84,24 @@ const FAKES: Pick<
   // D-324 — the Data → Reminders list. Its webclient-only gate answers before
   // the dispatchers are touched.
   reminderDeps: { dispatchers: {} as never },
+  // D-210 / D-240 — the reception trio. `ServerConfig` did not declare these, so
+  // `server.ts` dropped them and all three answered `not_configured` on every
+  // server through 26.10.21. Each handler's admin gate refuses this unregistered
+  // connection before a store is touched, so empty fakes reach a real answer.
+  receptionRecordDeps: {
+    getBookingStore: () => ({ listForOwner: () => [] }) as never,
+    getSubmissionStore: () => ({ listForOwner: () => [] }) as never,
+    // D-149 § N.6 — the per-record reveal rides the same key. Its admin gate refuses this
+    // unregistered connection before `find` or `open` is reached.
+    openRecord: { find: () => null, open: async () => ({ visitor_email: null, fields: {} }), formName: () => null },
+  },
+  receptionManageMintDeps: {
+    getCredentialStore: () => ({}) as never,
+    readBooking: () => null,
+    getBookingStore: () => ({ findById: () => null }) as never,
+    now: () => 0,
+  },
+  receptionLookupRevokeDeps: { getCredentialStore: () => ({}) as never, now: () => 0 },
 };
 
 const connectWs = (port: number): Promise<WebSocket> =>
@@ -243,6 +264,50 @@ describe('rpc-dep forwarding into the ws-server (server.ts)', () => {
         ws.close();
       }
     });
+
+    it('reception.record.list is wired (D-210 step 2a, Reception → Records — not not_configured)', async () => {
+      const ws = await connectWs(server.port);
+      try {
+        const r = await callRpc(ws, 'reception.record.list', {});
+        expect(r.error?.code).not.toBe('not_configured');
+        expect(r.error?.code).toBe('permission_denied');
+      } finally {
+        ws.close();
+      }
+    });
+
+    it('reception.record.open is wired (D-149 § N.6, open one record — not not_configured)', async () => {
+      const ws = await connectWs(server.port);
+      try {
+        const r = await callRpc(ws, 'reception.record.open', { record_id: 'wiring-probe' });
+        expect(r.error?.code).not.toBe('not_configured');
+        expect(r.error?.code).toBe('permission_denied');
+      } finally {
+        ws.close();
+      }
+    });
+
+    it('reception.manage.mint is wired (D-210 Appendix B — not not_configured)', async () => {
+      const ws = await connectWs(server.port);
+      try {
+        const r = await callRpc(ws, 'reception.manage.mint', { booking_id: 'wiring-probe' });
+        expect(r.error?.code).not.toBe('not_configured');
+        expect(r.error?.code).toBe('permission_denied');
+      } finally {
+        ws.close();
+      }
+    });
+
+    it('reception.lookup.revoke is wired (D-240 § D11 — not not_configured)', async () => {
+      const ws = await connectWs(server.port);
+      try {
+        const r = await callRpc(ws, 'reception.lookup.revoke', { endpoint_id: 'ep-probe', record_id: 'rec-probe' });
+        expect(r.error?.code).not.toBe('not_configured');
+        expect(r.error?.code).toBe('permission_denied');
+      } finally {
+        ws.close();
+      }
+    });
   });
 
   describe('WITHOUT the deps → not_configured (the contrast)', () => {
@@ -312,6 +377,46 @@ describe('rpc-dep forwarding into the ws-server (server.ts)', () => {
       const ws = await connectWs(server.port);
       try {
         const r = await callRpc(ws, 'recipe.installBySlug', { slug: 'wiring-probe' });
+        expect(r.error?.code).toBe('not_configured');
+      } finally {
+        ws.close();
+      }
+    });
+
+    it('reception.record.list → not_configured', async () => {
+      const ws = await connectWs(server.port);
+      try {
+        const r = await callRpc(ws, 'reception.record.list', {});
+        expect(r.error?.code).toBe('not_configured');
+      } finally {
+        ws.close();
+      }
+    });
+
+    it('reception.record.open → not_configured', async () => {
+      const ws = await connectWs(server.port);
+      try {
+        const r = await callRpc(ws, 'reception.record.open', { record_id: 'wiring-probe' });
+        expect(r.error?.code).toBe('not_configured');
+      } finally {
+        ws.close();
+      }
+    });
+
+    it('reception.manage.mint → not_configured', async () => {
+      const ws = await connectWs(server.port);
+      try {
+        const r = await callRpc(ws, 'reception.manage.mint', { booking_id: 'wiring-probe' });
+        expect(r.error?.code).toBe('not_configured');
+      } finally {
+        ws.close();
+      }
+    });
+
+    it('reception.lookup.revoke → not_configured', async () => {
+      const ws = await connectWs(server.port);
+      try {
+        const r = await callRpc(ws, 'reception.lookup.revoke', { endpoint_id: 'ep-probe', record_id: 'rec-probe' });
         expect(r.error?.code).toBe('not_configured');
       } finally {
         ws.close();

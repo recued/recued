@@ -117,7 +117,7 @@ import { createNotificationSettingsStore, type NotificationSettings } from '@rec
 import { createProactiveHistoryStore } from '../storage/proactive-history-store.js';
 import { createProactiveProposalStore } from '../storage/proactive-proposal-store.js';
 import { createYoursService, type YoursService } from '../situations/yours-service.js';
-import { createSphereStore } from '../storage/sphere-store.js';
+import { createSphereStore, nonAssetSphereOrigins } from '../storage/sphere-store.js';
 import { createQuietHoursStore } from '../storage/quiet-hours-store.js';
 import { shouldSuppressForQuietHours } from '@recued/contracts';
 import { createSituationStore, type SituationStore } from '../storage/situation-store.js';
@@ -831,7 +831,7 @@ export const composeCollectionContext = (
     });
   }
   const spheres: ReturnType<typeof createSphereStore> | undefined = db && workEntityStore ? createSphereStore(db, workEntityStore, id =>
-    (contactStore?.getByContactIdResolved(id) ?? contactStore?.get(id))?.relationship, ref => {
+    (contactStore?.getByContactIdResolved(id) ?? contactStore?.get(id))?.relationship, nonAssetSphereOrigins(ref => {
       if (ref.collection === 'episode' || ref.collection === 'history_trace') {
         const sphere = episodeRuntime?.referenceSphere(ref); if (sphere) return { sphere };
       }
@@ -850,7 +850,7 @@ export const composeCollectionContext = (
         return known.length && known.every(value => value !== undefined && value === known[0]) ? { sphere: known[0] } : undefined;
       }
       return undefined;
-    }) : undefined;
+    })) : undefined;
   if (db && workEntityStore && situationStore) episodeRuntime = createEpisodeRuntime({ db, work: workEntityStore, situations: situationStore,
     ...(mailFactStore ? { mailFacts: mailFactStore } : {}), ...(contactStore ? { contacts: contactStore } : {}),
     calendars: localSituationCalendars, mailboxes: localSituationMailboxes, timeZone: serverTimeZone, isVaultUnlocked,

@@ -37,6 +37,7 @@ import {
   isLifecycleAcceptingRpc,
   type LifecycleStatus,
   type ServerHeartbeatSnapshot,
+  type ServerBackupHealthSnapshot,
 } from '@recued/contracts';
 import type { BackgroundServiceRegistry } from './wire-background-services.js';
 
@@ -72,6 +73,8 @@ export interface ComposeServerHeartbeatEmitterDeps {
    *  for the pill's paused/attention states. Absent → the pill stays a plain
    *  green "running" (db-less boot, or before the sources are wired). */
   getServerHealth?: () => ServerHealthSnapshot | undefined;
+  /** Isolated from pressure/kill-switch reads and the base liveness beat. */
+  getBackupHealth?: () => ServerBackupHealthSnapshot | undefined;
   /** Polling cadence. Defaults to {@link SERVER_HEARTBEAT_INTERVAL_MS}. */
   intervalMs?: number;
   /** Clock override for tests. Defaults to `Date.now`. */
@@ -120,6 +123,11 @@ export const composeServerHeartbeatEmitter = (
         // paused glyph (distinct from the kill-switch red).
         payload.paused = health.paused;
         payload.pressure_details = health.pressure_details;
+      }
+      if (deps.getBackupHealth) {
+        const unavailable: ServerBackupHealthSnapshot = { age_ms: 0, monitoring: 'unavailable', integrity: { monitoring: 'unavailable', state: 'unavailable' } };
+        try { payload.backup_health = deps.getBackupHealth() ?? unavailable; }
+        catch { payload.backup_health = unavailable; }
       }
       deps.broadcast(payload);
     } catch (err) {

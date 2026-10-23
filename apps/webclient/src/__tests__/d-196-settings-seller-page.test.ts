@@ -1,7 +1,7 @@
 /** D-196 S2 - Settings -> Seller page. */
 
 import { describe, expect, it, vi } from 'vitest';
-import { LLM_GATEWAY_PAID_ACK_VERSION, SELLER_DEFAULT_DOOR_ID } from '@recued/contracts';
+import { LLM_GATEWAY_PAID_ACK_VERSION, RpcError, SELLER_DEFAULT_DOOR_ID } from '@recued/contracts';
 import type {
   SellerCreatePassTierResponse,
   SellerCustomer,
@@ -66,6 +66,10 @@ import {
   SELLER_OFFER_ROW_ATTR,
   SELLER_OFFER_STATE_ACTION_ATTR,
   SELLER_OFFER_STATE_STATUS_ATTR,
+  SELLER_OFFER_CHECKOUT_ATTR,
+  SELLER_OFFER_CHECKOUT_INPUT_ATTR,
+  SELLER_OFFER_CHECKOUT_ACTION_ATTR,
+  SELLER_OFFER_CHECKOUT_STATUS_ATTR,
   SELLER_ORDERS_ATTR,
   SELLER_ORDERS_STATUS_ATTR,
   SELLER_ORDER_BUCKET_GROUP_ATTR,
@@ -120,6 +124,7 @@ import {
   type SellerManualTierUpsertCaller,
   type SellerCreatePassTierCaller,
   type SellerOfferStateTransitionCaller,
+  type SellerOfferCheckoutUrlCaller,
   type SellerStripeSynchronizeCaller,
   mountSellerPage,
 } from '../settings/seller-page.js';
@@ -3863,5 +3868,190 @@ describe('Seller category (2026-09-03) — door_id defaults, sits behind Advance
       source_customer_id: 'cus-pro-1',
     });
     mount.dispose();
+  });
+});
+
+describe('D-207 ruling (C) — an offer’s checkout link', () => {
+  const LINK = 'https://buy.stripe.com/test_kit2900';
+  const kit = (over: Partial<{ checkout_url: string | null; state: 'draft' | 'active' | 'paused' | 'archived'; updated_at: number }> = {}) => ({
+    offer_id: 'client-kit',
+    kind: 'document' as const,
+    display_name: 'Client kit',
+    description: 'Brief, kickoff and handoff templates',
+    pricing_kind: 'fixed' as const,
+    amount_minor: 2_900,
+    currency: 'USD',
+    fulfillment_recipe_id: null,
+    checkout_url: null as string | null,
+    fulfillment_config: null,
+    state: 'active' as 'draft' | 'active' | 'paused' | 'archived',
+    created_by_recipe_id: null,
+    created_at: 1_700_000_000_000,
+    updated_at: 1_700_000_000_000,
+    ...over,
+  });
+  /** A server that applies the request faithfully. */
+  const applying = (): SellerOfferCheckoutUrlCaller => vi.fn(async (request) => {
+    const offer = kit({ checkout_url: request.checkout_url, updated_at: request.expected_updated_at + 1 });
+    return { result: 'updated' as const, offer, overview: overview({ offers: [offer] }) };
+  });
+  const mountKit = async (
+    offer: ReturnType<typeof kit>,
+    runSetOfferCheckoutUrl?: SellerOfferCheckoutUrlCaller,
+  ) => {
+    const host = makeFakeElement('div');
+    const mount = mountSellerPage({
+      host: host as unknown as HTMLElement,
+      document: makeFakeDocument() as unknown as Document,
+      initialSubpage: 'offers',
+      initialItemId: 'client-kit',
+      runGetOverview: async () => overview({ offers: [offer] }),
+      ...(runSetOfferCheckoutUrl === undefined ? {} : { runSetOfferCheckoutUrl }),
+    });
+    await mount.whenLoaded();
+    return { host, mount };
+  };
+  /** The Offers table names where the link goes, cut short, and keeps the whole
+   *  link in a title. Price and State never wrap: a whole link in the cell squeezed
+   *  them until they broke mid-word ("$29.0 / 0", "activ / e") in a live drive. */
+  const expectShortenedLink = (host: FakeElement): void => {
+    const table = findByAttr(host, SELLER_OFFERS_ATTR)!;
+    expect(textOf(table)).toContain('buy.stripe.com/test_kit2…');
+    expect(textOf(table)).not.toContain(LINK);
+    expect(collectTitles(table)).toContain(LINK);
+    const cells = findByAttr(table, SELLER_OFFER_ROW_ATTR, 'client-kit')!.children;
+    expect([textOf(cells[1]!), cells[1]!.className]).toEqual(['$29.00', 'seller-table-nowrap']);
+    expect([textOf(cells[2]!), cells[2]!.className]).toEqual(['active', 'seller-table-nowrap']);
+  };
+
+  it('saves a pasted link, trimmed, through the owner-only call and shows it', async () => {
+    const run = applying();
+    const { host, mount } = await mountKit(kit(), run);
+
+    expect(textOf(findByAttr(host, SELLER_OFFERS_ATTR)!)).toContain('Not set');
+    expect(textOf(findByAttr(host, SELLER_OFFER_CHECKOUT_ATTR)!)).toContain('where a buyer pays');
+    expect(findByAttr(host, SELLER_OFFER_CHECKOUT_ACTION_ATTR, 'remove')).toBeNull();
+
+    findByAttr(host, SELLER_OFFER_CHECKOUT_INPUT_ATTR)!.value = `  ${LINK}  `;
+    findByAttr(host, SELLER_OFFER_CHECKOUT_ACTION_ATTR, 'save')?.click();
+    await flushAsync();
+    await flushAsync();
+
+    expect(run).toHaveBeenCalledWith({
+      offer_id: 'client-kit',
+      expected_updated_at: 1_700_000_000_000,
+      checkout_url: LINK,
+    });
+    expect(mount.getState().overview?.offers?.[0]?.checkout_url).toBe(LINK);
+    expect(textOf(findByAttr(host, SELLER_OFFER_CHECKOUT_STATUS_ATTR)!)).toBe('Checkout link saved.');
+    expectShortenedLink(host);
+    expect(findByAttr(host, SELLER_OFFER_CHECKOUT_ACTION_ATTR, 'remove')).not.toBeNull();
+    mount.dispose();
+  });
+
+  it('never saves a blank link; removing it is its own explicit action', async () => {
+    const run = applying();
+    const { host, mount } = await mountKit(kit({ checkout_url: LINK }), run);
+
+    findByAttr(host, SELLER_OFFER_CHECKOUT_INPUT_ATTR)!.value = '   ';
+    findByAttr(host, SELLER_OFFER_CHECKOUT_ACTION_ATTR, 'save')?.click();
+    await flushAsync();
+    expect(run).not.toHaveBeenCalled();
+    const status = findByAttr(host, SELLER_OFFER_CHECKOUT_STATUS_ATTR)!;
+    expect(status.getAttribute('role')).toBe('alert');
+    expect(textOf(status)).toContain('starts with https://');
+
+    findByAttr(host, SELLER_OFFER_CHECKOUT_ACTION_ATTR, 'remove')?.click();
+    await flushAsync();
+    await flushAsync();
+    expect(run).toHaveBeenCalledWith({
+      offer_id: 'client-kit',
+      expected_updated_at: 1_700_000_000_000,
+      checkout_url: null,
+    });
+    expect(mount.getState().overview?.offers?.[0]?.checkout_url).toBeNull();
+    expect(textOf(findByAttr(host, SELLER_OFFER_CHECKOUT_STATUS_ATTR)!)).toBe('Checkout link removed.');
+    mount.dispose();
+  });
+
+  it('shows the server’s refusal and keeps the stored link', async () => {
+    const TOO_LONG = 'That link is too long. Recued adds each order\u2019s reference to it, and the '
+      + 'result would be too long to use. Use the short link your payment company gives you.';
+    const run: SellerOfferCheckoutUrlCaller = vi.fn(async () => {
+      throw new RpcError('bad_request', TOO_LONG, 400, 'server.seller.setOfferCheckoutUrl');
+    });
+    const { host, mount } = await mountKit(kit({ checkout_url: LINK }), run);
+
+    findByAttr(host, SELLER_OFFER_CHECKOUT_INPUT_ATTR)!.value = `https://buy.stripe.com/${'a'.repeat(480)}`;
+    const save = findByAttr(host, SELLER_OFFER_CHECKOUT_ACTION_ATTR, 'save');
+    save?.click();
+    await flushAsync();
+    await flushAsync();
+
+    const status = findByAttr(host, SELLER_OFFER_CHECKOUT_STATUS_ATTR)!;
+    expect(status.getAttribute('role')).toBe('alert');
+    expect(textOf(status)).toBe(TOO_LONG);
+    expect(mount.getState().overview?.offers?.[0]?.checkout_url).toBe(LINK);
+    expect(save?.disabled).toBe(false);
+    mount.dispose();
+  });
+
+  it('refuses an answer that does not carry the link it asked for', async () => {
+    const run: SellerOfferCheckoutUrlCaller = vi.fn(async () => {
+      const offer = kit({ checkout_url: 'https://buy.stripe.com/test_other', updated_at: 1_700_000_000_001 });
+      return { result: 'updated' as const, offer, overview: overview({ offers: [offer] }) };
+    });
+    const { host, mount } = await mountKit(kit(), run);
+
+    findByAttr(host, SELLER_OFFER_CHECKOUT_INPUT_ATTR)!.value = LINK;
+    findByAttr(host, SELLER_OFFER_CHECKOUT_ACTION_ATTR, 'save')?.click();
+    await flushAsync();
+    await flushAsync();
+
+    expect(mount.getState().overview?.offers?.[0]?.checkout_url).toBeNull();
+    expect(textOf(findByAttr(host, SELLER_OFFER_CHECKOUT_STATUS_ATTR)!)).toContain('an answer it did not expect');
+    mount.dispose();
+  });
+
+  it('previews an offer with its whole checkout link, or says it is not set', async () => {
+    // The live drive's first click on an offer opened this preview, and it left the
+    // link out: an owner checking which link a form sends buyers to had to open the
+    // offer to find out.
+    const previewOf = async (offer: ReturnType<typeof kit>) => {
+      const host = makeFakeElement('div');
+      const mount = mountSellerPage({
+        host: host as unknown as HTMLElement,
+        document: makeFakeDocument() as unknown as Document,
+        initialSubpage: 'offers',
+        runGetOverview: async () => overview({ offers: [offer] }),
+      });
+      await mount.whenLoaded();
+      const link = findByAttr(host, SELLER_COLLECTION_ITEM_LINK_ATTR, 'client-kit')!;
+      for (const listener of host.children[0]!.listeners.get('click') ?? []) {
+        listener({ target: link, button: 0, preventDefault: () => undefined });
+      }
+      const list = findByAttr(findByAttr(host, LIST_PREVIEW_ATTR)!, LIST_PREVIEW_FACTS_ATTR)!;
+      const values = findAllByTag(list, 'dd');
+      const facts = Object.fromEntries(
+        findAllByTag(list, 'dt').map((term, i) => [textOf(term), textOf(values[i]!)]),
+      );
+      mount.dispose();
+      return facts;
+    };
+    expect((await previewOf(kit({ checkout_url: LINK })))['Checkout link']).toBe(LINK);
+    expect((await previewOf(kit()))['Checkout link']).toBe('Not set');
+  });
+
+  it('keeps the link read-only on a host without the call, and on an archived offer', async () => {
+    const readOnly = await mountKit(kit({ checkout_url: LINK }));
+    expect(findByAttr(readOnly.host, SELLER_OFFER_CHECKOUT_ATTR)).toBeNull();
+    expectShortenedLink(readOnly.host);
+    readOnly.mount.dispose();
+
+    const archived = await mountKit(kit({ checkout_url: LINK, state: 'archived' }), applying());
+    expect(textOf(findByAttr(archived.host, SELLER_OFFER_CHECKOUT_ATTR)!)).toContain('cannot change');
+    expect(findByAttr(archived.host, SELLER_OFFER_CHECKOUT_INPUT_ATTR)).toBeNull();
+    expect(findByAttr(archived.host, SELLER_OFFER_CHECKOUT_ACTION_ATTR, 'save')).toBeNull();
+    archived.mount.dispose();
   });
 });

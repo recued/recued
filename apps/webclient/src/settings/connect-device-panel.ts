@@ -25,6 +25,8 @@ import {
   CHECK_HERE_RUNNING_LABEL,
   CHECK_CONNECTION_LABEL,
   CHECK_CONNECTION_NOTE,
+  CHECK_CONNECTION_RUNNING_NOTE,
+  CHECK_CONNECTION_FINISHED_NOTE,
   PAIRING_HEADING,
   PAIRING_STEPS,
   PAIRING_FIRST_DEVICE_NOTE,
@@ -43,6 +45,7 @@ export const CONNECT_DEVICE_STEP_DONE_ATTR = 'data-recued-connect-device-step-do
 export const CONNECT_DEVICE_STEP_KEY_ATTR = 'data-recued-connect-device-step-key';
 export const CONNECT_DEVICE_CHECK_BTN_ATTR = 'data-recued-connect-device-check';
 export const CONNECT_DEVICE_CHECK_ERROR_ATTR = 'data-recued-connect-device-check-error';
+export const CONNECT_DEVICE_CHECK_STATUS_ATTR = 'data-recued-connect-device-check-status';
 export const CONNECT_DEVICE_STATE_ATTR = 'data-recued-connect-device-state';
 export const CONNECT_DEVICE_NOTE_ATTR = 'data-recued-connect-device-note';
 export const CONNECT_DEVICE_EXPOSURE_CHECK_BTN_ATTR =
@@ -241,6 +244,9 @@ export const mountConnectDevicePanel = (
 
   let disposed = false;
   let checking = false;
+  let checkFinished = false;
+  type FocusKey = 'check' | 'router' | `address:${ConnectDevicePlaceCard['place']}`;
+  const focusTargets = new Map<FocusKey, HTMLElement>();
   /** Set only when the CHECK failed — never when it answered. A failed check
    *  leaves the router step unknown, which is the truth. */
   let checkError: string | null = null;
@@ -458,8 +464,9 @@ export const mountConnectDevicePanel = (
    *  them independently: a cloud probe that fails must not discard the answer
    *  the browser already got, and vice versa. `allSettled`, never `all`. */
   const runChecks = (): void => {
-    if (!canCheckAnything() || checking) return;
+    if (disposed || !canCheckAnything() || checking) return;
     checking = true;
+    checkFinished = false;
     checkError = null;
     render();
     void (async () => {
@@ -486,6 +493,7 @@ export const mountConnectDevicePanel = (
           ? Promise.resolve(null)
           : opts.checkAddressFromHere(address),
       ]);
+      if (disposed) return;
       // ⛔ THE ROUTER ROW IS PART OF WHAT THIS BUTTON ANSWERS. The panel read
       // `network.port_mapping` once at mount and never again, so pressing Check
       // connection left a stale `idle`/`unsupported` on screen no matter what
@@ -534,6 +542,7 @@ export const mountConnectDevicePanel = (
         checkError = CHECK_FROM_OUTSIDE_ERROR;
       }
       checking = false;
+      checkFinished = true;
       render();
     })();
   };
@@ -616,6 +625,7 @@ export const mountConnectDevicePanel = (
             actionBtn.setAttribute('aria-busy', 'true');
           }
           actionBtn.addEventListener('click', () => { flipPortMapping(action.enable); });
+          focusTargets.set('router', actionBtn);
           actionWrap.appendChild(actionBtn);
           actionWrap.appendChild(el('span', ` ${action.note}`));
           if (portMappingError !== null) {
@@ -640,6 +650,7 @@ export const mountConnectDevicePanel = (
       link.setAttribute('href', card.url);
       link.setAttribute('rel', 'noreferrer');
       link.textContent = card.url;
+      focusTargets.set(`address:${card.place}`, link);
       section.appendChild(link);
     }
 
@@ -702,6 +713,10 @@ export const mountConnectDevicePanel = (
 
   const render = (): void => {
     if (disposed) return;
+    // Reclaim only the control that owns focus at this render. An async check
+    // must not pull the reader back after they chose another control or route.
+    const owner = [...focusTargets].find(([, node]) => node === doc.activeElement)?.[0];
+    focusTargets.clear();
     // ⚠ `innerHTML = ''`, NOT `replaceChildren()` — the same note
     // `server-timezone-panel.ts` carries, and for the same reason: the
     // webclient's test fakes implement exactly the DOM surface the existing
@@ -716,6 +731,7 @@ export const mountConnectDevicePanel = (
 
     const intro = el('p', CONNECT_DEVICE_INTRO);
     intro.className = 'connect-device-intro';
+    intro.setAttribute('tabindex', '-1');
     panel.appendChild(intro);
 
     const facts = currentFacts();
@@ -724,21 +740,29 @@ export const mountConnectDevicePanel = (
     // ⛔ ONE ACTION, AFTER BOTH CARDS AND BEFORE PAIRING. It reads as a flow —
     // here are your addresses, check they work, then sign a device in — and it
     // answers questions on BOTH cards, so it cannot live inside either.
-    if (canCheckAnything()) {
+    if (canCheckAnything() || checking || checkFinished) {
       const checkBlock = el('section');
       checkBlock.className = 'connect-device-check-block';
-      const button = doc.createElement('button');
-      button.className = 'connect-device-check';
-      button.setAttribute('type', 'button');
-      button.setAttribute(CONNECT_DEVICE_CHECK_BTN_ATTR, 'true');
-      button.textContent = checking
-        ? CHECK_FROM_OUTSIDE_RUNNING_LABEL
-        : anythingChecked()
-        ? CHECK_FROM_OUTSIDE_AGAIN_LABEL
-        : CHECK_CONNECTION_LABEL;
-      if (checking) button.setAttribute('disabled', 'true');
-      button.addEventListener('click', runChecks);
-      checkBlock.appendChild(button);
+      let feedback: HTMLElement | undefined;
+      if (canCheckAnything() || checking) {
+        const button = doc.createElement('button');
+        button.className = 'connect-device-check';
+        button.setAttribute('type', 'button');
+        button.setAttribute(CONNECT_DEVICE_CHECK_BTN_ATTR, 'true');
+        button.textContent = checking
+          ? CHECK_FROM_OUTSIDE_RUNNING_LABEL
+          : anythingChecked()
+          ? CHECK_FROM_OUTSIDE_AGAIN_LABEL
+          : CHECK_CONNECTION_LABEL;
+        if (checking) {
+          button.setAttribute('disabled', 'true');
+          button.setAttribute('aria-busy', 'true');
+        } else {
+          focusTargets.set('check', button);
+        }
+        button.addEventListener('click', runChecks);
+        checkBlock.appendChild(button);
+      }
       const blurb = el('span', CHECK_CONNECTION_NOTE);
       blurb.className = 'connect-device-note';
       checkBlock.appendChild(blurb);
@@ -746,7 +770,25 @@ export const mountConnectDevicePanel = (
         const err = el('span', checkError);
         err.className = 'connect-device-check-error';
         err.setAttribute(CONNECT_DEVICE_CHECK_ERROR_ATTR, 'true');
+        err.setAttribute('role', 'alert');
+        err.setAttribute('aria-atomic', 'true');
+        feedback = err;
         checkBlock.appendChild(err);
+      } else if (checking || checkFinished) {
+        const status = el('span', checking
+          ? CHECK_CONNECTION_RUNNING_NOTE : CHECK_CONNECTION_FINISHED_NOTE);
+        status.className = 'connect-device-check-status';
+        status.setAttribute(CONNECT_DEVICE_CHECK_STATUS_ATTR, 'true');
+        status.setAttribute('role', 'status');
+        status.setAttribute('aria-atomic', 'true');
+        feedback = status;
+        checkBlock.appendChild(status);
+      }
+      // The disabled button cannot hold keyboard focus. Its progress message
+      // carries the same owner until the check/retry button is available again.
+      if (feedback !== undefined && !focusTargets.has('check')) {
+        feedback.setAttribute('tabindex', '-1');
+        focusTargets.set('check', feedback);
       }
       // ⚠ THE RAW ROWS, AFTER the plain-language rows above — never instead of
       // them. The tab this replaces made the table the ONLY answer, which is
@@ -788,6 +830,13 @@ export const mountConnectDevicePanel = (
     panel.appendChild(hosted);
 
     opts.host.appendChild(panel);
+    if (owner !== undefined) {
+      const target = focusTargets.get(owner);
+      const available = target !== undefined && target.getAttribute('disabled') === null;
+      const destination = available ? target : intro;
+      destination.focus?.({ preventScroll: true });
+      destination.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    }
   };
 
   render();
@@ -867,6 +916,7 @@ export const mountConnectDevicePanel = (
     refresh: render,
     dispose: () => {
       disposed = true;
+      focusTargets.clear();
       // ⚠ A pending expiry timer would call `render()` after teardown. `render`
       // already no-ops on `disposed`, so this is about not holding the closure
       // alive, not about correctness.
@@ -1001,9 +1051,19 @@ export const CONNECT_DEVICE_PANEL_STYLES = `
   cursor: default;
   opacity: 0.6;
 }
-[${CONNECT_DEVICE_PANEL_ATTR}] .connect-device-check-error {
+[${CONNECT_DEVICE_PANEL_ATTR}] .connect-device-check-error,
+[${CONNECT_DEVICE_PANEL_ATTR}] .connect-device-check-status {
   display: block;
   margin-top: 4px;
+}
+[${CONNECT_DEVICE_PANEL_ATTR}] .connect-device-check-status {
+  color: var(--fg-muted, var(--fg));
+}
+[${CONNECT_DEVICE_PANEL_ATTR}] [${CONNECT_DEVICE_CHECK_STATUS_ATTR}]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+[${CONNECT_DEVICE_PANEL_ATTR}] .connect-device-check-error {
   color: var(--danger, var(--fg));
 }
 /* D-273 — the one setting on this page. Its own block under the step's text

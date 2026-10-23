@@ -1868,6 +1868,9 @@ export const createGraphProvider = (
   return {
     kind: 'graph',
     slug: opts.slug,
+    // Each folder's delta link persists in the account store, and an expired
+    // one is seeded again from a listing (the 404/410 path).
+    resumesFromCursor: true,
     sendCapable,
     mutationCapable,
     // D-264 — creating a draft needs the same grant mutation does

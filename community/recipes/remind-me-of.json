@@ -1,7 +1,7 @@
 {
   "recipe_id": "remind-me-of",
   "chat_exposed": true,
-  "version": 2,
+  "version": 3,
   "ttl": 60,
   "metadata": {
     "name": "Remind me",
@@ -30,7 +30,8 @@
       "transform": "date_parse",
       "input": "{{config.remind_at}}",
       "require_offset": true,
-      "fail_on": "{{step.due_at_ms}} is_null"
+      "fail_on": "{{step.due_at_ms}} is_null",
+      "fail_reason": "Remind at could not be read as a date and time with its offset from UTC. Enter one that includes the offset."
     },
     {
       "id": "set",

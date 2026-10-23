@@ -169,3 +169,32 @@ export interface ArchiveBackupHealthStatus {
   };
   alerts: ArchiveBackupHealthAlert[];
 }
+
+/** Opt-in full-ciphertext reads of previously verified, retained copies at the
+ * enabled unattended-backup destination. No recovery factor is needed. */
+export interface ArchiveBackupIntegrityPolicy {
+  enabled: boolean;
+  schedule: ArchiveBackupSchedule;
+}
+export type ArchiveBackupIntegrityIssue = ArchiveRemoteIssue | 'history_unavailable' | 'stopped';
+export interface ArchiveBackupIntegrityRun {
+  operation_id: string;
+  destination_id: string;
+  started_at: number;
+  finished_at?: number;
+  outcome: 'running' | 'completed' | 'failed';
+  total: number;
+  checked: number;
+  failed: number;
+  skipped: number;
+  issue?: ArchiveBackupIntegrityIssue;
+}
+export interface ArchiveBackupIntegrityStatus {
+  policy: ArchiveBackupIntegrityPolicy;
+  monitoring: 'active' | 'paused' | 'not_configured' | 'unavailable';
+  issue?: 'settings_unavailable' | 'schedule_unavailable' | 'clock_changed';
+  destination?: { connection_name: string; destination_id: string };
+  next_run_at?: number;
+  last_run?: ArchiveBackupIntegrityRun;
+  alert_pending?: boolean;
+}

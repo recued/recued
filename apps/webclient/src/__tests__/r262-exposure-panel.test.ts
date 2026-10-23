@@ -36,6 +36,9 @@ import {
   EXPOSURE_APEX_ROW_ATTR,
   EXPOSURE_APEX_WARNING_ATTR,
   EXPOSURE_CELL_ATTR,
+  EXPOSURE_GRID_GUIDANCE_ATTR,
+  EXPOSURE_LAN_POSTURE_ATTR,
+  EXPOSURE_LAN_STATE_ATTR,
   EXPOSURE_LOAD_ERROR_ATTR,
   EXPOSURE_MODAL_ATTR,
   EXPOSURE_PANEL_ATTR,
@@ -43,11 +46,14 @@ import {
   EXPOSURE_PATH_ROW_ATTR,
   EXPOSURE_PRESET_ROW_ATTR,
   EXPOSURE_PUBLIC_MCP_BTN_ATTR,
+  EXPOSURE_RETRY_BTN_ATTR,
   mountExposurePanel,
   EXPOSURE_CONNECT_BTN_ATTR,
   EXPOSURE_CONNECT_MODAL_ATTR,
   EXPOSURE_CONNECT_SNIPPET_ATTR,
   type ExposureMutationResponse,
+  type ExposureGetCaller,
+  type MountExposurePanelOptions,
 } from '../settings/exposure-panel.js';
 import { PUBLIC_MCP_MODAL_COPY } from '../settings/public-mcp-modal.js';
 
@@ -1160,6 +1166,245 @@ describe('R26.2 Delta 1 — the preset click path is gated too', () => {
 
     release!();
     await gate;
+  });
+});
+
+describe('Exposure grid guidance', () => {
+  const allByAttr = (root: FakeElement, attr: string): FakeElement[] => [
+    ...(root.hasAttribute(attr) ? [root] : []),
+    ...root.children.flatMap(child => allByAttr(child, attr)),
+  ];
+
+  it('shares one explanation between the named table and the blocked Public switches', async () => {
+    const { host, mount, calls } = await setup({ hasPublicAddress: false });
+    const hints = allByAttr(host, EXPOSURE_GRID_GUIDANCE_ATTR);
+    expect(hints).toHaveLength(1);
+    expect(collectText(hints[0]!)).toContain('access from the internet');
+    expect(collectText(hints[0]!)).toContain('Settings, Server, Hostnames');
+    const hintId = hints[0]!.getAttribute('id')!;
+    expect(hintId).not.toBe('');
+    const table = findByAttr(host, 'aria-describedby', hintId)!;
+    expect(table.tagName).toBe('TABLE');
+    const label = findByAttr(host, 'id', table.getAttribute('aria-labelledby')!);
+    expect(label?.textContent).toBe('What each part allows');
+    expect(allByAttr(table, 'scope').map(node => node.getAttribute('scope'))).toEqual(['col', 'col', 'col']);
+    for (const row of mount.getState().model!.path_rows) {
+      const publicInput = findByAttr(host, EXPOSURE_CELL_ATTR, `${row.path}.public`)!;
+      const lanInput = findByAttr(host, EXPOSURE_CELL_ATTR, `${row.path}.lan`)!;
+      expect(publicInput.disabled).toBe(true);
+      expect(publicInput.checked).toBe(row.resolution.public);
+      expect(publicInput.getAttribute('aria-describedby')).toBe(hintId);
+      expect(lanInput.disabled).toBe(false);
+      expect(lanInput.checked).toBe(row.resolution.lan);
+      expect(lanInput.getAttribute('aria-describedby')).toBeNull();
+    }
+    expect(calls.setPath).toEqual([]);
+    mount.dispose();
+  });
+
+  it('omits the prerequisite explanation when the server permits Public access', async () => {
+    const { host, mount } = await setup({ hasPublicAddress: true, hasDdns: false });
+    await mount.refresh();
+    expect(allByAttr(host, EXPOSURE_GRID_GUIDANCE_ATTR)).toEqual([]);
+    for (const row of mount.getState().model!.path_rows) {
+      const input = findByAttr(host, EXPOSURE_CELL_ATTR, `${row.path}.public`)!;
+      expect(input.disabled).toBe(false);
+      expect(input.getAttribute('aria-describedby')).toBeNull();
+    }
+    expect(findByAttr(host, 'aria-describedby')).toBeNull();
+    mount.dispose();
+  });
+
+  it('lets an already-public path close while the other Public switches describe the missing address', async () => {
+    const { host, mount, calls } = await setup({ hasPublicAddress: false,
+      state: buildState({ resolution: resolution({ reception: { lan: false, public: true } }) }) });
+    expect(allByAttr(host, EXPOSURE_GRID_GUIDANCE_ATTR)).toHaveLength(1);
+    const reception = findByAttr(host, EXPOSURE_CELL_ATTR, 'reception.public')!;
+    expect(reception.checked).toBe(true);
+    expect(reception.disabled).toBe(false);
+    expect(reception.getAttribute('aria-describedby')).toBeNull();
+    expect(findByAttr(host, EXPOSURE_CELL_ATTR, 'health.public')?.getAttribute('aria-describedby')).not.toBeNull();
+    mount.clickCell('reception', 'public');
+    await mount.settle();
+    expect(calls.setPath).toEqual([{ path: 'reception', resolution: { lan: false, public: false } }]);
+    expect(findByAttr(host, EXPOSURE_CELL_ATTR, 'reception.public')?.disabled).toBe(true);
+    expect(findByAttr(host, EXPOSURE_CELL_ATTR, 'reception.public')?.getAttribute('aria-describedby'))
+      .toBe(findByAttr(host, EXPOSURE_GRID_GUIDANCE_ATTR)?.getAttribute('id'));
+    mount.dispose();
+  });
+});
+
+const deferredRead = <T,>() => {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+};
+type ExposureRead = Awaited<ReturnType<ExposureGetCaller>>;
+const readResult = (): ExposureRead => ({ state: buildState(), apex_mode: 'redirect', has_public_address: false });
+const mountReadPanel = (runGet: ExposureGetCaller, extra: Partial<MountExposurePanelOptions> = {}) => {
+  const host = makeFakeElement('div');
+  let broadcast: ((event: unknown) => void) | null = null;
+  const noWrite = async (): Promise<ExposureMutationResponse> => { throw new Error('Unexpected exposure mutation'); };
+  const mount = mountExposurePanel({
+    host: host as unknown as HTMLElement, document: makeFakeDocument() as unknown as Document,
+    runGet, runApplyPreset: noWrite, runSetPathResolution: noWrite, runSetPublicMcpAck: noWrite,
+    subscribe: ((_kind: string, cb: (event: unknown) => void) => { broadcast = cb; return () => {}; }) as never,
+    ...extra,
+  });
+  return { host, mount, fireBroadcast: (next = buildState({ last_changed_at: 9_999 })) => broadcast?.({
+    kind: 'exposure_changed', ...next, changed_at: next.last_changed_at, cursor: 1,
+  }) };
+};
+
+describe('Exposure read recovery', () => {
+  it('shares the pending mount read, including the legacy DDNS gate', async () => {
+    const inventory = deferredRead<ExposureRead>();
+    const ddns = deferredRead<boolean>();
+    let reads = 0;
+    let ddnsReads = 0;
+    const { host, mount } = mountReadPanel(() => { reads += 1; return inventory.promise; }, {
+      runHasDdns: () => { ddnsReads += 1; return ddns.promise; },
+    });
+    const first = mount.refresh();
+    expect(mount.refresh()).toBe(first);
+    expect(reads).toBe(1);
+    expect(ddnsReads).toBe(1);
+    expect(findByAttr(host, 'role', 'status')?.textContent).toBe('Loading exposure state…');
+    inventory.resolve({ state: buildState(), apex_mode: 'redirect' });
+    await Promise.resolve();
+    expect(mount.refresh()).toBe(first);
+    ddns.resolve(true);
+    await first;
+    expect(mount.getState().hasDdns).toBe(true);
+    expect(findByAttr(host, EXPOSURE_PATH_ROW_ATTR, 'reception')).not.toBeNull();
+    mount.dispose();
+  });
+
+  it('retires Retry immediately and shares one retry while advisory reads remain pending', async () => {
+    const inventory = deferredRead<ExposureRead>();
+    let reads = 0;
+    let lanReads = 0;
+    const { host, mount } = mountReadPanel(async () => {
+      reads += 1;
+      if (reads === 1) throw new Error('Initial read unavailable');
+      return inventory.promise;
+    }, {
+      runHasDdns: () => new Promise(() => {}),
+      readLanPosture: () => { lanReads += 1; return new Promise(() => {}); },
+    });
+    await mount.refresh();
+    const oldRetry = findByAttr(host, EXPOSURE_RETRY_BTN_ATTR)!;
+    expect(oldRetry.getAttribute('aria-label')).toBe('Retry loading exposure settings');
+    oldRetry.click(); oldRetry.click();
+    const retryRead = mount.refresh();
+    expect(mount.refresh()).toBe(retryRead);
+    expect(reads).toBe(2);
+    expect(lanReads).toBe(2);
+    expect(findByAttr(host, EXPOSURE_RETRY_BTN_ATTR)).toBeNull();
+    expect(findByAttr(host, EXPOSURE_LOAD_ERROR_ATTR)).toBeNull();
+    expect(findByAttr(host, 'role', 'status')?.getAttribute('aria-atomic')).toBe('true');
+    inventory.resolve(readResult());
+    await retryRead;
+    oldRetry.click();
+    expect(reads).toBe(2);
+    expect(mount.getState().loadError).toBeNull();
+    mount.dispose();
+  });
+
+  it('requires the current Retry after another failure and ignores it after disposal', async () => {
+    let reads = 0;
+    const { host, mount } = mountReadPanel(async () => {
+      reads += 1;
+      if (reads < 3) throw new Error('Read unavailable');
+      return readResult();
+    });
+    await mount.refresh();
+    const firstRetry = findByAttr(host, EXPOSURE_RETRY_BTN_ATTR)!;
+    firstRetry.click();
+    await mount.refresh();
+    const currentRetry = findByAttr(host, EXPOSURE_RETRY_BTN_ATTR)!;
+    expect(currentRetry).not.toBe(firstRetry);
+    firstRetry.click();
+    expect(reads).toBe(2);
+    currentRetry.click();
+    await mount.refresh();
+    expect(reads).toBe(3);
+    mount.dispose();
+    currentRetry.click();
+    await mount.refresh();
+    expect(reads).toBe(3);
+  });
+
+  it('a pending read failure cannot hide a newer live recovery', async () => {
+    const inventory = deferredRead<ExposureRead>();
+    const { host, mount, fireBroadcast } = mountReadPanel(() => inventory.promise);
+    const pending = mount.refresh();
+    fireBroadcast();
+    const cell = findByAttr(host, EXPOSURE_CELL_ATTR, 'reception.public');
+    inventory.reject(new Error('Older read unavailable'));
+    await pending;
+    expect(mount.getState().state?.last_changed_at).toBe(9_999);
+    expect(mount.getState().loadError).toBeNull();
+    expect(findByAttr(host, EXPOSURE_CELL_ATTR, 'reception.public')).toBe(cell);
+    expect(findByAttr(host, EXPOSURE_LOAD_ERROR_ATTR)).toBeNull();
+    mount.dispose();
+  });
+
+  it('a complete live state can recover a failed initial read', async () => {
+    const { host, mount, fireBroadcast } = mountReadPanel(async () => { throw new Error('Read unavailable'); });
+    await mount.refresh();
+    expect(findByAttr(host, EXPOSURE_LOAD_ERROR_ATTR)).not.toBeNull();
+    fireBroadcast();
+    expect(mount.getState().loadError).toBeNull();
+    expect(findByAttr(host, EXPOSURE_LOAD_ERROR_ATTR)).toBeNull();
+    expect(findByAttr(host, EXPOSURE_PATH_ROW_ATTR, 'reception')).not.toBeNull();
+    mount.dispose();
+  });
+
+  it.each(['success', 'error'] as const)('ignores a disposed inventory %s', async outcome => {
+    const inventory = deferredRead<ExposureRead>();
+    const { host, mount } = mountReadPanel(() => inventory.promise);
+    const pending = mount.refresh();
+    mount.dispose();
+    if (outcome === 'success') inventory.resolve(readResult());
+    else inventory.reject(new Error('Late failure'));
+    await pending;
+    expect(host.children).toHaveLength(0);
+  });
+
+  it.each(['idle', 'confirm'] as const)('a late LAN reply preserves the %s controls', async phase => {
+    const lan = deferredRead<Awaited<ReturnType<NonNullable<MountExposurePanelOptions['readLanPosture']>>>>();
+    const { host, mount } = mountReadPanel(async () => readResult(), { readLanPosture: () => lan.promise });
+    await mount.refresh();
+    if (phase === 'confirm') mount.clickManagePublicMcp();
+    const control = findByAttr(host, phase === 'confirm' ? EXPOSURE_MODAL_ATTR : EXPOSURE_CELL_ATTR);
+    lan.resolve({ lanPort: 7717, publiclyRoutable: false, publicAddresses: [] });
+    await lan.promise;
+    expect(findByAttr(host, phase === 'confirm' ? EXPOSURE_MODAL_ATTR : EXPOSURE_CELL_ATTR)).toBe(control);
+    expect(findByAttr(host, EXPOSURE_LAN_POSTURE_ATTR)).not.toBeNull();
+    mount.dispose();
+  });
+
+  it('rejects an older LAN reply after a newer retry has supplied the posture', async () => {
+    const oldLan = deferredRead<Awaited<ReturnType<NonNullable<MountExposurePanelOptions['readLanPosture']>>>>();
+    let reads = 0;
+    let lanReads = 0;
+    const { host, mount } = mountReadPanel(async () => {
+      if (++reads === 1) throw new Error('Initial read unavailable');
+      return readResult();
+    }, { readLanPosture: () => ++lanReads === 1 ? oldLan.promise
+      : Promise.resolve({ lanPort: 7717, publiclyRoutable: true, publicAddresses: ['203.0.113.7'] }) });
+    await mount.refresh();
+    findByAttr(host, EXPOSURE_RETRY_BTN_ATTR)!.click();
+    await mount.refresh();
+    const current = findByAttr(host, EXPOSURE_LAN_POSTURE_ATTR);
+    expect(current?.getAttribute(EXPOSURE_LAN_STATE_ATTR)).toBe('public');
+    oldLan.resolve({ lanPort: 7717, publiclyRoutable: false, publicAddresses: [] });
+    await oldLan.promise;
+    expect(findByAttr(host, EXPOSURE_LAN_POSTURE_ATTR)).toBe(current);
+    expect(findByAttr(host, EXPOSURE_LAN_STATE_ATTR)?.getAttribute(EXPOSURE_LAN_STATE_ATTR)).toBe('public');
+    mount.dispose();
   });
 });
 

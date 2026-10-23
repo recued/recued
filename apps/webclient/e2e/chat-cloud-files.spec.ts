@@ -1,5 +1,5 @@
 import type { ChatDeliverySnapshot, FileLifecyclePreview } from '@recued/contracts';
-import { test, expect, type Browser } from '@playwright/test';
+import { test, expect, type Browser, type Page } from '@playwright/test';
 import { build } from 'esbuild';
 import { mkdir, rm } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -18,6 +18,7 @@ test.afterAll(async () => { await rm(target, { force: true }); });
 
 const setup = async (browser: Browser, messenger = false) => {
   const context = await browser.newContext(); const page = await context.newPage();
+  const pageErrors: string[] = []; page.on('pageerror', error => { pageErrors.push(error.message); });
   const fixture = await createFixture({ emit: event => { void page.evaluate(event => {
     (window as unknown as { queueTestEvent?(e: unknown): void }).queueTestEvent?.(event);
   }, { ...event, cursor: Date.now() }).catch(() => {}); } }, messenger, true);
@@ -52,7 +53,7 @@ const setup = async (browser: Browser, messenger = false) => {
     },
     chips: page.locator('[data-recued-chat-route-attachment]'),
     loseAck: () => { loseAck = true; },
-    close: async () => { fixture.release(); await context.close(); fixture.close(); },
+    close: async () => { fixture.release(); await context.close(); fixture.close(); expect(pageErrors).toEqual([]); },
   };
 };
 
@@ -80,6 +81,157 @@ const openDataCloudFile = async (f: Awaited<ReturnType<typeof setup>>, filename 
   await expect(dialog.getByRole('button', { name: 'Shared conversation', exact: true })).toBeVisible();
   return dialog;
 };
+
+const prepareFileChat = async (f: Awaited<ReturnType<typeof setup>>, origin: 'saved' | 'cloud') => {
+  await f.page.evaluate(() => { location.hash = '#data/files'; });
+  await f.page.getByRole('button', { name: origin === 'saved' ? 'Saved files On this server' : 'Google Drive · Work drive', exact: true }).click();
+  await f.page.locator('[data-collection-record]').filter({ hasText: origin === 'saved' ? 'Attachment.pdf' : 'Cloud report.pdf' }).click();
+  const name = origin === 'saved' ? 'Use in Chat' : 'Import and use in Chat';
+  const dialog = f.page.getByRole('dialog', { name, exact: true });
+  return {
+    dialog,
+    trigger: f.page.getByRole('button', { name, exact: true }),
+    query: dialog.getByRole('searchbox', { name: 'Find a conversation' }),
+    getMethod: origin === 'saved' ? 'data.file.attachments.get' : 'data.file.attachments.remote.get',
+  };
+};
+const settle = (page: Page) => page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+const fileChatReply = (page: Page, method: string) => page.waitForResponse(response =>
+  response.url().endsWith('/existing-files-rpc') && response.request().postDataJSON().method === method);
+
+for (const origin of ['saved', 'cloud'] as const) {
+  for (const read of ['file', 'conversations'] as const) {
+    for (const width of [390, 1280]) {
+      test(`file-to-Chat ${origin} can type while ${read} loads at ${width}px`, async ({ browser }) => {
+        const f = await setup(browser); let release: (() => void) | undefined;
+        try {
+          await f.page.setViewportSize({ width, height: 900 });
+          const { dialog, trigger, query, getMethod } = await prepareFileChat(f, origin);
+          release = f.holdNext(read === 'file' ? getMethod : 'chat.sessions.list');
+          await trigger.focus(); await f.page.keyboard.press('Enter');
+          await expect(dialog.getByRole('status').filter({ hasText: 'Loading conversations…' })).toBeVisible();
+          await expect(query).toBeFocused({ timeout: 2_000 });
+          await expect(query).toBeEnabled(); await f.page.keyboard.type('Shar');
+          await expect(dialog.getByText('No conversations match your search.', { exact: true })).toBeHidden();
+          release();
+          await expect(dialog.getByRole('button', { name: 'Shared conversation', exact: true })).toBeVisible();
+          await expect(query).toBeFocused(); await f.page.keyboard.type('ed');
+          await expect(query).toHaveValue('Shared');
+          expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+          expect(f.fixture.cloudSource!.downloads()).toBe(0);
+          expect(f.calls.some(call => call.method === 'chat.send' || call.method === 'data.file.attachments.import')).toBe(false);
+        } finally { release?.(); await f.close(); }
+      });
+    }
+
+    test(`file-to-Chat ${origin} closes while ${read} loads and retires the reply`, async ({ browser }) => {
+      const f = await setup(browser); let release: (() => void) | undefined;
+      try {
+        const { dialog, trigger, query, getMethod } = await prepareFileChat(f, origin);
+        const address = f.page.url(); const method = read === 'file' ? getMethod : 'chat.sessions.list';
+        release = f.holdNext(method);
+        await trigger.focus(); await f.page.keyboard.press('Enter');
+        await expect(query).toBeFocused(); await f.page.keyboard.type('unmatched');
+        if (read === 'file') {
+          await dialog.getByRole('button', { name: 'Cancel', exact: true }).focus(); await f.page.keyboard.press('Enter');
+        } else await f.page.keyboard.press('Escape');
+        await expect(dialog).toHaveCount(0); await expect(trigger).toBeFocused();
+        const reply = fileChatReply(f.page, method); release(); await reply; await settle(f.page);
+        await expect(dialog).toHaveCount(0); await expect(trigger).toBeFocused();
+        expect(f.page.url()).toBe(address);
+        expect(f.calls.some(call => call.method === 'chat.send' || call.method === 'data.file.attachments.import')).toBe(false);
+      } finally { release?.(); await f.close(); }
+    });
+  }
+
+  test(`file-to-Chat ${origin} explains an empty search and keeps New chat available`, async ({ browser }) => {
+    const f = await setup(browser);
+    try {
+      const { dialog, trigger, query } = await prepareFileChat(f, origin);
+      await trigger.focus(); await f.page.keyboard.press('Enter');
+      await expect(dialog.getByRole('button', { name: 'Shared conversation', exact: true })).toBeVisible();
+      await query.fill('unmatched-conversation');
+      const empty = dialog.getByRole('status').filter({ hasText: 'No conversations match your search.' });
+      await expect(empty).toBeVisible();
+      await expect(dialog.getByRole('button', { name: 'Shared conversation', exact: true })).toHaveCount(0);
+      await expect(dialog.getByRole('button', { name: 'New chat', exact: true })).toBeVisible();
+      await query.fill('shared'); await expect(empty).toBeHidden();
+      await expect(dialog.getByRole('button', { name: 'Shared conversation', exact: true })).toBeVisible();
+      await query.fill(''); await expect(empty).toBeHidden();
+      await dialog.getByRole('button', { name: 'New chat', exact: true }).focus(); await f.page.keyboard.press('Enter');
+      if (origin === 'saved') {
+        await expect(f.page).toHaveURL(/#chat\/new$/); await expect(f.chips).toContainText('Attachment.pdf');
+      } else {
+        await expect(dialog).toContainText('Selected conversation: New chat');
+        await expect(dialog.getByRole('button', { name: 'Import and use in Chat', exact: true })).toBeEnabled();
+      }
+      expect(f.calls.some(call => call.method === 'chat.send' || call.method === 'data.file.attachments.import')).toBe(false);
+    } finally { await f.close(); }
+  });
+
+  test(`file-to-Chat ${origin} retries keep the query and respect a later focus move`, async ({ browser }) => {
+    const f = await setup(browser); let release: (() => void) | undefined;
+    try {
+      const { dialog, trigger, query, getMethod } = await prepareFileChat(f, origin);
+      f.failNext(getMethod, 'File read unavailable');
+      await trigger.focus(); await f.page.keyboard.press('Enter');
+      await expect(dialog).toContainText('File read unavailable');
+      await expect(query).toBeFocused(); await f.page.keyboard.type('Shar');
+      f.failNext(getMethod, 'File read still unavailable'); release = f.holdNext(getMethod);
+      await dialog.getByRole('button', { name: 'Retry', exact: true }).focus(); await f.page.keyboard.press('Enter');
+      await expect(query).toBeFocused(); await f.page.keyboard.type('ed');
+      release(); await expect(dialog).toContainText('File read still unavailable');
+      await expect(query).toBeFocused(); await expect(query).toHaveValue('Shared');
+      release = f.holdNext(getMethod);
+      await dialog.getByRole('button', { name: 'Retry', exact: true }).focus(); await f.page.keyboard.press('Enter');
+      await expect(query).toBeFocused();
+      const cancel = dialog.getByRole('button', { name: 'Cancel', exact: true }); await cancel.focus();
+      release(); await expect(dialog.getByRole('button', { name: 'Shared conversation', exact: true })).toBeVisible();
+      await expect(cancel).toBeFocused(); await expect(query).toHaveValue('Shared');
+      expect(f.calls.some(call => call.method === 'chat.send' || call.method === 'data.file.attachments.import')).toBe(false);
+    } finally { release?.(); await f.close(); }
+  });
+}
+
+test('file-to-Chat navigation during a read cannot revive the chooser or steal composer focus', async ({ browser }) => {
+  const f = await setup(browser); let release: (() => void) | undefined;
+  try {
+    const { dialog, trigger, getMethod } = await prepareFileChat(f, 'cloud');
+    release = f.holdNext(getMethod);
+    await trigger.focus(); await f.page.keyboard.press('Enter'); await expect(dialog).toBeVisible();
+    await f.page.evaluate(() => { location.hash = '#chat/new'; });
+    await expect(dialog).toHaveCount(0); await expect(f.input).toBeVisible(); await f.input.focus();
+    const reply = fileChatReply(f.page, getMethod); release(); await reply; await settle(f.page);
+    await expect(dialog).toHaveCount(0); await expect(f.input).toBeFocused(); await expect(f.chips).toHaveCount(0);
+    expect(f.calls.some(call => call.method === 'chat.send' || call.method === 'data.file.attachments.import')).toBe(false);
+  } finally { release?.(); await f.close(); }
+});
+
+test('file-to-Chat import retry restores keyboard focus without overriding a move to Close', async ({ browser }) => {
+  const f = await setup(browser); let release: (() => void) | undefined;
+  try {
+    const dialog = await openDataCloudFile(f);
+    await dialog.getByRole('button', { name: 'Shared conversation', exact: true }).click();
+    f.loseAck(); release = f.holdNext('data.file.attachments.import');
+    await dialog.getByRole('button', { name: 'Import and use in Chat', exact: true }).focus(); await f.page.keyboard.press('Enter');
+    const pending = dialog.getByRole('status').filter({ hasText: /^Saving / });
+    await expect(pending).toBeFocused();
+    await expect(dialog.getByRole('searchbox')).toBeDisabled();
+    release(); await expect(dialog).toContainText('Import acknowledgement lost');
+    const retry = dialog.getByRole('button', { name: 'Retry import', exact: true }); await expect(retry).toBeFocused();
+    f.failNext('data.file.attachments.import', 'Import temporarily unavailable'); release = f.holdNext('data.file.attachments.import');
+    await f.page.keyboard.press('Enter'); await expect(pending).toBeFocused();
+    await dialog.getByRole('button', { name: 'Close', exact: true }).focus();
+    release(); await expect(dialog).toContainText('Import temporarily unavailable');
+    await expect(dialog.getByRole('button', { name: 'Cancel', exact: true })).toBeFocused();
+    await retry.focus(); await f.page.keyboard.press('Enter');
+    await expect(f.page).toHaveURL(/#chat\/session\/s$/); await expect(f.chips).toHaveCount(1);
+    const imports = f.calls.filter(call => call.method === 'data.file.attachments.import');
+    expect(imports).toHaveLength(3); expect(imports.map(call => call.args)).toEqual([imports[0]!.args, imports[0]!.args, imports[0]!.args]);
+    expect(f.fixture.cloudSource!.downloads()).toBe(1);
+    expect(f.calls.some(call => call.method === 'chat.send')).toBe(false);
+  } finally { release?.(); await f.close(); }
+});
 
 test('Data browses connected files and imports into the shared Messenger conversation through the production shell', async ({ browser }, testInfo) => {
   const f = await setup(browser, true);

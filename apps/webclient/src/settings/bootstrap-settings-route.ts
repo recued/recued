@@ -246,6 +246,7 @@ import {
   type SellerTierUsagePolicyCaller,
   type SellerCreatePassTierCaller,
   type SellerOfferStateTransitionCaller,
+  type SellerOfferCheckoutUrlCaller,
   type SellerOverviewCaller,
   type SellerPageMount,
   type SellerSettingsUpdateCaller,
@@ -304,6 +305,7 @@ import {
   type NetworkPortMappingCaller,
 } from './hostnames.js';
 import {
+  CUSTOM_DOMAINS_PANEL_STYLES,
   mountCustomDomainsPanel,
   type CustomDomainPreflightCaller,
   type CustomDomainReadinessCaller,
@@ -750,6 +752,8 @@ export interface BootstrapSettingsRouteOptions {
   recipeExecuteCaller?: SellerRecipeRunCaller;
   /** D-200 Slice 6e — owner-only outcome-offer state transition. */
   sellerOfferStateTransitionCaller?: SellerOfferStateTransitionCaller;
+  /** D-207 ruling (C) — owner-only checkout link on an offer. */
+  sellerOfferCheckoutUrlCaller?: SellerOfferCheckoutUrlCaller;
   /** D-196 §4.7 — send-capable mail instances for the explicit Seller
    *  sender chooser. Optional so older paired servers degrade honestly. */
   sellerMailListCaller?: SellerMailListCaller;
@@ -786,6 +790,9 @@ export interface BootstrapSettingsRouteOptions {
   updateModeSetCaller?: UpdateModeSetCaller;
   updateApplyCaller?: UpdateApplyCaller;
   updateRollbackCaller?: UpdateRollbackCaller;
+  /** `server.getLifecycleState`, so Updates can say before Apply that nothing
+   *  would restart this server. */
+  serverLifecycleGetCaller?: MountUpdatesPageOptions['runGetLifecycle'];
   /** Exact, secret-free return path from a required server update to the
    * credential-replacement preflight that requested it. */
   credentialRotationServerUpdateContinuity?:
@@ -1512,6 +1519,8 @@ export const bootstrapSettingsRoute = (
       // inert when the bootstrap omits the hostname callers + the panel never
       // mounts.
       HOSTNAMES_PANEL_STYLES,
+      // The custom-domain DNS instructions also live under Server → Hostnames.
+      CUSTOM_DOMAINS_PANEL_STYLES,
       // D-132/D-133 — `HOUSEKEEPING_PANEL_STYLES` joins the bundle so a
       // cold `#settings` load renders the Housekeeping trust panel
       // styled. Selectors scope to `.housekeeping-*` so the rules are
@@ -1795,6 +1804,11 @@ export const bootstrapSettingsRoute = (
       runImport: opts.archiveImportCaller as ArchiveImportCaller,
       ...(archiveRemote === null ? {} : { remoteTarget: () => archiveRemote!.target() }),
       ...(opts.archiveImportReceipt === undefined ? {} : { importReceipt: opts.archiveImportReceipt }),
+      ...(opts.archiveRemoteBackups === undefined ? {} : { restoreReadiness: {
+        ports: opts.archiveRemoteBackups,
+        ...(opts.serverConnectionStatus === undefined ? {} : { connection: opts.serverConnectionStatus }),
+        onReview: item => archiveRemote?.focusReadinessItem(item),
+      } }),
       ...(opts.archiveResumeExportStart !== undefined
         ? { resumeExportStart: opts.archiveResumeExportStart }
         : {}),
@@ -2003,6 +2017,9 @@ export const bootstrapSettingsRoute = (
       ...(opts.sellerOfferStateTransitionCaller !== undefined
         ? { runTransitionOfferState: opts.sellerOfferStateTransitionCaller }
         : {}),
+      ...(opts.sellerOfferCheckoutUrlCaller !== undefined
+        ? { runSetOfferCheckoutUrl: opts.sellerOfferCheckoutUrlCaller }
+        : {}),
       ...(opts.sellerMailListCaller !== undefined
         ? { runListMailInstances: opts.sellerMailListCaller }
         : {}),
@@ -2077,6 +2094,9 @@ export const bootstrapSettingsRoute = (
         : {}),
       ...(opts.updateRollbackCaller !== undefined
         ? { runRollback: opts.updateRollbackCaller }
+        : {}),
+      ...(opts.serverLifecycleGetCaller !== undefined
+        ? { runGetLifecycle: opts.serverLifecycleGetCaller }
         : {}),
       ...(opts.updatesStartPoll !== undefined
         ? { startPoll: opts.updatesStartPoll }
@@ -2516,8 +2536,13 @@ export const bootstrapSettingsRoute = (
       document: doc,
       // Both narrowed above by `canMountNotifications`.
       runDescribe: opts.notificationsDescribeCaller as NotificationsDescribeCaller,
-      runSetChannel:
-        opts.notificationsSetChannelCaller as NotificationsSetChannelCaller,
+      runSetChannel: async (args) => {
+        const result = await opts.notificationsSetChannelCaller!(args);
+        if (result.ok && typeof args.patch.notification === 'boolean') {
+          kindPolicy?.updateChannelNotification(args.channel, args.patch.notification);
+        }
+        return result;
+      },
       // D-169 P1 — per-bridge sub-row group renders only when BOTH
       // callers are wired. The describe-bridges fetch happens alongside
       // the channel fetch; the set-bridge-mode caller drives the row
@@ -3380,7 +3405,13 @@ export const bootstrapSettingsRoute = (
       if (disposed) return false;
       if (panel.getState() === 'busy') return true;
       if (notifications?.hasInFlightWork() === true) return true;
+      if (quietHours?.hasInFlightWork() === true) return true;
+      if (situationDelivery?.hasInFlightWork() === true) return true;
       if (householdDelivery?.hasInFlightWork() === true) return true;
+      if (serverTimeZone?.isSaving() === true) return true;
+      if (tlsCertificates?.hasInFlightWork() === true) return true;
+      if (customDomains?.hasInFlightWork() === true) return true;
+      if (hostnames?.hasInFlightWork() === true) return true;
       if (aiModels?.hasInFlightWork() === true) return true;
       if (accountBinding?.hasInFlightWork() === true) return true;
       if (devicesPage?.hasInFlightWork() === true) return true;
@@ -3398,7 +3429,13 @@ export const bootstrapSettingsRoute = (
     hasUnsavedChanges: () => {
       if (disposed) return false;
       return notifications?.hasUnsavedChanges() === true
+        || quietHours?.hasUnsavedChanges() === true
+        || situationDelivery?.hasUnsavedChanges() === true
         || householdDelivery?.hasUnsavedChanges() === true
+        || serverTimeZone?.hasUnsavedChanges() === true
+        || tlsCertificates?.hasUnsavedChanges() === true
+        || customDomains?.hasUnsavedChanges() === true
+        || hostnames?.hasUnsavedChanges() === true
         || learningPanel?.hasUnsavedChanges() === true;
     },
     unsavedChangesPrompt: () => {
@@ -3406,7 +3443,13 @@ export const bootstrapSettingsRoute = (
       if (notifications?.hasUnsavedChanges() === true) {
         return 'Discard the unsaved notification verification phrase?';
       }
-      if (householdDelivery?.hasUnsavedChanges() === true) return 'Discard the unsaved household Telegram settings?';
+      if (quietHours?.hasUnsavedChanges() === true) return 'Discard the unsaved quiet hours window?';
+      if (situationDelivery?.hasUnsavedChanges() === true) return 'Discard the unsaved overview schedule?';
+      if (householdDelivery?.hasUnsavedChanges() === true) return 'Discard the unsaved household delivery settings?';
+      if (serverTimeZone?.hasUnsavedChanges() === true) return 'Discard the unsaved server timezone?';
+      if (tlsCertificates?.hasUnsavedChanges() === true) return 'Discard the unsaved certificate upload?';
+      if (customDomains?.hasUnsavedChanges() === true) return 'Discard the unsaved custom domain?';
+      if (hostnames?.hasUnsavedChanges() === true) return 'Discard the unsaved hostname changes?';
       return learningPanel?.hasUnsavedChanges() === true
         ? 'Discard the finished recipe draft?'
         : null;
@@ -3416,7 +3459,13 @@ export const bootstrapSettingsRoute = (
       if (notifications?.hasInFlightWork() === true) {
         return 'A notification setting is still updating. Leave Settings anyway?';
       }
+      if (quietHours?.hasInFlightWork() === true) return 'A quiet hours setting is still updating. Leave Settings anyway?';
+      if (situationDelivery?.hasInFlightWork() === true) return 'An overview action is still in progress. Leave Settings anyway?';
       if (householdDelivery?.hasInFlightWork() === true) return 'Household Telegram is still updating. Leave Settings anyway?';
+      if (serverTimeZone?.isSaving() === true) return 'The server timezone is still updating. Leave Settings anyway?';
+      if (tlsCertificates?.hasInFlightWork() === true) return 'A certificate change is still in progress. Leave Settings anyway?';
+      if (customDomains?.hasInFlightWork() === true) return 'A custom domain is still being added. Leave Settings anyway?';
+      if (hostnames?.hasInFlightWork() === true) return 'A hostname change is still in progress. Leave Settings anyway?';
       if (aiModels?.hasInFlightWork() === true) {
         return 'An AI model setting is still updating. Leave Settings anyway?';
       }
@@ -3473,6 +3522,7 @@ export const bootstrapSettingsRoute = (
       // tear down here.
       if (permissions !== null) permissions.dispose();
       if (notifications !== null) notifications.dispose();
+      connectDevice?.dispose();
       if (serverTimeZone !== null) serverTimeZone.dispose();
       if (quietHours !== null) quietHours.dispose();
       situationDelivery?.dispose();

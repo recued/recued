@@ -52,6 +52,8 @@ import {
   UPDATES_PAGE_STATE_ATTR,
   UPDATES_ROLLBACK_BTN_ATTR,
   UPDATES_ROLLBACK_RESULT_ATTR,
+  UPDATES_ROLLBACK_TERMINAL_NOTE_ATTR,
+  UPDATES_TERMINAL_NOTE_ATTR,
   UPDATES_RECEIPT_DIAGNOSTIC_ATTR,
   UPDATES_RECEIPT_DIAGNOSTIC_COPY_ATTR,
   UPDATES_RECEIPT_BASELINE_ATTR,
@@ -1855,6 +1857,89 @@ describe('mountUpdatesPage', () => {
     expect(find(h.el, UPDATES_APPLY_BTN_ATTR)).toBeNull();
     expect(runApply).not.toHaveBeenCalled();
     m.dispose();
+  });
+
+  describe('a server nothing restarts', () => {
+    const mountWithMode = (
+      runGetLifecycle: Parameters<typeof mountUpdatesPage>[0]['runGetLifecycle'],
+    ) => {
+      const h = host();
+      const runApply = vi.fn(async (): Promise<UpdateApplyResponse> => ({ status: 'restarting' }));
+      const runRollback = vi.fn(async (): Promise<UpdateRollbackResponse> => ({
+        status: 'rolled-back',
+        restored_snapshot: false,
+      }));
+      const m = mountUpdatesPage({
+        host: h.asHost,
+        document: fakeDoc(),
+        runCheck: async () => AVAILABLE,
+        runApply,
+        runRollback,
+        ...(runGetLifecycle === undefined ? {} : { runGetLifecycle }),
+      });
+      return { h, m, runApply, runRollback };
+    };
+    const buttonsShown = (el: FE): void => {
+      expect(find(el, UPDATES_APPLY_BTN_ATTR)).not.toBeNull();
+      expect(find(el, UPDATES_TERMINAL_NOTE_ATTR)).toBeNull();
+      expect(find(el, UPDATES_ROLLBACK_BTN_ATTR)?.hasAttribute('hidden')).toBe(false);
+      expect(find(el, UPDATES_ROLLBACK_TERMINAL_NOTE_ATTR)?.hasAttribute('hidden')).toBe(true);
+    };
+
+    it('gives the terminal steps instead of the update and rollback buttons', async () => {
+      const { h, m, runApply, runRollback } = mountWithMode(async () => ({ supervisor_mode: 'dev' }));
+      await flush();
+      expect(find(h.el, UPDATES_APPLY_BTN_ATTR)).toBeNull();
+      expect(find(h.el, UPDATES_TERMINAL_NOTE_ATTR)?.textContent)
+        .toMatch(/run recued stop, then recued update apply, then start the server again/);
+      expect(find(h.el, UPDATES_ROLLBACK_BTN_ATTR)?.hasAttribute('hidden')).toBe(true);
+      const rollbackNote = find(h.el, UPDATES_ROLLBACK_TERMINAL_NOTE_ATTR);
+      expect(rollbackNote?.hasAttribute('hidden')).toBe(false);
+      expect(rollbackNote?.textContent).toMatch(/run recued stop, then recued update rollback/);
+      // The release itself is still announced; only the button gives way.
+      expect(allText(find(h.el, UPDATES_AVAILABLE_ATTR)!)).toMatch(/Version 26\.8\.0 is available/);
+      expect(runApply).not.toHaveBeenCalled();
+      expect(runRollback).not.toHaveBeenCalled();
+      m.dispose();
+    });
+
+    it.each(['launchd', 'systemd', 'native', 'docker', 'docker-thin'])(
+      'keeps both buttons under a supervisor that restarts it (%s)',
+      async (mode) => {
+        const { h, m } = mountWithMode(async () => ({ supervisor_mode: mode as never }));
+        await flush();
+        buttonsShown(h.el);
+        m.dispose();
+      },
+    );
+
+    it('keeps both buttons when the mode is unknown, and the server decides', async () => {
+      const unknown: Array<Parameters<typeof mountWithMode>[0]> = [
+        undefined,
+        async () => { throw new Error('the server is restarting'); },
+        async () => ({}) as never,
+      ];
+      for (const runGetLifecycle of unknown) {
+        const { h, m } = mountWithMode(runGetLifecycle);
+        await flush();
+        buttonsShown(h.el);
+        m.dispose();
+      }
+    });
+
+    it('reads the mode again with each check, so a server now restarted by a supervisor gets its buttons back', async () => {
+      let mode = 'dev';
+      const runGetLifecycle = vi.fn(async () => ({ supervisor_mode: mode as never }));
+      const { h, m } = mountWithMode(runGetLifecycle);
+      await flush();
+      expect(find(h.el, UPDATES_TERMINAL_NOTE_ATTR)).not.toBeNull();
+      mode = 'launchd';
+      fire(find(h.el, UPDATES_CHECK_BTN_ATTR)!, 'click');
+      await flush();
+      expect(runGetLifecycle).toHaveBeenCalledTimes(2);
+      buttonsShown(h.el);
+      m.dispose();
+    });
   });
 
   it('major update: apply returns major-blocked → a force button applies with { force: true }', async () => {

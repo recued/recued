@@ -305,6 +305,61 @@ describe('D-149 P6 § A.5.3 — GET /reception/intake/<id>', () => {
     expect(res.body).toContain('value="consulting"');
   });
 
+  /** A choice box with labels: the visitor reads the label, the form sends the value. */
+  const labelledConfig = (): IntakeFormConfig => ({
+    ...goodConfig,
+    form_definition: {
+      ...goodConfig.form_definition,
+      fields: goodConfig.form_definition.fields.map((field) => field.name === 'service_interest'
+        ? { ...field, value_labels: { consulting: 'Consulting', training: 'Training & workshops' } }
+        : field),
+    },
+  });
+
+  it('shows each choice by its label and sends its stored value', async () => {
+    const env = buildEnv();
+    insertEndpoint(env, 'goodbearer', labelledConfig());
+    const handler = buildHandler(env);
+    const res = fakeRes();
+    await handler(
+      fakeReq('GET', '/reception/intake/ep-intake-1?t=goodbearer'),
+      res,
+    );
+    expect(res.body).toContain('<option value="consulting">Consulting</option>');
+    expect(res.body).toContain('<option value="training">Training &amp; workshops</option>');
+    // A value without a label shows as itself.
+    expect(res.body).toContain('<option value="other">other</option>');
+  });
+
+  it('echoes a choice back to the visitor by its label, and stores the value', async () => {
+    const env = buildEnv();
+    insertEndpoint(env, 'goodbearer', { ...labelledConfig(), visitor_receipt: { enabled: true } });
+    const handler = buildHandler(env);
+    const nonce = env.formNonce.issue('ep-intake-1', NOW);
+    const body = `t=goodbearer&form_nonce=${nonce}&visitor_email=v%40example.com&your_name=Q&service_interest=consulting&details=hello`;
+    const res = fakeRes();
+    await handler(
+      fakeReq('POST', '/reception/intake/ep-intake-1?t=goodbearer', body, {
+        host: 'localhost',
+        origin: 'http://localhost',
+        'content-type': 'application/x-www-form-urlencoded',
+      }),
+      res,
+    );
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain('<dt>What can I help with?</dt><dd>Consulting</dd>');
+    expect(res.body).not.toContain('<dd>consulting</dd>');
+    const row = env.submission.listPendingForEndpoint('ep-intake-1')[0]!;
+    const decrypted = await openFormSubmissionField({
+      key: deriveFormSubmissionPiiKeyFromSubDek(SUB_DEK),
+      endpoint_id: 'ep-intake-1',
+      submission_id: row.submission_id,
+      field: 'submission_blob',
+      ciphertext: row.submission_blob_encrypted,
+    });
+    expect((JSON.parse(decrypted!) as { fields: Record<string, unknown> }).fields.service_interest).toBe('consulting');
+  });
+
   it('renders honeypot field but tagged off-screen + tabindex=-1', async () => {
     const env = buildEnv();
     insertEndpoint(env, 'goodbearer');
@@ -460,6 +515,45 @@ describe('D-149 P6 § A.5.3 — POST /reception/intake/<id>', () => {
     expect(rows[0]!.metadata.definition_snapshot).toEqual(goodConfig.form_definition);
     expect((audit.calls as Array<{ action: string }>).some((c) => c.action === 'form_submission.received'))
       .toBe(true);
+  });
+
+  it('D-207 — tells the owner, through the port, when a paired form turns the visitor away', async () => {
+    const env = buildEnv();
+    insertEndpoint(env, 'goodbearer');
+    const binding = {
+      version: 1 as const,
+      form_definition_id: goodConfig.form_definition.form_definition_id,
+      recipe_id: 'show-order-checkout-link',
+      recipe_version: 1,
+      pair_revision: `d200-pair-v1-${'a'.repeat(64)}` as const,
+    };
+    const refusal = {
+      reason: 'no_checkout_link',
+      offer_id: 'client-kit',
+      recipe_id: 'show-order-checkout-link',
+    } as const;
+    const told: unknown[] = [];
+    const handler = buildHandler(env, undefined, {
+      resolveIntakeFormRecipePair: () => ({ kind: 'ready', binding, renders_response: true, uses_ai: false }),
+      coordinateIntakeFormPairedRun: async () => ({ kind: 'refused', refusal }),
+      noticeIntakeFormTurnedAway: (event) => { told.push(event); },
+    });
+    const nonce = env.formNonce.issue('ep-intake-1', NOW, binding);
+    const res = fakeRes();
+    await handler(
+      fakeReq('POST', '/reception/intake/ep-intake-1?t=goodbearer',
+        `t=goodbearer&form_nonce=${nonce}&visitor_email=v%40example.com&your_name=Q&service_interest=consulting&details=hello`,
+        { host: 'localhost', origin: 'http://localhost', 'content-type': 'application/x-www-form-urlencoded' }),
+      res,
+    );
+
+    expect(res.status).toBe(503);
+    expect(told).toEqual([expect.objectContaining({
+      endpoint_id: 'ep-intake-1',
+      form_name: goodConfig.display_name,
+      at: NOW,
+      refusal,
+    })]);
   });
 
   it('round-trips submission_blob via the AEAD key (decrypt matches plaintext)', async () => {

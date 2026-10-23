@@ -30,6 +30,8 @@ import { KEY_CLASSES } from './keys.js';
 import type { KeyClass, KeyHealthBundle } from './keys.js';
 import { totalRecord } from './total-record.js';
 import type { ReceptionEndpointKind } from './reception.js';
+import type { ArchiveBackupHealthStatus, ArchiveBackupIntegrityRun, ArchiveBackupIntegrityStatus } from './archive-remote.js';
+import type { BackupWatchdogDrill, BackupWatchdogIssue, BackupWatchdogStatus } from './backup-watchdog.js';
 
 /** D-148 § A.9 — closed list of passport export profiles. */
 export type ServerPassportProfile = 'support_redacted' | 'enterprise_audit' | 'migration_full';
@@ -125,11 +127,66 @@ export interface ServerCapabilityProfile {
   connections: Array<{ vendor: string; entity_count: number }>;
 }
 
+/** Historical receipt evidence, never a provider read or restore attestation. */
+export interface ServerPassportBackupEvidence {
+  observed_at: number;
+  monitoring: ArchiveBackupHealthStatus['monitoring'];
+  issue?: ArchiveBackupHealthStatus['issue'] | 'service_unavailable' | 'clock_changed';
+  destination?: ArchiveBackupHealthStatus['destination'];
+  backup?: ArchiveBackupHealthStatus['backup'];
+  recovery_test?: ArchiveBackupHealthStatus['recovery'];
+  /** Optional for older producers. The monitor owns alert delivery; a drill's
+   * alert_reported_at records an owner report, not provider attestation. */
+  watchdog?: ServerPassportWatchdogEvidence;
+  integrity: {
+    monitoring: ArchiveBackupIntegrityStatus['monitoring'];
+    state: 'not_checked' | 'running' | 'completed' | 'partial' | 'empty' | 'failed' | 'unavailable';
+    issue?: ArchiveBackupIntegrityStatus['issue'] | 'service_unavailable' | 'destination_changed';
+    next_run_at?: number;
+    /** Only the currently selected destination; its private fingerprint is
+     * already bound by `destination`. Counts describe that historical scan. */
+    last_run?: Omit<ArchiveBackupIntegrityRun, 'destination_id'>;
+  };
+}
+
+/** No endpoint, configuration revision, encrypted URL or recovery factor. */
+export interface ServerPassportWatchdogEvidence {
+  configured: boolean;
+  enabled: boolean;
+  state: BackupWatchdogStatus['state'];
+  issue?: BackupWatchdogIssue | 'service_unavailable';
+  last_attempt_at?: number;
+  last_acknowledged_at?: number;
+  drill?: BackupWatchdogDrill;
+}
+
+export interface ServerPassportWatchdogEvidenceRedacted {
+  configured: boolean;
+  enabled: boolean;
+  state: BackupWatchdogStatus['state'];
+  drill?: Pick<BackupWatchdogDrill, 'phase' | 'current_configuration'> & {
+    owner_reported_alert: boolean;
+    resumption_ping_acknowledged: boolean;
+  };
+}
+
+export interface ServerPassportBackupEvidenceRedacted {
+  monitoring: ServerPassportBackupEvidence['monitoring'];
+  backup_state?: NonNullable<ServerPassportBackupEvidence['backup']>['state'];
+  recovery_test_state?: NonNullable<ServerPassportBackupEvidence['recovery_test']>['state'];
+  integrity: Pick<ServerPassportBackupEvidence['integrity'], 'monitoring' | 'state'>;
+  watchdog?: ServerPassportWatchdogEvidenceRedacted;
+}
+
 export interface ServerPassportRecoveryBlock {
-  backup_status: 'configured' | 'unconfigured' | 'overdue';
+  /** Configuration/data-age summary. Recovery-test and S3-scan results are
+   * independent; `configured` alone never asserts either has passed. */
+  backup_status: 'configured' | 'unconfigured' | 'overdue' | 'unavailable';
   last_backup_at?: number;
   /** e.g. 's3://...' or 'local'. Redacted in `support_redacted`. */
   backup_location?: string;
+  /** Optional for passports written before receipt evidence was added. */
+  backup_evidence?: ServerPassportBackupEvidence;
   filevault_recovery_key_status: 'present' | 'absent';
 }
 
@@ -281,10 +338,11 @@ export interface ServerCapabilityProfileRedacted {
   connections_by_vendor: Array<{ vendor: string; count: number }>;
 }
 
-/** D-148 § A.9 — `support_redacted` projection of recovery block.
- *  Drops `backup_location` (sensitive). */
+/** D-148 § A.9 — support keeps state summaries only. Storage names, receipt
+ * IDs, evidence timestamps, scan counts, and location are omitted. */
 export interface ServerPassportRecoveryRedacted {
-  backup_status: 'configured' | 'unconfigured' | 'overdue';
+  backup_status: ServerPassportRecoveryBlock['backup_status'];
+  backup_evidence?: ServerPassportBackupEvidenceRedacted;
   filevault_recovery_key_status: 'present' | 'absent';
 }
 
@@ -410,6 +468,21 @@ export const projectServerPassport = (
   const recovery: ServerPassportRecoveryRedacted = {
     backup_status: full.recovery.backup_status,
     filevault_recovery_key_status: full.recovery.filevault_recovery_key_status,
+  };
+  const evidence = full.recovery.backup_evidence;
+  if (evidence) recovery.backup_evidence = {
+    monitoring: evidence.monitoring,
+    ...(evidence.backup ? { backup_state: evidence.backup.state } : {}),
+    ...(evidence.recovery_test ? { recovery_test_state: evidence.recovery_test.state } : {}),
+    integrity: { monitoring: evidence.integrity.monitoring, state: evidence.integrity.state },
+    ...(evidence.watchdog ? { watchdog: {
+      configured: evidence.watchdog.configured, enabled: evidence.watchdog.enabled, state: evidence.watchdog.state,
+      ...(evidence.watchdog.drill ? { drill: {
+        phase: evidence.watchdog.drill.phase, current_configuration: evidence.watchdog.drill.current_configuration,
+        owner_reported_alert: evidence.watchdog.drill.alert_reported_at !== undefined,
+        resumption_ping_acknowledged: evidence.watchdog.drill.ping_acknowledged_at !== undefined,
+      } } : {}),
+    } } : {}),
   };
   // Walks KEY_CLASSES rather than the input's own keys: `KeyHealthBundle` is
   // total by type AND by production (`loadKeyHealth` returns all seven), so the

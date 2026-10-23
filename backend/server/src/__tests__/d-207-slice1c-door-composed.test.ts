@@ -561,6 +561,12 @@ describe('D-207 slice 1c — the visitor submit reaches the gated runner', () =>
     const failed = await adapterHarness({ kind: 'failed', errors: [new Error('nope')] });
     await expect(failed.adapter({ submission_id: 'sub_1', form_config: formConfig() }))
       .resolves.toEqual({ kind: 'refused' });
+
+    // A selling form's reason survives the hop: it is what the owner's notice names.
+    const refusal = { reason: 'no_checkout_link', offer_id: 'kit', recipe_id: 'sell-kit' } as const;
+    const unsold = await adapterHarness({ kind: 'failed', errors: ['no link'], refusal });
+    await expect(unsold.adapter({ submission_id: 'sub_1', form_config: formConfig() }))
+      .resolves.toEqual({ kind: 'refused', refusal });
   });
 
   it('NO DOOR stands aside — it is not a success, and the caller must fall through', async () => {

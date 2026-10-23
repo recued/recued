@@ -131,7 +131,10 @@ export interface ComposeIngressRpcContextOptions {
     ExecutionContext,
     // D-207 slice 1c — the two contract stores the reception door is minted into.
     'executeDeps' | 'contractDefinitionStore' | 'grantEntryStore'
-  >;
+  > & {
+    /** D-207 — tells the owner when a paired form turns a visitor away. */
+    readonly notificationBlock?: ExecutionContext['notificationBlock'];
+  };
   readonly backgroundServices: BackgroundServiceRegistry;
   readonly getExposureMachine: () => ExposureStateMachine | undefined;
   readonly getWsHandleForLockout: () => WsServerHandle | undefined;
@@ -303,6 +306,9 @@ export const composeIngressRpcContext = async (
     // recipe's config names an offer; also the rpc handler's offer read.
     sellerOfferStore: app.sellerStoreRef,
     sellerOrderStore: app.sellerOrderStoreRef,
+    // D-207 — the owner hears when a selling form turns a buyer away.
+    ...(execution.notificationBlock ? { notifier: execution.notificationBlock } : {}),
+    getOwnerBaseUrl: () => storage.publicAddress.baseUrl('root'),
     sharedStore: app.sharedStoreRef,
     ...(fireReceptionWorkflow ? { fireReceptionWorkflow } : {}),
     ipBlockStore: storage.ipBlockStoreRef,

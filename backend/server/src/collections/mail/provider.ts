@@ -728,11 +728,28 @@ export const normalizeRfcMessageId = (
  *  provider classifies them that way. */
 export type ProviderSyncEventKind = 'created' | 'updated' | 'deleted';
 
+/** IMAP, when sync starts after a restart: every message one folder holds and
+ *  its flags, read with one `UID FETCH 1:* (FLAGS)`. A stored message of that
+ *  folder missing from it was deleted while the server was down, and one whose
+ *  flags differ had them changed meanwhile; the collection folds both in. A row
+ *  written since `read_at` is newer than this read and is left as it is. */
+export interface MailFolderSnapshot {
+  /** The folder, as its rows' `folder` hot field names it. */
+  folder: string;
+  /** When the folder was read (unix-ms). */
+  read_at: number;
+  /** Each message's `source_id` → its flags. */
+  messages: ReadonlyMap<string, { readonly is_read: boolean; readonly is_flagged: boolean }>;
+}
+
 export interface ProviderSyncEvent {
-  kind: ProviderSyncEventKind;
+  /** `folder` (IMAP): reconcile one folder's rows with `folder`. */
+  kind: ProviderSyncEventKind | 'folder';
   source_id: string;
   /** Present on `created` and `updated`, omitted on `deleted`. */
   message?: CanonicalMessage;
+  /** Present on `folder`. */
+  folder?: MailFolderSnapshot;
   /** D-318 step 6 — found by the provider's recovery scan, not as it arrived:
    *  its change cursor had expired (Gmail's history, Graph's delta), so the
    *  window was listed again. The email chat door runs no request found so
@@ -1001,6 +1018,17 @@ export interface MailProvider {
    *  shaped errors when the source is unreachable so
    *  `MailCollection` can stamp the right collection state. */
   connect(): Promise<void>;
+  /** True when this provider persists a cursor that brings in, after a
+   *  restart, what arrived while the server was down. A restart then re-lists
+   *  only the days since the mailbox last synced, not its whole backfill window.
+   *  Gmail's history and Graph's delta replay everything (moves and deletions
+   *  too) and list the window again by themselves when the cursor has expired.
+   *  IMAP's is a UID cursor per folder, true only once every folder has one its
+   *  UIDVALIDITY still matches: its catch-up fetches what was added, moved-in
+   *  mail included, and one read of every message's flags brings in the flags
+   *  changed and the messages deleted meanwhile (`MailFolderSnapshot`). */
+  readonly resumesFromCursor?: boolean;
+
   /** Fetch the last `backfill_days` of messages. `onMessage` runs
    *  per entry; returning `false` aborts the scan. Implementations
    *  should stream so millions of rows don't land in RAM. */

@@ -118,7 +118,12 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
   };
   let seq = 0;
   let disposed = false;
-  let pendingFocus: string | null = null;
+  let pendingFocus: {
+    key: string;
+    /** An asynchronous reply may redirect only the focus its action owns. */
+    from?: readonly string[];
+    fallback?: string;
+  } | null = null;
 
   const load = async (silent: boolean): Promise<void> => {
     if (callers.list === undefined) return;
@@ -157,11 +162,12 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
     const at = zonedWallClockToEpochMs(editing.value, zoneOf(reminder));
     if (at === null) {
       state = { ...state, editing: { ...editing, error: 'Pick a day and a time.' } };
-      pendingFocus = `at:${id}`;
+      pendingFocus = { key: `at:${id}` };
       deps.render();
       return;
     }
-    state = { ...state, working: id, notice: null };
+    state = { ...state, working: id, notice: { text: 'Saving reminder…', tone: 'ok' } };
+    pendingFocus = { key: 'notice', from: [`save:${id}`, `at:${id}`, `keep-time:${id}`] };
     deps.render();
     try {
       const out = await callers.update({ reminder_id: id, at });
@@ -170,19 +176,20 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
         ...state, working: null, editing: out.updated ? null : state.editing,
         notice: { text: out.message, tone: out.updated ? 'ok' : 'bad' },
       };
-      pendingFocus = out.updated ? `edit:${id}` : `at:${id}`;
+      pendingFocus = { key: out.updated ? `edit:${id}` : `at:${id}`, from: ['notice'], fallback: 'notice' };
       await load(true);
     } catch (error) {
       if (disposed) return;
-      state = { ...state, working: null, editing: { ...editing, error: humanizeRpcError(error) } };
-      pendingFocus = `at:${id}`;
+      state = { ...state, working: null, notice: null, editing: { ...editing, error: humanizeRpcError(error) } };
+      pendingFocus = { key: `at:${id}`, from: ['notice'] };
       deps.render();
     }
   };
 
   const cancel = async (id: string): Promise<void> => {
     if (callers.cancel === undefined || find(id) === undefined) return;
-    state = { ...state, working: id, notice: null };
+    state = { ...state, working: id, notice: { text: 'Cancelling reminder…', tone: 'ok' } };
+    pendingFocus = { key: 'notice', from: [`cancel-confirm:${id}`, `cancel-keep:${id}`] };
     deps.render();
     try {
       const out = await callers.cancel({ reminder_id: id });
@@ -191,12 +198,12 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
         ...state, working: null, confirming: null,
         notice: { text: out.message, tone: out.cancelled ? 'ok' : 'bad' },
       };
-      pendingFocus = 'notice';
+      pendingFocus = { key: 'notice', from: ['notice'] };
       await load(true);
     } catch (error) {
       if (disposed) return;
       state = { ...state, working: null, confirming: null, notice: { text: humanizeRpcError(error), tone: 'bad' } };
-      pendingFocus = 'notice';
+      pendingFocus = { key: 'notice', from: ['notice'] };
       deps.render();
     }
   };
@@ -318,19 +325,19 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
           ...state, confirming: null, notice: null,
           editing: { id, value: reminderWallClockValue(reminder.at, zoneOf(reminder)), error: null },
         };
-        pendingFocus = `at:${id}`;
+        pendingFocus = { key: `at:${id}` };
       } else if (action === 'reminders-edit-close') {
         state = { ...state, editing: null };
-        pendingFocus = `edit:${id}`;
+        pendingFocus = { key: `edit:${id}` };
       } else if (action === 'reminders-save') {
         void save(id);
         return true;
       } else if (action === 'reminders-cancel' && reminder !== undefined) {
         state = { ...state, editing: null, confirming: id, notice: null };
-        pendingFocus = `cancel-keep:${id}`;
+        pendingFocus = { key: `cancel-keep:${id}` };
       } else if (action === 'reminders-cancel-keep') {
         state = { ...state, confirming: null };
-        pendingFocus = `cancel:${id}`;
+        pendingFocus = { key: `cancel:${id}` };
       } else if (action === 'reminders-cancel-confirm') {
         void cancel(id);
         return true;
@@ -377,22 +384,24 @@ export const createRemindersSurface = (deps: RemindersSurfaceDeps): RemindersSur
     },
 
     restoreFocus: (root, key) => {
-      const wanted = pendingFocus ?? key;
+      if (disposed) return;
+      const request = pendingFocus;
+      // Consume even a rejected request: a reply received in another tab must
+      // not take focus when the owner later returns to Reminders.
+      pendingFocus = null;
+      const owned = request !== null && (request.from === undefined || (key !== null && request.from.includes(key)));
+      const wanted = owned ? request.key : key;
       if (wanted === null) return;
-      const found = root.querySelector?.(`[${REMINDERS_FOCUS_ATTR}="${wanted.replace(/["\\]/g, '\\$&')}"]`) as
-        | HTMLElement
-        | null
-        | undefined;
-      if (found !== null && found !== undefined) {
-        found.focus?.({ preventScroll: pendingFocus === null });
-        pendingFocus = null;
-      } else if (pendingFocus !== null && !state.loading) {
-        pendingFocus = null;
-      }
+      const control = (value: string): HTMLElement | null | undefined => root.querySelector?.(
+        `[${REMINDERS_FOCUS_ATTR}="${value.replace(/["\\]/g, '\\$&')}"]`,
+      ) as HTMLElement | null | undefined;
+      const found = control(wanted) ?? (owned && request.fallback !== undefined ? control(request.fallback) : null);
+      found?.focus?.({ preventScroll: !owned || wanted === key });
     },
 
     dispose: () => {
       disposed = true;
+      pendingFocus = null;
     },
   };
 };

@@ -37,6 +37,7 @@ import {
   MAIL_CHAT_DOOR_ENROL_SENDER_ATTR,
   MAIL_CHAT_DOOR_ENROL_STATE_ATTR,
   MAIL_CHAT_DOOR_ERROR_ATTR,
+  MAIL_CHAT_DOOR_RETRY_ATTR,
   MAIL_CHAT_DOOR_OWNER_PICK_ATTR,
   MAIL_CHAT_DOOR_PANEL_ATTR,
   MAIL_CHAT_DOOR_PAUSED_ATTR,
@@ -275,6 +276,107 @@ const pickChat = (host: FakeEl, slug: string): void => {
   select.dispatchEvent({ type: 'change' });
 };
 
+describe('Email chat read recovery', () => {
+  const setup = (failure?: 'settings' | 'mailboxes', heldGet?: Promise<MailChatDoorSettings>) => {
+    const host = makeFakeElement('div');
+    const get = vi.fn(() => Promise.resolve(OFF));
+    const list = vi.fn(() => Promise.resolve({ instances: MAILBOXES }));
+    if (heldGet) get.mockReturnValueOnce(heldGet);
+    if (failure === 'settings') get.mockImplementationOnce(() => { throw new Error('Settings unavailable.'); });
+    if (failure === 'mailboxes') list.mockImplementationOnce(() => { throw new Error('Mailboxes unavailable.'); });
+    const set = vi.fn(async () => OFF);
+    const check = vi.fn(async () => ({ ready: true, checks: [] }));
+    const recent = vi.fn(async () => ({ requests: [] }));
+    const panel = mountMailChatDoorPanel({
+      host: host as unknown as HTMLElement, document: fakeDocument,
+      runGet: get, runListMailboxes: list, runSet: set, runCheck: check, runRecent: recent,
+    });
+    return { host, panel, get, list, set, check, recent };
+  };
+
+  for (const failure of ['settings', 'mailboxes'] as const) {
+    it(`retries a failed ${failure} read without writes or overlapping reads`, async () => {
+      const f = setup(failure);
+      await flush();
+      expect(f.panel.getState()).toBe('error');
+      expect(one(f.host, MAIL_CHAT_DOOR_ERROR_ATTR).getAttribute('role')).toBe('alert');
+      let settingsDone!: (value: MailChatDoorSettings) => void;
+      let mailboxesDone!: (value: { instances: MailChatDoorMailboxRow[] }) => void;
+      f.get.mockReturnValueOnce(new Promise(resolve => { settingsDone = resolve; }));
+      f.list.mockReturnValueOnce(new Promise(resolve => { mailboxesDone = resolve; }));
+      one(f.host, MAIL_CHAT_DOOR_RETRY_ATTR).click();
+      const joined = f.panel.refresh();
+      await flush();
+      const retry = one(f.host, MAIL_CHAT_DOOR_RETRY_ATTR);
+      expect(retry.textContent).toBe('Retrying…');
+      expect(retry.disabled).toBe(false);
+      expect(retry.getAttribute('aria-disabled')).toBe('true');
+      expect(retry.getAttribute('aria-busy')).toBe('true');
+      retry.click(); retry.click();
+      settingsDone(OFF);
+      await flush();
+      void f.panel.refresh();
+      expect(f.panel.getState()).toBe('loading');
+      expect(f.get).toHaveBeenCalledTimes(2);
+      expect(f.list).toHaveBeenCalledTimes(2);
+      mailboxesDone({ instances: MAILBOXES });
+      await joined;
+      expect(f.panel.getState()).toBe('ready');
+      expect(byAttr(f.host, MAIL_CHAT_DOOR_RETRY_ATTR)).toHaveLength(0);
+      expect(byAttr(f.host, MAIL_CHAT_DOOR_CHAT_PICK_ATTR)).toHaveLength(1);
+      expect(f.set).not.toHaveBeenCalled();
+      expect(f.check).not.toHaveBeenCalled();
+      expect(f.recent).not.toHaveBeenCalled();
+    });
+  }
+
+  it('keeps a failed read batch owned until its other read settles, then permits another retry', async () => {
+    const f = setup('settings');
+    await flush();
+    f.get.mockRejectedValueOnce(new Error('Still unavailable.'));
+    let mailboxesDone!: (value: { instances: MailChatDoorMailboxRow[] }) => void;
+    f.list.mockReturnValueOnce(new Promise(resolve => { mailboxesDone = resolve; }));
+    one(f.host, MAIL_CHAT_DOOR_RETRY_ATTR).click();
+    await flush();
+    one(f.host, MAIL_CHAT_DOOR_RETRY_ATTR).click();
+    const joined = f.panel.refresh();
+    await flush();
+    expect(f.get).toHaveBeenCalledTimes(2);
+    expect(f.list).toHaveBeenCalledTimes(2);
+    expect(f.panel.getState()).toBe('loading');
+    mailboxesDone({ instances: MAILBOXES });
+    await joined;
+    expect(f.panel.getState()).toBe('error');
+    expect(f.panel.getError()).toBe('Still unavailable.');
+    expect(one(f.host, MAIL_CHAT_DOOR_RETRY_ATTR).getAttribute('aria-busy')).toBeNull();
+    one(f.host, MAIL_CHAT_DOOR_RETRY_ATTR).click();
+    await f.panel.refresh();
+    expect(f.panel.getState()).toBe('ready');
+    expect(f.get).toHaveBeenCalledTimes(3);
+    expect(f.list).toHaveBeenCalledTimes(3);
+    expect(f.set).not.toHaveBeenCalled();
+    expect(f.check).not.toHaveBeenCalled();
+  });
+
+  it('drops a pending read after disposal and starts no more reads', async () => {
+    let settingsDone!: (value: MailChatDoorSettings) => void;
+    const f = setup(undefined, new Promise(resolve => { settingsDone = resolve; }));
+    const pending = f.panel.refresh();
+    await flush();
+    const text = allText(f.host);
+    f.panel.dispose();
+    settingsDone(OFF);
+    await pending;
+    await f.panel.refresh();
+    expect(f.panel.getState()).toBe('loading');
+    expect(allText(f.host)).toBe(text);
+    expect(f.get).toHaveBeenCalledTimes(1);
+    expect(f.list).toHaveBeenCalledTimes(1);
+    expect(f.set).not.toHaveBeenCalled();
+    expect(f.check).not.toHaveBeenCalled();
+  });
+});
+
 describe('switching the email chat on', () => {
   it('offers as the chat mailbox only one that can send, and it among yours too — writing to yourself', async () => {
     const h = mount();
@@ -463,6 +565,178 @@ describe('the email chat, switched on', () => {
     await flush();
     expect(h.sets).toEqual([{ chat_mailbox: null }]);
     expect(h.host.getAttribute(MAIL_CHAT_DOOR_STATE_ATTR)).toBe('off');
+  });
+});
+
+describe('Email chat drafts during background reads', () => {
+  const type = (host: FakeEl, attr: string, value: string): void => {
+    const input = one(host, attr);
+    input.value = value;
+    input.dispatchEvent({ type: 'input' });
+  };
+  const draft = (host: FakeEl, enabled = true): void => {
+    type(host, MAIL_CHAT_DOOR_PREFIX_ATTR, ' reply: ');
+    type(host, MAIL_CHAT_DOOR_STALE_ATTR, '47');
+    type(host, MAIL_CHAT_DOOR_ENROL_INPUT_ATTR, 'second@personal.example');
+    const toggle = one(host, MAIL_CHAT_DOOR_PREFIX_ON_ATTR);
+    toggle.checked = enabled;
+    toggle.dispatchEvent({ type: 'change' });
+  };
+  const expectDraft = (host: FakeEl, enabled = true): void => {
+    expect(one(host, MAIL_CHAT_DOOR_PREFIX_ATTR).value).toBe(' reply: ');
+    expect(one(host, MAIL_CHAT_DOOR_PREFIX_ON_ATTR).checked).toBe(enabled);
+    expect(one(host, MAIL_CHAT_DOOR_PREFIX_ATTR).disabled).toBe(!enabled);
+    expect(one(host, MAIL_CHAT_DOOR_STALE_ATTR).value).toBe('47');
+  };
+
+  for (const kind of ['verification', 'round trip', 'refresh'] as const) {
+    it(`keeps drafts while ${kind} updates the displayed server state`, async () => {
+      let requests: MailChatDoorRecentRequest[] = [];
+      const h = mount({
+        settings: kind === 'verification' ? { ...ON, enrolled_senders: [sender()] } : ON,
+        recent: () => requests,
+      });
+      await flush();
+      draft(h.host, false);
+      if (kind === 'verification') {
+        h.serve(current => ({ ...current, enrolled_senders: [sender({ state: 'confirmed', code: null,
+          expires_at: null, confirmed_at: AT + 1, checked_by: 'mx.zohomail.com' })] }));
+        await h.tick();
+        expect(one(h.host, MAIL_CHAT_DOOR_ENROL_SENDER_ATTR, ME).getAttribute(MAIL_CHAT_DOOR_ENROL_STATE_ATTR))
+          .toBe('confirmed');
+      } else if (kind === 'round trip') {
+        one(h.host, MAIL_CHAT_DOOR_TEST_START_ATTR).click();
+        await flush();
+        requests = [request({ arrived_at: AT + 1, state: 'proven', proof: 'sent_record',
+          sender_auth: 'pass', chat: 'admitted', answer: 'sent', answered_at: AT + 2 })];
+        await h.tick();
+        expect(allText(one(h.host, MAIL_CHAT_DOOR_TEST_ATTR))).toContain('Answer sent');
+      } else {
+        h.serve(current => ({ ...current, ask_prefix: 'server:', stale_after_minutes: 90 }));
+        await h.panel.refresh();
+        expect(allText(h.host)).toContain('Now 90 minutes.');
+      }
+      expectDraft(h.host, false);
+      expect(one(h.host, MAIL_CHAT_DOOR_ENROL_INPUT_ATTR).value).toBe('second@personal.example');
+      expect(h.runSet).not.toHaveBeenCalled();
+      expect(h.runCheck).not.toHaveBeenCalled();
+    });
+  }
+
+  it('updates untouched fields when a fresh server snapshot arrives', async () => {
+    const h = mount({ settings: ON });
+    await flush();
+    h.serve(current => ({ ...current, ask_prefix: null, stale_after_minutes: 90 }));
+    await h.panel.refresh();
+    expect(one(h.host, MAIL_CHAT_DOOR_PREFIX_ON_ATTR).checked).toBe(false);
+    expect(one(h.host, MAIL_CHAT_DOOR_PREFIX_ATTR).disabled).toBe(true);
+    expect(one(h.host, MAIL_CHAT_DOOR_STALE_ATTR).value).toBe('90');
+  });
+
+  for (const invalid of ['prefix', 'timeout'] as const) {
+    it(`keeps invalid ${invalid} text through validation and another read`, async () => {
+      const h = mount({ settings: ON });
+      await flush();
+      draft(h.host);
+      const attr = invalid === 'prefix' ? MAIL_CHAT_DOOR_PREFIX_ATTR : MAIL_CHAT_DOOR_STALE_ATTR;
+      type(h.host, attr, '');
+      one(h.host, MAIL_CHAT_DOOR_SAVE_ATTR).click();
+      expect(one(h.host, attr).value).toBe('');
+      expect(allText(h.host)).toContain(invalid === 'prefix' ? 'Enter a prefix' : 'Enter whole minutes');
+      await h.panel.refresh();
+      expect(one(h.host, attr).value).toBe('');
+      expect(h.runSet).not.toHaveBeenCalled();
+    });
+  }
+
+  it('keeps a refused save and releases its drafts only after a successful save', async () => {
+    const h = mount({ settings: ON });
+    await flush();
+    draft(h.host);
+    h.runSet.mockRejectedValueOnce(new Error('Settings not saved.'));
+    one(h.host, MAIL_CHAT_DOOR_SAVE_ATTR).click();
+    await flush();
+    expectDraft(h.host);
+    expect(allText(h.host)).toContain('Settings not saved.');
+    one(h.host, MAIL_CHAT_DOOR_SAVE_ATTR).click();
+    await flush();
+    expect(h.sets).toEqual([{ ask_prefix: 'reply:', stale_after_minutes: 47 }]);
+    expect(one(h.host, MAIL_CHAT_DOOR_PREFIX_ATTR).value).toBe('reply:');
+    expect(one(h.host, MAIL_CHAT_DOOR_ENROL_INPUT_ATTR).value).toBe('second@personal.example');
+    h.serve(current => ({ ...current, ask_prefix: 'server:', stale_after_minutes: 90 }));
+    await h.panel.refresh();
+    expect(one(h.host, MAIL_CHAT_DOOR_PREFIX_ATTR).value).toBe('server:');
+    expect(one(h.host, MAIL_CHAT_DOOR_STALE_ATTR).value).toBe('90');
+  });
+
+  it('preserves settings drafts through unrelated resume and address saves', async () => {
+    const h = mount({ settings: { ...ON, paused_at: AT } });
+    await flush();
+    draft(h.host, false);
+    one(h.host, MAIL_CHAT_DOOR_RESUME_ATTR).click();
+    await flush();
+    expectDraft(h.host, false);
+    one(h.host, MAIL_CHAT_DOOR_ENROL_ADD_ATTR).click();
+    await flush();
+    expectDraft(h.host, false);
+    expect(one(h.host, MAIL_CHAT_DOOR_ENROL_INPUT_ATTR).value).toBe('');
+    expect(h.sets).toEqual([{ resume: true }, { enroll: 'second@personal.example' }]);
+  });
+
+  for (const kind of ['verification', 'refresh'] as const) {
+    for (const outcome of ['success', 'failure'] as const) {
+      it(`ignores a pre-save ${kind} ${outcome} arriving after the save`, async () => {
+        const h = mount({ settings: kind === 'verification' ? { ...ON, enrolled_senders: [sender()] } : ON });
+        await flush();
+        let resolve!: (value: MailChatDoorSettings) => void;
+        let reject!: (reason: Error) => void;
+        h.runGet.mockReturnValueOnce(new Promise((done, fail) => { resolve = done; reject = fail; }));
+        let pending: Promise<void> | undefined;
+        if (kind === 'verification') await h.tick();
+        else { pending = h.panel.refresh(); await flush(); }
+        draft(h.host);
+        one(h.host, MAIL_CHAT_DOOR_SAVE_ATTR).click();
+        await flush();
+        if (outcome === 'success') resolve(ON);
+        else reject(new Error('Old read failed.'));
+        await pending;
+        await flush();
+        expect(one(h.host, MAIL_CHAT_DOOR_PREFIX_ATTR).value).toBe('reply:');
+        expect(one(h.host, MAIL_CHAT_DOOR_STALE_ATTR).value).toBe('47');
+        expect(h.panel.getError()).toBeNull();
+        expect(h.panel.getState()).toBe('ready');
+        expect(h.sets).toEqual([{ ask_prefix: 'reply:', stale_after_minutes: 47 }]);
+      });
+    }
+  }
+
+  it('retires drafts when the mailbox is switched off and on again', async () => {
+    const h = mount({ settings: ON });
+    await flush();
+    draft(h.host, false);
+    one(h.host, MAIL_CHAT_DOOR_TURN_OFF_ATTR).click();
+    one(h.host, MAIL_CHAT_DOOR_TURN_OFF_CONFIRM_ATTR).click();
+    await flush();
+    h.serve(() => ON);
+    await h.panel.refresh();
+    expect(one(h.host, MAIL_CHAT_DOOR_PREFIX_ATTR).value).toBe(ON.ask_prefix);
+    expect(one(h.host, MAIL_CHAT_DOOR_PREFIX_ON_ATTR).checked).toBe(true);
+    expect(one(h.host, MAIL_CHAT_DOOR_STALE_ATTR).value).toBe(String(ON.stale_after_minutes));
+    expect(one(h.host, MAIL_CHAT_DOOR_ENROL_INPUT_ATTR).value).toBe('');
+  });
+
+  it('still forces the prefix on when the server changes to writing to yourself', async () => {
+    const h = mount({ settings: ON });
+    await flush();
+    draft(h.host, false);
+    h.serve(current => ({ ...current, owner_mailboxes: [CHAT] }));
+    await h.panel.refresh();
+    expect(one(h.host, MAIL_CHAT_DOOR_PREFIX_ON_ATTR).checked).toBe(true);
+    expect(one(h.host, MAIL_CHAT_DOOR_PREFIX_ON_ATTR).disabled).toBe(true);
+    expect(one(h.host, MAIL_CHAT_DOOR_PREFIX_ATTR).disabled).toBe(false);
+    one(h.host, MAIL_CHAT_DOOR_SAVE_ATTR).click();
+    await flush();
+    expect(h.sets).toEqual([{ ask_prefix: 'reply:', stale_after_minutes: 47 }]);
   });
 });
 

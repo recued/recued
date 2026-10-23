@@ -598,6 +598,17 @@ type VerifyValues = {
   result: HostnameOwnershipProofResult | null;
 };
 
+type VerifyDraftValues = Pick<VerifyValues,
+  'hostname' | 'method' | 'observed_token_hash' | 'cert_matches_hostname'>;
+
+const verificationDraftFor = (values: VerifyValues): VerifyDraftValues | null =>
+  values.hostname === null ? null : {
+    hostname: values.hostname,
+    method: values.method,
+    observed_token_hash: values.observed_token_hash,
+    cert_matches_hostname: values.cert_matches_hostname,
+  };
+
 export interface HostnamesPanelState {
   loading: boolean;
   error: string | null;
@@ -647,6 +658,8 @@ export interface HostnamesPanelState {
 export interface MountHostnamesPanelOptions {
   host: HTMLElement;
   document?: Document;
+  /** Defaults to this document's native discard confirmation. */
+  confirmDiscard?: (prompt: string) => boolean;
   runList: HostnamesListCaller;
   runGet: HostnamesGetCaller;
   runAdd: HostnamesAddCaller;
@@ -677,6 +690,8 @@ export interface MountHostnamesPanelOptions {
 
 export interface HostnamesPanelMount {
   getState(): HostnamesPanelState;
+  hasUnsavedChanges(): boolean;
+  hasInFlightWork(): boolean;
   refresh(): Promise<void>;
   whenLoaded(): Promise<void>;
   dispose(): void;
@@ -960,6 +975,14 @@ const updateValuesFor = (row: HostnameProjection): UpdateValues => ({
   enabled: row.enabled,
 });
 
+const sameFormValues = (left: UpdateValues, right: UpdateValues): boolean =>
+  left.cert_source === right.cert_source
+  && left.verification_method === right.verification_method
+  && left.verification_token_hash === right.verification_token_hash
+  && left.enabled === right.enabled
+  && left.listener_ports.length === right.listener_ports.length
+  && left.listener_ports.every((port) => right.listener_ports.includes(port));
+
 const diagnosticResponseHasHostnameMatchedTls = (
   response: DiagnosticResponse,
 ): boolean =>
@@ -996,6 +1019,8 @@ const buildAutoVerifyRequest = (
 // ---------------------------------------------------------------------------
 // Mount
 // ---------------------------------------------------------------------------
+
+let nextHostnamesValidationId = 0;
 
 export const mountHostnamesPanel = (
   opts: MountHostnamesPanelOptions,
@@ -1043,21 +1068,139 @@ export const mountHostnamesPanel = (
   let loadGeneration = 0;
   let detailGeneration = 0;
   let pendingLoad: Promise<void> = Promise.resolve();
+  // Keep the starting form values even if a background list refresh replaces
+  // the row. Field setters replace values instead of mutating this snapshot.
+  let updateBaseline: UpdateValues | null = null;
+  let verifyBaseline: VerifyDraftValues | null = null;
+  let pendingWrites = 0;
+  const trackWrite = <T>(request: Promise<T>): Promise<T> => {
+    pendingWrites++;
+    const settled = (): void => {
+      pendingWrites--;
+    };
+    // Observe settlement while returning the original promise, so callers keep
+    // their existing response and error handling order.
+    void request.then(settled, settled);
+    return request;
+  };
+  const editorBusy = (): boolean =>
+    state.add.saving || state.update.saving || state.remove.saving || state.verify.saving;
+  const hasUnsavedChanges = (): boolean => !disposed && (
+    (state.add.open && (
+      state.add.values.hostname !== DEFAULT_ADD_VALUES.hostname
+      || !sameFormValues(state.add.values, DEFAULT_ADD_VALUES)
+    ))
+    || (state.update.hostname !== null && updateBaseline !== null
+      && !sameFormValues(state.update.values, updateBaseline))
+    || (state.verify.hostname !== null && verifyBaseline !== null && (
+      state.verify.hostname !== verifyBaseline.hostname
+      || state.verify.method !== verifyBaseline.method
+      || state.verify.observed_token_hash !== verifyBaseline.observed_token_hash
+      || state.verify.cert_matches_hostname !== verifyBaseline.cert_matches_hostname
+    ))
+  );
+  const canSwitchEditor = (): boolean => {
+    if (disposed || editorBusy()) return false;
+    if (!hasUnsavedChanges()) return true;
+    const prompt = 'Discard the unsaved hostname changes?';
+    const view = doc.defaultView;
+    const proceed = opts.confirmDiscard !== undefined ? opts.confirmDiscard(prompt)
+      : typeof view?.confirm === 'function' ? view.confirm(prompt) : true;
+    return proceed && !disposed && !editorBusy();
+  };
+  const formSaving = (attr: string): boolean =>
+    attr === HOSTNAMES_ADD_FIELD_ATTR ? state.add.saving
+      : attr === HOSTNAMES_UPDATE_FIELD_ATTR ? state.update.saving
+        : attr === HOSTNAMES_VERIFY_FIELD_ATTR && state.verify.saving;
 
   const wrapper = doc.createElement('div');
   wrapper.setAttribute(HOSTNAMES_PANEL_ATTR, '');
   wrapper.className = 'hostnames-panel';
   opts.host.appendChild(wrapper);
 
+  const validationMessageId = `hostnames-validation-${++nextHostnamesValidationId}`;
+  const editorControls = new Map<string, HTMLInputElement | HTMLSelectElement>();
+  const bindChoiceChange = (
+    control: HTMLInputElement | HTMLSelectElement,
+    attr: string,
+    field: string,
+    onChange: () => void,
+  ): void => {
+    const tracksFocus = attr === HOSTNAMES_ADD_FIELD_ATTR || attr === HOSTNAMES_UPDATE_FIELD_ATTR
+      || attr === HOSTNAMES_VERIFY_FIELD_ATTR;
+    const key = `${attr}:${field}`;
+    control.disabled = formSaving(attr);
+    if (tracksFocus) editorControls.set(key, control);
+    control.addEventListener('change', () => {
+      if (disposed || formSaving(attr) || (tracksFocus && editorControls.get(key) !== control)) return;
+      const ownedFocus = tracksFocus && doc.activeElement === control;
+      onChange();
+      // A choice redraws the dependent fields. Return its own focus to the
+      // current control, without taking focus for an unfocused scripted change.
+      if (ownedFocus && !disposed) {
+        const current = editorControls.get(key);
+        if (current !== undefined && !current.disabled) current.focus({ preventScroll: true });
+      }
+    });
+  };
+
   const clearChildren = (el: HTMLElement): void => {
     while (el.firstChild) el.removeChild(el.firstChild);
+  };
+
+  // Optional reads settle independently of the hostname roster. Keep their
+  // render targets separate so status updates never detach an active editor
+  // (which would discard native focus, selection, Undo and composition).
+  const ddnsHost = doc.createElement('div');
+  const addressesHost = doc.createElement('div');
+  const localUrlsHost = doc.createElement('div');
+  const renderStatus = (host: HTMLElement, content: (target: HTMLElement) => void): void => {
+    if (disposed) return;
+    clearChildren(host);
+    content(host);
+    host.hidden = host.firstChild === null;
+  };
+  const keptWarnings: Array<{ host: HTMLElement; hostname: string; action: 'Removing it' | 'Switching it off' }> = [];
+
+  // Keep the form snapshot that produced a local error. Unrelated status or
+  // roster redraws retain it; edits, reopened editors and server errors replace it.
+  let localValidation: {
+    attr: string;
+    owner: HostnamesPanelState['add'] | HostnamesPanelState['update'];
+    issue: ValidationIssue;
+  } | null = null;
+  type EditorFeedback = { node: HTMLElement | null; invalidControl: HTMLInputElement | HTMLSelectElement | null };
+  const editorFeedback = new Map<string, EditorFeedback>();
+  const clearValidationAssociation = (feedback: EditorFeedback): void => {
+    const control = feedback.invalidControl;
+    if (control === null) return;
+    const descriptions = (control.getAttribute('aria-describedby') ?? '').split(/\s+/)
+      .filter(id => id !== '' && id !== validationMessageId);
+    if (descriptions.length === 0) control.removeAttribute('aria-describedby');
+    else control.setAttribute('aria-describedby', descriptions.join(' '));
+    if (control.getAttribute('aria-invalid') === 'true') control.removeAttribute('aria-invalid');
+    feedback.invalidControl = null;
+  };
+  const mountEditorFeedback = (form: HTMLElement, attr: string, node: HTMLElement | null): EditorFeedback => {
+    const feedback: EditorFeedback = { node, invalidControl: null };
+    editorFeedback.set(attr, feedback);
+    if (node !== null) form.appendChild(node);
+    return feedback;
+  };
+  const clearEditorFeedback = (feedback: EditorFeedback): void => {
+    // Remove only the current form's message. Replacing its inputs would lose
+    // native focus, selection and Undo; kept-address warnings remain separate.
+    if (feedback.invalidControl !== null) localValidation = null;
+    clearValidationAssociation(feedback);
+    feedback.node?.remove();
+    feedback.node = null;
   };
 
   const makeButton = (
     label: string,
     attr: string,
     variant: 'primary' | 'secondary' | 'danger',
-    onClick: () => void,
+    onClick: (event: MouseEvent) => void,
     disabled = false,
   ): HTMLButtonElement => {
     const btn = doc.createElement('button');
@@ -1068,6 +1211,23 @@ export const mountHostnamesPanel = (
     btn.disabled = disabled;
     btn.addEventListener('click', onClick);
     return btn;
+  };
+
+  const makeEditorSubmitButton = (
+    label: string,
+    buttonAttr: string,
+    fieldAttr: string,
+    onSubmit: (focusInvalid: boolean) => Promise<void>,
+    disabled: boolean,
+  ): HTMLButtonElement => {
+    const feedback = editorFeedback.get(fieldAttr);
+    return makeButton(label, buttonAttr, 'primary', (event) => {
+      if (disposed || formSaving(fieldAttr) || feedback === undefined
+        || editorFeedback.get(fieldAttr) !== feedback) return;
+      // Only a native activation of this mounted form may move focus to its
+      // invalid field. Public submissions and scripted clicks still validate.
+      void onSubmit(event.isTrusted);
+    }, disabled);
   };
 
   const makeField = (
@@ -1094,8 +1254,34 @@ export const mountHostnamesPanel = (
     input.className = mono ? 'hostnames-input hostnames-mono' : 'hostnames-input';
     input.type = 'text';
     input.value = value;
+    input.disabled = formSaving(attr);
     input.setAttribute(attr, field);
-    input.addEventListener('input', () => onInput(input.value));
+    editorControls.set(`${attr}:${field}`, input);
+    const feedback = editorFeedback.get(attr);
+    input.addEventListener('input', () => {
+      if (disposed || formSaving(attr) || feedback === undefined || editorFeedback.get(attr) !== feedback) return;
+      onInput(input.value);
+      clearEditorFeedback(feedback);
+    });
+    if (attr === HOSTNAMES_ADD_FIELD_ATTR || attr === HOSTNAMES_UPDATE_FIELD_ATTR) {
+      let composing = false;
+      input.addEventListener('compositionstart', () => { composing = true; });
+      input.addEventListener('compositionend', () => { composing = false; });
+      input.addEventListener('keydown', (event) => {
+        // Enter that accepts an IME candidate must not submit. Some browsers
+        // expose that key only through the legacy composition code (229).
+        if (event.key !== 'Enter' || !event.isTrusted || event.defaultPrevented
+          || event.repeat || composing || event.isComposing || event.keyCode === 229
+          || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+        if (disposed || editorBusy() || feedback === undefined
+          || editorFeedback.get(attr) !== feedback
+          || editorControls.get(`${attr}:${field}`) !== input) return;
+        event.preventDefault();
+        // Use the same validation, focus and synchronous write lock as a
+        // native activation of the current form's submit button.
+        void (attr === HOSTNAMES_ADD_FIELD_ATTR ? submitAdd(true) : submitUpdate(true));
+      });
+    }
     return input;
   };
 
@@ -1103,15 +1289,7 @@ export const mountHostnamesPanel = (
     field: string,
     value: string,
     onInput: (value: string) => void,
-  ): HTMLInputElement => {
-    const input = doc.createElement('input');
-    input.className = 'hostnames-input hostnames-mono';
-    input.type = 'text';
-    input.value = value;
-    input.setAttribute(HOSTNAMES_VERIFY_FIELD_ATTR, field);
-    input.addEventListener('input', () => onInput(input.value));
-    return input;
-  };
+  ): HTMLInputElement => makeInput(field, value, onInput, HOSTNAMES_VERIFY_FIELD_ATTR, true);
 
   const makeCertSourceSelect = (
     attr: string,
@@ -1139,7 +1317,7 @@ export const mountHostnamesPanel = (
       select.appendChild(option);
     }
     select.value = value;
-    select.addEventListener('change', () => onChange(select.value as HostnameCertSource));
+    bindChoiceChange(select, attr, 'cert_source', () => onChange(select.value as HostnameCertSource));
     return select;
   };
 
@@ -1199,7 +1377,7 @@ export const mountHostnamesPanel = (
       select.appendChild(option);
     }
     select.value = methods.includes(value) ? value : methods[0] ?? 'dns_txt';
-    select.addEventListener('change', () => onChange(select.value as HostnameVerificationMethod));
+    bindChoiceChange(select, attr, 'method', () => onChange(select.value as HostnameVerificationMethod));
     return select;
   };
 
@@ -1230,7 +1408,7 @@ export const mountHostnamesPanel = (
       box.type = 'checkbox';
       box.checked = selected.includes(port);
       box.setAttribute(attr, portFieldName(port));
-      box.addEventListener('change', () => {
+      bindChoiceChange(box, attr, portFieldName(port), () => {
         // Rebuild from the closed list rather than splicing the previous
         // array, so the result is always in contract order and can never
         // hold a duplicate.
@@ -1272,7 +1450,8 @@ export const mountHostnamesPanel = (
     form.className = 'hostnames-form';
     form.setAttribute(HOSTNAMES_ADD_FORM_ATTR, '');
 
-    if (state.add.error !== null) form.appendChild(renderError(state.add.error));
+    const feedback = mountEditorFeedback(form, HOSTNAMES_ADD_FIELD_ATTR,
+      state.add.error === null ? null : renderError(state.add.error));
 
     const grid = doc.createElement('div');
     grid.className = 'hostnames-form-grid';
@@ -1361,15 +1540,19 @@ export const mountHostnamesPanel = (
     const enabled = doc.createElement('input');
     enabled.type = 'checkbox';
     enabled.checked = state.add.values.enabled;
+    enabled.disabled = state.add.saving;
     enabled.setAttribute(HOSTNAMES_ADD_FIELD_ATTR, 'enabled');
     enabled.addEventListener('change', () => {
+      if (disposed || state.add.saving || editorFeedback.get(HOSTNAMES_ADD_FIELD_ATTR) !== feedback) return;
       state = {
         ...state,
         add: {
           ...state.add,
+          error: null,
           values: { ...state.add.values, enabled: enabled.checked },
         },
       };
+      clearEditorFeedback(feedback);
     });
     const enabledLabel = doc.createElement('label');
     enabledLabel.className = 'hostnames-checkbox-label';
@@ -1386,13 +1569,11 @@ export const mountHostnamesPanel = (
       }, state.add.saving),
     );
     actions.appendChild(
-      makeButton(
+      makeEditorSubmitButton(
         state.add.saving ? 'Adding...' : 'Add hostname',
         HOSTNAMES_ADD_SUBMIT_BTN_ATTR,
-        'primary',
-        () => {
-          void handle.submitAdd();
-        },
+        HOSTNAMES_ADD_FIELD_ATTR,
+        submitAdd,
         state.add.saving,
       ),
     );
@@ -1409,7 +1590,8 @@ export const mountHostnamesPanel = (
     form.className = 'hostnames-form';
     form.setAttribute(HOSTNAMES_UPDATE_FORM_ATTR, row.hostname);
 
-    if (state.update.error !== null) form.appendChild(renderError(state.update.error));
+    const feedback = mountEditorFeedback(form, HOSTNAMES_UPDATE_FIELD_ATTR,
+      state.update.error === null ? null : renderError(state.update.error));
 
     const grid = doc.createElement('div');
     grid.className = 'hostnames-form-grid';
@@ -1485,8 +1667,10 @@ export const mountHostnamesPanel = (
     const enabled = doc.createElement('input');
     enabled.type = 'checkbox';
     enabled.checked = state.update.values.enabled;
+    enabled.disabled = state.update.saving;
     enabled.setAttribute(HOSTNAMES_UPDATE_FIELD_ATTR, 'enabled');
     enabled.addEventListener('change', () => {
+      if (disposed || state.update.saving || editorFeedback.get(HOSTNAMES_UPDATE_FIELD_ATTR) !== feedback) return;
       state = {
         ...state,
         update: {
@@ -1495,6 +1679,7 @@ export const mountHostnamesPanel = (
           values: { ...state.update.values, enabled: enabled.checked },
         },
       };
+      clearEditorFeedback(feedback);
     });
     const enabledLabel = doc.createElement('label');
     enabledLabel.className = 'hostnames-checkbox-label';
@@ -1511,21 +1696,18 @@ export const mountHostnamesPanel = (
       }, state.update.saving),
     );
     actions.appendChild(
-      makeButton(
+      makeEditorSubmitButton(
         state.update.saving ? 'Saving...' : 'Save changes',
         HOSTNAMES_UPDATE_SUBMIT_BTN_ATTR,
-        'primary',
-        () => {
-          void handle.submitUpdate();
-        },
+        HOSTNAMES_UPDATE_FIELD_ATTR,
+        submitUpdate,
         state.update.saving,
       ),
     );
 
     form.appendChild(grid);
     form.appendChild(enabledLabel);
-    const kept = renderKeptWarning(row.hostname, 'Switching it off');
-    if (kept !== null) form.appendChild(kept);
+    form.appendChild(makeKeptWarningHost(row.hostname, 'Switching it off'));
     form.appendChild(actions);
     return form;
   };
@@ -1690,6 +1872,25 @@ export const mountHostnamesPanel = (
     return p;
   };
 
+  const updateKeptWarnings = (): void => {
+    for (const { host, hostname, action } of keptWarnings) {
+      renderStatus(host, (target) => {
+        const warning = renderKeptWarning(hostname, action);
+        if (warning !== null) target.appendChild(warning);
+      });
+    }
+  };
+
+  const makeKeptWarningHost = (hostname: string, action: 'Removing it' | 'Switching it off'): HTMLElement => {
+    const host = doc.createElement('div');
+    keptWarnings.push({ host, hostname, action });
+    renderStatus(host, (target) => {
+      const warning = renderKeptWarning(hostname, action);
+      if (warning !== null) target.appendChild(warning);
+    });
+    return host;
+  };
+
   const renderRemoveConfirm = (row: HostnameProjection): HTMLElement | null => {
     if (state.remove.hostname !== row.hostname) return null;
     const panel = doc.createElement('div');
@@ -1697,8 +1898,7 @@ export const mountHostnamesPanel = (
     panel.setAttribute(HOSTNAMES_REMOVE_CONFIRM_PANEL_ATTR, row.hostname);
 
     if (state.remove.error !== null) panel.appendChild(renderError(state.remove.error));
-    const kept = renderKeptWarning(row.hostname, 'Removing it');
-    if (kept !== null) panel.appendChild(kept);
+    panel.appendChild(makeKeptWarningHost(row.hostname, 'Removing it'));
     const p = doc.createElement('p');
     p.className = 'hostnames-muted';
     p.textContent = `Remove ${row.hostname} from your list of names?`;
@@ -1735,8 +1935,9 @@ export const mountHostnamesPanel = (
     form.className = 'hostnames-verify-form';
     form.setAttribute(HOSTNAMES_VERIFY_FORM_ATTR, row.hostname);
 
+    let message: HTMLElement | null = null;
     if (state.verify.error !== null) {
-      form.appendChild(renderError(state.verify.error, HOSTNAMES_PANEL_ERROR_ATTR));
+      message = renderError(state.verify.error, HOSTNAMES_PANEL_ERROR_ATTR);
     } else if (state.verify.result?.ok) {
       const p = doc.createElement('p');
       p.className = 'hostnames-muted';
@@ -1744,14 +1945,15 @@ export const mountHostnamesPanel = (
       p.textContent = state.verify.result.status === 'verified'
         ? 'You own it. Checked.'
         : 'Recued could not show that you own it.';
-      form.appendChild(p);
+      message = p;
     } else if (state.verify.saving && opts.runExternalProbe !== undefined) {
       const p = doc.createElement('p');
       p.className = 'hostnames-muted';
       p.setAttribute(HOSTNAMES_VERIFY_AUTO_PROBE_STATUS_ATTR, '');
       p.textContent = 'Checking from the outside…';
-      form.appendChild(p);
+      message = p;
     }
+    const feedback = mountEditorFeedback(form, HOSTNAMES_VERIFY_FIELD_ATTR, message);
 
     const grid = doc.createElement('div');
     grid.className = 'hostnames-form-grid';
@@ -1782,8 +1984,10 @@ export const mountHostnamesPanel = (
       const input = doc.createElement('input');
       input.type = 'checkbox';
       input.checked = state.verify.cert_matches_hostname;
+      input.disabled = state.verify.saving;
       input.setAttribute(HOSTNAMES_VERIFY_FIELD_ATTR, 'cert_matches_hostname');
       input.addEventListener('change', () => {
+        if (disposed || state.verify.saving || editorFeedback.get(HOSTNAMES_VERIFY_FIELD_ATTR) !== feedback) return;
         state = {
           ...state,
           verify: {
@@ -1793,6 +1997,7 @@ export const mountHostnamesPanel = (
             result: null,
           },
         };
+        clearEditorFeedback(feedback);
       });
       const label = doc.createElement('label');
       label.className = 'hostnames-checkbox-label';
@@ -1939,7 +2144,7 @@ export const mountHostnamesPanel = (
           () => {
             void handle.openDetail(row.hostname);
           },
-          state.detail.loading && state.detail.hostname === row.hostname,
+          editorBusy() || (state.detail.loading && state.detail.hostname === row.hostname),
         ),
       );
       actions.appendChild(
@@ -1950,7 +2155,7 @@ export const mountHostnamesPanel = (
           () => {
             handle.openUpdate(row.hostname);
           },
-          state.update.saving || state.remove.saving,
+          editorBusy(),
         ),
       );
       if (row.cert_source !== 'recued_acme') {
@@ -1962,6 +2167,7 @@ export const mountHostnamesPanel = (
             () => {
               handle.openVerify(row.hostname);
             },
+            editorBusy(),
           ),
         );
       }
@@ -1973,7 +2179,7 @@ export const mountHostnamesPanel = (
           () => {
             handle.openRemove(row.hostname);
           },
-          state.update.saving || state.remove.saving,
+          editorBusy(),
         ),
       );
       item.appendChild(actions);
@@ -2000,7 +2206,7 @@ export const mountHostnamesPanel = (
     state = { ...state, ddns: { ...state.ddns, busy: true, error: null } };
     render();
     try {
-      const res = await opts.runDdnsSetEnabled({ enabled });
+      const res = await trackWrite(opts.runDdnsSetEnabled({ enabled }));
       if (disposed) return;
       state = { ...state, ddns: { ...state.ddns, busy: false, enabled: res.enabled } };
     } catch (err) {
@@ -2015,7 +2221,7 @@ export const mountHostnamesPanel = (
   // cloud record exists. If this webclient is connected VIA the handle, the
   // toggle is BLOCKED (pausing would sever this connection) until the user
   // re-points Server URL.
-  const renderProDdns = (): void => {
+  const renderProDdns = (target: HTMLElement): void => {
     if (!state.ddns.available) return;
     const section = doc.createElement('div');
     section.className = 'hostnames-ddns';
@@ -2044,7 +2250,7 @@ export const mountHostnamesPanel = (
         `through ${host}. Switch to another address (a LAN URL or a custom domain) in ` +
         'Settings, then Server URL, and reconnect. After that you can pause.';
       section.appendChild(blocked);
-      wrapper.appendChild(section);
+      target.appendChild(section);
       return;
     }
 
@@ -2075,10 +2281,10 @@ export const mountHostnamesPanel = (
       err.setAttribute(HOSTNAMES_DDNS_ERROR_ATTR, '');
       section.appendChild(err);
     }
-    wrapper.appendChild(section);
+    target.appendChild(section);
   };
 
-  const renderLocalUrls = (): void => {
+  const renderLocalUrls = (target: HTMLElement): void => {
     // Render only when at least one address is known — this covers both the
     // "no caller" case (the slice stays empty) and the brief in-flight window,
     // so the section never flickers an empty header.
@@ -2116,10 +2322,10 @@ export const mountHostnamesPanel = (
 
       section.appendChild(row);
     }
-    wrapper.appendChild(section);
+    target.appendChild(section);
   };
 
-  const renderAddresses = (): void => {
+  const renderAddresses = (target: HTMLElement): void => {
     const response = state.addresses.response;
     if (opts.runAddressUses === undefined) return;
     if (response === null && state.addresses.error === null) return;
@@ -2244,11 +2450,15 @@ export const mountHostnamesPanel = (
             : `Right now that is ${app ?? 'none'} for links into the app, and ${answers ?? 'none'} for answer links.`);
       section.appendChild(links);
     }
-    wrapper.appendChild(section);
+    target.appendChild(section);
   };
 
   const render = (): void => {
     if (disposed) return;
+    for (const feedback of editorFeedback.values()) clearValidationAssociation(feedback);
+    editorControls.clear();
+    editorFeedback.clear();
+    keptWarnings.length = 0;
     clearChildren(wrapper);
 
     const header = doc.createElement('div');
@@ -2260,16 +2470,20 @@ export const mountHostnamesPanel = (
     header.appendChild(
       makeButton('Add hostname', HOSTNAMES_ADD_OPEN_BTN_ATTR, 'primary', () => {
         handle.openAdd();
-      }, state.add.open || state.add.saving),
+      }, state.add.open || editorBusy()),
     );
     wrapper.appendChild(header);
 
     if (state.error !== null) wrapper.appendChild(renderError(state.error));
-    renderProDdns();
+    wrapper.appendChild(ddnsHost);
+    renderStatus(ddnsHost, renderProDdns);
     renderAddForm();
     renderRows();
-    renderAddresses();
-    renderLocalUrls();
+    wrapper.appendChild(addressesHost);
+    renderStatus(addressesHost, renderAddresses);
+    wrapper.appendChild(localUrlsHost);
+    renderStatus(localUrlsHost, renderLocalUrls);
+    applyValidationAssociation();
   };
 
   /** Read the addresses handed out. `gen` ties a refresh's read to that
@@ -2292,7 +2506,8 @@ export const mountHostnamesPanel = (
           : { ...state.addresses, error: errMessage(err) },
       };
     }
-    render();
+    renderStatus(addressesHost, renderAddresses);
+    updateKeptWarnings();
   };
 
   const saveAddressUse = async (
@@ -2306,7 +2521,7 @@ export const mountHostnamesPanel = (
     };
     render();
     try {
-      const response = await opts.runSetAddressUse({ use, hostname });
+      const response = await trackWrite(opts.runSetAddressUse({ use, hostname }));
       if (disposed) return;
       state = { ...state, addresses: { ...state.addresses, response, saving: null } };
     } catch (err) {
@@ -2382,7 +2597,7 @@ export const mountHostnamesPanel = (
         if (disposed || gen !== loadGeneration) return;
         state = { ...state, localUrls: [] };
       }
-      render();
+      renderStatus(localUrlsHost, renderLocalUrls);
     })();
     // R27 delta-B — Pro DDNS control state, fetched separately (same non-
     // blocking discipline as the LAN URLs). Both the status (enabled) + the
@@ -2413,7 +2628,7 @@ export const mountHostnamesPanel = (
         if (disposed || gen !== loadGeneration) return;
         state = { ...state, ddns: { ...state.ddns, available: false } };
       }
-      render();
+      renderStatus(ddnsHost, renderProDdns);
     })();
     const addressesLoad = loadAddresses(gen);
     pendingLoad = Promise.all([listLoad, localUrlsLoad, ddnsLoad, addressesLoad])
@@ -2421,21 +2636,56 @@ export const mountHostnamesPanel = (
     return pendingLoad;
   };
 
-  const validateAdd = (): string | null => {
+  type ValidationIssue = {
+    message: string;
+    field: 'hostname' | 'verification_token_hash' | 'method' | 'listener_ports' | null;
+  };
+  const validationOwner = (attr: string): HostnamesPanelState['add'] | HostnamesPanelState['update'] | null =>
+    attr === HOSTNAMES_ADD_FIELD_ATTR ? state.add : attr === HOSTNAMES_UPDATE_FIELD_ATTR ? state.update : null;
+  const validationControl = (attr: string, issue: ValidationIssue): HTMLInputElement | HTMLSelectElement | undefined => {
+    if (issue.field === null) return undefined;
+    const field = issue.field === 'listener_ports' ? portFieldName(HOSTNAME_LISTENER_PORTS[0]!) : issue.field;
+    return editorControls.get(`${attr}:${field}`);
+  };
+  const applyValidationAssociation = (): void => {
+    if (localValidation === null) return;
+    const { attr, owner, issue } = localValidation;
+    if (validationOwner(attr) !== owner || owner.error !== issue.message) {
+      localValidation = null;
+      return;
+    }
+    const feedback = editorFeedback.get(attr);
+    const control = validationControl(attr, issue);
+    if (feedback?.node == null || control === undefined) return;
+    feedback.node.setAttribute('id', validationMessageId);
+    control.setAttribute('aria-invalid', 'true');
+    const descriptions = (control.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean);
+    control.setAttribute('aria-describedby', [...new Set([...descriptions, validationMessageId])].join(' '));
+    feedback.invalidControl = control;
+  };
+  const renderValidation = (attr: string, issue: ValidationIssue, focusInvalid: boolean): void => {
+    const owner = validationOwner(attr);
+    localValidation = owner === null || issue.field === null ? null : { attr, owner, issue };
+    render();
+    if (!focusInvalid || disposed || formSaving(attr)) return;
+    validationControl(attr, issue)?.focus();
+  };
+
+  const validateAdd = (): ValidationIssue | null => {
     const values = state.add.values;
-    if (values.hostname.trim() === '') return 'You need to give a name.';
+    if (values.hostname.trim() === '') return { message: 'You need to give a name.', field: 'hostname' };
     if (
       values.cert_source !== 'recued_acme'
       && values.verification_method !== 'cert_proof'
       && values.verification_token_hash.trim() === ''
     ) {
-      return 'Proof code is required for HTTP token and DNS TXT proofs.';
+      return { message: 'Proof code is required for HTTP token and DNS TXT proofs.', field: 'verification_token_hash' };
     }
     // ⛔ The server does NOT reject an empty array — `normalizePorts` swaps in
     // `[443]`. So "no ports checked" would save as 443 and the form would have
     // lied about what it did. Block it here, where we can still say so.
     if (values.listener_ports.length === 0) {
-      return 'Pick at least one port.';
+      return { message: 'Pick at least one port.', field: 'listener_ports' };
     }
     return null;
   };
@@ -2457,12 +2707,12 @@ export const mountHostnamesPanel = (
     return req;
   };
 
-  const submitAdd = async (): Promise<void> => {
-    if (disposed || state.add.saving) return;
+  const submitAdd = async (focusInvalid = false): Promise<void> => {
+    if (disposed || editorBusy()) return;
     const validation = validateAdd();
     if (validation !== null) {
-      state = { ...state, add: { ...state.add, error: validation } };
-      render();
+      state = { ...state, add: { ...state.add, error: validation.message } };
+      renderValidation(HOSTNAMES_ADD_FIELD_ATTR, validation, focusInvalid);
       return;
     }
 
@@ -2473,7 +2723,7 @@ export const mountHostnamesPanel = (
     };
     render();
     try {
-      const result = await opts.runAdd(buildAddRequest());
+      const result = await trackWrite(opts.runAdd(buildAddRequest()));
       if (disposed) return;
       const nextVerify =
         result.hostname.cert_source === 'recued_acme'
@@ -2485,6 +2735,7 @@ export const mountHostnamesPanel = (
                 ?? defaultMethodFor(result.hostname.cert_source),
               observed_token_hash: values.verification_token_hash,
             };
+      verifyBaseline = verificationDraftFor(nextVerify);
       state = {
         ...state,
         hostnames: upsertProjection(state.hostnames, result.hostname),
@@ -2532,13 +2783,13 @@ export const mountHostnamesPanel = (
     return next.some((port, i) => port !== row.listener_ports[i]);
   };
 
-  const validateUpdate = (): string | null => {
+  const validateUpdate = (): ValidationIssue | null => {
     const row = selectedUpdateRow();
-    if (row === null) return 'Pick a name to change.';
+    if (row === null) return { message: 'Pick a name to change.', field: null };
     const values = state.update.values;
     const methods = compatibleMethodsFor(values.cert_source);
     if (methods.length > 0 && !methods.includes(values.verification_method)) {
-      return 'You cannot prove it that way for this kind of certificate.';
+      return { message: 'You cannot prove it that way for this kind of certificate.', field: 'method' };
     }
     if (
       proofConfigWillChange(row)
@@ -2546,10 +2797,10 @@ export const mountHostnamesPanel = (
       && values.verification_method !== 'cert_proof'
       && values.verification_token_hash.trim() === ''
     ) {
-      return 'Proof code is required when changing to HTTP token or DNS TXT proof.';
+      return { message: 'Proof code is required when changing to HTTP token or DNS TXT proof.', field: 'verification_token_hash' };
     }
     if (values.listener_ports.length === 0) {
-      return 'Pick at least one port.';
+      return { message: 'Pick at least one port.', field: 'listener_ports' };
     }
     return null;
   };
@@ -2574,16 +2825,16 @@ export const mountHostnamesPanel = (
     return Object.keys(req).length > 1 ? req : null;
   };
 
-  const submitUpdate = async (): Promise<void> => {
-    if (disposed || state.update.saving) return;
+  const submitUpdate = async (focusInvalid = false): Promise<void> => {
+    if (disposed || editorBusy()) return;
     const row = selectedUpdateRow();
     const validation = validateUpdate();
     if (row === null || validation !== null) {
       state = {
         ...state,
-        update: { ...state.update, error: validation ?? 'Pick a name to change.' },
+        update: { ...state.update, error: validation?.message ?? 'Pick a name to change.' },
       };
-      render();
+      renderValidation(HOSTNAMES_UPDATE_FIELD_ATTR, validation ?? { message: 'Pick a name to change.', field: null }, focusInvalid);
       return;
     }
     const request = buildUpdateRequest(row);
@@ -2602,8 +2853,9 @@ export const mountHostnamesPanel = (
     };
     render();
     try {
-      const result = await opts.runUpdate(request);
+      const result = await trackWrite(opts.runUpdate(request));
       if (disposed) return;
+      updateBaseline = null;
       state = {
         ...state,
         hostnames: upsertProjection(state.hostnames, result.hostname),
@@ -2635,8 +2887,9 @@ export const mountHostnamesPanel = (
   };
 
   const loadDetail = async (hostname: string): Promise<void> => {
-    if (disposed) return;
+    if (!state.hostnames.some(row => row.hostname === hostname) || !canSwitchEditor()) return;
     const gen = ++detailGeneration;
+    verifyBaseline = null;
     state = {
       ...state,
       add: { ...state.add, open: false },
@@ -2695,8 +2948,9 @@ export const mountHostnamesPanel = (
     };
     render();
     try {
-      await opts.runRemove({ hostname });
+      await trackWrite(opts.runRemove({ hostname }));
       if (disposed) return;
+      if (state.verify.hostname === hostname) verifyBaseline = null;
       state = {
         ...state,
         hostnames: removeProjection(state.hostnames, hostname),
@@ -2759,7 +3013,7 @@ export const mountHostnamesPanel = (
   };
 
   const submitVerify = async (): Promise<void> => {
-    if (disposed || state.verify.saving) return;
+    if (disposed || editorBusy()) return;
     const row = selectedVerifyRow();
     const validation = validateVerify();
     if (row === null || validation !== null) {
@@ -2795,6 +3049,7 @@ export const mountHostnamesPanel = (
             ? { ownership_probe_method: state.verify.method }
             : {}),
         });
+        if (disposed) return;
         const autoRequest = buildAutoVerifyRequest(row, state.verify.method, response);
         if (autoRequest === null) {
           throw new Error(
@@ -2822,8 +3077,9 @@ export const mountHostnamesPanel = (
         };
         render();
       }
-      const result = await opts.runVerifyOwnership(request);
+      const result = await trackWrite(opts.runVerifyOwnership(request));
       if (disposed) return;
+      if (result.ok && result.status === 'verified') verifyBaseline = verificationDraftFor(state.verify);
       const nextRows = result.ok
         ? upsertProjection(state.hostnames, result.projection)
         : state.hostnames;
@@ -2856,15 +3112,29 @@ export const mountHostnamesPanel = (
 
   const handle: HostnamesPanelMount = {
     getState: () => state,
+    hasUnsavedChanges,
+    // Verification includes the probe that precedes its write. Inventory and
+    // detail reads are independent and do not block leaving.
+    hasInFlightWork: () => !disposed && (pendingWrites > 0 || state.verify.saving),
     refresh: doRefresh,
     whenLoaded: () => pendingLoad,
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      updateBaseline = null;
+      verifyBaseline = null;
+      localValidation = null;
+      for (const feedback of editorFeedback.values()) clearValidationAssociation(feedback);
+      editorControls.clear();
+      editorFeedback.clear();
+      keptWarnings.length = 0;
       wrapper.remove();
     },
     openAdd: () => {
-      if (disposed) return;
+      if (state.add.open || !canSwitchEditor()) return;
+      detailGeneration += 1;
+      updateBaseline = null;
+      verifyBaseline = null;
       state = {
         ...state,
         add: {
@@ -2886,7 +3156,7 @@ export const mountHostnamesPanel = (
       render();
     },
     cancelAdd: () => {
-      if (disposed) return;
+      if (disposed || state.add.saving) return;
       state = {
         ...state,
         add: {
@@ -2899,7 +3169,7 @@ export const mountHostnamesPanel = (
       render();
     },
     setAddField: (field, value) => {
-      if (disposed) return;
+      if (disposed || state.add.saving) return;
       const nextValues = { ...state.add.values };
       if (field === 'enabled') {
         nextValues.enabled = Boolean(value);
@@ -2921,7 +3191,7 @@ export const mountHostnamesPanel = (
       };
       render();
     },
-    submitAdd,
+    submitAdd: () => submitAdd(),
     openDetail: loadDetail,
     closeDetail: () => {
       if (disposed) return;
@@ -2930,9 +3200,13 @@ export const mountHostnamesPanel = (
       render();
     },
     openUpdate: (hostname) => {
-      if (disposed) return;
+      if (disposed || editorBusy() || state.update.hostname === hostname) return;
       const row = state.hostnames.find((h) => h.hostname === hostname);
-      if (!row || state.update.saving || state.remove.saving) return;
+      if (!row || !canSwitchEditor()) return;
+      detailGeneration += 1;
+      const values = updateValuesFor(row);
+      updateBaseline = values;
+      verifyBaseline = null;
       state = {
         ...state,
         add: { ...state.add, open: false },
@@ -2940,7 +3214,7 @@ export const mountHostnamesPanel = (
           hostname: row.hostname,
           saving: false,
           error: null,
-          values: updateValuesFor(row),
+          values,
         },
         detail: { ...DEFAULT_DETAIL_VALUES },
         remove: { ...DEFAULT_REMOVE_VALUES },
@@ -2950,6 +3224,7 @@ export const mountHostnamesPanel = (
     },
     cancelUpdate: () => {
       if (disposed || state.update.saving) return;
+      updateBaseline = null;
       state = {
         ...state,
         update: {
@@ -2962,7 +3237,7 @@ export const mountHostnamesPanel = (
       render();
     },
     setUpdateField: (field, value) => {
-      if (disposed || state.update.hostname === null) return;
+      if (disposed || state.update.saving || state.update.hostname === null) return;
       const nextValues = { ...state.update.values };
       if (field === 'enabled') {
         nextValues.enabled = Boolean(value);
@@ -2988,11 +3263,13 @@ export const mountHostnamesPanel = (
       };
       render();
     },
-    submitUpdate,
+    submitUpdate: () => submitUpdate(),
     openRemove: (hostname) => {
-      if (disposed || state.update.saving || state.remove.saving) return;
+      if (disposed || editorBusy()) return;
       const row = state.hostnames.find((h) => h.hostname === hostname);
-      if (!row) return;
+      if (!row || !canSwitchEditor()) return;
+      detailGeneration += 1;
+      verifyBaseline = null;
       state = {
         ...state,
         add: { ...state.add, open: false },
@@ -3015,12 +3292,15 @@ export const mountHostnamesPanel = (
     },
     confirmRemove,
     openVerify: (hostname) => {
-      if (disposed) return;
+      if (disposed || editorBusy() || state.verify.hostname === hostname) return;
       const row = state.hostnames.find((h) => h.hostname === hostname);
-      if (!row) return;
+      if (!row || !canSwitchEditor()) return;
+      detailGeneration += 1;
       const method =
         row.verification_method
         ?? defaultMethodFor(row.cert_source);
+      const values = { ...DEFAULT_VERIFY_VALUES, hostname: row.hostname, method };
+      verifyBaseline = verificationDraftFor(values);
       state = {
         ...state,
         add: { ...state.add, open: false },
@@ -3032,21 +3312,18 @@ export const mountHostnamesPanel = (
         },
         detail: { ...DEFAULT_DETAIL_VALUES },
         remove: { ...DEFAULT_REMOVE_VALUES },
-        verify: {
-          ...DEFAULT_VERIFY_VALUES,
-          hostname: row.hostname,
-          method,
-        },
+        verify: values,
       };
       render();
     },
     cancelVerify: () => {
-      if (disposed) return;
+      if (disposed || state.verify.saving) return;
+      verifyBaseline = null;
       state = { ...state, verify: { ...DEFAULT_VERIFY_VALUES } };
       render();
     },
     setVerifyField: (field, value) => {
-      if (disposed) return;
+      if (disposed || state.verify.saving) return;
       const row = selectedVerifyRow();
       if (row === null) return;
       const nextVerify: VerifyValues = {

@@ -60,6 +60,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PackConnectionsCallers } from '../settings/pack-connections-controls.js';
 import type { PackAccessPlan, PackAccessResult } from '@recued/contracts';
+import { RECORDS_QUOTA_NO_LIMIT } from '@recued/contracts';
 
 import {
   PACKS_DIALOG_ATTR,
@@ -997,6 +998,54 @@ describe('D-145 PA10 follow-on — install dialog', () => {
     mount.clickInstall('test-pack');
     expect(findByAttr(host, PACKS_DIALOG_OPERATION_DIFF_ATTR)).toBeNull();
     expect(findByAttr(host, PACKS_DIALOG_OWNER_OPERATION_REVIEW_ATTR)).not.toBeNull();
+  });
+
+  // ⛔ The global limits have no default: unset, they arrive as `RECORDS_QUOTA_NO_LIMIT`, and
+  // this read "Global 25/9007199254740991 rows, 8 KB/8192.00 TB" on a fresh server.
+  it('says "no limit" for a Records limit nobody set', async () => {
+    const { host, mount } = setupMount([
+      baseEntry({
+        installed: false,
+        installed_any_version: true,
+        manifest_review_hash: 'b'.repeat(64),
+        records_review: {
+          owner: { publisher: 'recued-core', pack_slug: 'test-pack' },
+          current_state: 'ready',
+          current_version: 2,
+          target_version: 3,
+          current_storage_schema_hash: 'old-schema',
+          target_storage_schema_hash: 'new-schema',
+          row_counts: [{ kind: 'job', rows: 12, payload_bytes: 4096 }],
+          estimated_rows: 12,
+          schema_changes: [],
+          destructive_changes: [],
+          quota: {
+            row_count: 1_200, payload_bytes: 4096, row_limit: 5_000_000, byte_limit: 5 * 1024 ** 3,
+            outbox_count: 0, outbox_limit: 1_000_000, data_generation: 1,
+          },
+          global_quota: {
+            row_count: 1_225, payload_bytes: 8192, outbox_count: 0, reserved_payload_bytes: 0,
+            row_limit: RECORDS_QUOTA_NO_LIMIT, byte_limit: RECORDS_QUOTA_NO_LIMIT, outbox_limit: RECORDS_QUOTA_NO_LIMIT,
+          },
+          retention: {},
+          export_checkpoint_available: true,
+          export_recommended: false,
+          active_executions: 0,
+          unacknowledged_events: 0,
+          pending_event_disposition: 'drain_or_explicit_retire',
+          temporary_unavailability: true,
+          resumable: true,
+          reverse_route_exists: false,
+        },
+      }),
+    ]);
+    await mount.whenLoaded();
+    mount.clickInstall('test-pack');
+
+    const text = collectTextContent(findByAttr(host, PACKS_DIALOG_RECORDS_REVIEW_ATTR)!);
+    expect(text).toContain('Usage 1,200/5,000,000 rows, 4 KB/5.00 GB');
+    expect(text).toContain('Global 1,225 rows, 8 KB, no limit');
+    expect(text).not.toMatch(/9007199|9,007,199|8192\.00 TB/);
   });
 
   it('renders and echoes the exact Records transition review', async () => {

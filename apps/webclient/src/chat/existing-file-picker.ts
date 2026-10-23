@@ -244,12 +244,15 @@ export const openFileChatPicker = (
   const imported = recordId.startsWith('file:remote:') || local;
   const ui = picker<{ file: FileAttachmentSelection; sessionId: string | null }>(doc, imported ? 'Import and use in Chat' : 'Use in Chat', signal);
   const status = doc.createElement('p'); status.setAttribute('role', 'status');
+  status.tabIndex = -1;
   const note = doc.createElement('p'); note.hidden = !imported;
   note.textContent = local
     ? 'Import saves the file as it is now as a copy in Files and adds it to your draft. Later changes in the folder will not update it. Closing this picker leaves any saved copies in Files. You choose when to send it.'
     : 'Import saves the current download as a copy in Files and adds it to your draft. Later cloud changes will not update it. Closing this picker leaves any saved copies in Files. You choose when to send it.';
   const query = doc.createElement('input'); query.type = 'search'; query.placeholder = 'Find a conversation'; query.setAttribute('aria-label', 'Find a conversation');
   const options = doc.createElement('div'); options.className = 'file-options';
+  const noMatches = doc.createElement('p'); noMatches.setAttribute('role', 'status'); noMatches.hidden = true;
+  noMatches.textContent = 'No conversations match your search.';
   const retry = doc.createElement('button'); retry.type = 'button'; retry.textContent = 'Retry'; retry.hidden = true;
   const use = doc.createElement('button'); use.type = 'button'; use.hidden = !imported; use.disabled = true;
   const chosen = doc.createElement('p');
@@ -259,7 +262,9 @@ export const openFileChatPicker = (
   let destination: { sessionId: string | null; title: string } | undefined;
   let importing = false; let loading = false; let failedImport = false; let importId: string | undefined;
   const render = (): void => {
-    query.disabled = importing || loading;
+    // Filtering needs no metadata. Keep the initial focus and anything typed
+    // while reads are pending; the loaded conversations use this same query.
+    query.disabled = importing;
     retry.disabled = importing || loading;
     ui.cancel.textContent = importing ? 'Close' : 'Cancel';
     use.textContent = importing ? 'Importing…' : failedImport ? 'Retry import' : 'Import and use in Chat';
@@ -267,6 +272,7 @@ export const openFileChatPicker = (
     inspect.disabled = importing || loading || !file;
     chosen.hidden = !imported || !destination;
     chosen.textContent = destination ? `Selected conversation: ${destination.title}` : '';
+    noMatches.hidden = true;
     options.replaceChildren(); if (!file || ('record_id' in file && file.unavailable_reason)) return;
     const target = (title: string, sessionId: string | null): void => {
       const button = doc.createElement('button'); button.type = 'button'; button.textContent = title;
@@ -281,10 +287,15 @@ export const openFileChatPicker = (
     };
     target('New chat', null);
     const needle = query.value.trim().toLocaleLowerCase();
-    for (const session of sessions) if (session.title.toLocaleLowerCase().includes(needle) || session.id.includes(needle)) target(session.title || 'Untitled conversation', session.id);
+    const matches = sessions.filter(session => session.title.toLocaleLowerCase().includes(needle) || session.id.includes(needle));
+    for (const session of matches) target(session.title || 'Untitled conversation', session.id);
+    noMatches.hidden = loading || importing || needle === '' || matches.length > 0;
   };
   const load = async (): Promise<void> => {
     if (loading || importing) return;
+    // Retry is about to disappear. Move its keyboard owner to the search now,
+    // so a later reply never has to reclaim focus from another control.
+    if (doc.activeElement === retry) query.focus({ preventScroll: true });
     loading = true;
     const previous = file; file = undefined; render();
     retry.hidden = true; status.textContent = 'Loading conversations…';
@@ -315,8 +326,13 @@ export const openFileChatPicker = (
   const importFile = async (): Promise<void> => {
     if (importing || loading || !file || !('record_id' in file) || file.unavailable_reason || !destination || !callers.cloud) return;
     const sessionId = destination.sessionId;
-    importing = true; retry.hidden = true; render();
+    const carryFocus = doc.activeElement === use;
+    importing = true; retry.hidden = true;
     status.textContent = `Saving ${file.export_as?.filename ?? file.filename} for ${destination.title}…`;
+    // Disabling the initiating button otherwise drops focus onto the page in
+    // Chromium. The stable status owns it until failure or an intentional move.
+    if (carryFocus) status.focus({ preventScroll: true });
+    render();
     try {
       importId ??= globalThis.crypto.randomUUID();
       const saved = await callers.cloud.importFile({ record_id: file.record_id, selection_revision: file.selection_revision, import_id: importId });
@@ -328,13 +344,20 @@ export const openFileChatPicker = (
       failedImport = true;
       status.textContent = `${error instanceof Error ? error.message : 'Import failed.'} Retry to recover this import. If the source file changed, reload it before trying again.`;
       retry.textContent = 'Reload file'; retry.hidden = false;
-    } finally { importing = false; if (ui.alive()) render(); }
+    } finally {
+      importing = false;
+      if (ui.alive()) {
+        const returnFocus = carryFocus && doc.activeElement === status;
+        render();
+        if (returnFocus) use.focus({ preventScroll: true });
+      }
+    }
   };
   query.addEventListener('input', render); retry.addEventListener('click', () => { void load(); });
   use.addEventListener('click', () => { void importFile(); });
   inspect.addEventListener('click', () => { if (file && callers.preview && !importing && !loading) void openFilePreview(doc,
     { record_id: recordId, filename: file.filename, selection_revision: file.selection_revision }, callers.preview, ui.signal); });
-  ui.dialog.append(note, status, inspect, query, options, chosen, use, retry); ui.show();
+  ui.dialog.append(note, status, inspect, query, noMatches, options, chosen, use, retry); ui.show();
   if (ui.alive()) { query.focus(); void load(); }
   return ui.result;
 };

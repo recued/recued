@@ -64,6 +64,7 @@ import {
   type ArchiveStatusCaller,
 } from '../settings/archive-backup-panel.js';
 import type { ArchiveImportReceiptController, ArchiveImportReceiptState } from '../settings/archive-import-receipt.js';
+import { PASSPORT_RECOVERY_SUMMARY_ATTR } from '../settings/passport-recovery-summary.js';
 
 // ──────────────────────────────────────────────────────────────────
 // Fake DOM (recovery-panel test shape + `checked`)
@@ -1317,6 +1318,42 @@ describe('R26.4 M1 — restore: Q2 cross-realm gate', () => {
 // ══════════════════════════════════════════════════════════════════
 
 describe('R26.4 M1 — passport-only export', () => {
+  it('renders the same exported snapshot that is downloaded, without extra calls, and clears it on navigation', async () => {
+    const passport = { profile: 'support_redacted', exported_at: 1_700_000_000_000, recovery: { backup_status: 'configured', backup_evidence: {
+      monitoring: 'active', backup_state: 'current', recovery_test_state: 'due', integrity: { monitoring: 'active', state: 'partial' },
+      watchdog: { configured: true, enabled: true, state: 'acknowledged', drill: { phase: 'completed', current_configuration: false, owner_reported_alert: true, resumption_ping_acknowledged: true } },
+    } } };
+    const runPassportExport = vi.fn<ArchivePassportExportCaller>(async () => ({ passport: passport as never }));
+    const h = setupMount({ runPassportExport }); await h.mount.clickPassportExport();
+    const json = JSON.stringify(passport, null, 2), summary = findByAttr(h.host, PASSPORT_RECOVERY_SUMMARY_ATTR)!;
+    expect(textOf(summary)).toContain('States recorded in this exported file'); expect(textOf(summary)).toContain('Recovery test overdue');
+    expect(textOf(summary)).toContain('Earlier monitor setup'); expect(textOf(summary)).toContain('not independently verified');
+    passport.recovery.backup_evidence.backup_state = 'due';
+    expect(textOf(summary)).toContain('Within its age limit at export'); expect(h.mount.getPassportJson()).toBe(json);
+    h.mount.clickPassportDownload(); expect(h.downloadLog[0]!.json).toBe(json); expect(runPassportExport).toHaveBeenCalledExactlyOnceWith({ profile: 'support_redacted' });
+    expect(h.exportLog).toHaveLength(0); expect(h.importLog).toHaveLength(0);
+    h.mount.clickCancel(); expect(findByAttr(h.host, PASSPORT_RECOVERY_SUMMARY_ATTR)).toBeNull(); expect(h.mount.getPassportJson()).toBeNull();
+    runPassportExport.mockRejectedValueOnce(new Error('fixture failure')); await h.mount.clickPassportExport();
+    expect(findByAttr(h.host, PASSPORT_RECOVERY_SUMMARY_ATTR)).toBeNull(); expect(h.mount.getPassportJson()).toBeNull();
+  });
+
+  it('fences a late export after cancel and a newer export, and wipes the snapshot on disposal', async () => {
+    let reply = (_: Awaited<ReturnType<ArchivePassportExportCaller>>) => {};
+    const runPassportExport = vi.fn<ArchivePassportExportCaller>().mockImplementationOnce(() => new Promise(resolve => { reply = resolve; }))
+      .mockResolvedValueOnce({ passport: { profile: 'support_redacted', recovery: { backup_status: 'overdue' } } as never });
+    const h = setupMount({ runPassportExport }), first = h.mount.clickPassportExport(); h.mount.clickCancel();
+    await h.mount.clickPassportExport(); const current = h.mount.getPassportJson();
+    reply({ passport: { profile: 'support_redacted', recovery: { backup_status: 'configured' } } as never }); await first;
+    expect(h.mount.getPassportJson()).toBe(current); expect(textOf(h.host)).toContain('Backup overdue at export');
+    h.mount.dispose(); expect(h.mount.getPassportJson()).toBeNull();
+  });
+
+  it('rejects a response with an unexpected export profile instead of offering it as a support download', async () => {
+    const h = setupMount({ runPassportExport: async () => ({ passport: { profile: 'migration_full', private_detail: 'private-value' } as never }) });
+    await h.mount.clickPassportExport(); expect(h.mount.getView()).toBe('passport-error'); expect(h.mount.getPassportJson()).toBeNull();
+    expect(findByAttr(h.host, ARCHIVE_PASSPORT_DOWNLOAD_BTN_ATTR)).toBeNull(); expect(textOf(h.host)).not.toContain('private-value');
+  });
+
   it('the menu shows the Export-identity-passport action when wired', () => {
     const { host } = setupMount();
     expect(findByAttr(host, ARCHIVE_PASSPORT_START_BTN_ATTR)).not.toBeNull();

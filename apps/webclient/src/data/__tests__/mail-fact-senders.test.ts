@@ -2,7 +2,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 
-import type { MailFactSendersResult } from '@recued/contracts';
+import type { MailFactSenderDismissal, MailFactSendersResult } from '@recued/contracts';
 
 import { createMailFactSenders, type MailFactSenderCallers } from '../mail-fact-senders.js';
 
@@ -165,5 +165,101 @@ describe('Senders without a template', () => {
     const { view } = harness({ listSenders: async () => { throw new Error('boom'); } });
     await view.refresh();
     expect(view.render()).toContain('role="alert"');
+    expect(view.render()).toContain('>Try again</button>');
+    expect(view.render()).not.toContain('Loading…');
+    expect(view.render()).not.toContain('Counting your mail…');
+    expect(view.isBusy()).toBe(false);
+  });
+
+  it('keeps a failed read retryable and sends only one read while retrying', async () => {
+    let reads = 0;
+    let release: (next: MailFactSendersResult) => void = () => {};
+    const listSenders = vi.fn(async () => {
+      if (++reads < 3) throw new Error('Sender count interrupted');
+      return new Promise<MailFactSendersResult>(resolve => { release = resolve; });
+    });
+    const dismissSender = vi.fn();
+    const h = harness({ listSenders, dismissSender });
+    await h.view.refresh();
+    h.view.handleAction('mail-facts-snd-retry', el({}));
+    await vi.waitFor(() => expect(h.view.isBusy()).toBe(false));
+    expect(h.view.render()).toContain('>Try again</button>');
+    h.view.handleAction('mail-facts-snd-retry', el({}));
+    h.view.handleAction('mail-facts-snd-retry', el({}));
+    expect(listSenders).toHaveBeenCalledTimes(3);
+    expect(h.view.render()).toContain('aria-disabled="true" aria-busy="true">Retrying…');
+    expect(h.view.render()).toContain('Sender count interrupted');
+    expect(h.view.hasInFlightWork()).toBe(false);
+    release(result());
+    await vi.waitFor(() => expect(h.view.render()).toContain('news@club.example'));
+    expect(h.view.render()).not.toContain('role="alert"');
+    expect(h.focus).toHaveBeenLastCalledWith('snd:make:news@club.example', 'snd:retry');
+    expect(dismissSender).not.toHaveBeenCalled();
+    h.view.handleAction('mail-facts-snd-retry', el({}));
+    expect(listSenders).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    { name: 'an empty list', next: result({ senders: [] }), canMake: true, canDismiss: true, key: 'view:senders' },
+    { name: 'only dismissed senders', next: result({ senders: [], dismissed: ['old@club.example'] }), canMake: true, canDismiss: true, key: 'snd:dismissed' },
+    { name: 'a list without the template editor', next: result(), canMake: false, canDismiss: true, key: 'snd:dismiss:news@club.example' },
+    { name: 'a list with no sender actions', next: result(), canMake: false, canDismiss: false, key: 'view:senders' },
+  ])('returns an owned retry to a visible control for $name', async ({ next, canMake, canDismiss, key }) => {
+    const listSenders = vi.fn().mockRejectedValueOnce(new Error('Interrupted')).mockResolvedValue(next);
+    const h = harness({ listSenders, ...(canDismiss ? { dismissSender: async (args: MailFactSenderDismissal) => args } : {}) }, canMake);
+    await h.view.refresh();
+    h.view.handleAction('mail-facts-snd-retry', el({}));
+    await vi.waitFor(() => expect(h.focus).toHaveBeenCalledWith(key, 'snd:retry'));
+    if (key !== 'view:senders') expect(h.view.render()).toContain(`${FOCUS}="${key}"`);
+  });
+
+  it('rechecks the list after a post-dismissal read failure without dismissing again', async () => {
+    const listSenders = vi.fn().mockResolvedValueOnce(result())
+      .mockRejectedValueOnce(new Error('Sender count interrupted'))
+      .mockResolvedValue(result({ senders: [], dismissed: ['news@club.example'] }));
+    const dismissSender = vi.fn(async (args: MailFactSenderDismissal) => args);
+    const h = harness({ listSenders, dismissSender });
+    await h.view.refresh();
+    h.view.handleAction('mail-facts-snd-dismiss', el({ 'data-address': 'news@club.example' }));
+    await vi.waitFor(() => expect(h.view.render()).toContain('>Try again</button>'));
+    h.view.handleAction('mail-facts-snd-retry', el({}));
+    await vi.waitFor(() => expect(h.view.render()).toContain('Dismissed (1)'));
+    expect(listSenders).toHaveBeenCalledTimes(3);
+    expect(dismissSender).toHaveBeenCalledExactlyOnceWith({ address: 'news@club.example', dismissed: true });
+  });
+
+  it.each(['success', 'error'] as const)('ignores an older recovery read’s late %s', async outcome => {
+    let resolve: (next: MailFactSendersResult) => void = () => {};
+    let reject: (error: Error) => void = () => {};
+    const retired = new Promise<MailFactSendersResult>((yes, no) => { resolve = yes; reject = no; });
+    const listSenders = vi.fn().mockRejectedValueOnce(new Error('Interrupted')).mockReturnValueOnce(retired)
+      .mockResolvedValue(result({ senders: [sender('fresh@club.example', 'fresh')] }));
+    const h = harness({ listSenders });
+    await h.view.refresh();
+    const old = h.view.refresh();
+    await h.view.refresh();
+    const painted = h.view.render();
+    const focusCalls = h.focus.mock.calls.length;
+    if (outcome === 'success') resolve(result()); else reject(new Error('Stale failure'));
+    await old;
+    expect(h.view.render()).toBe(painted);
+    expect(h.focus).toHaveBeenCalledTimes(focusCalls);
+    expect(h.view.render()).toContain('fresh@club.example');
+  });
+
+  it('ignores a recovery reply after disposal', async () => {
+    let release: (next: MailFactSendersResult) => void = () => {};
+    const listSenders = vi.fn().mockRejectedValueOnce(new Error('Interrupted'))
+      .mockImplementationOnce(() => new Promise<MailFactSendersResult>(resolve => { release = resolve; }));
+    const h = harness({ listSenders });
+    await h.view.refresh();
+    const pending = h.view.refresh();
+    h.view.dispose();
+    h.render.mockClear(); h.focus.mockClear();
+    release(result()); await pending;
+    expect(h.render).not.toHaveBeenCalled();
+    expect(h.focus).not.toHaveBeenCalled();
+    h.view.handleAction('mail-facts-snd-retry', el({}));
+    expect(listSenders).toHaveBeenCalledTimes(2);
   });
 });

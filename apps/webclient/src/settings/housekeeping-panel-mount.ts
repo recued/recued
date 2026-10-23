@@ -213,7 +213,7 @@ export interface MountHousekeepingPanelOptions {
 export interface HousekeepingPanelMount {
   /** Current state snapshot — for tests + host introspection. */
   getState(): HousekeepingPanelState;
-  /** Re-issue the config + status + trust reads. */
+  /** Re-issue config + status + trust, sharing an already pending initial load. */
   refresh(): Promise<void>;
   /** Resolves after the initial (or latest) load settles. */
   whenLoaded(): Promise<void>;
@@ -225,6 +225,8 @@ export interface HousekeepingPanelMount {
 // + raw `data-action` attrs. Inlined so the delegator branches without
 // importing renderer internals.
 const ACTION_SAVE = 'housekeeping-save';
+const ACTION_LOAD_RETRY = 'housekeeping-load-retry';
+const LOAD_FOCUS_ATTR = 'data-recued-housekeeping-load-focus';
 const ACTION_RUN_NOW_OPEN = 'housekeeping-run-now-open';
 const ACTION_RUN_NOW_CONFIRM = 'housekeeping-run-now-confirm';
 const ACTION_RUN_NOW_CANCEL = 'housekeeping-run-now-cancel';
@@ -255,14 +257,15 @@ type HousekeepingFocusIntent =
       radioValue?: string; cost?: string;
       selection?: { start: number; end: number; direction: 'forward' | 'backward' | 'none' };
     }
-  | { kind: 'dialog'; dialog: 'run-now' | 'reset' };
+  | { kind: 'dialog'; dialog: 'run-now' | 'reset' }
+  | { kind: 'load' };
 
 export const mountHousekeepingPanel = (
   opts: MountHousekeepingPanelOptions,
 ): HousekeepingPanelMount => {
   const now = opts.now ?? Date.now;
 
-  let state: HousekeepingPanelState = initialHousekeepingPanelState();
+  let state: HousekeepingPanelState = { ...initialHousekeepingPanelState(), loading: true };
   let customInputDraft: Partial<Record<'cycle_budget_ms' | 'cycle_interval_minutes', string>> = {};
   let configWriteVersion = 0;
   const scheduleDirty = (): boolean => state.config !== null && (
@@ -284,6 +287,7 @@ export const mountHousekeepingPanel = (
   let searchCaret: number | null = null;
   let disposed = false;
   let pendingLoad: Promise<void> = Promise.resolve();
+  let activeInitialLoad: Promise<void> | null = null;
   // Stale-load guards (mirror the cache mount) — drop a stale response.
   // SEPARATE counters for the full load (config+status+trust) vs the
   // status-only cycle refresh: a `housekeeping_cycle` arriving mid
@@ -291,6 +295,7 @@ export const mountHousekeepingPanel = (
   // leave the panel stuck with no config/trust).
   let loadGeneration = 0;
   let statusGeneration = 0;
+  let appliedStatusGeneration = 0;
   const trustVersions = new Map<string, number>();
   const promotionReadGenerations = new Map<string, number>();
   const pendingTrustWrites = new Map<string, { promotion?: HousekeepingPromotionSuggestion }>();
@@ -307,7 +312,7 @@ export const mountHousekeepingPanel = (
   const renderPanelFrame = (content: string): string => `
     <div class="housekeeping-panel">
       <header class="housekeeping-header">
-        <h2>Housekeeping</h2>
+        <h2 tabindex="-1" ${LOAD_FOCUS_ATTR}>Housekeeping</h2>
         <p class="housekeeping-summary">
           Idle-driven maintenance. AI producers never run on their own
           until you set a topic's Run policy to Auto below.
@@ -343,17 +348,13 @@ export const mountHousekeepingPanel = (
   const renderPanel = (): string => {
     if (state.loading && !state.config) {
       return renderPanelFrame(
-        `<p class="housekeeping-loading">Loading housekeeping…</p>`,
-      );
-    }
-    if (state.error && !state.config) {
-      return renderPanelFrame(
-        `<p class="housekeeping-error">${e(state.error)}</p>`,
+        `<p class="housekeeping-loading" role="status" aria-atomic="true" tabindex="-1" ${LOAD_FOCUS_ATTR}>Loading housekeeping…</p>`,
       );
     }
     if (!state.config) {
       return renderPanelFrame(
-        '<p class="housekeeping-error">Housekeeping config unavailable.</p>',
+        `<p class="housekeeping-error" role="alert">${e(state.error ?? 'Housekeeping config unavailable.')}</p>`
+        + `<div>${button({ label: 'Retry', ariaLabel: 'Retry loading housekeeping', action: ACTION_LOAD_RETRY })}</div>`,
       );
     }
     const runNowTask = state.tasks.find(
@@ -478,6 +479,10 @@ export const mountHousekeepingPanel = (
     };
     const active = host.ownerDocument?.activeElement as HTMLElement | null;
     if (!active || host.contains?.(active) !== true) return null;
+    if (active.closest?.(`[${LOAD_FOCUS_ATTR}]`)
+      || active.getAttribute('data-action') === ACTION_LOAD_RETRY) {
+      return { kind: 'load' };
+    }
     const resetDialog = active.closest?.('.housekeeping-reset-modal');
     const runNowDialog = active.closest?.('.housekeeping-runnow-dialog');
     const action = active.closest?.('[data-action]')?.getAttribute('data-action');
@@ -509,6 +514,15 @@ export const mountHousekeepingPanel = (
 
   const applyFocusIntent = (intent: HousekeepingFocusIntent | null): void => {
     if (intent === null) return;
+    if (intent.kind === 'load') {
+      const target = !state.config && !state.loading
+        ? findAction(ACTION_LOAD_RETRY)
+        : opts.host.querySelector?.<HTMLElement>(state.config
+          ? `h2[${LOAD_FOCUS_ATTR}]`
+          : `.housekeeping-loading[${LOAD_FOCUS_ATTR}]`) ?? null;
+      if (target && target.getClientRects().length > 0) focusElement(target);
+      return;
+    }
     let target = intent.kind === 'dialog'
       ? dialogElement(intent.dialog)
       : findAction(intent.action, intent.taskId, intent.topic, intent.radioValue, intent.cost);
@@ -633,6 +647,10 @@ export const mountHousekeepingPanel = (
   const doLoad = async (): Promise<void> => {
     if (disposed) return;
     const captured = ++loadGeneration;
+    const capturedStatus = ++statusGeneration;
+    // Retire older cycle reads without letting a failed newer cycle discard
+    // this load's usable task snapshot.
+    appliedStatusGeneration = capturedStatus;
     const capturedWrite = configWriteVersion;
     const capturedTrust = new Map(trustVersions);
     setState({ loading: true, error: null });
@@ -654,11 +672,13 @@ export const mountHousekeepingPanel = (
       for (const row of trust.rows) {
         if (!keepCurrent(row.topic)) trustRows[row.topic] = row;
       }
+      const applyStatus = capturedStatus >= appliedStatusGeneration;
+      if (applyStatus) appliedStatusGeneration = capturedStatus;
       setState({
         loading: false,
         error: null,
         ...(capturedWrite === configWriteVersion && !state.saving ? { config } : {}),
-        tasks: status.tasks,
+        ...(applyStatus ? { tasks: status.tasks } : {}),
         trustRows,
         promotionSuggestions: reconcilePromotions(state.promotionSuggestions, Object.values(trustRows)),
       });
@@ -751,7 +771,8 @@ export const mountHousekeepingPanel = (
     const captured = ++statusGeneration;
     try {
       const status = await opts.runStatusRead();
-      if (disposed || captured !== statusGeneration) return;
+      if (disposed || captured < appliedStatusGeneration) return;
+      appliedStatusGeneration = captured;
       setState({ tasks: status.tasks });
     } catch {
       // A failed background refresh keeps the prior table — never paint
@@ -1118,6 +1139,10 @@ export const mountHousekeepingPanel = (
     if (!actionEl) return;
     const action = actionEl.getAttribute('data-action');
     switch (action) {
+      case ACTION_LOAD_RETRY:
+        if (state.config || state.loading || opts.host.contains?.(actionEl) === false) return;
+        pendingLoad = loadAll();
+        return;
       case ACTION_TRUST_PICK:
       case ACTION_POOL_PICK:
         if (state.trustWriting[topicOf(actionEl) ?? '']) ev.preventDefault();
@@ -1381,10 +1406,15 @@ export const mountHousekeepingPanel = (
   // The meta load never gates `whenLoaded()` — it's secondary — but it
   // shares `loadGeneration` so a `refresh()` supersedes a stale one.
   const loadAll = (): Promise<void> => {
+    if (disposed) return Promise.resolve();
+    const initial = state.config === null;
+    if (initial && activeInitialLoad) return activeInitialLoad;
     const p = doLoad();
     void doLoadMcpMeta();
     void doLoadDrift();
-    return p;
+    if (!initial) return p;
+    activeInitialLoad = p.finally(() => { activeInitialLoad = null; });
+    return activeInitialLoad;
   };
 
   // ── Broadcast subscriptions ──────────────────────────────────────
@@ -1393,7 +1423,8 @@ export const mountHousekeepingPanel = (
     unsubscribers.push(
       opts.subscribe('housekeeping_cycle', () => {
         if (disposed) return;
-        pendingLoad = doRefreshStatus();
+        const refresh = doRefreshStatus();
+        pendingLoad = activeInitialLoad ?? refresh;
       }),
       // D-132 §A.8 — a promotion suggestion fires once an AI producer
       // has been manually run past the threshold under `manual` trust.

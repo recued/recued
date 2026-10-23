@@ -163,6 +163,9 @@ export interface ReceptionRecordRowModel {
   readonly kind: ReceptionRecordKind;
   readonly kind_label: string;
   readonly endpoint_id: string;
+  /** The form's name as the owner set it, or null when the server did not name it — the row
+   *  then falls back to the endpoint id. */
+  readonly form_name: string | null;
   readonly received_at: number;
   /** Relative ("3 hours ago"), from the inbox's own helper so both reception surfaces age a
    *  timestamp the same way. */
@@ -238,6 +241,10 @@ const toRow = (
     kind: record.kind,
     kind_label: KIND_LABELS[record.kind],
     endpoint_id: record.endpoint_id,
+    // Read defensively: it crossed the wire, and an older server never sends it.
+    form_name: typeof record.form_name === 'string' && record.form_name.trim() !== ''
+      ? record.form_name.trim()
+      : null,
     received_at: record.received_at,
     received_label: computeReceptionInboxWhenLabel(record.received_at, now),
     outcome: record.outcome,

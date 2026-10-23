@@ -264,6 +264,102 @@ describe('the filters become the query', () => {
 });
 
 describe('paging and reads', () => {
+  it('retries a failed later page once with the same cursor and keeps earlier rows', async () => {
+    const first = { email_at: 1_000, slug: 'work', record_id: 'mail:a' };
+    const second = { email_at: 900, slug: 'work', record_id: 'mail:b' };
+    let attempt = 0;
+    let release: (page: MailFactRowsPage) => void = () => {};
+    const { surface, queries } = harness(async query => {
+      if (query.before === undefined) return { rows: [row('a')], next_cursor: first };
+      if (query.before.record_id === first.record_id) return { rows: [row('b')], next_cursor: second };
+      if (++attempt < 3) throw new Error('Page interrupted');
+      return new Promise(resolve => { release = resolve; });
+    });
+    await surface.refresh();
+    surface.handleAction('mail-facts-load-more', {} as HTMLElement);
+    await vi.waitFor(() => expect(surface.render()).toContain('Parcel b'));
+    surface.handleAction('mail-facts-load-more', {} as HTMLElement);
+    await vi.waitFor(() => expect(surface.render()).toContain('Page interrupted'));
+    surface.handleAction('mail-facts-retry', {} as HTMLElement);
+    await vi.waitFor(() => expect(queries).toHaveLength(4));
+    await vi.waitFor(() => expect(surface.render()).toContain('>Try again</button>'));
+    surface.handleAction('mail-facts-retry', {} as HTMLElement);
+    surface.handleAction('mail-facts-retry', {} as HTMLElement);
+    surface.handleAction('mail-facts-load-more', {} as HTMLElement);
+    expect(queries).toHaveLength(5);
+    expect(queries.slice(2)).toEqual(Array.from({ length: 3 }, () => ({ limit: 50, before: second })));
+    expect(surface.render()).toContain('Retrying…');
+    expect(surface.render()).toContain('Parcel a');
+    expect(surface.render()).toContain('Parcel b');
+    release({ rows: [row('b'), row('c')] });
+    await vi.waitFor(() => expect(surface.render()).toContain('Parcel c'));
+    expect(surface.render().match(/data-recued-mail-fact-row="b"/g)).toHaveLength(1);
+    expect(surface.render()).not.toContain('Page interrupted');
+    expect(surface.render()).toContain('3 facts shown');
+  });
+
+  it('keeps a failed append protected from broadcast refreshes even after just one page', async () => {
+    const { surface } = harness(async query => {
+      if (query.before) throw new Error('Page interrupted');
+      return { rows: [row('a')], next_cursor: { email_at: 1, slug: 'work', record_id: 'mail:a' } };
+    });
+    await surface.refresh();
+    surface.handleAction('mail-facts-load-more', {} as HTMLElement);
+    await vi.waitFor(() => expect(surface.render()).toContain('Page interrupted'));
+    expect(surface.isBusy()).toBe(true);
+  });
+
+  it('retires a failed page when a filter changes and retries the new first page', async () => {
+    let filteredReads = 0;
+    const { surface, queries } = harness(async query => {
+      if (query.type === 'bill') {
+        if (++filteredReads === 1) throw new Error('Filtered list interrupted');
+        return { rows: [row('filtered')] };
+      }
+      if (query.before) throw new Error('Page interrupted');
+      return { rows: [row('a')], next_cursor: { email_at: 1, slug: 'work', record_id: 'mail:a' } };
+    });
+    await surface.refresh();
+    surface.handleAction('mail-facts-load-more', {} as HTMLElement);
+    await vi.waitFor(() => expect(surface.render()).toContain('Page interrupted'));
+    surface.handleChange(select('type', 'bill'));
+    await vi.waitFor(() => expect(surface.render()).toContain('Filtered list interrupted'));
+    const count = queries.length;
+    surface.handleAction('mail-facts-load-more', {} as HTMLElement);
+    expect(queries).toHaveLength(count);
+    surface.handleAction('mail-facts-retry', {} as HTMLElement);
+    await vi.waitFor(() => expect(surface.render()).toContain('Parcel filtered'));
+    expect(queries.at(-1)).toEqual({ limit: 50, type: 'bill' });
+    expect(surface.render()).not.toContain('Parcel a');
+  });
+
+  it.each(['resolve', 'reject'] as const)('ignores a stale page retry that later %ss after a filter change', async outcome => {
+    let resolve: (page: MailFactRowsPage) => void = () => {};
+    let reject: (error: Error) => void = () => {};
+    let appendReads = 0;
+    const { surface, queries } = harness(async query => {
+      if (query.type === 'bill') return { rows: [row('filtered')] };
+      if (query.before) {
+        if (++appendReads === 1) throw new Error('Page interrupted');
+        return new Promise((yes, no) => { resolve = yes; reject = no; });
+      }
+      return { rows: [row('a')], next_cursor: { email_at: 1, slug: 'work', record_id: 'mail:a' } };
+    });
+    await surface.refresh();
+    surface.handleAction('mail-facts-load-more', {} as HTMLElement);
+    await vi.waitFor(() => expect(surface.render()).toContain('Page interrupted'));
+    surface.handleAction('mail-facts-retry', {} as HTMLElement);
+    surface.handleChange(select('type', 'bill'));
+    await vi.waitFor(() => expect(surface.render()).toContain('Parcel filtered'));
+    const painted = surface.render();
+    if (outcome === 'resolve') resolve({ rows: [row('stale')] });
+    else reject(new Error('Stale page interrupted'));
+    // A subsequent read drains the old promise without a timer-dependent assertion.
+    await surface.refresh(true);
+    expect(surface.render()).toBe(painted);
+    expect(queries.at(-1)).toEqual({ limit: 50, type: 'bill' });
+  });
+
   it('loads more after the last email, and does not repeat a row', async () => {
     const cursor = { email_at: 1_000, slug: 'work', record_id: 'mail:a' };
     const { surface, queries } = harness([

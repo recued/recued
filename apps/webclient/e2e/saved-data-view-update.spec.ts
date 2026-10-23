@@ -1,8 +1,9 @@
+import { HARNESS_ORIGIN } from './helpers/harness-origin.js';
 import { expect, test, type Page } from '@playwright/test';
 import type { SavedDataView, SavedDataViewDefinition } from '@recued/contracts';
 import { openSavedViewList } from './helpers/saved-data-views.js';
 
-const BASE = 'http://127.0.0.1:4319/full-app-harness.html';
+const BASE = `${HARNESS_ORIGIN}/full-app-harness.html`;
 const ID = 'view_00000000-0000-4000-8000-000000000002';
 const KEY = 'recued-test-saved-data-views';
 const tools = (page: Page) => page.locator('[data-saved-data-views]');
@@ -84,7 +85,7 @@ test('Saved view updates replace Overdue with Next seven days at the same task b
   await expect(page.getByRole('searchbox', { name: 'Search tasks' })).toHaveValue('Task');
   await expect(page).toHaveURL(new RegExp(`#views/${ID}$`));
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.screenshot({ path: '/tmp/recued-saved-view-update.png', fullPage: true });
+  await page.screenshot({ path: test.info().outputPath('recued-saved-view-update.png'), fullPage: true });
 });
 
 test('Saved view updates offer Save as new without changing the original settings or bookmark', async ({ page }) => {

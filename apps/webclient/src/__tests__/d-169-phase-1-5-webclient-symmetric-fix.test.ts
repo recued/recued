@@ -396,6 +396,40 @@ describe('D-169 pair-code-success — read failures and Web Locks', () => {
     });
   });
 
+  it.each(['navigator', 'locks', 'request'] as const)(
+    'resolves no browser pair lock when capability access throws at %s', blocked => {
+      const original = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+      const denied = (): never => { throw new Error('private browser policy detail'); };
+      const locks = Object.defineProperty({}, 'request', { get: denied });
+      const navigator = blocked === 'locks'
+        ? Object.defineProperty({}, 'locks', { get: denied }) : { locks };
+      Object.defineProperty(globalThis, 'navigator', {
+        configurable: true,
+        ...(blocked === 'navigator' ? { get: denied } : { value: navigator }),
+      });
+      try {
+        expect(resolveBrowserPairFinalizeLockProvider()).toBeNull();
+      } finally {
+        if (original) Object.defineProperty(globalThis, 'navigator', original);
+        else Reflect.deleteProperty(globalThis, 'navigator');
+      }
+    },
+  );
+
+  it.each(['throws', 'rejects'] as const)(
+    'does not finalize pairing when an available lock request %s', async failure => {
+      const error = new Error('lock request denied');
+      const request = <T>(): Promise<T> => {
+        if (failure === 'throws') throw error;
+        return Promise.reject(error);
+      };
+      const invokePassportFetch = vi.fn(async () => ({ passport: buildPassport() }));
+      await expect(runFinalize({ lockProvider: { request }, invokePassportFetch }))
+        .rejects.toBe(error);
+      expect(invokePassportFetch).not.toHaveBeenCalled();
+    },
+  );
+
   it('resolveBrowserPairFinalizeLockProvider returns the stubbed navigator.locks provider', async () => {
     const locks = makeLockRecorder().provider;
 

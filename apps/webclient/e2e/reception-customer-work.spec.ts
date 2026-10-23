@@ -1,8 +1,9 @@
+import { HARNESS_ORIGIN } from './helpers/harness-origin.js';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
 import { installCustomerWorkFixture } from './fixtures/customer-work.js';
-const BASE = 'http://127.0.0.1:4319/full-app-harness.html';
+const BASE = `${HARNESS_ORIGIN}/full-app-harness.html`;
 const pane = (page: Page) => page.locator('[data-recued-webclient-content]');
 const jobNav = (page: Page) => page.getByRole('navigation', { name: 'Job sections', exact: true });
 const board = (page: Page) => page.locator('[data-jobs-board]:visible');

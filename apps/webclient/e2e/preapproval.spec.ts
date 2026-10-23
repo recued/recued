@@ -1,6 +1,7 @@
+import { HARNESS_ORIGIN } from './helpers/harness-origin.js';
 import { expect, test } from '@playwright/test';
 
-const BASE = 'http://127.0.0.1:4319/full-app-harness.html?preapproval=1';
+const BASE = `${HARNESS_ORIGIN}/full-app-harness.html?preapproval=1`;
 const PARENT = 'pap_11111111-1111-4111-8111-111111111111';
 const CHILD = 'pap_33333333-3333-4333-8333-333333333333';
 for (const width of [280, 1280]) {

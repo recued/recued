@@ -222,16 +222,6 @@ export interface ComposeNotificationBlockDeps {
    *  no recipient sends (D-158 amendment 2026-10-18). Absent ⇒ such a
    *  connection gives no reminder destination. */
   mailboxAddress?: (slug: string) => string | undefined;
-  /** D-169 P1 — optional snapshot of currently-connected bridge
-   *  `client_token_id`s, used to tag each per-bridge sub-row in
-   *  Settings → Notifications with a live presence flag (N.6 UX —
-   *  "Bridge1 Chrome on macOS — Offline since 5m ago"). Absent ⇒ every
-   *  row reads `connected: false` and the surface degrades to the
-   *  durable-only view (still functional, just without the presence
-   *  hint). The composer pulls the Set from the ws-server's per-tick
-   *  roster snapshot via the thunk pattern so this composer runs
-   *  before the WS server's handle exists. */
-  getConnectedBridgeTokenIds?: () => Set<string>;
   /** D-177 P5a — the session-grant resolver (built by the caller over the
    *  contract-definition store). The batch-approval coordinator mints the
    *  `grant_mode: 'batch'` grant from an answered snapshot through it.
@@ -584,7 +574,9 @@ export const composeNotificationBlock = (
     if (channel === 'bridge') {
       if (!hasAdapter('bridge')) return false;
       if (!clientTokens) return false;
-      return bridgeChannel.reminderReady();
+      // Not `reminderReady`: Bridge 0.0.2 (the Chrome Web Store build) cannot
+      // confirm, and without this a fresh pair could never switch notifications on.
+      return bridgeChannel.notifyReady();
     }
     if (!hasAdapter(channel)) return false;
     if (!connectionStore) return false;
@@ -601,19 +593,18 @@ export const composeNotificationBlock = (
   //
   // The `connected` flag is a presence-snapshot hint, not a routing
   // gate — D-169 P2 wires the routing decision separately via the
-  // per-ask roster lookup (TR-12). P1 surfaces presence through the
-  // optional `getConnectedBridgeTokenIds` thunk; when absent the row
-  // reads `connected: false` and the Settings UI renders "Offline"
-  // copy without breaking the row contract.
+  // per-ask roster lookup (TR-12). ⛔ It comes from the bridge registry
+  // through the port the WebSocket server binds after this composer runs
+  // (`bindBridgeReminders`). Until 2026-10-22 it came from an optional
+  // `getConnectedBridgeTokenIds` dep that no caller ever passed, so every
+  // paired Bridge read "Offline", connected or not.
   const bridgeRosterProbe = async () => {
     if (!clientTokens) return [];
     const tokens = clientTokens.list({
       client_kind: 'bridge',
       include_revoked: false,
     });
-    const connectedSet = deps.getConnectedBridgeTokenIds
-      ? deps.getConnectedBridgeTokenIds()
-      : new Set<string>();
+    const connectedSet = bridgeChannel.connectedBridgeIds();
     return tokens.map((t) => {
       const out: {
         client_token_id: string;

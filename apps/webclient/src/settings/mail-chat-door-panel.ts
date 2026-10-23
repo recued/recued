@@ -75,6 +75,7 @@ export const MAIL_CHAT_DOOR_TURN_OFF_ATTR = 'data-recued-mail-chat-door-turn-off
 export const MAIL_CHAT_DOOR_TURN_OFF_CONFIRM_ATTR = 'data-recued-mail-chat-door-turn-off-confirm';
 export const MAIL_CHAT_DOOR_KEEP_ON_ATTR = 'data-recued-mail-chat-door-keep-on';
 export const MAIL_CHAT_DOOR_ERROR_ATTR = 'data-recued-mail-chat-door-error';
+export const MAIL_CHAT_DOOR_RETRY_ATTR = 'data-recued-mail-chat-door-retry';
 export const MAIL_CHAT_DOOR_ENROL_ATTR = 'data-recued-mail-chat-door-enrol';
 export const MAIL_CHAT_DOOR_ENROL_INPUT_ATTR = 'data-recued-mail-chat-door-enrol-input';
 export const MAIL_CHAT_DOOR_ENROL_ADD_ATTR = 'data-recued-mail-chat-door-enrol-add';
@@ -192,6 +193,14 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
   let error: string | null = null;
   let busy = false;
   let disposed = false;
+  let pendingRead: Promise<void> | null = null;
+  let retryOffered = false;
+  let retryNode: HTMLButtonElement | null = null;
+  let settingsVersion = 0;
+  // Drafts belong to this mailbox until their corresponding save succeeds.
+  let prefixDraft: { enabled: boolean; text: string } | null = null;
+  let staleDraft: string | null = null;
+  const editControls = new Map<string, HTMLInputElement>();
   // Switching on.
   let pickChat = '';
   const pickOwners = new Set<string>();
@@ -216,6 +225,15 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
     if (Array.isArray((next as Partial<MailChatDoorSettings>).enrolled_senders)) return next;
     enrolSupported = false;
     return { ...next, enrolled_senders: [] };
+  };
+
+  const acceptSettings = (next: MailChatDoorSettings): void => {
+    if (settings?.chat_mailbox !== next.chat_mailbox) {
+      prefixDraft = null;
+      staleDraft = null;
+      enrolDraft = '';
+    }
+    settings = normalize(next);
   };
 
   const el = (tag: string, text?: string): HTMLElement => {
@@ -267,7 +285,10 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
     try {
       const next = await opts.runSet(patch);
       if (disposed) return false;
-      settings = normalize(next);
+      settingsVersion += 1;
+      acceptSettings(next);
+      if (patch.ask_prefix !== undefined) prefixDraft = null;
+      if (patch.stale_after_minutes !== undefined) staleDraft = null;
       return true;
     } catch (err) {
       if (disposed) return false;
@@ -295,8 +316,10 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
       if (disposed) return;
       checks = result;
       if (result.ready) {
-        settings = normalize(await opts.runSet({ chat_mailbox: pickChat, owner_mailboxes }));
+        const next = await opts.runSet({ chat_mailbox: pickChat, owner_mailboxes });
         if (disposed) return;
+        settingsVersion += 1;
+        acceptSettings(next);
         checks = null;
         await startTest();
       }
@@ -332,11 +355,14 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
       // A look already on its way when the panel closed asks nothing.
       if (disposed) return;
       void (async () => {
+        const version = settingsVersion;
         try {
           const next = await opts.runGet();
           if (disposed) return;
-          settings = normalize(next);
-          if (!busy) render();
+          if (version === settingsVersion) {
+            acceptSettings(next);
+            if (!busy) render();
+          }
         } catch {
           // The last view stays: a failed look is not "nothing arrived".
         }
@@ -637,6 +663,7 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
     input.value = enrolDraft;
     input.disabled = busy;
     input.setAttribute(MAIL_CHAT_DOOR_ENROL_INPUT_ATTR, '');
+    editControls.set(MAIL_CHAT_DOOR_ENROL_INPUT_ATTR, input);
     input.addEventListener('input', () => { enrolDraft = input.value; });
     const label = el('label');
     label.appendChild(el('span', 'Add an address'));
@@ -678,18 +705,25 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
     // The settings.
     const prefixOn = doc.createElement('input');
     prefixOn.type = 'checkbox';
-    prefixOn.checked = current.ask_prefix !== null || oneMailbox;
+    prefixOn.checked = oneMailbox || (prefixDraft?.enabled ?? current.ask_prefix !== null);
     // One mailbox: always on, or every email the owner writes to themselves
     // would start a conversation (the server refuses it off).
     prefixOn.disabled = busy || oneMailbox;
     prefixOn.setAttribute(MAIL_CHAT_DOOR_PREFIX_ON_ATTR, '');
+    editControls.set(MAIL_CHAT_DOOR_PREFIX_ON_ATTR, prefixOn);
     const prefix = doc.createElement('input');
     prefix.type = 'text';
     prefix.className = 'rx-input';
-    prefix.value = current.ask_prefix ?? MAIL_CHAT_ASK_PREFIX_DEFAULT;
-    prefix.disabled = busy || current.ask_prefix === null;
+    prefix.value = prefixDraft?.text ?? current.ask_prefix ?? MAIL_CHAT_ASK_PREFIX_DEFAULT;
+    prefix.disabled = busy || !prefixOn.checked;
     prefix.setAttribute(MAIL_CHAT_DOOR_PREFIX_ATTR, '');
-    prefixOn.addEventListener('change', () => { prefix.disabled = !prefixOn.checked; });
+    editControls.set(MAIL_CHAT_DOOR_PREFIX_ATTR, prefix);
+    const keepPrefixDraft = (): void => { prefixDraft = { enabled: prefixOn.checked, text: prefix.value }; };
+    prefix.addEventListener('input', keepPrefixDraft);
+    prefixOn.addEventListener('change', () => {
+      keepPrefixDraft();
+      prefix.disabled = busy || !prefixOn.checked;
+    });
     const prefixLabel = el('label');
     prefixLabel.className = 'rx-checkbox-row';
     prefixLabel.appendChild(prefixOn);
@@ -705,11 +739,13 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
     const stale = doc.createElement('input');
     stale.type = 'number';
     stale.className = 'rx-input';
-    stale.value = String(current.stale_after_minutes);
+    stale.value = staleDraft ?? String(current.stale_after_minutes);
     stale.disabled = busy;
     stale.setAttribute('min', String(MAIL_CHAT_STALE_AFTER_MINUTES_MIN));
     stale.setAttribute('max', String(MAIL_CHAT_STALE_AFTER_MINUTES_MAX));
     stale.setAttribute(MAIL_CHAT_DOOR_STALE_ATTR, '');
+    editControls.set(MAIL_CHAT_DOOR_STALE_ATTR, stale);
+    stale.addEventListener('input', () => { staleDraft = stale.value; });
     const staleLabel = el('label');
     staleLabel.appendChild(el('span', 'An email is late after'));
     staleLabel.appendChild(stale);
@@ -720,6 +756,8 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
       + 'when you wrote.'));
 
     const saveButton = button(busy ? 'Saving…' : 'Save', MAIL_CHAT_DOOR_SAVE_ATTR, () => {
+      keepPrefixDraft();
+      staleDraft = stale.value;
       const minutes = Number(stale.value);
       if (!isMailChatStaleAfterMinutes(minutes)) {
         error = `Enter whole minutes from ${MAIL_CHAT_STALE_AFTER_MINUTES_MIN} to ${MAIL_CHAT_STALE_AFTER_MINUTES_MAX}.`;
@@ -817,57 +855,115 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
     }
   };
 
+  const renderReadRetry = (): void => {
+    const retry = button(pendingRead === null ? 'Retry Email chat settings' : 'Retrying…',
+      MAIL_CHAT_DOOR_RETRY_ATTR, () => { void refresh(); });
+    if (pendingRead !== null) {
+      retry.setAttribute('aria-disabled', 'true');
+      retry.setAttribute('aria-busy', 'true');
+    }
+    retryNode = retry;
+    opts.host.appendChild(retry);
+  };
+
   const render = (): void => {
     if (disposed) return;
+    const ownedRetry = retryNode !== null && doc.activeElement === retryNode;
+    const editing = [...editControls].find(([, node]) => node === doc.activeElement);
+    const selection = editing === undefined ? null : {
+      start: editing[1].selectionStart, end: editing[1].selectionEnd, direction: editing[1].selectionDirection,
+    };
+    editControls.clear();
+    retryNode = null;
     opts.host.innerHTML = '';
     opts.host.setAttribute(MAIL_CHAT_DOOR_PANEL_ATTR, '');
     opts.host.setAttribute(MAIL_CHAT_DOOR_STATE_ATTR, state === 'ready' && settings !== null
       ? (settings.chat_mailbox === null ? 'off' : 'on')
       : state);
-    opts.host.appendChild(el('h3', 'Email chat'));
+    const heading = el('h3', 'Email chat');
+    heading.setAttribute('tabindex', '-1');
+    opts.host.appendChild(heading);
     if (state === 'loading') {
-      opts.host.appendChild(el('p', 'Loading…'));
-      return;
-    }
-    if (settings === null) {
+      const status = el('p', retryOffered ? 'Retrying Email chat settings…' : 'Loading…');
+      status.setAttribute('role', 'status');
+      opts.host.appendChild(status);
+      if (retryOffered) renderReadRetry();
+    } else if (settings === null) {
       const p = el('p', error ?? 'Could not read the email chat settings.');
       p.setAttribute(MAIL_CHAT_DOOR_ERROR_ATTR, '');
+      p.setAttribute('role', 'alert');
       opts.host.appendChild(p);
-      return;
-    }
-    if (settings.chat_mailbox === null) {
+      renderReadRetry();
+    } else if (settings.chat_mailbox === null) {
       renderOff(opts.host);
       renderError(opts.host);
     } else {
       renderOn(opts.host, settings);
     }
+    if (ownedRetry) {
+      const target = retryNode ?? opts.host.querySelector?.<HTMLElement>(
+        'select:not(:disabled), input:not(:disabled), button:not(:disabled)',
+      ) ?? heading;
+      target.focus?.({ preventScroll: true });
+    } else if (editing !== undefined) {
+      // Capture the current owner at each paint: a delayed read cannot reclaim
+      // focus after the owner has moved to another field or outside the panel.
+      const target = editControls.get(editing[0]);
+      if (target !== undefined && !target.disabled) {
+        target.focus?.({ preventScroll: true });
+        if (selection?.start != null && selection.end != null) {
+          target.setSelectionRange?.(selection.start, selection.end, selection.direction ?? undefined);
+        }
+      }
+    }
   };
 
-  const refresh = async (): Promise<void> => {
-    try {
-      const [next, listed] = await Promise.all([opts.runGet(), opts.runListMailboxes()]);
-      if (disposed) return;
-      // A server from before the door answers with nothing.
-      if (next === null || typeof next !== 'object' || !('chat_mailbox' in next)) {
-        throw new Error('This server does not have email chat yet. Update Recued to use it.');
+  const refresh = (): Promise<void> => {
+    if (disposed) return Promise.resolve();
+    if (pendingRead !== null) return pendingRead;
+    if (settings === null) { state = 'loading'; error = null; }
+    const version = settingsVersion;
+    pendingRead = (async () => {
+      try {
+        // Keep the batch owned until both reads settle, including when one fails
+        // before the other answers. A retry must not overlap that remaining read.
+        const [got, mail] = await Promise.allSettled([
+          Promise.resolve().then(() => opts.runGet()),
+          Promise.resolve().then(() => opts.runListMailboxes()),
+        ]);
+        if (got.status === 'rejected') throw got.reason;
+        if (mail.status === 'rejected') throw mail.reason;
+        const next = got.value;
+        const listed = mail.value;
+        if (disposed || version !== settingsVersion) return;
+        // A server from before the door answers with nothing.
+        if (next === null || typeof next !== 'object' || !('chat_mailbox' in next)) {
+          throw new Error('This server does not have email chat yet. Update Recued to use it.');
+        }
+        acceptSettings(next);
+        mailboxes = [...(listed?.instances ?? [])];
+        if (!ownersSeeded) {
+          ownersSeeded = true;
+          for (const slug of next.owner_mailboxes) if (mailboxes.some((row) => row.slug === slug)) pickOwners.add(slug);
+        }
+        if (next.chat_mailbox !== null) await loadRecent();
+        if (disposed || version !== settingsVersion) return;
+        state = 'ready';
+        error = null;
+        retryOffered = false;
+        watchEnrolment();
+      } catch (err) {
+        if (disposed || version !== settingsVersion) return;
+        state = 'error';
+        error = message(err);
+        retryOffered = true;
       }
-      settings = normalize(next);
-      mailboxes = [...(listed?.instances ?? [])];
-      if (!ownersSeeded) {
-        ownersSeeded = true;
-        for (const slug of next.owner_mailboxes) if (mailboxes.some((row) => row.slug === slug)) pickOwners.add(slug);
-      }
-      if (next.chat_mailbox !== null) await loadRecent();
-      if (disposed) return;
-      state = 'ready';
-      error = null;
-      watchEnrolment();
-    } catch (err) {
-      if (disposed) return;
-      state = 'error';
-      error = message(err);
-    }
-    render();
+    })().finally(() => {
+      pendingRead = null;
+      if (!disposed) render();
+    });
+    if (settings === null) render();
+    return pendingRead;
   };
 
   render();
@@ -879,6 +975,8 @@ export const mountMailChatDoorPanel = (opts: MountMailChatDoorPanelOptions): Mai
     refresh,
     dispose: () => {
       disposed = true;
+      retryNode = null;
+      editControls.clear();
       stopTest();
       stopEnrolWatch();
     },

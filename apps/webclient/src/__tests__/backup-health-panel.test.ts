@@ -10,15 +10,105 @@ const disposals: (() => void)[] = [];
 afterEach(() => { for (const dispose of disposals.splice(0)) dispose(); vi.useRealTimers(); });
 const setup = async (value = initial) => {
   const { root, document } = pickerTestDom(); let current = structuredClone(value);
+  let now = 1_700_000_000_000;
   const get = vi.fn<BackupHealthPorts['get']>(async () => current);
   const save = vi.fn<BackupHealthPorts['save']>(async input => { current = { ...current, policy: input.policy }; return current; });
-  const mounted = mountBackupHealth({ host: root as unknown as HTMLElement, document, ports: { get, save } }); disposals.push(() => mounted.dispose());
+  const mounted = mountBackupHealth({ host: root as unknown as HTMLElement, document, ports: { get, save }, now: () => now }); disposals.push(() => mounted.dispose());
   const node = (name: string) => { const n = root.querySelector(`[data-backup-health-${name}]`); if (!n) throw new Error(name); return n; };
   await vi.waitFor(() => expect(node('save').disabled).toBe(false));
-  return { root, node, mounted, get, save, current: (next: ArchiveBackupHealthStatus) => { current = next; } };
+  return { root, node, mounted, get, save, now: (value: number) => { now = value; }, current: (next: ArchiveBackupHealthStatus) => { current = next; } };
 };
 
 describe('backup health panel', () => {
+  it('identifies both invalid limits, focuses the first, and clears only corrected errors through refresh', async () => {
+    const h = await setup(), hours = h.node('hours'), days = h.node('days');
+    hours.value = ''; hours.fire('input'); days.value = '366'; days.fire('input');
+    const focusHours = vi.spyOn(hours, 'focus'), focusDays = vi.spyOn(days, 'focus');
+    h.node('save').click(); expect(h.save).not.toHaveBeenCalled();
+    expect(focusHours).toHaveBeenCalledTimes(1); expect(focusDays).not.toHaveBeenCalled();
+    for (const name of ['hours', 'days']) {
+      expect(h.node(name).getAttribute('aria-invalid')).toBe('true');
+      expect(h.node(name).getAttribute('aria-describedby')).toBe(h.node(`${name}-error`).id);
+    }
+    expect(h.node('hours-error').textContent).toBe('Enter a whole number from 1 to 8760 hours.');
+    expect(h.node('days-error').textContent).toBe('Enter a whole number from 1 to 365 days.');
+    await h.mounted.refresh(); expect(hours.value).toBe(''); expect(days.value).toBe('366');
+    expect(h.node('hours')).toBe(hours); expect(focusHours).toHaveBeenCalledTimes(1);
+    hours.value = '72'; hours.fire('input');
+    expect(hours.getAttribute('aria-invalid')).toBeNull(); expect(hours.getAttribute('aria-describedby')).toBeNull();
+    expect(h.node('hours-error').textContent).toBe(''); expect(days.getAttribute('aria-invalid')).toBe('true');
+    h.node('save').click(); expect(focusDays).toHaveBeenCalledTimes(1);
+    days.value = '14'; days.fire('change'); expect(days.getAttribute('aria-invalid')).toBeNull();
+    h.node('save').click(); expect(h.save).toHaveBeenCalledExactlyOnceWith({ policy: { alerts_enabled: true, backup_max_age_hours: 72, recovery_max_age_days: 14 } });
+  });
+
+  it('stamps accepted completion and retains that time through pending, failed, and unavailable reads', async () => {
+    const h = await setup(); const first = h.node('last-refreshed').getAttribute('datetime');
+    expect(first).toBe('2023-11-14T22:13:20.000Z');
+    const input = h.node('hours'); input.value = '72'; input.fire('input'); input.focus();
+    let finish!: (value: ArchiveBackupHealthStatus) => void;
+    h.get.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    h.now(1_700_000_001_000); const reading = h.mounted.refresh();
+    expect(h.node('refresh-status').textContent).toContain('Refreshing status…');
+    expect(h.node('last-refreshed').getAttribute('datetime')).toBe(first);
+    h.now(1_700_000_002_000); finish(initial); await reading;
+    const accepted = h.node('last-refreshed').getAttribute('datetime');
+    expect(accepted).toBe('2023-11-14T22:13:22.000Z');
+    h.now(1_700_000_003_000); h.get.mockRejectedValueOnce(new Error('private provider path')); await h.mounted.refresh();
+    expect(h.node('refresh-status').textContent).toContain('Latest status refresh failed.');
+    expect(h.node('last-refreshed').getAttribute('datetime')).toBe(accepted);
+    h.current({ ...initial, monitoring: 'unavailable', issue: 'settings_unavailable' }); await h.mounted.refresh();
+    expect(h.node('last-refreshed').getAttribute('datetime')).toBe(accepted);
+    expect(h.node('refresh-status').textContent).toContain('Latest status refresh failed.');
+    h.current({ ...initial, monitoring: 'paused' }); await h.mounted.refresh();
+    expect(h.node('last-refreshed').getAttribute('datetime')).toBe('2023-11-14T22:13:23.000Z');
+    expect(h.node('refresh-status').textContent).not.toContain('failed');
+    expect(input.value).toBe('72'); expect(input.focused).toBe(true); expect(h.node('hours')).toBe(input);
+    expect(h.root.textContent).not.toContain('private provider'); expect(h.save).not.toHaveBeenCalled();
+  });
+
+  it.each(['success', 'failure'] as const)('leaves initial failure and disposed %s reads without a fabricated timestamp', async outcome => {
+    const { root, document } = pickerTestDom();
+    const get = vi.fn<BackupHealthPorts['get']>().mockRejectedValueOnce(new Error('Initial unavailable'));
+    const mounted = mountBackupHealth({ host: root as unknown as HTMLElement, document, ports: { get, save: vi.fn() } });
+    disposals.push(() => mounted.dispose()); await vi.waitFor(() => expect(root.textContent).toContain('Latest status refresh failed.'));
+    expect(root.querySelector('[data-backup-health-last-refreshed]')).toBeNull();
+    let resolve!: (value: ArchiveBackupHealthStatus) => void, reject!: (error: Error) => void;
+    get.mockImplementationOnce(() => new Promise((done, fail) => { resolve = done; reject = fail; }));
+    const reading = mounted.refresh(); mounted.dispose(); const before = root.textContent;
+    if (outcome === 'success') resolve(initial); else reject(new Error('Late private failure'));
+    await reading; expect(root.textContent).toBe(before);
+    expect(root.querySelector('[data-backup-health-last-refreshed]')).toBeNull();
+  });
+
+  it.each([true, false])('recovers from an uncertain save and an older failed read (old first: %s)', async oldFirst => {
+    const h = await setup(), input = h.node('hours');
+    const previous = h.node('last-refreshed').getAttribute('datetime');
+    let failRead!: (error: Error) => void, failSave!: (error: Error) => void;
+    let latest!: (value: ArchiveBackupHealthStatus) => void;
+    h.get.mockImplementationOnce(() => new Promise((_resolve, reject) => { failRead = reject; }));
+    h.get.mockImplementationOnce(() => new Promise(resolve => { latest = resolve; }));
+    h.save.mockImplementationOnce(() => new Promise((_resolve, reject) => { failSave = reject; }));
+    const reading = h.mounted.refresh();
+    input.value = '48'; input.fire('input'); h.node('save').click();
+    input.value = '72'; input.fire('input'); input.focus();
+    if (oldFirst) {
+      failRead(new Error('private stale read')); await reading;
+      expect(h.node('refresh-status').textContent).toContain('Waiting to refresh status after the save.');
+    }
+    failSave(new Error('private uncertain save'));
+    await vi.waitFor(() => expect(h.node('feedback').textContent).toContain('could not be confirmed'));
+    if (!oldFirst) { failRead(new Error('private stale read')); await reading; }
+    expect(h.get).toHaveBeenCalledTimes(3);
+    expect(h.node('refresh-status').textContent).toContain('Refreshing status…');
+    expect(h.node('last-refreshed').getAttribute('datetime')).toBe(previous);
+    h.now(1_700_000_004_000); latest(initial);
+    await vi.waitFor(() => expect(h.node('last-refreshed').getAttribute('datetime')).toBe('2023-11-14T22:13:24.000Z'));
+    expect(input.value).toBe('72'); expect(input.focused).toBe(true); expect(h.node('hours')).toBe(input);
+    expect(h.node('refresh-status').textContent).not.toContain('failed');
+    expect(h.save).toHaveBeenCalledTimes(1); expect(h.root.textContent).not.toContain('private');
+  });
+
   it('distinguishes missing first evidence from current proof and saves only bounded age limits', async () => {
     const h = await setup(); expect(h.node('backup').textContent).toContain('Waiting for the first verified backup');
     expect(h.node('recovery').textContent).toContain('Waiting for the first passing recovery test');
@@ -52,13 +142,21 @@ describe('backup health panel', () => {
 
   it('discards a poll started before a save and preserves a newer draft made during that save', async () => {
     const h = await setup(); let readReply = (_: ArchiveBackupHealthStatus) => {}, saveReply = (_: ArchiveBackupHealthStatus) => {};
+    const firstTime = h.node('last-refreshed').getAttribute('datetime');
+    let currentReply!: (value: ArchiveBackupHealthStatus) => void;
     h.get.mockImplementationOnce(() => new Promise(resolve => { readReply = resolve; }));
+    h.get.mockImplementationOnce(() => new Promise(resolve => { currentReply = resolve; }));
     h.save.mockImplementationOnce(() => new Promise(resolve => { saveReply = resolve; }));
     const reading = h.mounted.refresh(); h.node('hours').value = '48'; h.node('hours').fire('input'); h.node('save').click();
     h.node('hours').value = '72'; h.node('hours').fire('input');
     const saved = { ...initial, policy: { ...initial.policy, backup_max_age_hours: 48 } }; h.current(saved); saveReply(saved);
     await vi.waitFor(() => expect(h.node('feedback').textContent).toContain('newer edits'));
-    readReply(initial); await reading;
+    h.now(1_700_000_001_000); readReply(initial); await reading;
+    expect(h.node('last-refreshed').getAttribute('datetime')).toBe(firstTime);
+    expect(h.node('refresh-status').textContent).toContain('Refreshing status…');
+    expect(h.get).toHaveBeenCalledTimes(3);
+    h.now(1_700_000_002_000); currentReply(saved);
+    await vi.waitFor(() => expect(h.node('last-refreshed').getAttribute('datetime')).toBe('2023-11-14T22:13:22.000Z'));
     expect(h.node('hours').value).toBe('72'); expect(h.save).toHaveBeenCalledTimes(1);
     h.node('save').click(); expect(h.save).toHaveBeenLastCalledWith({ policy: { ...initial.policy, backup_max_age_hours: 72 } });
   });

@@ -52,10 +52,11 @@ const INVOICES = { publisher: 'recued-core', pack_slug: 'invoice-book' };
  *  schema (`scripts/bump-changed-since-publish.mjs`), so a version is added here once
  *  its schema is checked: invoice-book 5 is 4 with `record-payment` pinned at v6 (the
  *  26.10.12 cut), and quote-pipeline 3 is 2 with `show-quote-quote-pipeline` pinned at v2
- *  and `record-outcome` at v4 (the 26.10.20 cut). An owner who has not updated the pack
- *  yet keeps working. */
+ *  and `record-outcome` at v4 (the 26.10.20 cut). quote-pipeline 4 is 3 with its recipes
+ *  re-pinned for each stop's reason (the 26.10.22 cut). An owner who has not updated the
+ *  pack yet keeps working. */
 export const QUOTE_SIGNOFF_PACK_VERSIONS: Readonly<Record<string, readonly number[]>> = {
-  'quote-pipeline': [2, 3],
+  'quote-pipeline': [2, 3, 4],
   'invoice-book': [4, 5, 6, 7, 8, 9],
 };
 const TABLE = 'quote_signoffs';

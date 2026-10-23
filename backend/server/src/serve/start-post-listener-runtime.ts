@@ -1,4 +1,5 @@
 import type { RuntimeConfigStore } from '@recued/config';
+import { createServerBackupHealthSource } from '../archive/server-backup-health.js';
 import { buildQuietHoursReleaseHandler } from '../quiet-hours-release-handler.js';
 import { zoneByLabel, type ConnectionHealth, type LifecycleStatus } from '@recued/contracts';
 import type { NotificationBlock, NotificationMessage } from '@recued/notification';
@@ -148,7 +149,9 @@ export type PostListenerRuntimeCollectionContext =
 
 export interface StartPostListenerRuntimeOptions {
   readonly unattendedBackups?: import('../archive/unattended-backups.js').UnattendedBackups;
+  readonly backupIntegrity?: import('../archive/backup-integrity.js').BackupIntegrity;
   readonly backupHealth?: import('../archive/backup-health.js').BackupHealth;
+  readonly backupWatchdog?: import('../archive/backup-watchdog.js').BackupWatchdog;
   readonly restoreDrills?: import('../archive/restore-drills.js').RestoreDrills;
   readonly dbPath: string;
   readonly runtimeConfig: RuntimeConfigStore;
@@ -267,6 +270,9 @@ export const startPostListenerRuntime = async (
       ...(options.getServerHealth !== undefined
         ? { getServerHealth: options.getServerHealth }
         : {}),
+      ...(options.backupHealth || options.backupIntegrity ? { getBackupHealth: createServerBackupHealthSource({
+        backupHealth: options.backupHealth, backupIntegrity: options.backupIntegrity,
+      }) } : {}),
     });
   }
 
@@ -393,7 +399,9 @@ export const startPostListenerRuntime = async (
 
   const schedulersBundle = startSchedulers({
     ...(options.unattendedBackups ? { unattendedBackups: options.unattendedBackups } : {}),
+    ...(options.backupIntegrity ? { backupIntegrity: options.backupIntegrity } : {}),
     ...(options.backupHealth ? { backupHealth: options.backupHealth } : {}),
+    ...(options.backupWatchdog ? { backupWatchdog: options.backupWatchdog } : {}),
     ...(options.restoreDrills ? { restoreDrills: options.restoreDrills } : {}),
     // D-269 — the declared server zone for cron schedules that carry none, so
     // `0 9 * * *` means 9am to the OWNER rather than 9am wherever this process

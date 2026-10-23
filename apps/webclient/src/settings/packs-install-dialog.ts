@@ -38,7 +38,7 @@ import type {
 } from '@recued/contracts';
 // Same byte formatter the Records explorer uses — these are the same quota
 // ceilings, shown one screen earlier.
-import { describeTestedRange, formatPressureBytes, installRecipeRiskFromPreview } from '@recued/contracts';
+import { describeTestedRange, formatPressureBytes, installRecipeRiskFromPreview, isRecordsQuotaUnlimited } from '@recued/contracts';
 import {
   ACCESS_LABEL,
   OWN_NEEDS_WHAT,
@@ -1584,13 +1584,20 @@ export const renderPacksInstallDialog = (
         ? 'keep'
         : `expire after ${value.days} days`}`)
       .join(', ') || 'keep (default)';
+    // ⛔ An unset limit arrives as `RECORDS_QUOTA_NO_LIMIT` (the global limits have no default),
+    // which printed as "Global 0/9007199254740991 rows, 0 B/8192.00 TB".
+    const usage = (rows: number, rowLimit: number, bytes: number, byteLimit: number): string => {
+      const rowsFree = isRecordsQuotaUnlimited(rowLimit);
+      const bytesFree = isRecordsQuotaUnlimited(byteLimit);
+      if (rowsFree && bytesFree) return `${rows.toLocaleString()} rows, ${formatPressureBytes(bytes)}, no limit`;
+      return `${rows.toLocaleString()}${rowsFree ? ' rows (no limit)' : `/${rowLimit.toLocaleString()} rows`}, `
+        + `${formatPressureBytes(bytes)}${bytesFree ? ' (no limit)' : `/${formatPressureBytes(byteLimit)}`}`;
+    };
     policy.textContent =
-      `Usage ${recordsReview.quota.row_count}/${recordsReview.quota.row_limit} rows, `
-      + `${formatPressureBytes(recordsReview.quota.payload_bytes)}`
-      + `/${formatPressureBytes(recordsReview.quota.byte_limit)} · `
-      + `Global ${recordsReview.global_quota.row_count}/${recordsReview.global_quota.row_limit} rows, `
-      + `${formatPressureBytes(recordsReview.global_quota.payload_bytes)}`
-      + `/${formatPressureBytes(recordsReview.global_quota.byte_limit)}`
+      `Usage ${usage(recordsReview.quota.row_count, recordsReview.quota.row_limit,
+        recordsReview.quota.payload_bytes, recordsReview.quota.byte_limit)} · `
+      + `Global ${usage(recordsReview.global_quota.row_count, recordsReview.global_quota.row_limit,
+        recordsReview.global_quota.payload_bytes, recordsReview.global_quota.byte_limit)}`
       + `${recordsReview.global_quota.reserved_payload_bytes === 0
         ? ''
         : ` (+${formatPressureBytes(recordsReview.global_quota.reserved_payload_bytes)} reserved)`} · `

@@ -1,6 +1,7 @@
 import type { ArchiveRemoteDestination, ArchiveUnattendedSettings, ArchiveUnattendedStatus } from '@recued/contracts';
 import { ARCHIVE_UNATTENDED_ISSUE_TEXT } from '@recued/contracts';
 import { formatClientDateTime } from '@recued/ui-shared';
+import { createBackupFormValidation, isBackupUtcTime, isBackupWholeNumber } from './backup-form-validation.js';
 
 export interface UnattendedBackupsPorts {
   get(): Promise<ArchiveUnattendedStatus>;
@@ -8,6 +9,7 @@ export interface UnattendedBackupsPorts {
 }
 export const mountUnattendedBackups = (options: { host: HTMLElement; document: Document; ports: UnattendedBackupsPorts }) => {
   const { host, document: doc, ports } = options;
+  const validation = createBackupFormValidation(doc, 'unattended');
   const make = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string): HTMLElementTagNameMap[K] => {
     const node = doc.createElement(tag); if (text !== undefined) node.textContent = text; return node;
   };
@@ -19,16 +21,26 @@ export const mountUnattendedBackups = (options: { host: HTMLElement; document: D
   };
   const enabled = label('Enable scheduled backups ', make('input'), 'data-unattended-enabled'); enabled.type = 'checkbox'; enabled.checked = true;
   const destination = label('Backup storage ', make('select'), 'data-unattended-destination');
+  const selectedDestination = (): Pick<ArchiveRemoteDestination, 'connection_name' | 'destination_id'> | undefined => {
+    const live = choices.get(destination.value);
+    return !enabled.checked ? chosen : live?.destination_id === chosen?.destination_id ? live : undefined;
+  };
+  validation.field(destination, host, 'destination', () => selectedDestination() ? undefined : 'Choose the backup storage again. Refresh storage if it changed or is unavailable.');
   const cadence = label('Repeat ', make('select'), 'data-unattended-cadence');
   for (const value of ['daily', 'weekly']) { const node = make('option', value === 'daily' ? 'Daily' : 'Weekly'); node.value = value; cadence.appendChild(node); } cadence.value = 'daily';
+  validation.field(cadence, host, 'cadence', () => ['daily', 'weekly'].includes(cadence.value) ? undefined : 'Choose daily or weekly backups.');
   const time = label('Time (UTC) ', make('input'), 'data-unattended-time'); time.type = 'time'; time.value = '02:00';
+  validation.field(time, host, 'time', () => isBackupUtcTime(time.value) ? undefined : 'Enter a UTC time, such as 02:00.');
   const day = label('Weekday (weekly backups) ', make('select'), 'data-unattended-day');
   for (const [index, value] of ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].entries()) {
     const node = make('option', value); node.value = String(index); day.appendChild(node);
   } day.value = '0';
+  validation.field(day, host, 'day', () => isBackupWholeNumber(day.value, 0, 6) ? undefined : 'Choose a weekday for backups.');
   const keep = label('Backups to keep ', make('input'), 'data-unattended-keep'); keep.type = 'number'; keep.min = '1'; keep.max = '30'; keep.step = '1'; keep.value = '5';
+  validation.field(keep, host, 'keep', () => isBackupWholeNumber(keep.value, 1, 30) ? undefined : 'Enter a whole number from 1 to 30 backups to keep.');
   const words = label('Recovery words (first setup or replace backup key) ', make('input'), 'data-unattended-words');
   words.type = 'password'; words.autocomplete = 'off'; words.spellcheck = false;
+  validation.field(words, host, 'words', () => !current?.configured && words.value.trim() === '' ? 'Enter your recovery words for the first setup.' : undefined);
   host.appendChild(make('p', 'Failure alerts use your notification settings. Missed times become one backup when the server is available. Older remote copies are removed only after a new copy is verified.'));
   const save = make('button', 'Save backup schedule'); save.type = 'button'; save.className = 'rx-btn rx-btn-primary'; save.setAttribute('data-unattended-save', ''); host.appendChild(save);
   const status = make('p'); status.setAttribute('role', 'status'); status.setAttribute('data-unattended-status', ''); host.appendChild(status);
@@ -66,6 +78,7 @@ export const mountUnattendedBackups = (options: { host: HTMLElement; document: D
     status.textContent = !value.configured ? 'No unattended backup schedule is configured.'
       : `${settings?.enabled ? 'Enabled' : 'Paused'}${value.next_run_at ? ` · Next backup: ${formatClientDateTime(value.next_run_at)}` : ''}${run ? ` · Last run: ${run.outcome === 'verified' ? 'verified in remote storage' : run.outcome === 'running' ? 'in progress' : `needs attention. ${run.issue ? ARCHIVE_UNATTENDED_ISSUE_TEXT[run.issue] : 'The backup could not be confirmed.'}`}` : ''}${value.alert_pending ? ' · Failure alert awaiting notification delivery' : ''}`;
     save.disabled = busy;
+    validation.refresh();
   };
   const refresh = async (): Promise<void> => {
     if (disposed || busy || loading) return;
@@ -78,23 +91,21 @@ export const mountUnattendedBackups = (options: { host: HTMLElement; document: D
     }
   };
   for (const control of [enabled, destination, cadence, time, day, keep, words]) {
-    const changed = (): void => { dirty = true; editVersion++; };
+    const changed = (): void => { if (disposed) return; dirty = true; editVersion++; validation.refresh(); };
     control.addEventListener('input', changed); control.addEventListener('change', changed);
   }
-  destination.addEventListener('change', () => { chosen = choices.get(destination.value); renderDestination(); });
+  destination.addEventListener('change', () => { if (disposed) return; chosen = choices.get(destination.value); renderDestination(); validation.refresh(); });
   save.disabled = true;
   save.addEventListener('click', () => {
     if (disposed || busy || current === undefined) return;
-    const live = choices.get(destination.value);
-    const selected = !enabled.checked ? chosen : live?.destination_id === chosen?.destination_id ? live : undefined;
-    if (!selected) { feedback.textContent = 'Refresh storage and select the backup destination again.'; return; }
-    const match = /^(\d{2}):(\d{2})$/u.exec(time.value), count = Number(keep.value);
-    if (!match || !Number.isInteger(count) || count < 1 || count > 30) { feedback.textContent = 'Choose a UTC time and 1 to 30 backups to keep.'; return; }
-    if (!current.configured && words.value.trim() === '') { feedback.textContent = 'Enter your recovery words once to set up unattended backups.'; return; }
+    if (!validation.validate()) { feedback.textContent = ''; return; }
+    validation.reset();
+    const selected = selectedDestination()!;
+    const [hour, minute] = time.value.split(':').map(Number);
     const recoveryKey = words.value.trim(); words.value = '';
     const settings: ArchiveUnattendedSettings = { enabled: enabled.checked, connection_name: selected.connection_name,
-      destination_id: selected.destination_id, keep_last: count, schedule: { cadence: cadence.value === 'weekly' ? 'weekly' : 'daily',
-        hour_utc: Number(match[1]), minute_utc: Number(match[2]), weekday_utc: Number(day.value) } };
+      destination_id: selected.destination_id, keep_last: Number(keep.value), schedule: { cadence: cadence.value === 'weekly' ? 'weekly' : 'daily',
+        hour_utc: hour!, minute_utc: minute!, weekday_utc: Number(day.value) } };
     const submittedVersion = editVersion;
     generation++; busy = true; save.disabled = true; feedback.textContent = 'Saving the backup schedule…';
     void ports.save({ settings, ...(recoveryKey ? { recoveryKey } : {}) }).then(result => {
@@ -110,8 +121,8 @@ export const mountUnattendedBackups = (options: { host: HTMLElement; document: D
     refresh,
     destinations(values: ArchiveRemoteDestination[]): void {
       if (disposed) return;
-      choices = new Map(values.map(value => [value.connection_name, value])); renderDestination();
+      choices = new Map(values.map(value => [value.connection_name, value])); renderDestination(); validation.refresh();
     },
-    dispose() { disposed = true; words.value = ''; if (timer !== undefined) clearTimeout(timer); },
+    dispose() { disposed = true; validation.dispose(); words.value = ''; if (timer !== undefined) clearTimeout(timer); },
   };
 };

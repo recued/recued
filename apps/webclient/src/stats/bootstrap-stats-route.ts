@@ -119,9 +119,17 @@ export const STATS_ROUTE_STYLES = `
   padding: 9px 14px 9px 0;
   vertical-align: baseline;
 }
+/* ⛔ break-word, NOT the inherited anywhere. The content root sets
+   overflow-wrap: anywhere, which counts ANY letter as a break point when the
+   table sizes its columns, so the meaning column's width: 100% took all but
+   one letter of this one: the column fell to its header's 55px and
+   "Autopilot" rendered as "Autopilo / t" (6 of 20 names, measured at 1440px
+   and 390px). break-word still breaks a word that cannot fit a line at all,
+   but sizes the column by whole words. */
 [${STATS_ROUTE_HOST_ATTR}] .stats-table__name {
   font-size: 13px;
   font-weight: 650;
+  overflow-wrap: break-word;
 }
 [${STATS_ROUTE_HOST_ATTR}] .stats-table__value {
   font-weight: 680;

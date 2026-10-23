@@ -253,6 +253,9 @@ describe('composeIngressRpcContext', () => {
       // D-207 slice 3c — what the reception RUNNER opens an order against.
       sellerOfferStore: app.sellerStoreRef,
       sellerOrderStore: app.sellerOrderStoreRef,
+      // D-207 — the owner's address, for the link in a turned-away notice. This context
+      // has no notification block, so no `notifier` is passed and nobody is told.
+      getOwnerBaseUrl: expect.any(Function),
       sharedStore: app.sharedStoreRef,
       fireReceptionWorkflow: expect.any(Function),
       ipBlockStore: storage.ipBlockStoreRef,
@@ -308,6 +311,27 @@ describe('composeIngressRpcContext', () => {
       formDefinitionReader: expect.any(Function),
     });
     expect(ingressMocks.logMcpHttpBootBanner).toHaveBeenCalledTimes(1);
+  });
+
+  it('D-207 — hands Reception the notification block, and the owner\u2019s own address for its links', async () => {
+    const notificationBlock = { notify: vi.fn() };
+    const storage = makeStorage();
+    const baseUrl = vi.fn(() => 'https://me.example');
+    (storage as unknown as { publicAddress: Record<string, unknown> }).publicAddress = {
+      tag: 'public-address',
+      baseUrl,
+    };
+    await composeIngressRpcContext(makeOptions({
+      storage,
+      execution: { executeDeps: { tag: 'execute-deps' }, notificationBlock } as never,
+    }));
+
+    const [deps] = ingressMocks.composeReceptionSubstrate.mock.calls[0] as unknown as [
+      { notifier?: unknown; getOwnerBaseUrl: () => string | null },
+    ];
+    expect(deps.notifier).toBe(notificationBlock);
+    expect(deps.getOwnerBaseUrl()).toBe('https://me.example');
+    expect(baseUrl).toHaveBeenCalledWith('root');
   });
 
   it('forwards webclientBundlePresent: TRUE when a verified bundle resolves', async () => {

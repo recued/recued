@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import {
-  ARTIFACTS, CHAT_SETUP, FIXED_NOW, HARNESS_URL, SETTINGS_NAV_ITEM, installFullAppHooks,
+  CHAT_SETUP, FIXED_NOW, HARNESS_URL, SETTINGS_NAV_ITEM, installFullAppHooks,
 } from './helpers/full-app.js';
 
 /**
@@ -1622,7 +1622,7 @@ test('Set up Chat sends a provider it does not name to slot 1 and slot 2', async
   await expect(slot.getByRole('combobox', { name: 'Slot 1: fast protocol' })).toBeVisible();
 });
 
-test('Settings AI Models slot mistakes are said under the button that was pressed', async ({ page }) => {
+test('Settings AI Models slot mistakes are said under the button that was pressed', async ({ page }, info) => {
   await page.goto(`${HARNESS_URL}?ai=two`);
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#settings/ai-models/providers'));
@@ -1673,7 +1673,7 @@ test('Settings AI Models slot mistakes are said under the button that was presse
   await expect(page.locator('[data-recued-ai-models-action-error]')).toHaveCount(0);
   expect(await page.evaluate(() => window.__app.rpcCallCount('server.setLLMSlot'))).toBe(0);
   expect(await page.evaluate(() => window.__app.rpcCallCount('server.probeLlmSource'))).toBe(0);
-  await page.screenshot({ path: `${ARTIFACTS}/full-app-ai-slot-inline-errors.png`, fullPage: true });
+  await page.screenshot({ path: info.outputPath('full-app-ai-slot-inline-errors.png'), fullPage: true });
 
   // With the key for the new address the save goes, carrying the name.
   await slot.getByRole('textbox', { name: 'Slot 2: better, slower thinking API key' })
@@ -1856,7 +1856,7 @@ test('Settings AI Models pool entries are named, tested, and edited in place', a
     .toBeFocused();
   await form.getByRole('textbox', { name: 'Free-pool entry groq-2 model', exact: true })
     .fill('llama-3.3-70b-versatile');
-  await page.screenshot({ path: `${ARTIFACTS}/full-app-ai-pool-edit.png`, fullPage: true });
+  await page.screenshot({ path: test.info().outputPath(`full-app-ai-pool-edit.png`), fullPage: true });
   await form.getByRole('button', { name: 'Save free-pool entry groq-2', exact: true }).click();
 
   await expect(added).toContainText('groq-2: OpenAI-compatible / llama-3.3-70b-versatile (enabled)');

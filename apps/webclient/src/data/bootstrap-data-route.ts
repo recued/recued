@@ -5633,6 +5633,7 @@ export const bootstrapDataRoute = (
   let universalSearchQuery = opts.savedView?.definition.tab === 'search' ? opts.savedView.definition.query : '';
   let universalSearchGroups: CollectionSearchGroup[] | undefined;
   let universalSearchLoading = false;
+  let universalSearchCapabilitiesLoading = false;
   let universalSearchError: string | undefined;
   /** Installed recipes matching the same query — the owner's CAPABILITIES.
    *  Filtered CLIENT-SIDE from `recipe.list`, which the route already loads:
@@ -5649,6 +5650,7 @@ export const bootstrapDataRoute = (
   let universalSearchMarketQuery = '';
   /** Guards against an out-of-order response overwriting a newer one. */
   let universalSearchSeq = 0;
+  let universalSearchMarketSeq = 0;
 
   let explorerRecords: CollectionRecord[] = [];
   let explorerDetail: CollectionExplorerDetailState | null = null;
@@ -6224,7 +6226,7 @@ export const bootstrapDataRoute = (
       selectedSlug: explorerSelectedSlug,
       records: (tab === 'calendar' || tab === 'mail') && explorerSelectedSlug ? explorerRecords.filter(row => facetIncludes({ collection: tab, id: `${explorerSelectedSlug}:${row.record_id}` })) : explorerRecords,
       detail,
-      loading: explorerLoading,
+      loading: explorerLoading || loading,
       ...(explorerError !== undefined ? { error: explorerError } : {}),
       ...(explorerErrorRetryable ? { retryable: true } : {}),
       ...(explorerRetrying ? { retrying: true } : {}),
@@ -7026,6 +7028,7 @@ export const bootstrapDataRoute = (
           ? renderUniversalSearch({
               query: universalSearchQuery,
               ...(universalSearchLoading ? { loading: true } : {}),
+              ...(universalSearchCapabilitiesLoading ? { capabilitiesLoading: true } : {}),
               ...(universalSearchGroups !== undefined
                 ? { groups: universalSearchGroups }
                 : {}),
@@ -8473,14 +8476,17 @@ export const bootstrapDataRoute = (
   /** Load an explorer tab: list its instances, auto-select the sole one (or wait
    *  for a pick), then fetch its records. Called from `refreshActive`; the outer
    *  generation guard there paints the result. */
-  const loadExplorer = async (tab: DataTabId): Promise<void> => {
+  const loadExplorer = async (tab: DataTabId, preferredSourceSlug?: string): Promise<void> => {
     explorerLiveRefreshPending = false;
     if (isSingleCollectionTab(tab)) return loadSingleCollection(tab);
     const platform = EXPLORER_TAB_PLATFORM[tab];
     const seq = ++explorerSeq;
-    const requestedSlug = initialExplorerSlug ?? savedExplorerScopes.get(tab) ?? null;
+    const requestedSlug = preferredSourceSlug ?? initialExplorerSlug ?? savedExplorerScopes.get(tab) ?? null;
     initialExplorerSlug = null;
     const previouslySelectedSlug = explorerSelectedSlug;
+    // Keep the intended source through a failed roster read, so Retry cannot
+    // silently select a different account. Membership is checked after loading.
+    if (requestedSlug !== null) explorerSelectedSlug = requestedSlug;
     // The display schema is keyed on the canonical collection name = the
     // CollectionPlatform (`file`), NOT the tab id (`files`). Using the tab id
     // would miss the schema (→ record_id titles). mail/calendar coincide, files
@@ -8575,6 +8581,9 @@ export const bootstrapDataRoute = (
             : 'The source for this view is gone. Pick another one to carry on.';
         explorerErrorRetryable = false;
       }
+      // The roster is ready even when this source's records are slow. Keep
+      // other accounts selectable while the chosen account is loading.
+      render();
       if (explorerSelectedSlug !== null) {
         if (opts.savedView !== undefined) savedExplorerScopes.set(tab, explorerSelectedSlug);
         await fetchExplorerRecords(platform, explorerSelectedSlug, seq);
@@ -8648,7 +8657,7 @@ export const bootstrapDataRoute = (
     const retryGeneration = ++explorerRetryGeneration;
     explorerRetrying = true;
     render();
-    await loadExplorer(retryTab);
+    await loadExplorer(retryTab, explorerSelectedSlug ?? undefined);
     if (
       disposed
       || retryGeneration !== explorerRetryGeneration
@@ -8895,14 +8904,20 @@ export const bootstrapDataRoute = (
     syncDataHash();
   };
 
-  const applyRecordsView = (reset = false): void => {
+  const applyRecordsView = (action: 'apply' | 'reset' | 'clear-filters' = 'apply'): void => {
     if (activeTab !== 'records' || recordsState.loading || hasRecordsInFlightWork()) return;
     const entity = recordsState.selectedNamespace?.schema.entities[recordsState.selectedKind ?? ''];
     if (!entity) return;
     try {
-      const view = reset ? {} : parseRecordsViewDraft(recordsState.viewDraft, entity);
-      if (activeRecordsAction()?.startsWith('records-filter-')) focusRecordsAction('records-apply-view');
-      recordsState = { ...recordsState, view, viewDraft: recordsViewDraft(view) };
+      const view = action === 'reset' ? {} : action === 'clear-filters'
+        ? (recordsState.view.sort === undefined ? {} : { sort: recordsState.view.sort })
+        : parseRecordsViewDraft(recordsState.viewDraft, entity);
+      const viewDraft = recordsViewDraft(view);
+      // Clearing filters must neither apply nor discard an unfinished sort edit.
+      if (action === 'clear-filters') viewDraft.sort = recordsState.viewDraft.sort;
+      if (activeRecordsAction()?.startsWith('records-filter-')
+        || activeRecordsAction() === 'records-clear-filters') focusRecordsAction('records-apply-view');
+      recordsState = { ...recordsState, view, viewDraft };
       pendingLoadPromise = loadRecordsPage();
     } catch (error) {
       const focus = activeRecordsFocusIdentity();
@@ -9433,14 +9448,14 @@ export const bootstrapDataRoute = (
     } catch (error) {
       recordsState = { ...recordsState, error: humanizeRpcError(error) };
     } finally {
-      const stillOwnsFocus = activeRecordsAction() === action;
+      const settledFocus = activeRecordsFocusIdentity();
       recordsState = {
         ...recordsState,
         exporting: false,
         exportingAction: null,
       };
       render();
-      if (stillOwnsFocus) focusRecordsAction(action);
+      focusRecordsIdentity(settledFocus);
     }
   };
 
@@ -9710,7 +9725,10 @@ export const bootstrapDataRoute = (
     await openRecordsRecord(id);
   };
 
-  const refreshActive = async (silent = false): Promise<void> => {
+  const refreshActive = async (
+    silent = false,
+    explorerScope?: { tab: DataTabId; slug: string },
+  ): Promise<void> => {
     const generation = ++loadGeneration;
     if (activeTab === 'task') {
       taskListFilter = resolveTaskListFilter(taskViewFilters, (opts.now ?? Date.now)());
@@ -9776,7 +9794,7 @@ export const bootstrapDataRoute = (
       // D-198 Slice 5 — the explorer owns its own async guard (`explorerSeq`) +
       // error state; the outer generation guard below still gates the paint.
       // Phase 2: provenance tabs (annotation / link) load through the same path.
-      await loadExplorer(activeTab);
+      await loadExplorer(activeTab, explorerScope?.tab === activeTab ? explorerScope.slug : undefined);
     }
 
     if (disposed || generation !== loadGeneration) return;
@@ -9861,20 +9879,32 @@ export const bootstrapDataRoute = (
   const PACK_SEARCH_LIMIT = 5;
   const MARKET_SEARCH_LIMIT = 6;
 
-  /** ⛔ SEQUENCE-GUARDED. Typing "kes" fires three searches; without the guard
-   *  the slowest response wins and the owner sees results for a prefix they have
-   *  already moved past. The same discipline the explorer uses for its records. */
+  /** Retire replies at the edit/navigation boundary, before the next debounce.
+   * A query comparison alone misses an edit away and back to the same words. */
+  const retireUniversalSearch = (): void => {
+    universalSearchSeq += 1;
+    universalSearchMarketSeq += 1;
+    if (universalSearchTimer !== null) clearTimeout(universalSearchTimer);
+    universalSearchTimer = null;
+    universalSearchGroups = undefined;
+    universalSearchRecipes = [];
+    universalSearchPacks = [];
+    universalSearchMarket = [];
+    universalSearchMarketQuery = '';
+    universalSearchMarketError = undefined;
+    universalSearchMarketLoading = false;
+    universalSearchLoading = false;
+    universalSearchCapabilitiesLoading = false;
+    universalSearchError = undefined;
+  };
+
   const runUniversalSearch = async (): Promise<void> => {
+    if (disposed || activeLens !== 'data' || activeTab !== 'search') return;
     const caller = opts.collectionSearchAllCaller;
     const query = universalSearchQuery.trim();
     if (query === '') {
-      universalSearchGroups = undefined;
-      universalSearchRecipes = [];
-      universalSearchPacks = [];
-      universalSearchMarket = [];
-      universalSearchMarketError = undefined;
-      universalSearchLoading = false;
-      universalSearchError = undefined;
+      retireUniversalSearch();
+      render();
       return;
     }
     if (caller === undefined) {
@@ -9885,11 +9915,21 @@ export const bootstrapDataRoute = (
       universalSearchGroups = undefined;
       universalSearchError = 'This server cannot search.';
       universalSearchLoading = false;
+      universalSearchCapabilitiesLoading = false;
       render();
       return;
     }
     const seq = ++universalSearchSeq;
+    const navigation = navigationGeneration;
+    const isCurrent = (): boolean => !disposed
+      && seq === universalSearchSeq && navigation === navigationGeneration
+      && activeLens === 'data' && activeTab === 'search'
+      && query === universalSearchQuery.trim();
     universalSearchLoading = true;
+    universalSearchCapabilitiesLoading = true;
+    universalSearchGroups = undefined;
+    universalSearchRecipes = [];
+    universalSearchPacks = [];
     universalSearchError = undefined;
     // A new local search retires any marketplace answer: it belonged to the
     // previous query, and leaving it up would attach cloud results to words the
@@ -9898,11 +9938,29 @@ export const bootstrapDataRoute = (
       universalSearchMarket = [];
       universalSearchMarketError = undefined;
     }
-    // ⚠ Fetched ALONGSIDE the collection search, not before it: the two are
-    // independent, and serialising them would make every keystroke pay both
-    // latencies. A recipe-list failure must not sink the record results, so it
-    // degrades to no capability group rather than to an error.
-    const recipeList = await (async (): Promise<ServerRecipeListEntry[]> => {
+    render();
+    // Each branch paints as it settles. In particular a slow capability list
+    // must neither delay starting the record search nor hide its ready rows.
+    const recordSearch = (async (): Promise<void> => {
+      try {
+        const { groups } = await caller({ query });
+        if (!isCurrent()) return;
+        universalSearchGroups = groups;
+        universalSearchError = undefined;
+      } catch (err) {
+        if (!isCurrent()) return;
+        universalSearchGroups = undefined;
+        universalSearchError = humanizeRpcError(err);
+      } finally {
+        if (isCurrent()) {
+          universalSearchLoading = false;
+          render();
+        }
+      }
+    })();
+    // Recipe and pack lists settle together to preserve pack/member absorption.
+    // Their failures still degrade independently to an empty capability list.
+    const recipeRead = (async (): Promise<ServerRecipeListEntry[]> => {
       const listCaller = opts.recipeListCaller;
       if (listCaller === undefined) return [];
       try {
@@ -9911,7 +9969,7 @@ export const bootstrapDataRoute = (
         return [];
       }
     })();
-    const packList = await (async (): Promise<ReadonlyArray<RosterPack>> => {
+    const packRead = (async (): Promise<ReadonlyArray<RosterPack>> => {
       const packCaller = opts.packInstalledListCaller;
       if (packCaller === undefined) return [];
       try {
@@ -9923,70 +9981,60 @@ export const bootstrapDataRoute = (
         return [];
       }
     })();
-    if (disposed || seq !== universalSearchSeq) return;
+    const capabilitySearch = (async (): Promise<void> => {
+      const [recipeList, packList] = await Promise.all([recipeRead, packRead]);
+      if (!isCurrent()) return;
 
-    universalSearchPacks = rankSearchable(
-      packList,
-      (p) => ({
+      universalSearchPacks = rankSearchable(
+        packList,
+        (p) => ({
+          name: p.name ?? p.slug,
+          ...(p.description !== undefined ? { description: p.description } : {}),
+        }),
+        query,
+        PACK_SEARCH_LIMIT,
+      ).map((p) => ({
+        slug: p.slug,
         name: p.name ?? p.slug,
         ...(p.description !== undefined ? { description: p.description } : {}),
-      }),
-      query,
-      PACK_SEARCH_LIMIT,
-    ).map((p) => ({
-      slug: p.slug,
-      name: p.name ?? p.slug,
-      ...(p.description !== undefined ? { description: p.description } : {}),
-      ...(p.publisher !== undefined ? { publisher: p.publisher } : {}),
-    }));
+        ...(p.publisher !== undefined ? { publisher: p.publisher } : {}),
+      }));
 
-    // ⛔⛔ A MEMBER IS ABSORBED ONLY WHEN ITS PACK ALSO MATCHED. Suppressing every
-    // bundled recipe outright looks tidier and LOSES REAL HITS: measured on the
-    // shipped corpus, `recued-core/fleet-money` carries a recipe called
-    // "Settlements" and the pack's own text contains none of that word — so an
-    // owner searching "settlements" for a recipe they demonstrably have would
-    // get nothing. Same capability at two granularities collapses to the pack;
-    // a member whose pack did not match still surfaces, attributed to it.
-    const matchedPackSlugs = new Set(universalSearchPacks.map((p) => p.slug));
-    const bundleSlug = (bundle: string): string => bundle.split('/').pop() ?? bundle;
-    universalSearchRecipes = rankSearchable(
-      recipeList,
-      (r) => ({
-        name: r.recipe.metadata.name,
-        description: r.recipe.metadata.description,
-        ...(r.recipe.metadata.tags !== undefined ? { tags: r.recipe.metadata.tags } : {}),
-      }),
-      query,
-      RECIPE_SEARCH_LIMIT,
-    ).filter((r) => {
-      const bundle = r.recipe.metadata.recipe_bundle;
-      return bundle === undefined || !matchedPackSlugs.has(bundleSlug(bundle));
-    }).map((r) => {
-      const bundle = r.recipe.metadata.recipe_bundle;
-      return {
-        recipe_id: r.recipe_id,
-        name: r.recipe.metadata.name,
-        description: r.recipe.metadata.description,
-        publisher_id: r.publisher_id,
-        ...(bundle !== undefined ? { bundle } : {}),
-      };
-    });
-    render();
-    try {
-      const { groups } = await caller({ query });
-      if (disposed || seq !== universalSearchSeq) return;
-      universalSearchGroups = groups;
-      universalSearchError = undefined;
-    } catch (err) {
-      if (disposed || seq !== universalSearchSeq) return;
-      universalSearchGroups = undefined;
-      universalSearchError = humanizeRpcError(err);
-    } finally {
-      if (!disposed && seq === universalSearchSeq) {
-        universalSearchLoading = false;
-        render();
-      }
-    }
+      // ⛔⛔ A MEMBER IS ABSORBED ONLY WHEN ITS PACK ALSO MATCHED. Suppressing every
+      // bundled recipe outright looks tidier and LOSES REAL HITS: measured on the
+      // shipped corpus, `recued-core/fleet-money` carries a recipe called
+      // "Settlements" and the pack's own text contains none of that word — so an
+      // owner searching "settlements" for a recipe they demonstrably have would
+      // get nothing. Same capability at two granularities collapses to the pack;
+      // a member whose pack did not match still surfaces, attributed to it.
+      const matchedPackSlugs = new Set(universalSearchPacks.map((p) => p.slug));
+      const bundleSlug = (bundle: string): string => bundle.split('/').pop() ?? bundle;
+      universalSearchRecipes = rankSearchable(
+        recipeList,
+        (r) => ({
+          name: r.recipe.metadata.name,
+          description: r.recipe.metadata.description,
+          ...(r.recipe.metadata.tags !== undefined ? { tags: r.recipe.metadata.tags } : {}),
+        }),
+        query,
+        RECIPE_SEARCH_LIMIT,
+      ).filter((r) => {
+        const bundle = r.recipe.metadata.recipe_bundle;
+        return bundle === undefined || !matchedPackSlugs.has(bundleSlug(bundle));
+      }).map((r) => {
+        const bundle = r.recipe.metadata.recipe_bundle;
+        return {
+          recipe_id: r.recipe_id,
+          name: r.recipe.metadata.name,
+          description: r.recipe.metadata.description,
+          publisher_id: r.publisher_id,
+          ...(bundle !== undefined ? { bundle } : {}),
+        };
+      });
+      universalSearchCapabilitiesLoading = false;
+      render();
+    })();
+    await Promise.all([recordSearch, capabilitySearch]);
   };
 
   /** ⛔ OWNER-INITIATED. Never called from the input path — see the caller's
@@ -9994,13 +10042,25 @@ export const bootstrapDataRoute = (
   const runMarketplaceSearch = async (): Promise<void> => {
     const caller = opts.marketplacePackSearchCaller;
     const query = universalSearchQuery.trim();
-    if (caller === undefined || query === '') return;
+    if (disposed || activeLens !== 'data' || activeTab !== 'search'
+      || caller === undefined || query === '' || universalSearchMarketLoading
+      || universalSearchLoading || universalSearchCapabilitiesLoading
+      || universalSearchError !== undefined || universalSearchGroups === undefined
+      || universalSearchGroups.length > 0 || universalSearchRecipes.length > 0
+      || universalSearchPacks.length > 0) return;
+    const seq = ++universalSearchMarketSeq;
+    const navigation = navigationGeneration;
+    const isCurrent = (): boolean => !disposed
+      && seq === universalSearchMarketSeq && navigation === navigationGeneration
+      && activeLens === 'data' && activeTab === 'search'
+      && query === universalSearchQuery.trim();
     universalSearchMarketLoading = true;
+    universalSearchMarketQuery = query;
     universalSearchMarketError = undefined;
     render();
     try {
       const { packs } = await caller(query);
-      if (disposed) return;
+      if (!isCurrent()) return;
       universalSearchMarketQuery = query;
       universalSearchMarket = packs.slice(0, MARKET_SEARCH_LIMIT).map((p) => ({
         slug: p.slug,
@@ -10009,11 +10069,11 @@ export const bootstrapDataRoute = (
         ...(p.publisher_id !== undefined ? { publisher_id: p.publisher_id } : {}),
       }));
     } catch (err) {
-      if (disposed) return;
+      if (!isCurrent()) return;
       universalSearchMarket = [];
       universalSearchMarketError = humanizeRpcError(err);
     } finally {
-      if (!disposed) {
+      if (isCurrent()) {
         universalSearchMarketLoading = false;
         render();
       }
@@ -10219,8 +10279,9 @@ export const bootstrapDataRoute = (
   const selectTab = async (
     tab: DataTabId,
     focusActivatedTab = false,
+    sourceSlug?: string,
   ): Promise<void> => {
-    if (activeTab === tab) return;
+    if (activeTab === tab && sourceSlug === undefined) return;
     if (hasRecordsInFlightWork()) {
       focusRecordsInFlightOwner();
       return;
@@ -10242,6 +10303,7 @@ export const bootstrapDataRoute = (
       return;
     }
     if (focusActivatedTab) pendingCollectionTabFocus = tab;
+    if (activeTab === 'search') retireUniversalSearch();
     navigationGeneration += 1;
     timelineLoadGeneration += 1;
     loadingTimeline = false;
@@ -10287,8 +10349,33 @@ export const bootstrapDataRoute = (
     // Claiming the search box there ejected a keyboard user from navigation.
     if (tab === 'search' && !focusActivatedTab) pendingUniversalSearchFocus = true;
     syncDataHash();
-    pendingLoadPromise = refreshActive();
+    const scope = sourceSlug === undefined ? undefined : { tab, slug: sourceSlug };
+    pendingLoadPromise = refreshActive(false, scope);
     await pendingLoadPromise;
+  };
+
+  /** Search names an exact source. Let the explorer load its roster and that
+   * source in order, then open a record only while this navigation still owns
+   * both the tab and source. A later click, Back, or disposal retires the work. */
+  const openSearchDestination = async (
+    tab: DataTabId,
+    slug: string,
+    recordId?: string,
+  ): Promise<void> => {
+    if (disposed || activeLens !== 'data') return;
+    const previousNavigation = navigationGeneration;
+    const opening = selectTab(tab, true, slug);
+    const navigation = navigationGeneration;
+    const explorerGeneration = explorerSeq;
+    await opening;
+    if (
+      disposed || navigation === previousNavigation
+      || navigation !== navigationGeneration || explorerGeneration !== explorerSeq
+      || activeLens !== 'data' || activeTab !== tab
+      || explorerSelectedSlug !== slug
+      || !explorerInstances.some(instance => instance.slug === slug)
+    ) return;
+    if (recordId !== undefined) await openExplorerRecord(recordId);
   };
 
   // D-198 Slice 1b — switch the Data | Memory lens. Orthogonal to the tab; the
@@ -10336,6 +10423,7 @@ export const bootstrapDataRoute = (
       focusMemoryImportSubmit();
       return;
     }
+    if (activeTab === 'search') retireUniversalSearch();
     navigationGeneration += 1;
     retireRunVerification();
     workEntityDialogOpenSeq += 1;
@@ -14080,9 +14168,10 @@ export const bootstrapDataRoute = (
       focusRecordsAction('records-add-filter');
       return;
     }
-    if (action === 'records-reset-view' || action === 'records-apply-view') {
+    if (action === 'records-reset-view' || action === 'records-apply-view' || action === 'records-clear-filters') {
       ev.preventDefault();
-      if (!recordsNavigationLocked) applyRecordsView(action === 'records-reset-view');
+      if (!recordsNavigationLocked) applyRecordsView(action === 'records-reset-view' ? 'reset'
+        : action === 'records-clear-filters' ? 'clear-filters' : 'apply');
       return;
     }
     if (action === 'records-next-page' || action === 'records-prev-page' || action === 'records-first-page') {
@@ -14310,46 +14399,17 @@ export const bootstrapDataRoute = (
       return;
     }
     // ── UNIVERSAL SEARCH ────────────────────────────────────────────────────
-    if (action === SEARCH_OPEN_RECORD_ACTION) {
-      // ⛔⛔ THE HANDOFF IS THREE STEPS AND THEY ARE ORDERED. `openExplorerRecord`
-      // reads `activeTab` + `explorerSelectedSlug` — it was written for a click
-      // INSIDE an explorer, where both already point at the record's own
-      // collection. On the search tab neither does: `EXPLORER_TAB_PLATFORM`
-      // has no entry for `search`, so the original one-liner hit the
-      // `platform === undefined` guard and returned. No error, no navigation —
-      // the row was simply inert, which a render test could not see.
-      // `selectExplorerInstance` reads `EXPLORER_TAB_PLATFORM[activeTab]` in its
-      // FIRST line, so `selectTab` must have LANDED before it runs, and the
-      // record open must wait for the instance. Hence await, not `void`.
+    if (action === SEARCH_OPEN_RECORD_ACTION || action === SEARCH_OPEN_GROUP_ACTION) {
       const recordId = target.getAttribute(SEARCH_RECORD_ID_ATTR);
       const slug = target.getAttribute(SEARCH_GROUP_SLUG_ATTR);
       const platform = target.getAttribute(SEARCH_GROUP_PLATFORM_ATTR);
-      if (
-        recordId !== null && recordId.length > 0
-        && slug !== null && platform !== null && isDataTab(platform)
-      ) {
-        void (async () => {
-          await selectTab(platform);
-          // A guard in `selectTab` (unsaved editor, in-flight records work) can
-          // refuse the switch. Opening the record anyway would resolve it
-          // against whatever tab is still showing, so stop where it stopped.
-          if (activeTab !== platform) return;
-          await selectExplorerInstance(slug);
-          await openExplorerRecord(recordId);
-        })();
-      }
-      return;
-    }
-    if (action === SEARCH_OPEN_GROUP_ACTION) {
-      // "More in <group>" hands off to the explorer for that collection —
-      // the search is a FINDING surface; reading a collection is what the
-      // explorer already does well, and duplicating it here would be a second
-      // implementation of the same list.
-      const slug = target.getAttribute(SEARCH_GROUP_SLUG_ATTR);
-      const platform = target.getAttribute(SEARCH_GROUP_PLATFORM_ATTR);
-      if (slug !== null && platform !== null && isDataTab(platform)) {
-        void selectTab(platform);
-        void selectExplorerInstance(slug);
+      // Collection platforms use `file`; the Data tab is named `files`.
+      const tab = platform === 'file' ? 'files'
+        : platform === 'mail' || platform === 'calendar' ? platform : null;
+      if (action === SEARCH_OPEN_RECORD_ACTION && (recordId === null || recordId.length === 0)) return;
+      if (tab !== null && slug !== null && slug.length > 0) {
+        void openSearchDestination(tab, slug,
+          action === SEARCH_OPEN_RECORD_ACTION ? recordId ?? undefined : undefined);
       }
       return;
     }
@@ -14815,16 +14875,16 @@ export const bootstrapDataRoute = (
       typeof target.hasAttribute === 'function'
       && target.hasAttribute(SEARCH_INPUT_ATTR)
     ) {
+      if (universalSearchQuery.trim() !== target.value.trim()) {
+        retireUniversalSearch();
+        universalSearchLoading = target.value.trim() !== '';
+      }
       universalSearchQuery = target.value;
       // ⛔ NO `render()` HERE. Repainting on every keystroke replaces the input
       // element the owner is typing into, which drops the caret to the end and
       // makes editing mid-string impossible. The value is already on screen —
       // the DOM has it — so state catches up silently and the debounced search
       // repaints when results arrive.
-      if (universalSearchQuery.trim() === '') {
-        universalSearchGroups = undefined;
-        universalSearchError = undefined;
-      }
       scheduleUniversalSearch();
       opts.onViewChange?.(currentView());
       return;
@@ -15615,6 +15675,7 @@ export const bootstrapDataRoute = (
       sphereControl?.dispose();
       if (disposed) return;
       disposed = true;
+      retireUniversalSearch();
       remindersSurface.dispose();
       fileChatAbort?.abort(); filePreviewAbort?.abort();
       contactSearchRefresh.cancel();
@@ -15630,11 +15691,6 @@ export const bootstrapDataRoute = (
       disposeUploadWidget();
       routeRoot.removeEventListener('click', onClick);
       routeRoot.removeEventListener('input', onInput);
-      // A pending keystroke must not fire a search into a torn-down route.
-      if (universalSearchTimer !== null) {
-        clearTimeout(universalSearchTimer);
-        universalSearchTimer = null;
-      }
       routeRoot.removeEventListener('change', onChange);
       routeRoot.removeEventListener('submit', onRecordsViewSubmit);
       routeRoot.removeEventListener('keydown', onKeyDown);

@@ -21,9 +21,13 @@ import {
   SERVER_TZ_CLOCK_ROLE_ATTR,
   SERVER_TZ_CLOCK_ROW_ATTR,
   SERVER_TZ_ERROR_ATTR,
+  SERVER_TZ_LOADING_ATTR,
   SERVER_TZ_MODE_ATTR,
+  SERVER_TZ_RETRY_ATTR,
   SERVER_TZ_SAVE_ATTR,
   SERVER_TZ_ZONE_INPUT_ATTR,
+  type ServerTimeZoneGetCaller,
+  type ServerTimeZoneSetCaller,
 } from '../settings/server-timezone-panel.js';
 
 /** ⚠ NO JSDOM — the webclient ships none, so every panel test here rolls a
@@ -111,13 +115,14 @@ const snapshot = (
 const mount = (
   res: ServerTimeZoneGetResponse,
   clientZone = 'Asia/Hong_Kong',
-  runSet = vi.fn(async () => res),
+  runSet: ServerTimeZoneSetCaller = vi.fn(async () => res),
+  runGet: ServerTimeZoneGetCaller = async () => res,
 ) => {
   const host = makeFakeElement('div');
   const panel = mountServerTimeZonePanel({
     host: host as unknown as HTMLElement,
     document: fakeDocument,
-    runGet: async () => res,
+    runGet,
     runSet,
     now: () => AT,
     clientZone,
@@ -127,6 +132,12 @@ const mount = (
 };
 
 const clockRows = (host: FakeEl) => byAttr(host, SERVER_TZ_CLOCK_ROW_ATTR);
+const deferred = <T>() => {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+};
 
 describe('D-269 — the two-clock preview collapses and splits', () => {
   it('⚠ ONE row when the clocks agree — the collapse is the design, not an empty state', () => {
@@ -246,5 +257,197 @@ describe('D-269 — the panel', () => {
     // And the divergence is visible at the same moment: Panama and New York are
     // an hour apart in summer, which is the whole cost of the mistake.
     expect(panel.getClocks()?.diverged).toBe(true);
+  });
+
+  it('retains the exact draft through a pending save and failure, retries it, then adopts the confirmed zone', async () => {
+    const first = deferred<ServerTimeZoneGetResponse>();
+    const confirmed = snapshot({ zone: 'America/Los_Angeles' }, 'America/Los_Angeles');
+    const runSet = vi.fn<ServerTimeZoneSetCaller>()
+      .mockReturnValueOnce(first.promise).mockResolvedValueOnce(confirmed);
+    const runGet = vi.fn(async () => snapshot());
+    const { host, panel } = mount(snapshot(), 'Asia/Hong_Kong', runSet, runGet);
+    await panel.refresh();
+    const readsBefore = runGet.mock.calls.length;
+    const input = byAttr(host, SERVER_TZ_ZONE_INPUT_ATTR)[0]!;
+    input.value = '  PST  ';
+    input.dispatchEvent({ type: 'input' });
+    byAttr(host, SERVER_TZ_SAVE_ATTR)[0]!.click();
+
+    expect(panel.isSaving()).toBe(true);
+    expect(byAttr(host, SERVER_TZ_ZONE_INPUT_ATTR)[0]!.value).toBe('  PST  ');
+    expect(byAttr(host, SERVER_TZ_ZONE_INPUT_ATTR)[0]!.disabled).toBe(true);
+    expect(panel.getClocks()?.rows[0]?.zone).toBe('Asia/Hong_Kong');
+    await panel.refresh();
+    expect(runGet).toHaveBeenCalledTimes(readsBefore);
+    first.reject(new Error('Connection interrupted.'));
+    await vi.waitFor(() => expect(panel.isSaving()).toBe(false));
+    expect(byAttr(host, SERVER_TZ_ZONE_INPUT_ATTR)[0]!.value).toBe('  PST  ');
+    expect(byAttr(host, SERVER_TZ_ERROR_ATTR)[0]!.getAttribute('role')).toBe('alert');
+
+    byAttr(host, SERVER_TZ_SAVE_ATTR)[0]!.click();
+    await vi.waitFor(() => expect(panel.isSaving()).toBe(false));
+    expect(runSet.mock.calls).toEqual([
+      [{ mode: 'fixed', zone: 'PST' }], [{ mode: 'fixed', zone: 'PST' }],
+    ]);
+    expect(byAttr(host, SERVER_TZ_ZONE_INPUT_ATTR)[0]!.value).toBe('America/Los_Angeles');
+    expect(panel.getClocks()?.rows[0]?.zone).toBe('America/Los_Angeles');
+    expect(panel.getError()).toBeNull();
+  });
+
+  it('keeps a draft when a refresh observes an external mode change, while previewing the saved clock', async () => {
+    const runSet = vi.fn(async () => snapshot());
+    const runGet = vi.fn(async () => snapshot());
+    const { host, panel } = mount(snapshot(), 'Asia/Hong_Kong', runSet, runGet);
+    await panel.refresh();
+    const input = byAttr(host, SERVER_TZ_ZONE_INPUT_ATTR)[0]!;
+    input.value = 'Asia/Tokyo';
+    input.dispatchEvent({ type: 'input' });
+    runGet.mockResolvedValueOnce(snapshot({ mode: 'follows_host' }, 'Europe/Paris'));
+    await panel.refresh();
+    expect(panel.getMode()).toBe('fixed');
+    expect(byAttr(host, SERVER_TZ_ZONE_INPUT_ATTR)[0]!.value).toBe('Asia/Tokyo');
+    expect(panel.getClocks()?.rows[0]?.zone).toBe('Europe/Paris');
+    expect(allText(host)).toContain('Following this machine — currently Europe/Paris.');
+    expect(runSet).not.toHaveBeenCalled();
+  });
+
+  it.each(['success', 'error'] as const)('a rejected older read cannot replace a save %s', async outcome => {
+    const reading = deferred<ServerTimeZoneGetResponse>();
+    const writing = deferred<ServerTimeZoneGetResponse>();
+    const runGet = vi.fn(async () => snapshot());
+    const { host, panel } = mount(snapshot(), 'Asia/Hong_Kong', () => writing.promise, runGet);
+    await panel.refresh();
+    runGet.mockReturnValueOnce(reading.promise);
+    const refreshing = panel.refresh();
+    byAttr(host, SERVER_TZ_ZONE_INPUT_ATTR)[0]!.value = 'Asia/Tokyo';
+    byAttr(host, SERVER_TZ_SAVE_ATTR)[0]!.click();
+    if (outcome === 'success') writing.resolve(snapshot({ zone: 'Asia/Tokyo' }, 'Asia/Tokyo'));
+    else writing.reject(new Error('Write failed.'));
+    await vi.waitFor(() => expect(panel.isSaving()).toBe(false));
+    reading.reject(new Error('Stale read failed.'));
+    await refreshing;
+    expect(byAttr(host, SERVER_TZ_ZONE_INPUT_ATTR)[0]!.value).toBe('Asia/Tokyo');
+    expect(panel.getState()).toBe('ready');
+    expect(panel.getError()).toBe(outcome === 'success' ? null : 'Write failed.');
+    expect(panel.getClocks()?.rows[0]?.zone).toBe(outcome === 'success' ? 'Asia/Tokyo' : 'Asia/Hong_Kong');
+  });
+
+  it('an older successful read cannot clear the newest refresh error', async () => {
+    const older = deferred<ServerTimeZoneGetResponse>();
+    const newer = deferred<ServerTimeZoneGetResponse>();
+    const runGet = vi.fn(async () => snapshot());
+    const { panel } = mount(snapshot(), 'Asia/Hong_Kong', undefined, runGet);
+    await panel.refresh();
+    runGet.mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+    const oldRefresh = panel.refresh();
+    const newRefresh = panel.refresh();
+    newer.reject(new Error('Newest read failed.'));
+    await newRefresh;
+    older.resolve(snapshot({ zone: 'Europe/Paris' }, 'Europe/Paris'));
+    await oldRefresh;
+    expect(panel.getState()).toBe('error');
+    expect(panel.getError()).toBe('Newest read failed.');
+    expect(panel.getClocks()?.rows[0]?.zone).toBe('Asia/Hong_Kong');
+  });
+});
+
+describe('Timezone initial read recovery', () => {
+  it('retries a failed read in place, exposes progress and waits for the shared request', async () => {
+    const retrying = deferred<ServerTimeZoneGetResponse>();
+    const runGet = vi.fn<ServerTimeZoneGetCaller>()
+      .mockRejectedValueOnce(new Error('Timezone is temporarily unavailable.'))
+      .mockReturnValueOnce(retrying.promise);
+    const runSet = vi.fn(async () => snapshot());
+    const { host, panel } = mount(snapshot(), 'Asia/Hong_Kong', runSet, runGet);
+    await panel.refresh();
+    expect(panel.getState()).toBe('error');
+    expect(byAttr(host, SERVER_TZ_ERROR_ATTR)[0]!.getAttribute('role')).toBe('alert');
+    const retry = byAttr(host, SERVER_TZ_RETRY_ATTR)[0]!;
+    expect(retry.textContent).toBe('Retry loading timezone');
+    retry.click();
+    retry.click();
+    const joined = panel.refresh();
+    expect(runGet).toHaveBeenCalledTimes(2);
+    expect(panel.getState()).toBe('loading');
+    expect(panel.getError()).toBeNull();
+    expect(byAttr(host, SERVER_TZ_ERROR_ATTR)).toHaveLength(0);
+    expect(byAttr(host, SERVER_TZ_ZONE_INPUT_ATTR)).toHaveLength(0);
+    const progress = byAttr(host, SERVER_TZ_LOADING_ATTR)[0]!;
+    expect(progress.getAttribute('role')).toBe('status');
+    expect(progress.getAttribute('aria-atomic')).toBe('true');
+    retrying.resolve(snapshot());
+    await joined;
+    expect(panel.getState()).toBe('ready');
+    expect(byAttr(host, SERVER_TZ_RETRY_ATTR)).toHaveLength(0);
+    expect(byAttr(host, SERVER_TZ_ZONE_INPUT_ATTR)[0]!.value).toBe('Asia/Hong_Kong');
+    retry.click();
+    expect(runGet).toHaveBeenCalledTimes(2);
+    expect(runSet).not.toHaveBeenCalled();
+  });
+
+  it('keeps retry available after another failed read without writing settings', async () => {
+    const runGet = vi.fn<ServerTimeZoneGetCaller>()
+      .mockRejectedValueOnce(new Error('First read failed.'))
+      .mockRejectedValueOnce(new Error('Still unavailable.'))
+      .mockResolvedValueOnce(snapshot());
+    const runSet = vi.fn(async () => snapshot());
+    const { host, panel } = mount(snapshot(), 'Asia/Hong_Kong', runSet, runGet);
+    await panel.refresh();
+    byAttr(host, SERVER_TZ_RETRY_ATTR)[0]!.click();
+    await panel.refresh();
+    expect(panel.getError()).toBe('Still unavailable.');
+    expect(byAttr(host, SERVER_TZ_RETRY_ATTR)).toHaveLength(1);
+    byAttr(host, SERVER_TZ_RETRY_ATTR)[0]!.click();
+    await panel.refresh();
+    expect(panel.getState()).toBe('ready');
+    expect(runGet).toHaveBeenCalledTimes(3);
+    expect(runSet).not.toHaveBeenCalled();
+  });
+
+  it('shares the first pending read rather than issuing duplicate reads', async () => {
+    const first = deferred<ServerTimeZoneGetResponse>();
+    const runGet = vi.fn(() => first.promise);
+    const { panel } = mount(snapshot(), 'Asia/Hong_Kong', undefined, runGet);
+    const one = panel.refresh();
+    const two = panel.refresh();
+    expect(runGet).toHaveBeenCalledTimes(1);
+    first.resolve(snapshot());
+    await Promise.all([one, two]);
+    expect(panel.getState()).toBe('ready');
+  });
+
+  it('clears the pending guard after a caller throws before returning a promise', async () => {
+    const runGet = vi.fn<ServerTimeZoneGetCaller>()
+      .mockImplementationOnce(() => { throw new Error('Read could not start.'); })
+      .mockResolvedValueOnce(snapshot());
+    const { host, panel } = mount(snapshot(), 'Asia/Hong_Kong', undefined, runGet);
+    await panel.refresh();
+    expect(panel.getError()).toBe('Read could not start.');
+    byAttr(host, SERVER_TZ_RETRY_ATTR)[0]!.click();
+    await panel.refresh();
+    expect(panel.getState()).toBe('ready');
+    expect(runGet).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['success', 'error'] as const)('disposal retires a retry %s and its detached button', async outcome => {
+    const retrying = deferred<ServerTimeZoneGetResponse>();
+    const runGet = vi.fn<ServerTimeZoneGetCaller>()
+      .mockRejectedValueOnce(new Error('Read failed.'))
+      .mockReturnValueOnce(retrying.promise);
+    const { host, panel } = mount(snapshot(), 'Asia/Hong_Kong', undefined, runGet);
+    await panel.refresh();
+    const retry = byAttr(host, SERVER_TZ_RETRY_ATTR)[0]!;
+    retry.click();
+    const joined = panel.refresh();
+    const progress = byAttr(host, SERVER_TZ_LOADING_ATTR)[0];
+    panel.dispose();
+    retry.click();
+    if (outcome === 'success') retrying.resolve(snapshot());
+    else retrying.reject(new Error('Late read failed.'));
+    await joined;
+    expect(runGet).toHaveBeenCalledTimes(2);
+    expect(byAttr(host, SERVER_TZ_LOADING_ATTR)[0]).toBe(progress);
+    expect(byAttr(host, SERVER_TZ_RETRY_ATTR)).toHaveLength(0);
+    expect(byAttr(host, SERVER_TZ_ERROR_ATTR)).toHaveLength(0);
   });
 });

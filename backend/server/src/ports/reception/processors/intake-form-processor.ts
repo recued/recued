@@ -51,6 +51,7 @@ import {
   NOTE_TITLE_MAX,
   RECUED_BUILTIN_SOURCE_ID,
   TASK_TITLE_MAX,
+  intakeFormChoiceText,
   type IntakeFormConfig,
   type SourceTopTierKind,
 } from '@recued/contracts';
@@ -148,7 +149,19 @@ const buildEntityShape = (
   const labelByName = new Map(
     config.form_definition.fields.map((f) => [f.name, f.label] as const),
   );
-  const valueOf = (name: string): string => asText(decoded.fields[name]);
+  const fieldByName = new Map(
+    config.form_definition.fields.map((f) => [f.name, f] as const),
+  );
+  // What the owner reads for an answer: a choice as the visitor read it
+  // ("Under 10k"). The metadata below keeps the stored value, which a recipe
+  // or a filter may compare.
+  const valueOf = (name: string): string => {
+    const raw = decoded.fields[name];
+    const field = fieldByName.get(name);
+    return field?.type === 'enum' && typeof raw === 'string'
+      ? intakeFormChoiceText(field, raw)
+      : asText(raw);
+  };
   // D-210 A.8 slice 2b step 3 — this was `rule.target_kind === undefined`
   // ("log-only"). Absent is no longer a value, but the BEHAVIOUR it selected is
   // not dead: it was always "this intake's answers ARE the record, so review the

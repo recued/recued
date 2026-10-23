@@ -210,6 +210,8 @@ const identityCopy = (identity: ServerSwitchConvergenceIdentity): string =>
     ? `${identity.label} (${identity.serverUrl})`
     : identity.label;
 
+const DRAFT_COPY_TIMEOUT_MS = 5_000;
+
 export const mountServerSwitchConvergence = (
   opts: MountServerSwitchConvergenceOptions,
 ): ServerSwitchConvergenceMount => {
@@ -260,6 +262,7 @@ export const mountServerSwitchConvergence = (
   let focusables: HTMLElement[] = [];
   let focusAfterRender: HTMLElement | null = null;
   let statusNode: HTMLElement | null = null;
+  let cancelDraftCopy: (() => void) | null = null;
 
   const focus = (element: HTMLElement | null | undefined): void => {
     if (element == null || typeof element.focus !== 'function') return;
@@ -271,6 +274,8 @@ export const mountServerSwitchConvergence = (
   };
 
   const render = (): void => {
+    cancelDraftCopy?.();
+    const renderedRevision = actionRevision;
     while (dialog.firstChild !== null) dialog.removeChild(dialog.firstChild);
     focusables = [];
 
@@ -344,6 +349,7 @@ export const mountServerSwitchConvergence = (
       dialog.appendChild(activeWork);
     }
 
+    let draftField: HTMLTextAreaElement | null = null;
     if (
       serverSwitchWorkStateHasChatDraft(state.workState)
       && state.chatDraft !== undefined
@@ -357,6 +363,7 @@ export const mountServerSwitchConvergence = (
       draft.setAttribute(SERVER_SWITCH_CONVERGENCE_DRAFT_ATTR, '');
       draft.setAttribute('readonly', '');
       draft.value = state.chatDraft;
+      draftField = draft;
       dialog.appendChild(draft);
       focusables.push(draft);
     }
@@ -397,24 +404,73 @@ export const mountServerSwitchConvergence = (
       copy.setAttribute(SERVER_SWITCH_CONVERGENCE_COPY_ATTR, '');
       copy.textContent = 'Copy draft';
       if (busy !== null) copy.setAttribute('disabled', '');
+      let copyPending = false;
       copy.addEventListener('click', () => {
-        if (busy !== null) return;
-        const write = opts.writeClipboard
-          ?? (doc.defaultView?.navigator?.clipboard?.writeText
-            ? (text: string) => doc.defaultView!.navigator.clipboard.writeText(text)
-            : undefined);
-        if (write === undefined) {
-          status.textContent = 'Select the message above and copy it yourself.';
-          focus(focusables[0] ?? null);
-          return;
+        if (busy !== null || disposed || copyPending || renderedRevision !== actionRevision) return;
+        const draftText = state.chatDraft ?? '';
+        const focusBeforeCopy = doc.activeElement;
+        const selectionBeforeCopy = draftField === null ? null : {
+          start: draftField.selectionStart,
+          end: draftField.selectionEnd,
+          direction: draftField.selectionDirection,
+        };
+        let settled = false;
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        copyPending = true;
+        copy.setAttribute('aria-busy', 'true');
+        copy.setAttribute('aria-disabled', 'true');
+        status.textContent = 'Copying the message…';
+        const cancel = (): void => {
+          settled = true;
+          if (timer !== null) clearTimeout(timer);
+          copyPending = false;
+          copy.removeAttribute('aria-busy');
+          copy.removeAttribute('aria-disabled');
+          if (cancelDraftCopy === cancel) cancelDraftCopy = null;
+        };
+        cancelDraftCopy = cancel;
+        const finish = (copied: boolean): void => {
+          if (settled) return;
+          cancel();
+          if (disposed || renderedRevision !== actionRevision) return;
+          if (copied) {
+            status.textContent = 'Copied. It is still not saved on the new server.';
+            return;
+          }
+          let selected = false;
+          if (draftField !== null && selectionBeforeCopy !== null) {
+            // A delayed denial must respect later focus and selection changes.
+            const selectionChanged = draftField.selectionStart !== selectionBeforeCopy.start
+              || draftField.selectionEnd !== selectionBeforeCopy.end
+              || draftField.selectionDirection !== selectionBeforeCopy.direction;
+            if (selectionChanged) {
+              selected = draftField.selectionStart === 0 && draftField.selectionEnd === draftField.value.length;
+            } else {
+              if (doc.activeElement === focusBeforeCopy) focus(draftField);
+              try {
+                draftField.setSelectionRange(0, draftField.value.length);
+                selected = true;
+              } catch { /* The message remains available for manual selection. */ }
+            }
+          }
+          status.textContent = selected
+            ? 'Recued could not copy it. The message is selected, so you can copy it yourself.'
+            : 'Recued could not copy it. Select the message above and copy it yourself.';
+        };
+        try {
+          let write = opts.writeClipboard;
+          if (write === undefined) {
+            const clipboard = doc.defaultView?.navigator?.clipboard;
+            if (typeof clipboard?.writeText === 'function') {
+              write = text => clipboard.writeText(text);
+            }
+          }
+          if (write === undefined) { finish(false); return; }
+          timer = setTimeout(() => finish(false), DRAFT_COPY_TIMEOUT_MS);
+          void Promise.resolve(write(draftText)).then(() => finish(true), () => finish(false));
+        } catch {
+          finish(false);
         }
-        void write(state.chatDraft ?? '').then(
-          () => { status.textContent = 'Copied. It is still not saved on the new server.'; },
-          () => {
-            status.textContent = 'Couldn’t copy automatically. Select the message above and copy it yourself.';
-            focus(focusables[0] ?? null);
-          },
-        );
       });
       actions.appendChild(copy);
       focusables.push(copy);
@@ -559,6 +615,7 @@ export const mountServerSwitchConvergence = (
       if (disposed) return;
       disposed = true;
       actionRevision += 1;
+      cancelDraftCopy?.();
       docEvents.removeEventListener?.('keydown', onKeydown);
       for (const [element, wasInert] of obscured) {
         if (!wasInert) element.removeAttribute('inert');

@@ -126,6 +126,11 @@ afterEach(async () => { await h?.provider.close(); });
 // ────────────────────────────────────────────────────────────────
 
 describe('GraphProvider — connect', () => {
+  it('resumes from its persisted delta links, so a restart lists only what it may have missed', () => {
+    h = newHarness({ routes: [] });
+    expect(h.provider.resumesFromCursor).toBe(true);
+  });
+
   it('ensures a usable access token', async () => {
     h = newHarness({ routes: [] });
     await h.provider.connect();

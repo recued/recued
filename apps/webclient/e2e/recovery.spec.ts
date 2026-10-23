@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import { HARNESS_SERVER_PUBLIC_KEY } from './harness/server-identity.js';
 import { openChatHistory } from './helpers/chat-history.js';
 import {
-  ARTIFACTS, CHAT_INPUT, CHAT_SESSION_ROW, CONNECTION_BANNER,
+  CHAT_INPUT, CHAT_SESSION_ROW, CONNECTION_BANNER,
   CONNECTIONS_ROUTE, HARNESS_URL, SHELL_CONTENT, SHELL_HOST,
   installFullAppHooks,
 } from './helpers/full-app.js';
@@ -100,6 +100,72 @@ const MULTI_TAB_TAKEOVER_REQUEST_COUNT_KEY =
   'recued.e2e.multi-tab-takeover-request-count';
 
 installFullAppHooks();
+
+for (const journey of ['first pair', 'reconnect']) {
+  for (const hint of ['normal', 'navigator', 'userAgent', 'platform', 'userAgentData', 'userAgentData.platform']) {
+    test(`device-name hints preserve ${journey} with ${hint === 'normal' ? 'normal access' : `blocked ${hint}`}`, async ({ page }) => {
+      await page.setViewportSize({ width: hint === 'normal' ? 1280 : 390, height: 900 });
+      await page.addInitScript(blocked => {
+        const denied = (): never => { throw new Error('Private browser hint policy'); };
+        if (blocked === 'navigator') {
+          Object.defineProperty(window, 'navigator', { configurable: true, get: denied });
+          return;
+        }
+        const hints = { platform: 'macOS' };
+        Object.defineProperties(navigator, {
+          userAgent: { configurable: true, value: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36' },
+          platform: { configurable: true, value: 'MacIntel' },
+          userAgentData: { configurable: true, value: hints },
+        });
+        if (blocked === 'userAgentData.platform') Object.defineProperty(hints, 'platform', { get: denied });
+        else if (blocked !== 'normal') Object.defineProperty(navigator, blocked, { configurable: true, get: denied });
+      }, hint);
+      const base = journey === 'first pair'
+        ? `${HARNESS_URL}?journey=multi-tab-pair&chat=session`
+        : `${HARNESS_URL}?journey=reauth&chat=session`;
+      const exactUrl = `${base}#chat/session/chat_1`;
+      const entryUrl = journey === 'first pair'
+        ? `${base}&code=PAIR5678&recued_pair_resume=same-origin#chat/session/chat_1`
+        : exactUrl;
+      await page.goto(entryUrl);
+      const draft = 'Keep this unsent thought while browser hints are blocked.';
+      if (journey === 'reconnect') {
+        await page.waitForFunction(() => window.__app?.ready === true);
+        await page.locator(`[${CHAT_INPUT}]`).fill(draft);
+        await page.evaluate(() => window.__app.forceReauth());
+      }
+      const form = page.getByRole('form', { name: journey === 'first pair' ? 'Pair this browser' : 'Reconnect this browser', exact: true });
+      await expect(form).toBeVisible();
+      await page.waitForFunction(() => window.__app?.ready === true);
+      expect(await page.evaluate(() => window.__app.pairSubmitCount?.())).toBe(0);
+      await page.evaluate(() => {
+        const send = window.fetch.bind(window);
+        window.fetch = (input, init) => {
+          const url = input instanceof Request ? input.url : String(input);
+          if (new URL(url, location.href).pathname === '/auth/pair') {
+            const body = typeof init?.body === 'string' ? JSON.parse(init.body) as { displayName?: unknown } : null;
+            document.documentElement.setAttribute('data-device-name-post', typeof body?.displayName === 'string' ? body.displayName : 'missing');
+          }
+          return send(input, init);
+        };
+      });
+      await form.locator('#webclient-pair-code-input-recovery-0').fill(`${Array(23).fill('abandon').join(' ')} art`);
+      const submit = form.getByRole('button', { name: journey === 'first pair' ? 'Pair this device' : 'Reconnect this browser', exact: true });
+      await submit.focus(); await page.keyboard.press('Enter');
+      await page.waitForFunction(() => window.__app.activeRoute() === 'chat');
+      await expect(form).toHaveCount(0);
+      await expect(page).toHaveURL(exactUrl);
+      await expect(page.locator('html')).toHaveAttribute('data-device-name-post', hint === 'normal' ? 'Chrome on macOS' : 'Web browser');
+      expect(await page.evaluate(() => window.__app.pairSubmitCount?.())).toBe(1);
+      expect(await page.evaluate(() => window.__app.rpcCallCount('chat.send'))).toBe(0);
+      if (journey === 'reconnect') {
+        await expect(page.locator(`[${CHAT_INPUT}]`)).toHaveValue(draft);
+        await expect(page.locator(`[${CHAT_INPUT}]`)).toBeFocused();
+      }
+      await expect(page.locator('body')).not.toContainText('Private browser hint policy');
+    });
+  }
+}
 
 test('cold-start credential corruption becomes a safe guided repair and exact return', async ({ page }) => {
   const pageErrors: Error[] = [];
@@ -201,7 +267,7 @@ test('cold-start credential corruption becomes a safe guided repair and exact re
     narrowLayout.buttonHeights.every((height) => height >= 44),
   ).toBe(true);
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-cold-start-credential-repair-mobile.png`,
+    path: test.info().outputPath(`full-app-cold-start-credential-repair-mobile.png`),
     fullPage: true,
   });
   await page.setViewportSize({ width: 390, height: 844 });
@@ -344,7 +410,7 @@ test('partial local access becomes an explained repair with preserved context', 
     narrowLayout.buttonHeights.every((height) => height >= 44),
   ).toBe(true);
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-partial-local-state-repair-mobile.png`,
+    path: test.info().outputPath(`full-app-partial-local-state-repair-mobile.png`),
     fullPage: true,
   });
   await page.setViewportSize({ width: 390, height: 844 });
@@ -481,7 +547,7 @@ test('persistent-storage startup failure guides an in-place retry and exact retu
   );
   expect(narrowRetryBottom).toBeLessThanOrEqual(653.5);
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-persistent-storage-recovery-mobile.png`,
+    path: test.info().outputPath(`full-app-persistent-storage-recovery-mobile.png`),
     fullPage: true,
   });
   await page.setViewportSize({ width: 390, height: 844 });
@@ -572,7 +638,7 @@ test('persistent-storage reload that stays blocked preserves recovery context an
     narrowLayout.buttonHeights.every((height) => height >= 44),
   ).toBe(true);
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-persistent-storage-reload-still-blocked-mobile.png`,
+    path: test.info().outputPath(`full-app-persistent-storage-reload-still-blocked-mobile.png`),
     fullPage: true,
   });
 
@@ -665,7 +731,7 @@ test("insecure HTTP resumes pairing at the chosen page's own secure origin", asy
 
   const localUrl = handoff.locator(`[${SECURE_ACCESS_LOCAL_URL}]`);
   const exactLocalUrl =
-    `http://localhost:4319/full-app-harness.html${journeyQuery}&${resumeQuery}#chat/session/chat_1`;
+    `http://localhost:${new URL(HARNESS_URL).port}/full-app-harness.html${journeyQuery}&${resumeQuery}#chat/session/chat_1`;
   await expect(localUrl).toHaveValue(exactLocalUrl);
   await expect(handoff.locator(`[${SECURE_ACCESS_HTTPS_INPUT}]`)).toHaveValue('');
   expect(await handoff.textContent()).not.toContain('https://192.168.1.42');
@@ -723,7 +789,7 @@ test("insecure HTTP resumes pairing at the chosen page's own secure origin", asy
   );
   expect(localActionBottom).toBeLessThanOrEqual(653.5);
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-secure-access-handoff-mobile.png`,
+    path: test.info().outputPath(`full-app-secure-access-handoff-mobile.png`),
     fullPage: true,
   });
   await page.setViewportSize({ width: 390, height: 844 });
@@ -811,7 +877,7 @@ test("insecure HTTP resumes pairing at the chosen page's own secure origin", asy
     arrivalLayout.viewportWidth,
   );
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-secure-access-arrival-mobile.png`,
+    path: test.info().outputPath(`full-app-secure-access-arrival-mobile.png`),
     fullPage: true,
   });
 
@@ -995,7 +1061,7 @@ test('successful secure pairing stays clean through reload, Back, and Forward', 
     narrowLayout.viewportWidth,
   );
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-pair-success-return-mobile.png`,
+    path: test.info().outputPath(`full-app-pair-success-return-mobile.png`),
     fullPage: true,
   });
   expect(
@@ -1082,7 +1148,7 @@ test('successful secure pairing stays clean through reload, Back, and Forward', 
     visibleSplashSeen: false,
   });
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-pair-refresh-continuity-mobile.png`,
+    path: test.info().outputPath(`full-app-pair-refresh-continuity-mobile.png`),
     fullPage: true,
   });
 
@@ -1186,7 +1252,7 @@ test('a sibling pair form adopts another tab success at its own exact route', as
       viewportWidth: 280,
     });
     await sibling.screenshot({
-      path: `${ARTIFACTS}/full-app-multi-tab-pair-sibling-mobile.png`,
+      path: test.info().outputPath(`full-app-multi-tab-pair-sibling-mobile.png`),
       fullPage: true,
     });
     expect(siblingErrors).toHaveLength(0);
@@ -1351,7 +1417,7 @@ test('credential loss in one tab converges every sibling through one guided re-p
     expect(await sibling.evaluate(() => window.__app.pairSubmitCount?.()))
       .toBe(0);
     await sibling.screenshot({
-      path: `${ARTIFACTS}/full-app-guided-repair-sibling-winner-mobile.png`,
+      path: test.info().outputPath(`full-app-guided-repair-sibling-winner-mobile.png`),
       fullPage: true,
     });
 
@@ -1610,7 +1676,7 @@ test('a stalled sibling reconnect becomes one safe exact-work takeover', async (
     expect(narrowLayout.primaryHeight).toBeGreaterThanOrEqual(44);
     expect(narrowLayout.recoveryColumnCount).toBe(2);
     await sibling.screenshot({
-      path: `${ARTIFACTS}/full-app-stalled-sibling-safe-takeover-mobile.png`,
+      path: test.info().outputPath(`full-app-stalled-sibling-safe-takeover-mobile.png`),
       fullPage: true,
     });
 
@@ -1697,9 +1763,9 @@ test('simultaneous safe takeovers choose one visible winner and converge every t
   const sourceUrl =
     `${HARNESS_URL}?journey=multi-tab-transition&fail_pair_once=1&takeover_delay_ms=700&chat=session&keep=source%20simultaneous#connections`;
   const firstUrl =
-    `${HARNESS_URL}?journey=multi-tab-transition&takeover_delay_ms=700&pair_response_delay_ms=3000&chat=session&keep=first%20contender#chat/session/chat_1`;
+    `${HARNESS_URL}?journey=multi-tab-transition&takeover_delay_ms=700&hold_pair_response=1&chat=session&keep=first%20contender#chat/session/chat_1`;
   const secondUrl =
-    `${HARNESS_URL}?journey=multi-tab-transition&takeover_delay_ms=700&pair_response_delay_ms=3000&chat=session&keep=second%20contender#chat/session/chat_1`;
+    `${HARNESS_URL}?journey=multi-tab-transition&takeover_delay_ms=700&hold_pair_response=1&chat=session&keep=second%20contender#chat/session/chat_1`;
 
   try {
     await Promise.all([
@@ -1735,11 +1801,15 @@ test('simultaneous safe takeovers choose one visible winner and converge every t
     const secondForm = second.getByRole('form', {
       name: 'Reconnect this browser',
     });
-    await Promise.all([
-      expect(sourceForm).toBeVisible(),
-      expect(firstForm).toBeVisible(),
-      expect(secondForm).toBeVisible(),
-    ]);
+    // Mounted sessions reconcile credentials on tab activation as well as
+    // cross-tab hints. Visit each real tab before using its reconnect controls.
+    for (const [tab, form] of [[page, sourceForm], [first, firstForm], [second, secondForm]] as const) {
+      await tab.bringToFront();
+      // Drive the focus reconciliation used by restored/background tabs;
+      // activating a headless WebKit view alone may not dispatch this event.
+      await tab.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await expect(form).toBeVisible();
+    }
 
     const recoveryKey = `${Array(23).fill('abandon').join(' ')} art`;
     await Promise.all([
@@ -1787,7 +1857,7 @@ test('simultaneous safe takeovers choose one visible winner and converge every t
     const secondTakeover = secondForm.getByRole('button', {
       name: 'Reconnect in this tab',
     });
-    await Promise.all([firstTakeover.click(), secondTakeover.click()]);
+    await Promise.all([firstTakeover.press('Enter'), secondTakeover.press('Enter')]);
 
     await expect.poll(async () => {
       const [firstCount, secondCount] = await Promise.all([
@@ -1832,6 +1902,8 @@ test('simultaneous safe takeovers choose one visible winner and converge every t
     });
     await expect(loserProgress).toBeDisabled();
     await expect(loserProgress).toBeFocused();
+    expect(await winner.evaluate(() => window.__app.pendingPairResponses?.())).toBe(1);
+    expect(await winner.evaluate(() => window.__app.releasePairResponses?.())).toBe(1);
 
     await Promise.all([
       page.waitForFunction(
@@ -1929,9 +2001,9 @@ test('a failed takeover owner yields its exact retry to the queued successor', a
   const sourceUrl =
     `${HARNESS_URL}?journey=multi-tab-transition&fail_pair_once=1&takeover_delay_ms=700&chat=session&keep=source%20succession#connections`;
   const firstUrl =
-    `${HARNESS_URL}?journey=multi-tab-transition&takeover_delay_ms=700&pair_response_delay_ms=3000&fail_first_takeover_globally=1&chat=session&keep=first%20succession#chat/session/chat_1`;
+    `${HARNESS_URL}?journey=multi-tab-transition&takeover_delay_ms=700&hold_pair_response=1&fail_first_takeover_globally=1&chat=session&keep=first%20succession#chat/session/chat_1`;
   const secondUrl =
-    `${HARNESS_URL}?journey=multi-tab-transition&takeover_delay_ms=700&pair_response_delay_ms=3000&fail_first_takeover_globally=1&chat=session&keep=second%20succession#chat/session/chat_1`;
+    `${HARNESS_URL}?journey=multi-tab-transition&takeover_delay_ms=700&hold_pair_response=1&fail_first_takeover_globally=1&chat=session&keep=second%20succession#chat/session/chat_1`;
 
   try {
     await Promise.all([
@@ -1967,11 +2039,15 @@ test('a failed takeover owner yields its exact retry to the queued successor', a
     const secondForm = second.getByRole('form', {
       name: 'Reconnect this browser',
     });
-    await Promise.all([
-      expect(sourceForm).toBeVisible(),
-      expect(firstForm).toBeVisible(),
-      expect(secondForm).toBeVisible(),
-    ]);
+    // Mounted sessions reconcile credentials on tab activation as well as
+    // cross-tab hints. Visit each real tab before using its reconnect controls.
+    for (const [tab, form] of [[page, sourceForm], [first, firstForm], [second, secondForm]] as const) {
+      await tab.bringToFront();
+      // Drive the focus reconciliation used by restored/background tabs;
+      // activating a headless WebKit view alone may not dispatch this event.
+      await tab.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await expect(form).toBeVisible();
+    }
 
     const recoveryKey = `${Array(23).fill('abandon').join(' ')} art`;
     await Promise.all([
@@ -2004,8 +2080,8 @@ test('a failed takeover owner yields its exact retry to the queued successor', a
         .fill('SECOND-SUCCESSION'),
     ]);
     await Promise.all([
-      firstForm.getByRole('button', { name: 'Reconnect in this tab' }).click(),
-      secondForm.getByRole('button', { name: 'Reconnect in this tab' }).click(),
+      firstForm.getByRole('button', { name: 'Reconnect in this tab' }).press('Enter'),
+      secondForm.getByRole('button', { name: 'Reconnect in this tab' }).press('Enter'),
     ]);
 
     await expect.poll(async () => {
@@ -2034,6 +2110,11 @@ test('a failed takeover owner yields its exact retry to the queued successor', a
       ? 'SECOND-SUCCESSION'
       : 'FIRST-SUCCESSION';
 
+    await expect(successorNotice).toContainText('Picking one tab');
+    await expect(successorForm).toHaveAttribute('aria-busy', 'true');
+    // The first server reply fails only after both contenders are queued.
+    expect(await failedOwner.evaluate(() => window.__app.pendingPairResponses?.())).toBe(1);
+    expect(await failedOwner.evaluate(() => window.__app.releasePairResponses?.())).toBe(1);
     await expect(failedNotice).toHaveAttribute(PAIR_SUCCESSION, '', {
       timeout: 8_000,
     });
@@ -2080,6 +2161,8 @@ test('a failed takeover owner yields its exact retry to the queued successor', a
       await failedOwner.evaluate(() => window.__app.pairSubmitCount?.() ?? 0)
       + await successor.evaluate(() => window.__app.pairSubmitCount?.() ?? 0),
     ).toBe(2);
+    expect(await successor.evaluate(() => window.__app.pendingPairResponses?.())).toBe(1);
+    expect(await successor.evaluate(() => window.__app.releasePairResponses?.())).toBe(1);
 
     await Promise.all([
       page.waitForFunction(
@@ -2207,11 +2290,15 @@ test('a lost recovery owner hands one survivor the exact retry', async ({
     const secondForm = second.getByRole('form', {
       name: 'Reconnect this browser',
     });
-    await Promise.all([
-      expect(sourceForm).toBeVisible(),
-      expect(firstForm).toBeVisible(),
-      expect(secondForm).toBeVisible(),
-    ]);
+    // Mounted sessions reconcile credentials on tab activation as well as
+    // cross-tab hints. Visit each real tab before using its reconnect controls.
+    for (const [tab, form] of [[page, sourceForm], [first, firstForm], [second, secondForm]] as const) {
+      await tab.bringToFront();
+      // Drive the focus reconciliation used by restored/background tabs;
+      // activating a headless WebKit view alone may not dispatch this event.
+      await tab.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await expect(form).toBeVisible();
+    }
 
     const recoveryKey = `${Array(23).fill('abandon').join(' ')} art`;
     await Promise.all([
@@ -2244,8 +2331,8 @@ test('a lost recovery owner hands one survivor the exact retry', async ({
         .fill('SECOND-FAILED'),
     ]);
     await Promise.all([
-      firstForm.getByRole('button', { name: 'Reconnect in this tab' }).click(),
-      secondForm.getByRole('button', { name: 'Reconnect in this tab' }).click(),
+      firstForm.getByRole('button', { name: 'Reconnect in this tab' }).press('Enter'),
+      secondForm.getByRole('button', { name: 'Reconnect in this tab' }).press('Enter'),
     ]);
 
     const sourceNotice = sourceForm.locator(`[${PAIR_INTERRUPTED_NOTICE}]`);
@@ -2744,7 +2831,7 @@ test('a third tab arriving and reloading mid-pair waits for one clean exact-rout
       viewportWidth: 280,
     });
     await arrival.screenshot({
-      path: `${ARTIFACTS}/full-app-mid-transition-wait-mobile.png`,
+      path: test.info().outputPath(`full-app-mid-transition-wait-mobile.png`),
       fullPage: true,
     });
 
@@ -2811,7 +2898,7 @@ test('a third tab arriving and reloading mid-pair waits for one clean exact-rout
       viewportWidth: 280,
     });
     await arrival.screenshot({
-      path: `${ARTIFACTS}/full-app-mid-transition-arrival-mobile.png`,
+      path: test.info().outputPath(`full-app-mid-transition-arrival-mobile.png`),
       fullPage: true,
     });
     expect(siblingErrors).toHaveLength(0);
@@ -2975,7 +3062,7 @@ test('an interrupted pair save keeps sibling context through triage and credenti
       STARTUP_RELOAD_RECOVERY_SESSION_KEY,
     )).toBeNull();
     await arrival.screenshot({
-      path: `${ARTIFACTS}/full-app-credential-repair-reload-sibling-mobile.png`,
+      path: test.info().outputPath(`full-app-credential-repair-reload-sibling-mobile.png`),
       fullPage: true,
     });
 
@@ -3002,7 +3089,7 @@ test('an interrupted pair save keeps sibling context through triage and credenti
     );
     expect(narrowRecovery.minimumButtonHeight).toBeGreaterThanOrEqual(36);
     await page.screenshot({
-      path: `${ARTIFACTS}/full-app-interrupted-pair-save-mobile.png`,
+      path: test.info().outputPath(`full-app-interrupted-pair-save-mobile.png`),
       fullPage: true,
     });
 
@@ -3076,7 +3163,7 @@ test('an interrupted pair save keeps sibling context through triage and credenti
     );
     expect(arrivalRecoveryLayout.buttonHeight).toBeGreaterThanOrEqual(44);
     await arrival.screenshot({
-      path: `${ARTIFACTS}/full-app-sibling-converged-startup-recovery-mobile.png`,
+      path: test.info().outputPath(`full-app-sibling-converged-startup-recovery-mobile.png`),
       fullPage: true,
     });
 
@@ -3145,7 +3232,7 @@ test('an interrupted pair save keeps sibling context through triage and credenti
     );
     expect(triageLayout.minimumButtonHeight).toBeGreaterThanOrEqual(44);
     await arrival.screenshot({
-      path: `${ARTIFACTS}/full-app-sibling-converged-repeated-startup-mobile.png`,
+      path: test.info().outputPath(`full-app-sibling-converged-repeated-startup-mobile.png`),
       fullPage: true,
     });
 
@@ -3247,7 +3334,7 @@ test('an interrupted pair save keeps sibling context through triage and credenti
     );
     expect(arrivalPairLayout.primaryHeight).toBeGreaterThanOrEqual(44);
     await arrival.screenshot({
-      path: `${ARTIFACTS}/full-app-sibling-triage-credential-loss-mobile.png`,
+      path: test.info().outputPath(`full-app-sibling-triage-credential-loss-mobile.png`),
       fullPage: true,
     });
     expect(await arrival.evaluate(() => window.__app.pairSubmitCount?.()))
@@ -3423,7 +3510,7 @@ test('reauth guides a secure re-pair and returns to the exact unsent Chat work',
   expect(pairBounds!.x).toBeGreaterThanOrEqual(-0.5);
   expect(pairBounds!.x + pairBounds!.width).toBeLessThanOrEqual(390.5);
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-reauth-guided-repair-mobile.png`,
+    path: test.info().outputPath(`full-app-reauth-guided-repair-mobile.png`),
     fullPage: true,
   });
 
@@ -3527,7 +3614,7 @@ test('a rejected recovery key guides correction without losing the exact return 
   );
   expect(await page.evaluate(() => window.__app.pairSubmitCount?.())).toBe(1);
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-recovery-key-correction-mobile.png`,
+    path: test.info().outputPath(`full-app-recovery-key-correction-mobile.png`),
     fullPage: true,
   });
 
@@ -3676,7 +3763,7 @@ test('a rejected recovery key guides correction without losing the exact return 
     expect(button.width).toBeGreaterThanOrEqual(44);
   }
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-recovery-key-triage-narrow.png`,
+    path: test.info().outputPath(`full-app-recovery-key-triage-narrow.png`),
     fullPage: true,
   });
 
@@ -3798,7 +3885,7 @@ test('a rejected recovery key guides correction without losing the exact return 
     expect(button.width).toBeGreaterThanOrEqual(44);
   }
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-recovery-key-safe-stop-narrow.png`,
+    path: test.info().outputPath(`full-app-recovery-key-safe-stop-narrow.png`),
     fullPage: true,
   });
 
@@ -4132,7 +4219,7 @@ test('an admin-confirmed server replacement reloads safely and completes one ver
     expect(button.width).toBeGreaterThanOrEqual(44);
   }
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-replacement-server-review-narrow.png`,
+    path: test.info().outputPath(`full-app-replacement-server-review-narrow.png`),
     fullPage: true,
   });
 
@@ -4210,7 +4297,7 @@ test('an admin-confirmed server replacement reloads safely and completes one ver
     },
   });
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-replacement-server-verified-return-mobile.png`,
+    path: test.info().outputPath(`full-app-replacement-server-verified-return-mobile.png`),
     fullPage: true,
   });
 
@@ -4307,7 +4394,7 @@ test('durable reconnect access retries only app startup and returns to exact uns
   );
   expect(narrowLayout.buttonHeight).toBeGreaterThanOrEqual(44);
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-post-pair-startup-recovery-mobile.png`,
+    path: test.info().outputPath(`full-app-post-pair-startup-recovery-mobile.png`),
     fullPage: true,
   });
 
@@ -4344,7 +4431,7 @@ test('durable reconnect access retries only app startup and returns to exact uns
     receiptLayout.viewportWidth,
   );
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-startup-recovery-confirmation-mobile.png`,
+    path: test.info().outputPath(`full-app-startup-recovery-confirmation-mobile.png`),
     fullPage: true,
   });
 
@@ -4600,7 +4687,7 @@ test('paired cold-start failures stay on cause-aware retry until the exact page 
   expect(await page.evaluate(() => window.__app.startupDiagnosticText?.()))
     .toBe(reviewedSummary);
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-cold-start-failure-triage-mobile.png`,
+    path: test.info().outputPath(`full-app-cold-start-failure-triage-mobile.png`),
     fullPage: true,
   });
 
@@ -4713,7 +4800,7 @@ test('a startup reload that still fails preserves repeated triage and the exact 
   await expect(diagnosticSummary).not.toContainText('#connections');
   await expect(diagnosticSummary).not.toContainText('/ws');
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-startup-reload-still-failing-mobile.png`,
+    path: test.info().outputPath(`full-app-startup-reload-still-failing-mobile.png`),
     fullPage: true,
   });
 
@@ -4813,7 +4900,7 @@ test('an intentional startup reload returns to the exact page with one recovery 
     receiptLayout.viewportWidth,
   );
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-startup-reload-recovery-mobile.png`,
+    path: test.info().outputPath(`full-app-startup-reload-recovery-mobile.png`),
     fullPage: true,
   });
 

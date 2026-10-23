@@ -95,6 +95,38 @@ describe('it surfaces why a weak row is on the page', () => {
 });
 
 describe('its empty and error states', () => {
+  it('keeps record hits visible while installed capabilities are still loading', () => {
+    const html = renderUniversalSearch({
+      ...base, query: 'kestrel', capabilitiesLoading: true,
+      groups: [group('inbox', 'mail', [row()])],
+    }, NOW);
+    expect(html).toContain('Kestrel item A pricing');
+    expect(html).toContain('Searching installed recipes and packs');
+    expect(html).not.toContain('Nothing on this server matches');
+  });
+
+  it('keeps capability hits visible while records are still loading', () => {
+    const html = renderUniversalSearch({
+      ...base, query: 'kestrel', loading: true,
+      recipes: [{ recipe_id: 'kestrel', name: 'Kestrel recipe' }],
+      marketplaceOffered: true,
+    }, NOW);
+    expect(html).toContain('Kestrel recipe');
+    expect(html).toContain('Searching records');
+    expect(html).not.toContain(SEARCH_MARKETPLACE_ACTION);
+  });
+
+  it('waits for every local search before claiming nothing matches or offering the cloud', () => {
+    for (const pending of [{ loading: true }, { capabilitiesLoading: true }]) {
+      const html = renderUniversalSearch({
+        ...base, query: 'kestrel', groups: [], marketplaceOffered: true, ...pending,
+      }, NOW);
+      expect(html).toContain('role="status"');
+      expect(html).not.toContain('Nothing on this server matches');
+      expect(html).not.toContain(SEARCH_MARKETPLACE_ACTION);
+    }
+  });
+
   // ⛔ "No results" alone cannot be told apart from "the search did not run".
   it('names the scope it searched when nothing matched', () => {
     const html = renderUniversalSearch({ ...base, query: 'zzz', groups: [] }, NOW);

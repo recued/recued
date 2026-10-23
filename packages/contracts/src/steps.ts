@@ -351,6 +351,19 @@ export interface BaseStep {
    *  is present and actually triggers; absent means "this was a failure", the
    *  behaviour every guard had before. See {@link StepFailureKind}. */
   fail_kind?: StepFailureKind;
+  /** What the person who ran the recipe reads when this step stops it: a
+   *  `guard` that holds, or a `fail_on` that does. It becomes the error's
+   *  message; the code stays `RECIPE_GUARD_TRIGGERED` / `RECIPE_FAIL_ON_TRIGGERED`.
+   *
+   *  ⛔ Without it a stop said only "Guard triggered", and the run dialog put
+   *  that under "Run returned errors": the Cal.com live run (2026-10-22) stopped
+   *  three ways, "choose a project", "this meeting has no transcript" and "no
+   *  booking is coming up", and all three read the same.
+   *
+   *  ⚠ Plain words, shown as written, never a `{{ref}}`. It reaches the run
+   *  dialog, the Logs and the chat agent that ran the recipe, and a resolved
+   *  value there could be an address the run was carrying. */
+  fail_reason?: string;
   /** Cache freshness mode for this step. Defaults to 'acceptable' — or to
    *  'fresh' for a read of the owner's own records in a recipe that writes
    *  (engine `step-seed.ts`); naming a mode keeps the author's call.

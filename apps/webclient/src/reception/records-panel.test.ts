@@ -14,9 +14,14 @@ import type {
   ReceptionBookingRecordSummary,
   ReceptionRecordListInput,
   ReceptionRecordListResult,
+  ReceptionRecordOpenResult,
+  ReceptionSubmissionRecordSummary,
 } from '@recued/contracts';
 
 import {
+  RECEPTION_RECORDS_DETAILS_ATTR,
+  RECEPTION_RECORDS_DETAILS_RETRY_ATTR,
+  RECEPTION_RECORDS_DETAILS_TOGGLE_ATTR,
   RECEPTION_RECORDS_EMPTY_ATTR,
   RECEPTION_RECORDS_ERROR_ATTR,
   RECEPTION_RECORDS_KIND_ATTR,
@@ -337,5 +342,156 @@ describe('mountReceptionRecordsPanel — the generation guard', () => {
     expect(html).toContain('SECOND');
     expect(html).not.toContain('FIRST_STALE');
     panel.dispose();
+  });
+});
+
+describe('mountReceptionRecordsPanel — opening one record (who the visitor was)', () => {
+  const intake = (
+    over: Partial<ReceptionSubmissionRecordSummary> = {},
+  ): ReceptionSubmissionRecordSummary => ({
+    kind: 'intake_form',
+    record_id: 'sub_dana',
+    endpoint_id: 'ep_kit',
+    received_at: NOW - 600_000,
+    outcome: 'pending',
+    form_definition_id: 'fd_kit',
+    resolved: [],
+    ...over,
+  });
+
+  const opened = (over: Partial<ReceptionRecordOpenResult> = {}): ReceptionRecordOpenResult => ({
+    record: intake({ form_name: 'Buy the kit' }),
+    form_name: 'Buy the kit',
+    visitor_email: 'dana@example.com',
+    answers: [
+      { label: 'Email', value: 'dana@example.com' },
+      { label: 'Your name', value: 'Dana Example' },
+    ],
+    ...over,
+  });
+
+  /** A conn that answers the list from `list` and each open from the `opens` queue. */
+  const mountWith = (
+    list: ReceptionRecordListResult,
+    opens: ReadonlyArray<ReceptionRecordOpenResult | Error | Promise<ReceptionRecordOpenResult>>,
+  ) => {
+    const { doc, host } = makeDoc();
+    const openCalls: unknown[] = [];
+    let i = 0;
+    const conn = ((method: string, args?: unknown) => {
+      if (method === 'reception.record.list') return Promise.resolve(list);
+      openCalls.push(args);
+      const next = opens[Math.min(i, opens.length - 1)];
+      i += 1;
+      return next instanceof Error ? Promise.reject(next) : Promise.resolve(next);
+    }) as unknown as ReceptionRecordsConn;
+    const panel = mountReceptionRecordsPanel({
+      host: host as unknown as HTMLElement,
+      conn,
+      document: doc,
+      now: () => NOW,
+    });
+    const click = async (attr: string, value: string): Promise<void> => {
+      rootOf(host).listeners.get('click')?.[0]?.({
+        target: { getAttribute: (k: string) => (k === attr ? value : null) },
+      });
+      for (let n = 0; n < 4; n += 1) await Promise.resolve();
+    };
+    return { host, panel, openCalls, click };
+  };
+
+  it('names the form the owner set, and opens nothing until asked', async () => {
+    const { host, panel, openCalls } = mountWith(ok([intake({ form_name: 'Buy the kit' }) as never]), [opened()]);
+    await panel.refresh();
+    const html = rootOf(host).innerHTML;
+    expect(html).toContain('Buy the kit');
+    expect(html).not.toContain('ep_kit');
+    expect(html).toContain(`aria-expanded="false"`);
+    expect(html).toContain(`${RECEPTION_RECORDS_DETAILS_TOGGLE_ATTR}="sub_dana">Show details</button>`);
+    // ⛔ Sealed until the owner opens it (D-173 I-3): no read, no value on the page.
+    expect(openCalls).toEqual([]);
+    expect(html).not.toContain('Dana Example');
+  });
+
+  it('falls back to the endpoint id when the server could not name the form', async () => {
+    const { host, panel } = mountWith(ok([intake()  as never]), [opened()]);
+    await panel.refresh();
+    expect(rootOf(host).innerHTML).toContain('Endpoint <code>ep_kit</code>');
+  });
+
+  it('“Show details” opens THAT record and lists what the visitor told the form, with a way to write back', async () => {
+    const { host, panel, openCalls, click } = mountWith(ok([intake() as never]), [opened()]);
+    await panel.refresh();
+
+    await click(RECEPTION_RECORDS_DETAILS_TOGGLE_ATTR, 'sub_dana');
+
+    expect(openCalls).toEqual([{ record_id: 'sub_dana' }]);
+    const html = rootOf(host).innerHTML;
+    expect(html).toContain(`${RECEPTION_RECORDS_DETAILS_ATTR}="sub_dana"`);
+    expect(html).toContain('<dt>Your name</dt><dd>Dana Example</dd>');
+    expect(html).toContain('<a href="mailto:dana%40example.com">Write to dana@example.com</a>');
+    expect(html).toContain(`aria-expanded="true"`);
+    expect(html).toContain('>Hide details</button>');
+  });
+
+  it('“Hide details” takes the visitor’s values off the page, and opening again asks again', async () => {
+    const { host, panel, openCalls, click } = mountWith(ok([intake() as never]), [opened()]);
+    await panel.refresh();
+    await click(RECEPTION_RECORDS_DETAILS_TOGGLE_ATTR, 'sub_dana');
+    await click(RECEPTION_RECORDS_DETAILS_TOGGLE_ATTR, 'sub_dana');
+
+    expect(rootOf(host).innerHTML).not.toContain('Dana Example');
+    expect(openCalls).toHaveLength(1);
+    await click(RECEPTION_RECORDS_DETAILS_TOGGLE_ATTR, 'sub_dana');
+    expect(openCalls).toHaveLength(2);
+  });
+
+  it('⛔ escapes everything the visitor typed', async () => {
+    const { host, panel, click } = mountWith(ok([intake() as never]), [opened({
+      visitor_email: 'x"><img src=x onerror=alert(1)>@example.com',
+      answers: [{ label: '<b>Name</b>', value: '<script>alert(1)</script>' }],
+    })]);
+    await panel.refresh();
+    await click(RECEPTION_RECORDS_DETAILS_TOGGLE_ATTR, 'sub_dana');
+
+    const html = rootOf(host).innerHTML;
+    expect(html).not.toContain('<script>');
+    expect(html).not.toContain('<img src=x');
+    expect(html).not.toContain('<b>Name</b>');
+    expect(html).toContain('&lt;script&gt;');
+  });
+
+  it('says plainly when a record cannot be opened, in the owner’s words, and can try again', async () => {
+    const unreadable = Object.assign(new Error('reception.record.open: record could not be opened'), {
+      code: 'reception_record_unreadable',
+    });
+    const { host, panel, openCalls, click } = mountWith(ok([intake() as never]), [unreadable, opened()]);
+    await panel.refresh();
+    await click(RECEPTION_RECORDS_DETAILS_TOGGLE_ATTR, 'sub_dana');
+
+    let html = rootOf(host).innerHTML;
+    expect(html).toContain('This record could not be opened.');
+    expect(html).not.toContain('reception.record.open');
+    expect(html).toContain('role="alert"');
+
+    await click(RECEPTION_RECORDS_DETAILS_RETRY_ATTR, 'sub_dana');
+    html = rootOf(host).innerHTML;
+    expect(openCalls).toHaveLength(2);
+    expect(html).toContain('<dd>Dana Example</dd>');
+  });
+
+  it('drops an answer that arrives after the owner hid the record', async () => {
+    let release: (value: ReceptionRecordOpenResult) => void = () => {};
+    const slow = new Promise<ReceptionRecordOpenResult>((resolve) => { release = resolve; });
+    const { host, panel } = mountWith(ok([intake() as never]), [slow]);
+    await panel.refresh();
+
+    const opening = panel.openDetails('sub_dana');
+    expect(rootOf(host).innerHTML).toContain('Opening…');
+    panel.closeDetails('sub_dana');
+    release(opened());
+    await opening;
+
+    expect(rootOf(host).innerHTML).not.toContain('Dana Example');
   });
 });

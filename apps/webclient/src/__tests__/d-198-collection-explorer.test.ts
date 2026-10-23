@@ -78,6 +78,12 @@ describe('collection-explorer — schema-driven list', () => {
     expect(single).not.toContain(COLLECTION_SELECT_INSTANCE_ACTION);
   });
 
+  it('waits for the source roster before claiming nothing is connected', () => {
+    const html = renderCollectionExplorer(base({ instances: [], selectedSlug: null, loading: true }));
+    expect(html).toContain('role="status">Loading sources…');
+    expect(html).not.toContain('Nothing connected');
+  });
+
   it('empty states: no instances vs no records', () => {
     expect(renderCollectionExplorer(base({ instances: [], selectedSlug: null })))
       .toContain('Nothing connected');

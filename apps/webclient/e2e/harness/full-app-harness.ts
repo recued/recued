@@ -1,3 +1,5 @@
+import { passportSummaryFixture } from './passport-summary-fixture.js';
+import { restoreReadinessFixture, seedRestoreReadinessReceipt } from './restore-readiness-fixture.js';
 /**
  * Full-app webclient render harness (Playwright e2e, "Path B" — fake transport).
  *
@@ -48,6 +50,7 @@ import type {
   HousekeepingConfigRow,
   EnrichmentTrustRow,
   ConfidenceDriftSignal,
+  ExecutionListQuery,
 } from '@recued/contracts';
 import {
   HARNESS_SERVER_FINGERPRINT,
@@ -930,6 +933,11 @@ const buildFakeTransport = (
   const states = new Set<(s: WebclientWsState) => void>();
   const messages = new Set<(m: unknown) => void>();
   const rpcCallCounts = new Map<string, number>();
+  const backupWatchdogDrillDemo = searchParams.get('backup_watchdog_drill') === 'ready';
+  let backupWatchdogResumingReads = 0;
+  let backupWatchdogStatus: import('@recued/contracts').BackupWatchdogStatus = backupWatchdogDrillDemo
+    ? { configured: true, enabled: true, state: 'acknowledged', configuration_revision: crypto.randomUUID(), last_acknowledged_at: Date.now() }
+    : { configured: false, enabled: false, state: 'not_configured' };
   const housekeepingTrustRows = new Map<string, EnrichmentTrustRow>(
     ['summary', 'thread_signals'].map((topic): [string, EnrichmentTrustRow] => [topic, {
       topic, trust_state: housekeepingBannersDemo ? 'manual' : 'auto',
@@ -1573,6 +1581,10 @@ const buildFakeTransport = (
   const recordsDemoPackSlug = longRecordsTextDemo
     ? `pack-${'identifier'.repeat(10)}`
     : 'same-board';
+  // The pack's name, as `records.namespace.list` sends it for a pack on the server's roster.
+  const recordsDemoPackName = longRecordsTextDemo
+    ? `Pack ${'Identifier'.repeat(10)}`
+    : 'Same Board';
   const recordsDemoKind = longRecordsTextDemo
     ? `entity_${'kind'.repeat(18)}`
     : 'job';
@@ -1611,6 +1623,7 @@ const buildFakeTransport = (
           { key: 'id', slot: 'pk', kind: 'id', required: true },
           {
             key: recordsDemoTitleField,
+            ...(searchParams.get('records_labels') === '1' ? { label: 'Job name <primary>' } : {}),
             slot: 's1',
             kind: 'string',
             required: true,
@@ -1674,6 +1687,7 @@ const buildFakeTransport = (
   };
   const recordsDemoNamespace = (publisher = recordsDemoPublisher) => ({
     owner: { publisher, pack_slug: recordsDemoPackSlug },
+    display_name: recordsDemoPackName,
     state: recordsOrphanedDemo
       ? {
           state: 'orphaned' as const,
@@ -1966,6 +1980,14 @@ const buildFakeTransport = (
       ts: FIXED_NOW - 2_500,
     }],
   };
+  const logsSummaryDemo = searchParams.get('logs_summary') === '1';
+  const logsSummaryError = {
+    error_id: 'private-error-id', code: 'BAD_INPUT' as const,
+    message: 'private error message', severity: 'error' as const,
+    source: { recipe_id: 'private-recipe', step_id: 'private-step' },
+    details: { token: 'private-token', url: 'https://private.example.test' },
+    timestamp: new Date(FIXED_NOW).toISOString(), retryable: false,
+  };
   const verificationRunDetail = {
     audit: {
       run_id: verificationRun.run_id,
@@ -1984,13 +2006,17 @@ const buildFakeTransport = (
       instance_id: longLogsTextDemo
         ? `server-${'I'.repeat(240)}`
         : 'server-verification',
-      errors: [],
+      errors: logsSummaryDemo ? [logsSummaryError] : [],
+      ...(logsSummaryDemo ? {
+        output_string: 'private run output',
+        run_yield: { steps_run: 4, steps_skipped: 1, items_total: 12, items_failed: 3, stopped_at: null },
+      } : {}),
     },
     approvals: {
       checkpoints: [],
       outcome: 'allow',
     },
-    errors: [],
+    errors: logsSummaryDemo ? [logsSummaryError] : [],
     links: verificationRun.links,
     gateway: {
       policy_result: verificationRun.policy_result,
@@ -2012,6 +2038,7 @@ const buildFakeTransport = (
     policy_result: 'allowed',
     links: [],
   };
+  let recipeResultLogRun: typeof verificationRunDetail | null = null;
   const verificationCalendarRecord = {
     record_id: 'event-1',
     received_at: FIXED_NOW - 3_000,
@@ -2338,6 +2365,52 @@ const buildFakeTransport = (
           error = savedViewsReply.error;
         }
         if (rpc.method === 'collection.searchAll') result = { groups: [] };
+        if (rpc.method === 'passport.export') {
+          const reply = passportSummaryFixture(searchParams.get('passport_summary'), FIXED_NOW);
+          if (reply !== undefined) result = reply;
+        }
+        // A write-only monitor credential never enters the fixture's saved state.
+        if (rpc.method === 'server.archive.watchdog.get') {
+          // A synthetic post-resumption acknowledgment, separate from the owner report.
+          const d = backupWatchdogStatus.drill;
+          if (d?.phase === 'resuming' && backupWatchdogResumingReads++ >= 1) {
+            d.ping_acknowledged_at = Date.now(); d.finished_at = Date.now(); d.phase = 'completed';
+            backupWatchdogStatus.last_acknowledged_at = d.ping_acknowledged_at;
+          }
+          result = structuredClone(backupWatchdogStatus);
+        }
+        if (rpc.method === 'server.archive.watchdog.drill.start') {
+          const input = rpc.args;
+          if (input && typeof input === 'object' && 'operation_id' in input && typeof input.operation_id === 'string'
+            && 'pause_minutes' in input && (input.pause_minutes === 10 || input.pause_minutes === 15 || input.pause_minutes === 30 || input.pause_minutes === 60)) {
+            const at = Date.now();
+            backupWatchdogStatus = { ...backupWatchdogStatus, state: 'drill_paused', configuration_revision: crypto.randomUUID(), drill: {
+              operation_id: input.operation_id, phase: 'paused', pause_minutes: input.pause_minutes, started_at: at,
+              pause_until: at + input.pause_minutes * 60_000, current_configuration: true,
+            } };
+            backupWatchdogResumingReads = 0; result = structuredClone(backupWatchdogStatus);
+          }
+        }
+        if (rpc.method === 'server.archive.watchdog.drill.update') {
+          const input = rpc.args, d = backupWatchdogStatus.drill;
+          if (d && input && typeof input === 'object' && 'operation_id' in input && input.operation_id === d.operation_id && 'action' in input) {
+            if (input.action === 'cancel') { d.phase = 'cancelled'; d.finished_at = Date.now(); }
+            if (input.action === 'confirm_alert') { d.phase = 'resuming'; d.resumed_at = Date.now(); d.alert_reported_at = Date.now(); }
+            backupWatchdogStatus.state = 'acknowledged'; result = structuredClone(backupWatchdogStatus);
+          }
+        }
+        if (rpc.method === 'server.archive.watchdog.save') {
+          const input = rpc.args;
+          if (input && typeof input === 'object' && 'enabled' in input && typeof input.enabled === 'boolean') {
+            const configured = !('forget' in input && input.forget === true)
+              && (backupWatchdogStatus.configured || ('ping_url' in input && typeof input.ping_url === 'string'));
+            backupWatchdogStatus = { configured, enabled: input.enabled, state: !configured ? 'not_configured' : input.enabled ? 'blocked' : 'paused',
+              ...(configured && input.enabled ? { issue: 'backup_not_current' } : {}) };
+            result = structuredClone(backupWatchdogStatus);
+          }
+        }
+        const readinessReply = restoreReadinessFixture(searchParams.get('restore_readiness'), rpc.method);
+        if (readinessReply !== undefined) result = readinessReply;
         let beforeRpcResponse: (() => void) | null = null;
         if (
           archiveRestorePreviewDemo
@@ -5655,18 +5728,22 @@ const buildFakeTransport = (
         }
         if (verificationJourneyDemo) {
           if (rpc.method === 'execution.list') {
-            const args = rpc.args as { cursor?: unknown };
-            result = pagedLogsDemo
-              ? args.cursor === undefined
-                ? {
-                    runs: [verificationRun],
-                    next_cursor: {
-                      last_started_at: verificationRun.started_at,
-                      last_run_id: verificationRun.run_id,
-                    },
-                  }
-                : { runs: [olderVerificationRun] }
-              : { runs: [verificationRun] };
+            const args = rpc.args as ExecutionListQuery;
+            const rows = pagedLogsDemo && args.cursor !== undefined
+              ? [olderVerificationRun] : [verificationRun];
+            result = {
+              runs: searchParams.get('logs_filters') === '1'
+                ? rows.filter(row =>
+                    (args.status === undefined || args.status.some(status => status === row.status))
+                    && (args.origin === undefined || args.origin.some(actor => actor === row.origin.actor))
+                    && (args.recipe_id === undefined || args.recipe_id === row.recipe_id)
+                    && (args.since === undefined || row.started_at >= args.since))
+                : rows,
+              ...(pagedLogsDemo && args.cursor === undefined ? { next_cursor: {
+                last_started_at: verificationRun.started_at,
+                last_run_id: verificationRun.run_id,
+              } } : {}),
+            };
           } else if (rpc.method === 'execution.get') {
             const args = rpc.args as { run_id?: unknown };
             if (logsDetailFailuresRemaining > 0) {
@@ -5680,7 +5757,22 @@ const buildFakeTransport = (
                 run:
                   args.run_id === verificationRun.run_id
                     ? verificationRunDetail
-                    : null,
+                    : pagedLogsDemo && args.run_id === olderVerificationRun.run_id
+                      ? {
+                          ...verificationRunDetail,
+                          audit: {
+                            ...verificationRunDetail.audit,
+                            run_id: olderVerificationRun.run_id,
+                            recipe_id: olderVerificationRun.recipe_id,
+                            recipe_hash: 'hash-older-verification-run',
+                            started_at: olderVerificationRun.started_at,
+                            finished_at: olderVerificationRun.finished_at,
+                            status: olderVerificationRun.status,
+                          },
+                          links: [],
+                          gateway: { policy_result: olderVerificationRun.policy_result, per_call_trace: [] },
+                        }
+                      : null,
               };
             }
           } else if (rpc.method === 'execution.active') {
@@ -6888,7 +6980,14 @@ const buildFakeTransport = (
                 // the real one rather than a hand-copied guess.
                 resolution: applyPreset('lan_only', { acknowledged: false }),
                 derived_preset_label: 'lan_only',
-                public_mcp_acknowledgement: { acknowledged: false },
+                public_mcp_acknowledgement: searchParams.get('exposure') === 'acknowledged'
+                  ? {
+                    acknowledged: true,
+                    acknowledged_at: FIXED_NOW,
+                    acknowledged_by_client_id: 'device-current',
+                    free_text_confirmation: 'enable public MCP',
+                  }
+                  : { acknowledged: false },
                 last_changed_at: FIXED_NOW,
                 changed_by_client_id: 'device-current',
               },
@@ -7270,6 +7369,19 @@ const buildFakeTransport = (
             };
           }
         }
+        // Opt-in gate refusals let confirmation focus tests hold and then
+        // settle a write through the normal RPC error path.
+        if (searchParams.get('exposure_write') === 'refuse' && [
+          'exposure.set_public_mcp_acknowledgement',
+          'exposure.set_path_resolution',
+          'exposure.apply_preset',
+        ].includes(rpc.method)) {
+          error = {
+            code: rpc.method === 'exposure.set_public_mcp_acknowledgement'
+              ? 'public_mcp_phrase_mismatch' : 'ws_lockout_phrase_mismatch',
+            message: 'The confirmation phrase was refused.',
+          };
+        }
         const preapprovalReply = preapprovalDemoReply(rpc.method, rpc.args);
         if (preapprovalReply !== null) { result = preapprovalReply.result; error = preapprovalReply.error; }
         const localChangesReply = localChangesDemoReply(rpc.method,rpc.args);
@@ -7354,6 +7466,30 @@ const buildFakeTransport = (
         if(receptionFixture){const receptionReply=await receptionFixture(rpc.method,rpc.args);if(receptionReply){result=receptionReply.result;error=receptionReply.error;}}
         const connectionsFixture = (window as Window & { __connectionsFixture?: (method: string, args: unknown) => Promise<{ result?: unknown; error?: { code: string; message: string } } | undefined> }).__connectionsFixture;
         if (connectionsFixture) { const reply = await connectionsFixture(rpc.method, rpc.args); if (reply) { result = reply.result; error = reply.error; } }
+        // An opt-in persisted anchor lets result-navigation tests reach a real
+        // Logs detail through the production router. Other result fixtures
+        // deliberately keep their unaudited (no run_id) response shape.
+        if (recipeRunLogDemo) {
+          if (rpc.method === 'execute' && error === undefined && result !== null
+            && typeof result === 'object' && 'recipe_id' in result && 'recipe_hash' in result) {
+            const runId = `run-${result.recipe_id}-${rpcCallCounts.get('execute')}`;
+            recipeResultLogRun = {
+              ...verificationRunDetail,
+              audit: {
+                ...verificationRunDetail.audit, run_id: runId,
+                recipe_id: String(result.recipe_id), recipe_hash: String(result.recipe_hash),
+                started_at: FIXED_NOW - 7, finished_at: FIXED_NOW, duration_ms: 7, status: 'succeeded',
+              },
+              links: [], gateway: { policy_result: 'allowed', per_call_trace: [] },
+            };
+            result = { ...result, run_id: runId };
+          } else if (rpc.method === 'execution.get') {
+            result = { run: (rpc.args as { run_id?: unknown }).run_id === recipeResultLogRun?.audit.run_id
+              ? recipeResultLogRun : null };
+          } else if (rpc.method === 'execution.list') result = { runs: [] };
+          else if (rpc.method === 'execution.active') result = { entries: [], lanes: [] };
+          else if (rpc.method === 'collection.contract.session_grant.list') result = { grants: [] };
+        }
         if (result === undefined && error === undefined) return;
         // rpc-conn registers the pending request before transport.send. One
         // harness mode deliberately lets the AI-config read settle on a later
@@ -8216,6 +8352,9 @@ interface FullAppHooks {
   fireMessage(message: unknown): void;
   /** Multi-tab journey diagnostic: proves the passive sibling never POSTed. */
   pairSubmitCount?(): number;
+  /** Inspect and settle explicitly held synthetic pairing replies. */
+  pendingPairResponses?(): number;
+  releasePairResponses?(): number;
   /** Multi-tab journey diagnostic: proves a takeover uses only its fresh code. */
   lastPairingCode?(): string | null;
   /** Replacement-server journey diagnostic: proves only the newly generated
@@ -8287,6 +8426,7 @@ const recipeLinkButtonsResultDemo =
 const recipeFileArtifactResultDemo =
   searchParams.get('recipe_result') === 'file-artifact';
 const recipeRunFactsDemo = searchParams.get('recipe_run_facts') === '1';
+const recipeRunLogDemo = searchParams.get('recipe_run_log') === '1';
 const packsMultiViewDemo =
   searchParams.get('packs_app_views') === 'multi';
 const packsReactiveRecipeDemo =
@@ -8666,6 +8806,13 @@ const startupFailure = (): Error => {
       );
   }
 };
+/** This fake server answers only the methods its specs name and leaves every
+ *  other call open forever, which no real server does. Under the app's limit on
+ *  calls running at once (`RPC_WS_MAX_IN_FLIGHT_PER_CLIENT`) those open calls
+ *  fill every slot and the app never finishes starting, so the harness lifts
+ *  it. The limit itself is checked in `rpc-conn.test.ts` and against a real
+ *  server in the live drives. */
+const HARNESS_RPC_MAX_IN_FLIGHT = Number.POSITIVE_INFINITY;
 const bootstrapWithStartupFault: typeof bootstrapWebclient = async (
   options,
 ) => {
@@ -8674,7 +8821,7 @@ const bootstrapWithStartupFault: typeof bootstrapWebclient = async (
     pairedAppBootstrapFailuresRemaining -= 1;
     throw startupFailure();
   }
-  return bootstrapWebclient(options);
+  return bootstrapWebclient({ ...options, rpcMaxInFlight: HARNESS_RPC_MAX_IN_FLIGHT });
 };
 const transport = buildFakeTransport(
   searchParams.get('ai') !== 'empty',
@@ -8980,6 +9127,17 @@ const secureAccessPairedReload =
   secureAccessJourney
   && window.sessionStorage.getItem(SECURE_ACCESS_PAIRED_SESSION_KEY) === '1';
 
+const holdPairResponse = multiTabTransitionJourney
+  && searchParams.get('hold_pair_response') === '1';
+const heldPairResponses: Array<() => void> = [];
+const pairResponseHooks = {
+  pendingPairResponses: (): number => heldPairResponses.length,
+  releasePairResponses: (): number => {
+    const pending = heldPairResponses.splice(0);
+    for (const resolve of pending) resolve();
+    return pending.length;
+  },
+};
 let pairSubmitCount = 0;
 let lastPairingCode: string | null = null;
 let lastRecoveryKey: string | null = null;
@@ -9068,10 +9226,11 @@ const installRecoveryPairFetch = (
         requestedPostPairFailures,
       );
     }
-    // Harness-only observation window for simultaneous takeover tests. The
-    // request counter advances before this pause, so Playwright can identify
-    // the one lock owner while the losing tab is still visibly queued.
-    if (pairResponseDelayMs > 0) {
+    // Hold takeover replies until the test has observed ownership. These
+    // queues contain only resolvers; no recovery words or pairing data.
+    if (holdPairResponse) {
+      await new Promise<void>((resolve) => { heldPairResponses.push(resolve); });
+    } else if (pairResponseDelayMs > 0) {
       await new Promise<void>((resolve) => {
         window.setTimeout(resolve, pairResponseDelayMs);
       });
@@ -9296,6 +9455,7 @@ void (async (): Promise<void> => {
             fireState: (state) => transport.fireState(state),
             fireMessage: (message) => transport.fireMessage(message),
             pairSubmitCount: () => pairSubmitCount,
+            ...pairResponseHooks,
             lastPairingCode: () => lastPairingCode,
             lastRecoveryKey: () => lastRecoveryKey,
             credentialClearCount: () => credentialClearCount,
@@ -9388,6 +9548,7 @@ void (async (): Promise<void> => {
         fireState: (state) => transport.fireState(state),
         fireMessage: (message) => transport.fireMessage(message),
         pairSubmitCount: () => pairSubmitCount,
+        ...pairResponseHooks,
         lastPairingCode: () => lastPairingCode,
         lastRecoveryKey: () => lastRecoveryKey,
         credentialClearCount: () => credentialClearCount,
@@ -9415,7 +9576,7 @@ void (async (): Promise<void> => {
           location: {
             protocol: 'http:',
             hostname: '192.168.1.42',
-            port: '4319',
+            port: window.location.port,
             pathname: window.location.pathname,
             search: window.location.search,
             hash: window.location.hash,
@@ -9561,6 +9722,7 @@ void (async (): Promise<void> => {
           cryptoKeysWiper: async () => undefined,
           bootstrap: (options) => bootstrapWebclient({
             ...options,
+            rpcMaxInFlight: HARNESS_RPC_MAX_IN_FLIGHT,
             exposureProfile: 'community-shareable',
             hashSource,
             now: () => FIXED_NOW,
@@ -9614,6 +9776,7 @@ void (async (): Promise<void> => {
           cryptoKeysWiper: async () => undefined,
           bootstrap: (options) => bootstrapWebclient({
             ...options,
+            rpcMaxInFlight: HARNESS_RPC_MAX_IN_FLIGHT,
             exposureProfile: 'community-shareable',
             hashSource,
             now: () => FIXED_NOW,
@@ -9850,6 +10013,7 @@ void (async (): Promise<void> => {
         cryptoKeysWiper: async () => undefined,
         bootstrap: (options) => bootstrapWebclient({
           ...options,
+          rpcMaxInFlight: HARNESS_RPC_MAX_IN_FLIGHT,
           exposureProfile: 'community-shareable',
           hashSource,
           now: () => FIXED_NOW,
@@ -9881,12 +10045,14 @@ void (async (): Promise<void> => {
       return;
     }
 
+    if (searchParams.has('restore_readiness')) await seedRestoreReadinessReceipt(localStore);
     const handle = await bootstrapWebclient({
       root,
       localStore,
       ...(profileStore !== undefined ? { profileStore } : {}),
       tokenStore,
       transport: transport.transport,
+      rpcMaxInFlight: HARNESS_RPC_MAX_IN_FLIGHT,
       exposureProfile: 'community-shareable',
       hashSource,
       document,

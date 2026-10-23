@@ -24,6 +24,12 @@ import type { AskDeliveryDestination, AskDeliveryEnvelope, AskDeliveryOutcome, A
 
 export interface BridgeReminderPort {
   ready(): Promise<boolean>;
+  /** Whether a connected bridge is a release from before notification receipts.
+   *  It shows plain notifications but never answers the probe `ready` sends, so
+   *  it can never confirm a reminder. */
+  legacyConnected(): boolean;
+  /** The `client_token_id` of every bridge holding a live connection now. */
+  connectedIds(): ReadonlySet<string>;
   destinations(settings: NotificationSettings): Promise<AskDeliveryDestination[]>;
   deliver(envelope: AskDeliveryEnvelope): Promise<AskDeliveryOutcome>;
   withdraw(receipt: AskDeliveryReceipt, closed_ask_ids: readonly string[]): Promise<boolean>;
@@ -31,6 +37,13 @@ export interface BridgeReminderPort {
 export interface BridgeChannel extends Channel {
   bindReminderPort(port: BridgeReminderPort): void;
   reminderReady(): Promise<boolean>;
+  /** Whether plain notifications can be switched on: a bridge confirmed it can
+   *  show them, or a connected bridge predates that confirmation. Reminders still
+   *  need `reminderReady`. */
+  notifyReady(): Promise<boolean>;
+  /** The paired bridges connected right now, for Settings' Online / Offline.
+   *  Empty until the host binds its port. */
+  connectedBridgeIds(): ReadonlySet<string>;
   reminderDestinations(settings: NotificationSettings): Promise<AskDeliveryDestination[]>;
 }
 
@@ -57,6 +70,8 @@ export const createBridgeChannel = (deps: BridgeChannelDeps): BridgeChannel => {
   return {
     bindReminderPort(port) { reminders = port; },
     reminderReady: () => reminders?.ready() ?? Promise.resolve(false),
+    notifyReady: async () => reminders?.legacyConnected() === true || await (reminders?.ready() ?? false),
+    connectedBridgeIds: () => reminders?.connectedIds() ?? new Set<string>(),
     reminderDestinations: settings => reminders?.destinations(settings) ?? Promise.resolve([]),
     deliverAskDelivery: envelope => reminders?.deliver(envelope) ?? Promise.resolve({ outcome: 'not_delivered', error: 'No live OS notification adapter' }),
     withdrawAskDelivery: (receipt, closed) => reminders?.withdraw(receipt, closed) ?? Promise.resolve(false),

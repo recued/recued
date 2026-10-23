@@ -33,5 +33,8 @@ await bootstrapWebclient({ root: document.getElementById('app')!, document, tran
     webclient_token: token, pair_metadata: { paired_at: Date.now(), server_passport_fingerprint: 'fixture', server_handle_at_pair: 'fixture', instance_id: 'mail-work-browser' }, cert_pin_state: null }),
   tokenStore: { wrap: async () => token, unwrap: async () => 'fixture-bearer' },
   exposureProfile: 'community-shareable', enablePassportFetchVerify: false,
+  // The fake server above leaves every call outside its list open forever, which
+  // would fill the app's 64 call slots; a real server answers every call.
+  rpcMaxInFlight: Number.POSITIVE_INFINITY,
 });
 document.body.setAttribute('data-ready', 'true');

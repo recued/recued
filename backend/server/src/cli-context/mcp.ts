@@ -152,7 +152,12 @@ const ensureServerInstanceId = async (db: Database.Database): Promise<string> =>
 
 export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
   const env = options.env ?? process.env;
-  const dbPath = resolveRealmDbPath(getArg(options.args, 'db') ?? env.DB_PATH);
+  // ⚠ stderr, never stdout: stdout is the MCP protocol stream on stdio. The
+  // default note is console.log, so a first run that created the realm put a
+  // non-JSON line ahead of the `initialize` reply.
+  const dbPath = resolveRealmDbPath(getArg(options.args, 'db') ?? env.DB_PATH, {
+    note: (message) => { console.error(message); },
+  });
 
   options.bootTrace?.markDbOpenAttempted('configured-db-path');
   const db = await openApplicationDatabase({ dbPath, env });

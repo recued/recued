@@ -1,4 +1,5 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
+import type { MailFactRow, MailFactRowsCursor, MailFactRowsQuery, MailFactSenderDismissal, MailFactSendersResult, ReminderView } from '@recued/contracts';
 import {
   DATA_DETAIL_HEADING, HARNESS_URL, SHARED_PROVENANCE, SHARED_PROVENANCE_DETAIL,
   SHARED_PROVENANCE_PRIMARY, SHARED_REFERENCE, SHARED_REFERENCE_ID, installFullAppHooks,
@@ -60,6 +61,261 @@ const DATA_FORM_RESPONSE_RUN_PICKER =
 const DATA_COLLECTION_SLUG = 'data-collection-slug';
 const DATA_COLLECTION_RECORD = 'data-collection-record';
 const DATA_DOWNLOAD_FILE = 'data-recued-data-download-file';
+
+type ReminderWriteOutcome = 'success' | 'refused' | 'error';
+type ReminderReadOutcome = 'current' | 'missing' | 'error';
+declare global { interface Window {
+  __reminderFocus: {
+    reads: number;
+    writes: { method: string; args: { reminder_id: string; at?: number } }[];
+    waitingForRead: boolean;
+    releaseWrite(outcome: ReminderWriteOutcome): void;
+    releaseRead(outcome: ReminderReadOutcome): void;
+  };
+} }
+
+/** Held replies exercise the real Data route's repaint and focus capture. */
+const openReminderFocusFixture = async (page: Page, holdRead = false): Promise<void> => {
+  await page.addInitScript(({ holdRead }) => {
+    type Reply = { result?: unknown; error?: { code: string; message: string } };
+    let reminder: ReminderView = {
+      reminder_id: 'rem_1', text: 'Call the dentist', at: Date.UTC(2030, 9, 16, 19),
+      when: 'Wednesday 16 October at 7:00 PM', state: 'pending', delivered_at: null, time_zone: 'UTC',
+    };
+    const neighbor: ReminderView = { ...reminder, reminder_id: 'rem_2', text: 'Read a book' };
+    const history: ReminderView = { ...reminder, reminder_id: 'rem_0', text: 'Stretch', state: 'delivered', delivered_at: reminder.at };
+    let write: { method: string; args: { reminder_id: string; at?: number }; resolve: (reply: Reply) => void } | null = null;
+    let read: ((reply: Reply) => void) | null = null;
+    const listed = (): Reply => ({ result: {
+      reminders: [...(reminder.state === 'pending' ? [reminder] : []), neighbor],
+      count: reminder.state === 'pending' ? 2 : 1,
+      delivered: [history, ...(reminder.state !== 'pending' ? [reminder] : [])],
+    } });
+    const fixture: Window['__reminderFocus'] = {
+      reads: 0, writes: [], waitingForRead: false,
+      releaseWrite(outcome) {
+        if (write === null) throw new Error('No reminder write is waiting.');
+        const pending = write; write = null;
+        if (outcome === 'error') {
+          pending.resolve({ error: { code: 'unavailable', message: 'Fixture reminder request interrupted.' } });
+        } else if (pending.method === 'reminder.update') {
+          if (outcome === 'success') reminder = { ...reminder, at: pending.args.at!, when: 'Moved to the chosen time' };
+          pending.resolve({ result: { updated: outcome === 'success', message: outcome === 'success' ? 'Reminder time changed.' : 'Reminder time could not be changed.' } });
+        } else {
+          if (outcome === 'success') reminder = { ...reminder, state: 'cancelled' };
+          pending.resolve({ result: { cancelled: outcome === 'success', message: outcome === 'success' ? 'Reminder cancelled.' : 'Reminder could not be cancelled.' } });
+        }
+      },
+      releaseRead(outcome) {
+        if (read === null) throw new Error('No reminder read is waiting.');
+        const resolve = read; read = null; fixture.waitingForRead = false;
+        if (outcome === 'missing') reminder = { ...reminder, state: 'delivered', delivered_at: reminder.at };
+        resolve(outcome === 'error'
+          ? { error: { code: 'unavailable', message: 'Fixture reminder list interrupted.' } }
+          : listed());
+      },
+    };
+    window.__reminderFocus = fixture;
+    Object.assign(window, { __connectionsFixture: async (method: string, args: { reminder_id: string; at?: number }) => {
+      if (method === 'reminder.list') {
+        fixture.reads += 1;
+        if (holdRead && fixture.writes.length > 0) return new Promise<Reply>(resolve => { read = resolve; fixture.waitingForRead = true; });
+        return listed();
+      }
+      if (method === 'reminder.update' || method === 'reminder.cancel') {
+        fixture.writes.push({ method, args });
+        return new Promise<Reply>(resolve => { write = { method, args, resolve }; });
+      }
+      return undefined;
+    } });
+  }, { holdRead });
+  await page.goto(`${HARNESS_URL}?reminder_focus=1#data/reminder`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await expect(page.locator('[data-recued-reminders]')).toContainText('Call the dentist');
+};
+
+const startReminderWrite = async (page: Page, action: 'save' | 'cancel', scripted = false): Promise<void> => {
+  const row = page.locator('.reminders-row[data-reminder-id="rem_1"]');
+  await row.getByRole('button', { name: action === 'save' ? 'Change time' : 'Cancel', exact: true }).click();
+  if (action === 'save') await row.locator('[data-recued-reminders-field="at"]').fill('2030-10-17T20:30');
+  const button = row.getByRole('button', { name: action === 'save' ? 'Save' : 'Cancel it', exact: true });
+  if (scripted) {
+    await page.locator('[data-recued-account-menu-trigger]').focus();
+    await button.evaluate(node => (node as HTMLButtonElement).click());
+  } else {
+    await button.focus();
+    await page.keyboard.press('Enter');
+  }
+  await expect.poll(() => page.evaluate(() => window.__reminderFocus.writes.length)).toBe(1);
+};
+
+const expectReminderWrite = async (page: Page, action: 'save' | 'cancel'): Promise<void> => {
+  expect(await page.evaluate(() => window.__reminderFocus.writes)).toEqual([{
+    method: action === 'save' ? 'reminder.update' : 'reminder.cancel',
+    args: { reminder_id: 'rem_1', ...(action === 'save' ? { at: Date.UTC(2030, 9, 17, 20, 30) } : {}) },
+  }]);
+};
+
+type MailFactsPageReply = 'page' | 'empty' | 'missing-email' | 'duplicates' | 'error';
+declare global { interface Window {
+  __mailFactsPaging: {
+    queries: MailFactRowsQuery[];
+    pending: boolean;
+    release(reply: MailFactsPageReply): void;
+  };
+} }
+
+const openMailFactsPagingFixture = async (
+  page: Page, failure: 'initial' | 'first-append' | 'third-page' = 'third-page',
+): Promise<void> => {
+  await page.addInitScript(({ failure }) => {
+    type Reply = { result?: unknown; error?: { code: string; message: string } };
+    const cursor = (id: string): MailFactRowsCursor => ({ email_at: id === 'a' ? 3000 : 2000, slug: 'work', record_id: `mail:${id}` });
+    const row = (id: string): MailFactRow => ({
+      fact: {
+        fact_id: id, type: 'shipment', template_id: null, email: { slug: 'work', record_id: `mail:${id}` },
+        email_at: id === 'a' ? 3000 : id === 'b' ? 2000 : 1000, position: 0, identity_keys: [], thing_id: null,
+        variables: { carrier: 'UPS', tracking_number: `1Z-${id}`, state: 'in_transit' },
+        passes: { carrier: 'standard', tracking_number: 'standard', state: 'standard' },
+        data: { parcel: id }, missing: [], refused: [], complete: true, source_hash: `fixture-${id}`, revision: 1, created_at: 1,
+      },
+      email: { slug: 'work', record_id: `mail:${id}`, from: 'parcels@example.test', subject: `Parcel ${id}`, at: id === 'a' ? 3000 : id === 'b' ? 2000 : 1000 },
+      thing: null, of_email: { index: 1, count: 1 }, runs: [],
+    });
+    let failed = false;
+    let pending: { resolve: (reply: Reply) => void; query: MailFactRowsQuery } | null = null;
+    const fixture: Window['__mailFactsPaging'] = {
+      queries: [], pending: false,
+      release(reply) {
+        if (pending === null) throw new Error('No mail facts page is waiting.');
+        const { resolve, query } = pending; pending = null; fixture.pending = false;
+        if (reply === 'error') resolve({ error: { code: 'unavailable', message: 'Fixture page interrupted.' } });
+        else if (reply === 'empty') resolve({ result: { rows: [] } });
+        else if (reply === 'missing-email') resolve({ result: { rows: [{ ...row('c'), email: null }] } });
+        else if (reply === 'duplicates') resolve({ result: { rows: [row('a'), row('b')] } });
+        else resolve({ result: query.before === undefined ? { rows: [row('a')], next_cursor: cursor('a') }
+          : { rows: [row('b'), row('c')] } });
+      },
+    };
+    window.__mailFactsPaging = fixture;
+    Object.assign(window, { __connectionsFixture: async (method: string, query: MailFactRowsQuery) => {
+      if (method === 'mail_fact.template.list') return { result: { templates: [] } };
+      if (method === 'mail_fact.type.list') return { result: { types: [] } };
+      if (method !== 'mail_fact.facts.list') return undefined;
+      fixture.queries.push(structuredClone(query));
+      if (query.type === 'bill') return { result: { rows: [row('filtered')] } };
+      const shouldFail = failure === 'initial' ? query.before === undefined
+        : query.before?.record_id === (failure === 'first-append' ? 'mail:a' : 'mail:b');
+      if (shouldFail) {
+        if (!failed) { failed = true; return { error: { code: 'unavailable', message: 'Fixture page interrupted.' } }; }
+        return new Promise<Reply>(resolve => { pending = { resolve, query }; fixture.pending = true; });
+      }
+      return { result: query.before === undefined ? { rows: [row('a')], next_cursor: cursor('a') }
+        : { rows: [row('b')], next_cursor: cursor('b') } };
+    } });
+  }, { failure });
+  await page.goto(`${HARNESS_URL}?mail_facts_paging=1#data/mail_fact`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const host = page.locator('[data-recued-mail-facts]');
+  if (failure !== 'initial') {
+    await expect(host.locator('[data-recued-mail-fact-row]')).toHaveCount(1);
+    if (failure === 'third-page') {
+      await host.getByRole('button', { name: 'Load more', exact: true }).click();
+      await expect(host.locator('[data-recued-mail-fact-row]')).toHaveCount(2);
+    }
+    await host.getByRole('button', { name: 'Load more', exact: true }).click();
+  }
+  await expect(host.getByRole('alert')).toContainText('Fixture page interrupted.');
+};
+
+const retryMailFactsPage = async (page: Page): Promise<void> => {
+  const before = await page.evaluate(() => window.__mailFactsPaging.queries.length);
+  const retry = page.locator('[data-recued-mail-facts-focus="retry"]');
+  await retry.focus(); await page.keyboard.press('Enter');
+  await expect.poll(() => page.evaluate(() => window.__mailFactsPaging.pending)).toBe(true);
+  await expect(retry).toHaveText('Retrying…');
+  await expect(retry).toHaveAttribute('aria-busy', 'true');
+  await expect(retry).toHaveAttribute('aria-disabled', 'true');
+  await expect(retry).not.toHaveAttribute('disabled');
+  await expect(retry).toBeFocused();
+  await retry.evaluate(node => { (node as HTMLButtonElement).click(); (node as HTMLButtonElement).click(); });
+  await expect.poll(() => page.evaluate(() => window.__mailFactsPaging.queries.length)).toBe(before + 1);
+};
+
+type MailSendersReply = 'populated' | 'empty' | 'dismissed' | 'error';
+declare global { interface Window {
+  __mailSendersRecovery: {
+    reads: number;
+    writes: MailFactSenderDismissal[];
+    pending: number;
+    release(reply: MailSendersReply): void;
+  };
+} }
+
+const openMailSendersRecoveryFixture = async (page: Page, ready = false): Promise<void> => {
+  await page.addInitScript(({ ready }) => {
+    type Reply = { result?: unknown; error?: { code: string; message: string } };
+    let pending: ((reply: Reply) => void) | null = null;
+    let dismissed = false;
+    const listed = (reply: Exclude<MailSendersReply, 'error'>): MailFactSendersResult => ({
+      senders: reply === 'populated' && !dismissed ? [{
+        address: 'news@club.example.test', count: 3, subjects: [{ subject: 'Club news', count: 3 }],
+        newest: { slug: 'work', record_id: 'mail:9', from: 'news@club.example.test', subject: 'Club news', at: 1 },
+      }] : [],
+      dismissed: dismissed ? ['news@club.example.test'] : reply === 'dismissed' ? ['old@club.example.test'] : [],
+      days: 30, scanned: 40,
+    });
+    const interrupted: Reply = { error: { code: 'unavailable', message: 'Fixture sender count interrupted.' } };
+    const fixture: Window['__mailSendersRecovery'] = {
+      reads: 0, writes: [], pending: 0,
+      release(reply) {
+        if (pending === null) throw new Error('No sender read is waiting.');
+        const resolve = pending; pending = null; fixture.pending = 0;
+        resolve(reply === 'error' ? interrupted : { result: listed(reply) });
+      },
+    };
+    window.__mailSendersRecovery = fixture;
+    Object.assign(window, { __connectionsFixture: async (method: string, args: MailFactSenderDismissal) => {
+      if (method === 'mail_fact.facts.list') return { result: { rows: [] } };
+      if (method === 'mail_fact.template.list') return { result: { templates: [] } };
+      if (method === 'mail_fact.type.list') return { result: { types: [] } };
+      if (method === 'mail_fact.senders.list') {
+        fixture.reads += 1;
+        if (fixture.reads === 1) return ready ? { result: listed('populated') } : interrupted;
+        if (ready && fixture.reads === 2 && fixture.writes.length > 0) return interrupted;
+        return new Promise<Reply>(resolve => { pending = resolve; fixture.pending = 1; });
+      }
+      if (method === 'mail_fact.senders.dismiss') {
+        fixture.writes.push(structuredClone(args)); dismissed = args.dismissed;
+        return { result: args };
+      }
+      return undefined;
+    } });
+  }, { ready });
+  await page.goto(`${HARNESS_URL}?mail_senders_recovery=1#data/mail_fact/senders`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const host = page.locator('[data-recued-mail-facts="senders"]');
+  if (ready) await expect(host.locator('[data-recued-mail-fact-sender]')).toHaveCount(1);
+  else {
+    await expect(host.getByRole('alert')).toContainText('Fixture sender count interrupted.');
+    await expect(host.getByText('Loading…', { exact: true })).toHaveCount(0);
+    await expect(host.getByText('Counting your mail…', { exact: true })).toHaveCount(0);
+  }
+};
+
+const retryMailSendersRead = async (page: Page): Promise<void> => {
+  const before = await page.evaluate(() => window.__mailSendersRecovery.reads);
+  const retry = page.locator('[data-recued-mail-facts-focus="snd:retry"]');
+  await retry.focus(); await page.keyboard.press('Enter');
+  await expect(retry).toHaveText('Retrying…');
+  await expect(retry).toHaveAttribute('aria-busy', 'true');
+  await expect(retry).toHaveAttribute('aria-disabled', 'true');
+  await expect(retry).not.toHaveAttribute('disabled');
+  await expect(retry).toBeFocused();
+  await retry.evaluate(node => { (node as HTMLButtonElement).click(); (node as HTMLButtonElement).click(); });
+  await expect.poll(() => page.evaluate(() => window.__mailSendersRecovery.pending)).toBe(1);
+  await expect.poll(() => page.evaluate(() => window.__mailSendersRecovery.reads)).toBe(before + 1);
+};
 
 installFullAppHooks();
 
@@ -3138,12 +3394,15 @@ test('Data contains long Records identities and diagnostics on a narrow phone', 
     }
   };
 
+  // The pack by its name and publisher; the kind and field read as words. The identities
+  // themselves stay in the data attributes, the record header and the purge confirmation.
+  const longPackName = `Pack ${'Identifier'.repeat(10)}`;
   const namespace = page.locator('.records-namespace');
-  await expect(namespace.locator('strong')).toHaveText(longPack);
-  await expect(namespace.locator('span')).toHaveText(longPublisher);
-  await expect(page.locator('.records-pack-summary h3')).toHaveText(longPack);
+  await expect(namespace.locator('strong')).toHaveText(longPackName);
+  await expect(namespace.locator('span')).toHaveText(`by ${longPublisher}`);
+  await expect(page.locator('.records-pack-summary h3')).toHaveText(longPackName);
   await expect(page.locator('[data-action="records-select-kind"]'))
-    .toContainText(longKind);
+    .toContainText(`Entity ${'kind'.repeat(18)}`);
   await expect(page.locator(`td[data-field="${longField}"]`))
     .toHaveText(longTitle);
   await expect(page.locator('td[data-field="id"]')).toHaveText(longRecordId);
@@ -3175,8 +3434,9 @@ test('Data contains long Records identities and diagnostics on a narrow phone', 
   const detail = page.locator('.records-detail');
   await expect(page.locator('#records-detail-title')).toHaveText(longRecordId);
   await expect(detail.locator('header small')).toContainText(longPackRef);
-  await expect(detail.locator('dt').filter({ hasText: longField }))
-    .toHaveText(longField);
+  const longFieldLabel = `Field ${'identifier'.repeat(18)}`;
+  await expect(detail.locator('dt').filter({ hasText: longFieldLabel }))
+    .toHaveText(longFieldLabel);
   await expect(detail.locator('dd').filter({ hasText: longTitle }))
     .toHaveText(longTitle);
   await expect(detail.locator('.records-relationship-impact .records-ref-link'))
@@ -4183,4 +4443,276 @@ test('Data returns keyboard focus from record detail to its exact row', async ({
 
   await expect(record).toBeVisible();
   await expect(record).toBeFocused();
+});
+
+for (const width of [390, 1280]) {
+  for (const action of ['save', 'cancel'] as const) {
+    for (const outcome of ['success', 'refused', 'error'] as const) {
+      for (const moveAway of [false, true]) {
+        test(`Data Reminders ${action} ${outcome} ${moveAway ? 'respects moved' : 'returns owned'} focus at ${width}px`, async ({ page }) => {
+          await page.setViewportSize({ width, height: 900 });
+          await openReminderFocusFixture(page);
+          await startReminderWrite(page, action);
+          const notice = page.locator('[data-recued-reminders-focus="notice"]');
+          await expect(notice).toHaveText(action === 'save' ? 'Saving reminder…' : 'Cancelling reminder…');
+          await expect(notice).toBeFocused();
+          const outside = page.locator('[data-recued-account-menu-trigger]');
+          if (moveAway) await outside.focus();
+          await page.evaluate(outcome => window.__reminderFocus.releaseWrite(outcome), outcome);
+
+          const host = page.locator('[data-recued-reminders]');
+          const message = outcome === 'error' ? 'Fixture reminder request interrupted.'
+            : action === 'save' ? (outcome === 'success' ? 'Reminder time changed.' : 'Reminder time could not be changed.')
+              : outcome === 'success' ? 'Reminder cancelled.' : 'Reminder could not be cancelled.';
+          await expect(host).toContainText(message);
+          if (moveAway) await expect(outside).toBeFocused();
+          else await expect(page.locator(`[data-recued-reminders-focus="${action === 'save' ? (outcome === 'success' ? 'edit:rem_1' : 'at:rem_1') : 'notice'}"]`)).toBeFocused();
+          if (action === 'save' && outcome !== 'success') {
+            await expect(host.locator('[data-recued-reminders-field="at"]')).toHaveValue('2030-10-17T20:30');
+          }
+          expect(await page.evaluate(() => window.__reminderFocus.reads)).toBe(outcome === 'error' ? 1 : 2);
+          await expectReminderWrite(page, action);
+        });
+      }
+    }
+  }
+}
+
+for (const action of ['save', 'cancel'] as const) {
+  for (const readOutcome of ['current', 'missing', 'error'] as const) {
+    for (const moveAway of [false, true]) {
+      test(`Data Reminders ${action} keeps ${moveAway ? 'another row’s' : 'owned'} focus through a delayed ${readOutcome} list`, async ({ page }) => {
+        await page.setViewportSize({ width: 390, height: 844 });
+        await openReminderFocusFixture(page, true);
+        await startReminderWrite(page, action);
+        await page.evaluate(() => window.__reminderFocus.releaseWrite('success'));
+        await expect.poll(() => page.evaluate(() => window.__reminderFocus.waitingForRead)).toBe(true);
+        const notice = page.locator('[data-recued-reminders-focus="notice"]');
+        await expect(notice).toBeFocused();
+        const neighbor = page.locator('[data-recued-reminders-focus="edit:rem_2"]');
+        if (moveAway) await neighbor.focus();
+        await page.evaluate(outcome => window.__reminderFocus.releaseRead(outcome), readOutcome);
+        const host = page.locator('[data-recued-reminders]');
+        await expect(notice).toHaveText(action === 'save' ? 'Reminder time changed.' : 'Reminder cancelled.');
+        if (readOutcome === 'error') await expect(host.getByRole('alert')).toHaveText('Fixture reminder list interrupted.');
+        if (readOutcome === 'missing' || (action === 'cancel' && readOutcome !== 'error')) {
+          await expect(host.locator('.reminders-list[aria-label] [data-reminder-id="rem_1"]')).toHaveCount(0);
+        }
+        if (moveAway) await expect(neighbor).toBeFocused();
+        else await expect(action === 'save' && readOutcome !== 'missing'
+          ? page.locator('[data-recued-reminders-focus="edit:rem_1"]') : notice).toBeFocused();
+        expect(await page.evaluate(() => window.__reminderFocus.reads)).toBe(2);
+        await expectReminderWrite(page, action);
+      });
+    }
+  }
+
+  test(`Data Reminders ${action} respects history focus during its write`, async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await openReminderFocusFixture(page);
+    await startReminderWrite(page, action);
+    const history = page.locator('[data-recued-reminders-focus="history"]');
+    await history.focus();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('.reminders-history')).toHaveAttribute('open', '');
+    await page.evaluate(() => window.__reminderFocus.releaseWrite('success'));
+    await expect(page.locator('[data-recued-reminders-focus="notice"]')).toHaveText(action === 'save' ? 'Reminder time changed.' : 'Reminder cancelled.');
+    await expect(history).toBeFocused();
+    await expect(page.locator('.reminders-history')).toHaveAttribute('open', '');
+    await expectReminderWrite(page, action);
+  });
+
+  test(`Data Reminders scripted ${action} leaves outside focus throughout the write`, async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await openReminderFocusFixture(page);
+    await startReminderWrite(page, action, true);
+    const outside = page.locator('[data-recued-account-menu-trigger]');
+    await expect(outside).toBeFocused();
+    await page.evaluate(() => window.__reminderFocus.releaseWrite('success'));
+    await expect(page.locator('[data-recued-reminders-focus="notice"]')).toHaveText(action === 'save' ? 'Reminder time changed.' : 'Reminder cancelled.');
+    await expect(outside).toBeFocused();
+    await expectReminderWrite(page, action);
+  });
+}
+
+for (const width of [390, 1280]) {
+  for (const failure of ['first-append', 'third-page'] as const) {
+    for (const moveAway of [false, true]) {
+      test(`Data Mail facts retries ${failure} with ${moveAway ? 'moved' : 'owned'} focus at ${width}px`, async ({ page }) => {
+        await page.setViewportSize({ width, height: 900 });
+        await openMailFactsPagingFixture(page, failure);
+        const host = page.locator('[data-recued-mail-facts]');
+        const rows = host.locator('[data-recued-mail-fact-row]');
+        const count = failure === 'third-page' ? 2 : 1;
+        const failedQuery = await page.evaluate(() => window.__mailFactsPaging.queries.at(-1));
+        await host.locator('[data-recued-mail-facts-focus="data:a"]').click();
+        await retryMailFactsPage(page);
+        await expect(rows).toHaveCount(count);
+        await page.evaluate(() => window.__mailFactsPaging.release('error'));
+        const retry = host.locator('[data-recued-mail-facts-focus="retry"]');
+        await expect(retry).toHaveText('Try again');
+        await expect(retry).toBeFocused();
+        await expect(retry).not.toHaveAttribute('aria-busy');
+        await expect(retry).not.toHaveAttribute('aria-disabled');
+        await retryMailFactsPage(page);
+        const outside = page.locator('[data-recued-account-menu-trigger]');
+        if (moveAway) await outside.focus();
+        await page.evaluate(() => window.__mailFactsPaging.release('page'));
+        await expect(rows).toHaveCount(3);
+        expect(await rows.evaluateAll(nodes => nodes.map(node => node.getAttribute('data-recued-mail-fact-row')))).toEqual(['a', 'b', 'c']);
+        await expect(host.getByRole('alert')).toHaveCount(0);
+        await expect(host.locator('[data-recued-mail-fact-row="a"] details')).toHaveAttribute('open', '');
+        await expect(host.locator('[data-recued-mail-facts-focus="list-count"]')).toHaveText('3 facts shown');
+        if (moveAway) await expect(outside).toBeFocused();
+        else await expect(host.locator(`[data-recued-mail-facts-focus="mail:${failure === 'third-page' ? 'c' : 'b'}"]`)).toBeFocused();
+        const queries = await page.evaluate(() => window.__mailFactsPaging.queries);
+        expect(queries.slice(-3)).toEqual([failedQuery, failedQuery, failedQuery]);
+        expect(queries).toHaveLength(failure === 'third-page' ? 5 : 4);
+      });
+    }
+  }
+
+  for (const reply of ['page', 'empty'] as const) {
+    test(`Data Mail facts retries an initial failure to ${reply} at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 900 });
+      await openMailFactsPagingFixture(page, 'initial');
+      await retryMailFactsPage(page);
+      await page.evaluate(reply => window.__mailFactsPaging.release(reply), reply);
+      const host = page.locator('[data-recued-mail-facts]');
+      await expect(host.getByRole('alert')).toHaveCount(0);
+      await expect(host.locator('[data-recued-mail-fact-row]')).toHaveCount(reply === 'page' ? 1 : 0);
+      await expect(host.locator(`[data-recued-mail-facts-focus="${reply === 'page' ? 'mail:a' : 'view:facts'}"]`)).toBeFocused();
+      if (reply === 'empty') await expect(host).toContainText('No facts yet.');
+      expect(await page.evaluate(() => window.__mailFactsPaging.queries)).toEqual([{ limit: 50 }, { limit: 50 }]);
+    });
+  }
+}
+
+for (const reply of ['page', 'error'] as const) {
+  test(`Data Mail facts retires a page retry before its stale ${reply} reply`, async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await openMailFactsPagingFixture(page);
+    await retryMailFactsPage(page);
+    const type = page.locator('[data-recued-mail-facts-filter="type"]');
+    await type.selectOption('bill');
+    const host = page.locator('[data-recued-mail-facts]');
+    await expect(host.locator('[data-recued-mail-fact-row]')).toHaveAttribute('data-recued-mail-fact-row', 'filtered');
+    await type.focus();
+    await page.evaluate(reply => window.__mailFactsPaging.release(reply), reply);
+    // Let the released transport reply and its route callback finish painting.
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await expect(host.getByRole('alert')).toHaveCount(0);
+    await expect(host.locator('[data-recued-mail-fact-row]')).toHaveAttribute('data-recued-mail-fact-row', 'filtered');
+    await expect(type).toBeFocused();
+    await expect(type).toHaveValue('bill');
+    expect(await page.evaluate(() => window.__mailFactsPaging.queries.at(-1))).toEqual({ limit: 50, type: 'bill' });
+  });
+}
+
+for (const reply of ['empty', 'missing-email', 'duplicates'] as const) {
+  for (const moveAway of [false, true]) {
+    test(`Data Mail facts ends a ${reply} page retry with ${moveAway ? 'moved' : 'owned'} focus`, async ({ page }) => {
+      await page.setViewportSize({ width: 390, height: 844 });
+      await openMailFactsPagingFixture(page);
+      await retryMailFactsPage(page);
+      const outside = page.locator('[data-recued-account-menu-trigger]');
+      if (moveAway) await outside.focus();
+      await page.evaluate(reply => window.__mailFactsPaging.release(reply), reply);
+      const host = page.locator('[data-recued-mail-facts]');
+      await expect(host.getByRole('alert')).toHaveCount(0);
+      const count = host.locator('[data-recued-mail-facts-focus="list-count"]');
+      await expect(count).toHaveText(`${reply === 'missing-email' ? 3 : 2} facts shown`);
+      await expect(host.getByRole('button', { name: 'Load more', exact: true })).toHaveCount(0);
+      if (moveAway) await expect(outside).toBeFocused();
+      else await expect(count).toBeFocused();
+    });
+  }
+}
+
+for (const width of [390, 1280]) {
+  for (const reply of ['populated', 'empty', 'dismissed'] as const) {
+    for (const moveAway of [false, true]) {
+      test(`Data Mail senders recovers to ${reply} with ${moveAway ? 'moved' : 'owned'} focus at ${width}px`, async ({ page }) => {
+        await page.setViewportSize({ width, height: 900 });
+        await openMailSendersRecoveryFixture(page);
+        await retryMailSendersRead(page);
+        const outside = page.locator('[data-recued-account-menu-trigger]');
+        if (moveAway) await outside.focus();
+        await page.evaluate(reply => window.__mailSendersRecovery.release(reply), reply);
+        const host = page.locator('[data-recued-mail-facts="senders"]');
+        await expect(host.getByRole('alert')).toHaveCount(0);
+        await expect(host.locator('[data-recued-mail-fact-sender]')).toHaveCount(reply === 'populated' ? 1 : 0);
+        if (reply === 'empty') await expect(host).toContainText('No sender without a template');
+        if (reply === 'dismissed') await expect(host.locator('[data-recued-mail-facts-focus="snd:dismissed"]')).toHaveText('Dismissed (1)');
+        if (moveAway) await expect(outside).toBeFocused();
+        else {
+          const key = reply === 'populated' ? 'snd:make:news@club.example.test' : reply === 'dismissed' ? 'snd:dismissed' : 'view:senders';
+          await expect(host.locator(`[data-recued-mail-facts-focus="${key}"]`)).toBeFocused();
+        }
+        await expect(page).toHaveURL(/#data\/mail_fact\/senders$/);
+        expect(await page.evaluate(() => window.__mailSendersRecovery.reads)).toBe(2);
+        expect(await page.evaluate(() => window.__app.rpcCallCount('mail_fact.senders.dismiss'))).toBe(0);
+      });
+    }
+  }
+
+  test(`Data Mail senders keeps repeated read failures retryable at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await openMailSendersRecoveryFixture(page);
+    await retryMailSendersRead(page);
+    await page.evaluate(() => window.__mailSendersRecovery.release('error'));
+    const host = page.locator('[data-recued-mail-facts="senders"]');
+    const retry = host.locator('[data-recued-mail-facts-focus="snd:retry"]');
+    await expect(retry).toHaveText('Try again');
+    await expect(retry).not.toHaveAttribute('aria-busy');
+    await expect(retry).not.toHaveAttribute('aria-disabled');
+    await expect(retry).toBeFocused();
+    await expect(host.getByText('Loading…', { exact: true })).toHaveCount(0);
+    await retryMailSendersRead(page);
+    await page.evaluate(() => window.__mailSendersRecovery.release('populated'));
+    await expect(host.getByRole('alert')).toHaveCount(0);
+    await expect(host.locator('[data-recued-mail-facts-focus="snd:make:news@club.example.test"]')).toBeFocused();
+    expect(await page.evaluate(() => window.__mailSendersRecovery.reads)).toBe(3);
+    expect(await page.evaluate(() => window.__mailSendersRecovery.writes)).toEqual([]);
+  });
+}
+
+for (const reply of ['populated', 'error'] as const) {
+  test(`Data Mail senders respects a view change before a late ${reply} reply`, async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await openMailSendersRecoveryFixture(page);
+    await retryMailSendersRead(page);
+    const facts = page.locator('[data-recued-mail-facts-focus="view:facts"]');
+    await facts.focus(); await page.keyboard.press('Enter');
+    await expect(page.locator('[data-recued-mail-facts="facts"]')).toBeVisible();
+    await page.evaluate(reply => window.__mailSendersRecovery.release(reply), reply);
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await expect(facts).toBeFocused();
+    const senders = page.locator('[data-recued-mail-facts-focus="view:senders"]');
+    await senders.focus(); await page.keyboard.press('Enter');
+    await expect.poll(() => page.evaluate(() => window.__mailSendersRecovery.pending)).toBe(1);
+    await page.evaluate(() => window.__mailSendersRecovery.release('populated'));
+    const host = page.locator('[data-recued-mail-facts="senders"]');
+    await expect(host.locator('[data-recued-mail-fact-sender]')).toHaveCount(1);
+    await expect(host.getByRole('alert')).toHaveCount(0);
+    await expect(senders).toBeFocused();
+    expect(await page.evaluate(() => window.__mailSendersRecovery.reads)).toBe(3);
+    expect(await page.evaluate(() => window.__mailSendersRecovery.writes)).toEqual([]);
+  });
+}
+
+test('Data Mail senders retries the read after dismissal without repeating the write', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openMailSendersRecoveryFixture(page, true);
+  const host = page.locator('[data-recued-mail-facts="senders"]');
+  await host.getByRole('button', { name: 'Dismiss', exact: true }).click();
+  await expect(host.getByRole('alert')).toContainText('Fixture sender count interrupted.');
+  await retryMailSendersRead(page);
+  await page.evaluate(() => window.__mailSendersRecovery.release('populated'));
+  await expect(host.locator('[data-recued-mail-fact-sender]')).toHaveCount(0);
+  await expect(host.getByRole('alert')).toHaveCount(0);
+  await expect(host.locator('[data-recued-mail-facts-focus="snd:dismissed"]')).toBeFocused();
+  expect(await page.evaluate(() => window.__mailSendersRecovery.reads)).toBe(3);
+  expect(await page.evaluate(() => window.__mailSendersRecovery.writes)).toEqual([{ address: 'news@club.example.test', dismissed: true }]);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('mail_fact.senders.dismiss'))).toBe(1);
 });

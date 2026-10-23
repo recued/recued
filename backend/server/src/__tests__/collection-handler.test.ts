@@ -420,6 +420,7 @@ describe('makeCollectionHandlers', () => {
       'collection.mail.enrollManagedOAuth',
       'collection.mail.enrollOAuth',
       'collection.mail.list',
+      'collection.mail.resync',
       'collection.mail.updateCredentials',
       // D-177 N.12 — `collection.mail.send` is intentionally NOT wired
       // (gateway internal executor only); see the d-177-n12 ratchet test.

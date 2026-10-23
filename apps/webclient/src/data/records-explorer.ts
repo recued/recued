@@ -13,9 +13,9 @@ import type {
 // One byte formatter for the whole product — B / KB / MB / GB / TB. These
 // numbers are quota ceilings (`1_000_000`) and payload totals, and both read as
 // digit soup at `.toLocaleString()` width.
-import { formatPressureBytes } from '@recued/contracts';
+import { formatPressureBytes, isRecordsQuotaUnlimited, recordFieldLabel } from '@recued/contracts';
 import { e, renderReferenceLink } from '@recued/ui-shared';
-import { recordsViewHasDraft, renderRecordsViewControls, type RecordsBrowseState } from './records-view-controls.js';
+import { recordsFieldLabel, recordsViewHasDraft, renderRecordsViewControls, type RecordsBrowseState } from './records-view-controls.js';
 
 export const RECORDS_SELECT_NAMESPACE_ACTION = 'records-select-namespace';
 export const RECORDS_SELECT_KIND_ACTION = 'records-select-kind';
@@ -98,6 +98,14 @@ export interface RecordsExplorerState extends RecordsBrowseState {
 const namespaceKey = (ns: RecordsNamespaceView): string =>
   `${ns.owner.publisher}/${ns.owner.pack_slug}`;
 
+/** The pack as the owner knows it: its manifest name ("Decision Log") when the server sent one,
+ *  else its slug made readable ("Decision log"). ⛔ A label only — `namespaceKey` stays the
+ *  identity (the record header, the purge confirmation, every data attribute). */
+const packLabel = (ns: RecordsNamespaceView): string => {
+  const name = typeof ns.display_name === 'string' ? ns.display_name.trim() : '';
+  return name !== '' ? name : recordFieldLabel(ns.owner.pack_slug);
+};
+
 const RECORDS_KIND_PANEL_ID = 'recued-records-kind-panel';
 const recordsKindTabId = (kind: string): string =>
   `recued-records-kind-tab-${encodeURIComponent(kind)}`;
@@ -140,6 +148,16 @@ const stateLabel = (namespace: RecordsNamespaceView): string => {
 const quotaPercent = (used: number, limit: number): string =>
   limit === 0 ? (used === 0 ? '0' : '∞') : `${Math.round((used / limit) * 100)}%`;
 
+const count = (n: number): string => n.toLocaleString();
+
+/** "12 / 5,000,000 · 0%" against a limit; "12 · no limit" when none is set. ⛔ An unset limit
+ *  arrives as `RECORDS_QUOTA_NO_LIMIT`, a number that printed as "9,007,199,254,740,991" rows
+ *  and "8192.00 TB" (the global limits have no default). */
+const quotaUsage = (used: number, limit: number, format: (n: number) => string): string =>
+  isRecordsQuotaUnlimited(limit)
+    ? `${format(used)} <small>no limit</small>`
+    : `${format(used)} / ${format(limit)} <small>${quotaPercent(used, limit)}</small>`;
+
 const renderNamespaceNav = (state: RecordsExplorerState): string => {
   if (state.namespaces.length === 0) {
     return '<p class="records-empty">No pack-owned Records are installed or retained.</p>';
@@ -153,8 +171,8 @@ const renderNamespaceNav = (state: RecordsExplorerState): string => {
         ${recordsControlsLocked(state) ? 'aria-disabled="true"' : ''}
         ${loading ? 'aria-busy="true"' : ''}
         data-action="${RECORDS_SELECT_NAMESPACE_ACTION}" ${RECORDS_NAMESPACE_ATTR}="${e(key)}">
-        <strong>${e(namespace.owner.pack_slug)}</strong>
-        <span>${e(namespace.owner.publisher)}</span>
+        <strong>${e(packLabel(namespace))}</strong>
+        <span>by ${e(namespace.owner.publisher)}</span>
         <small data-state="${e(namespace.state.state)}">${e(stateLabel(namespace))}</small>
       </button>`;
     }).join('')}
@@ -164,19 +182,19 @@ const renderNamespaceNav = (state: RecordsExplorerState): string => {
 const renderQuota = (namespace: RecordsNamespaceView): string => {
   const quota = namespace.quota;
   return `<dl class="records-quota" aria-label="Records quota">
-    <div><dt>Rows</dt><dd>${quota.row_count.toLocaleString()} / ${quota.row_limit.toLocaleString()} <small>${quotaPercent(quota.row_count, quota.row_limit)}</small></dd></div>
-    <div><dt>Payload</dt><dd>${formatPressureBytes(quota.payload_bytes)} / ${formatPressureBytes(quota.byte_limit)} <small>${quotaPercent(quota.payload_bytes, quota.byte_limit)}</small></dd></div>
-    <div><dt>Event backlog</dt><dd>${quota.outbox_count.toLocaleString()} / ${quota.outbox_limit.toLocaleString()} <small>${quotaPercent(quota.outbox_count, quota.outbox_limit)}</small></dd></div>
+    <div><dt>Rows</dt><dd>${quotaUsage(quota.row_count, quota.row_limit, count)}</dd></div>
+    <div><dt>Payload</dt><dd>${quotaUsage(quota.payload_bytes, quota.byte_limit, formatPressureBytes)}</dd></div>
+    <div><dt>Event backlog</dt><dd>${quotaUsage(quota.outbox_count, quota.outbox_limit, count)}</dd></div>
   </dl>`;
 };
 
 const renderGlobalQuota = (quota: RecordsGlobalQuotaSnapshot | null): string => {
   if (quota === null) return '';
   return `<dl class="records-quota records-global-quota" aria-label="Global Records quota">
-    <div><dt>All Records rows</dt><dd>${quota.row_count.toLocaleString()} / ${quota.row_limit.toLocaleString()} <small>${quotaPercent(quota.row_count, quota.row_limit)}</small></dd></div>
-    <div><dt>All payload</dt><dd>${formatPressureBytes(quota.payload_bytes)} / ${formatPressureBytes(quota.byte_limit)} <small>${quotaPercent(quota.payload_bytes, quota.byte_limit)}</small></dd></div>
+    <div><dt>All Records rows</dt><dd>${quotaUsage(quota.row_count, quota.row_limit, count)}</dd></div>
+    <div><dt>All payload</dt><dd>${quotaUsage(quota.payload_bytes, quota.byte_limit, formatPressureBytes)}</dd></div>
     <div><dt>Migration reserve</dt><dd>${formatPressureBytes(quota.reserved_payload_bytes)}</dd></div>
-    <div><dt>All event backlog</dt><dd>${quota.outbox_count.toLocaleString()} / ${quota.outbox_limit.toLocaleString()} <small>${quotaPercent(quota.outbox_count, quota.outbox_limit)}</small></dd></div>
+    <div><dt>All event backlog</dt><dd>${quotaUsage(quota.outbox_count, quota.outbox_limit, count)}</dd></div>
   </dl>`;
 };
 
@@ -193,7 +211,7 @@ const renderKindNav = (state: RecordsExplorerState): string => {
       ${state.loadingKind === kind.kind ? 'aria-busy="true"' : ''}
       aria-selected="${kind.kind === state.selectedKind ? 'true' : 'false'}"
       tabindex="${kind.kind === tabStop ? '0' : '-1'}">
-      ${e(kind.kind)} <span>${kind.rows.toLocaleString()}</span>
+      ${e(recordFieldLabel(kind.kind))} <span>${kind.rows.toLocaleString()}</span>
     </button>`).join('')}
   </div>`;
 };
@@ -246,9 +264,18 @@ const renderList = (state: RecordsExplorerState): string => {
   const entity = namespace.schema.entities[kind];
   if (entity === undefined) return '<p role="alert">The installed schema no longer contains this kind.</p>';
   const fields = entity.fields.slice(0, 6);
-  if (state.records.length === 0) return `<p class="records-empty">${state.loading ? 'Loading results…' : state.view.filters ? 'No records match what you picked.' : 'No records in this kind.'}</p>`;
+  if (state.records.length === 0) {
+    const filtered = Object.keys(state.view.filters ?? {}).length > 0;
+    const locked = recordsControlsLocked(state) || state.exporting || state.outboxRefreshing
+      || state.changesRefreshing || state.markingReviewed;
+    return `<div class="records-empty-state"><p class="records-empty">${state.loading ? 'Loading results…'
+      : state.error ? 'No records are shown. Check the message above.'
+      : filtered ? 'No records match the applied filters.' : 'No records in this kind.'}</p>
+      ${filtered && !state.loading ? `<button type="button" data-action="records-clear-filters"${locked ? ' aria-disabled="true"' : ''}>Clear filters</button>` : ''}
+    </div>`;
+  }
   return `<div class="records-table-scroll" data-recued-scroll-rail><table class="records-table">
-    <thead><tr>${fields.map((field) => `<th>${e(field.key)}${field.privacy ? `<small>${e(field.privacy)}</small>` : ''}</th>`).join('')}<th>Revision</th></tr></thead>
+    <thead><tr>${fields.map((field) => `<th scope="col">${e(recordsFieldLabel(field))}${field.privacy ? `<small>${e(field.privacy)}</small>` : ''}</th>`).join('')}<th scope="col">Revision</th></tr></thead>
     <tbody>${state.records.map((record) => `<tr data-action="${RECORDS_OPEN_RECORD_ACTION}"
       ${RECORDS_ID_ATTR}="${e(record.id)}">${fields.map((field) => renderCell(record, field)).join('')}
       <td>v${record._record.version} · r${record._record.revision}
@@ -270,7 +297,7 @@ const renderDetail = (state: RecordsExplorerState): string => {
       <button type="button" data-action="${RECORDS_CLOSE_RECORD_ACTION}" ${recordsControlsLocked(state) ? 'aria-disabled="true"' : ''}>Back</button></header>
     <dl>${entity.fields.map((field) => {
       const value = field.kind === 'id' ? record.id : getPath(record, field.key);
-      return `<div><dt>${e(field.key)} ${field.privacy ? `<small class="records-pii-tag">${e(field.privacy)}</small>` : ''}</dt>
+      return `<div><dt>${e(recordsFieldLabel(field))} ${field.privacy ? `<small class="records-pii-tag">${e(field.privacy)}</small>` : ''}</dt>
         <dd>${field.kind === 'ref' ? renderReference(value, recordsControlsLocked(state)) : e(displayValue(value))}</dd><small>${e(field.kind)} · ${e(field.slot)}${field.required ? ' · required' : ''}</small></div>`;
     }).join('')}</dl>
     <div class="records-detail-meta">Pack version ${record._record.version} · revision ${record._record.revision} · created ${new Date(record._record.created_at).toISOString()} · updated ${new Date(record._record.updated_at).toISOString()}</div>
@@ -434,7 +461,7 @@ export const renderRecordsExplorer = (state: RecordsExplorerState): string => {
     ${state.error && state.detail === null ? `<p role="alert">${e(state.error)}</p>` : ''}
     ${state.loading ? '<p aria-live="polite">Loading Records…</p>' : ''}
     <div class="records-layout">${renderNamespaceNav(state)}
-      <section class="records-content" aria-label="Record contents">${namespace === null ? '' : `<section class="records-pack-summary"><div><h3>${e(namespace.owner.pack_slug)}</h3><p>${e(namespace.owner.publisher)} · ${e(stateLabel(namespace))}</p>${renderPurge(state, namespace)}</div>${renderQuota(namespace)}</section>
+      <section class="records-content" aria-label="Record contents">${namespace === null ? '' : `<section class="records-pack-summary"><div><h3>${e(packLabel(namespace))}</h3><p>by ${e(namespace.owner.publisher)} · ${e(stateLabel(namespace))}</p>${renderPurge(state, namespace)}</div>${renderQuota(namespace)}</section>
         ${renderChanges(state)}
         ${renderOutbox(state)}
         ${renderKindNav(state)}
@@ -461,6 +488,7 @@ export const renderRecordsExplorer = (state: RecordsExplorerState): string => {
 };
 
 export const RECORDS_EXPLORER_STYLES = `
+  .records-applied-view{display:grid;gap:6px;min-width:0;margin:12px 0;font-size:13px;overflow-wrap:anywhere}.records-applied-view p{margin:0}.records-applied-filters{display:flex;flex-wrap:wrap;gap:6px;min-width:0;margin:0;padding:0;list-style:none}.records-applied-filters li{box-sizing:border-box;min-width:0;max-width:100%;padding:5px 8px;border:1px solid var(--border,#e4e7ec);border-radius:6px;white-space:pre-wrap}.records-empty-state{min-width:0;overflow-wrap:anywhere}
   .records-view-controls{display:grid;gap:10px;margin:16px 0;min-width:0}.records-filter-row,.records-view-actions,.records-pagination{display:flex;align-items:end;gap:8px;flex-wrap:wrap;min-width:0}.records-view-controls label{display:grid;gap:4px;flex:1 1 150px;min-width:0;max-width:100%}.records-view-controls input,.records-view-controls select{width:100%;min-width:0}.records-view-controls select{box-sizing:border-box;min-height:38px;padding:7px 9px;border:1px solid var(--border,#d0d5dd);border-radius:6px;background:var(--surface,#fff);color:var(--fg,#101828);font:inherit}.records-view-controls .records-help{margin:0;overflow-wrap:anywhere}.records-pagination{align-items:center;margin-top:12px}.records-view-controls button:disabled{opacity:.6;cursor:default}
   .records-explorer{display:grid;gap:18px;min-width:0}.records-heading{display:flex;justify-content:space-between;gap:20px;align-items:end}.records-heading>*{min-width:0}.records-heading h2{margin:2px 0}.records-heading p{max-width:760px;margin:6px 0;color:var(--muted,#667085)}
   .records-explorer button{box-sizing:border-box;min-height:36px;padding:7px 10px;border:1px solid var(--border,#d0d5dd);border-radius:6px;background:var(--surface,#fff);color:var(--fg,#101828);font:inherit;font-size:13px;line-height:1.2;cursor:pointer}.records-explorer button:hover:not([aria-disabled=true]){border-color:var(--border-strong,var(--border,#98a2b3));background:var(--surface-sunk,var(--surface-subtle,#f7f8fa))}.records-explorer button:focus-visible,.records-explorer summary:focus-visible{outline:2px solid var(--accent,#315efb);outline-offset:1px}.records-explorer summary{box-sizing:border-box;min-height:36px;padding:8px 4px;border-radius:6px;cursor:pointer}.records-explorer input{box-sizing:border-box;min-height:38px;padding:7px 9px;border:1px solid var(--border,#d0d5dd);border-radius:6px;background:var(--surface,#fff);color:var(--fg,#101828);font:inherit}

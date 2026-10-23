@@ -267,6 +267,7 @@ export const OP_STEP_PASSTHROUGH_KNOBS = [
   'fail_on',
   'stop_when',
   'fail_kind',
+  'fail_reason',
   'cache',
   'foreach',
   'pii_fields',

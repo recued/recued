@@ -24,6 +24,7 @@ import {
 } from '@recued/ui-shared/server-settings/housekeeping';
 
 import { formatPressureBytes, pressureSurfaceRows } from '@recued/contracts';
+import { button } from '@recued/ui-shared/primitives';
 import type {
   HousekeepingTaskStatus,
   PressureDetails,
@@ -44,6 +45,8 @@ const ACTION_RUN_NOW_OPEN = 'housekeeping-run-now-open';
 const ACTION_RUN_NOW_CONFIRM = 'housekeeping-run-now-confirm';
 const ACTION_RUN_NOW_CANCEL = 'housekeeping-run-now-cancel';
 const ACTION_RECLAIM = 'maintenance-storage-reclaim';
+const ACTION_STATUS_RETRY = 'maintenance-status-retry';
+const READ_FOCUS_ATTR = 'data-recued-maintenance-read-focus';
 
 /** Stable hook for the storage section. */
 export const MAINTENANCE_STORAGE_ATTR = 'data-recued-maintenance-storage';
@@ -106,7 +109,8 @@ interface MaintenancePanelState {
 
 type MaintenanceFocusIntent =
   | { kind: 'action'; action: string; taskId?: string }
-  | { kind: 'dialog' };
+  | { kind: 'dialog' }
+  | { kind: 'status' };
 
 export interface MaintenancePanelMount {
   getState(): MaintenancePanelState;
@@ -131,13 +135,12 @@ export const mountMaintenancePanel = (
   };
   let disposed = false;
   let pendingLoad: Promise<void> = Promise.resolve();
-  // SEPARATE counters for the full load (clears `loading`) vs the
-  // status-only cycle refresh — a `housekeeping_cycle` arriving mid initial
-  // load must NOT invalidate the load that clears `loading` (else the panel
-  // can stick on "Loading…" if the refresh then fails). Mirrors the
-  // housekeeping mount's split-generation guard.
-  let loadGeneration = 0;
+  let activeLoad: Promise<void> | null = null;
   let statusGeneration = 0;
+  // A foreground read retires older background reads. A newer successful
+  // cycle can recover an error without a late foreground failure hiding it.
+  // A failed cycle still leaves the foreground read able to clear `loading`.
+  let displayedStatusGeneration = 0;
 
   opts.host.setAttribute(MAINTENANCE_PANEL_HOST_ATTR, '');
 
@@ -193,10 +196,13 @@ export const mountMaintenancePanel = (
 
   const renderPanel = (): string => {
     if (state.loading && state.tasks.length === 0) {
-      return `<p class="housekeeping-loading">Loading maintenance tasks…</p>`;
+      return `<p class="housekeeping-loading" role="status" tabindex="-1" ${READ_FOCUS_ATTR}>Loading maintenance tasks…</p>`;
     }
     if (state.error) {
-      return `<p class="housekeeping-error">${escapeHtml(state.error)}</p>`;
+      return `<div class="housekeeping-panel">`
+        + `<p class="housekeeping-error" role="alert">${escapeHtml(state.error)}</p>`
+        + `<div>${button({ label: 'Retry', ariaLabel: 'Retry loading maintenance tasks', action: ACTION_STATUS_RETRY })}</div>`
+        + `</div>`;
     }
     const runNowTask = state.tasks.find(
       (t) => t.meta.id === state.runNow.task_id,
@@ -204,7 +210,7 @@ export const mountMaintenancePanel = (
     return `
       <div class="housekeeping-panel">
         <header class="housekeeping-header">
-          <h2>Maintenance</h2>
+          <h2 tabindex="-1" ${READ_FOCUS_ATTR}>Maintenance</h2>
           <p class="housekeeping-summary">
             Deterministic upkeep the server runs on its own when idle —
             TLS renewal, audit compaction, cache cleanup, and more. Run any
@@ -275,6 +281,10 @@ export const mountMaintenancePanel = (
     };
     const active = host.ownerDocument?.activeElement as HTMLElement | null;
     if (!active || host.contains?.(active) !== true) return null;
+    if (active.closest?.(`[${READ_FOCUS_ATTR}]`)
+      || active.getAttribute('data-action') === ACTION_STATUS_RETRY) {
+      return { kind: 'status' };
+    }
     const actionElement = active.closest?.('[data-action]');
     const action = actionElement?.getAttribute('data-action');
     if (action) {
@@ -293,6 +303,14 @@ export const mountMaintenancePanel = (
 
   const applyFocusIntent = (intent: MaintenanceFocusIntent | null): void => {
     if (intent === null) return;
+    if (intent.kind === 'status') {
+      const target = state.error
+        ? findAction(ACTION_STATUS_RETRY)
+        : opts.host.querySelector?.<HTMLElement>(`[${READ_FOCUS_ATTR}]`) ?? null;
+      // A hidden Server tab no longer owns recovery focus.
+      if (target && target.getClientRects().length > 0) focusElement(target);
+      return;
+    }
     focusElement(
       intent.kind === 'dialog'
         ? dialogElement()
@@ -316,19 +334,33 @@ export const mountMaintenancePanel = (
     render(focusIntent);
   };
 
-  const doLoad = async (): Promise<void> => {
-    if (disposed) return;
-    const captured = ++loadGeneration;
+  const doLoad = (): Promise<void> => {
+    if (disposed) return Promise.resolve();
+    if (activeLoad) return activeLoad;
+    const captured = ++statusGeneration;
+    displayedStatusGeneration = captured;
     setState({ loading: true, error: null });
-    try {
-      const status = await opts.runStatusRead();
-      if (disposed || captured !== loadGeneration) return;
-      setState({ loading: false, error: null, tasks: status.tasks });
-      await doRefreshStorage();
-    } catch (err) {
-      if (disposed || captured !== loadGeneration) return;
-      setState({ loading: false, error: humanizeRpcError(err) });
-    }
+    const read = (async (): Promise<void> => {
+      try {
+        const status = await opts.runStatusRead();
+        if (disposed) return;
+        if (captured < displayedStatusGeneration) {
+          setState({ loading: false });
+          return;
+        }
+        displayedStatusGeneration = captured;
+        setState({ loading: false, error: null, tasks: status.tasks });
+        await doRefreshStorage();
+      } catch (err) {
+        if (disposed) return;
+        setState({
+          loading: false,
+          ...(captured >= displayedStatusGeneration ? { error: humanizeRpcError(err) } : {}),
+        });
+      }
+    })();
+    activeLoad = read.finally(() => { activeLoad = null; });
+    return activeLoad;
   };
 
   // Background status refresh (on a `housekeeping_cycle` broadcast) — keeps
@@ -338,8 +370,9 @@ export const mountMaintenancePanel = (
     const captured = ++statusGeneration;
     try {
       const status = await opts.runStatusRead();
-      if (disposed || captured !== statusGeneration) return;
-      setState({ tasks: status.tasks });
+      if (disposed || captured < displayedStatusGeneration) return;
+      displayedStatusGeneration = captured;
+      setState({ loading: false, tasks: status.tasks, error: null });
       await doRefreshStorage();
     } catch {
       // keep the prior table
@@ -447,6 +480,10 @@ export const mountMaintenancePanel = (
     const actionEl = target?.closest?.('[data-action]');
     if (!actionEl) return;
     switch (actionEl.getAttribute('data-action')) {
+      case ACTION_STATUS_RETRY:
+        if (!state.error || state.loading || opts.host.contains?.(actionEl) === false) return;
+        pendingLoad = doLoad();
+        return;
       case ACTION_RUN_NOW_OPEN: {
         if (!opts.runRunNow) return;
         const taskId = actionEl.getAttribute('data-task-id');
@@ -502,14 +539,13 @@ export const mountMaintenancePanel = (
     const currentIndex = buttons.indexOf(
       dialog.ownerDocument.activeElement as HTMLButtonElement,
     );
-    const wrapsBackward = ev.shiftKey && currentIndex <= 0;
-    const wrapsForward = !ev.shiftKey
-      && (currentIndex < 0 || currentIndex === buttons.length - 1);
-    if (!wrapsBackward && !wrapsForward) return;
+    // Own every step, including between buttons: WebKit's native Tab order
+    // can skip buttons unless full keyboard access is enabled.
+    const nextIndex = ev.shiftKey
+      ? (currentIndex <= 0 ? buttons.length - 1 : currentIndex - 1)
+      : (currentIndex + 1) % buttons.length;
     ev.preventDefault();
-    focusElement(
-      wrapsBackward ? buttons[buttons.length - 1]! : buttons[0]!,
-    );
+    focusElement(buttons[nextIndex]!);
   };
 
   opts.host.addEventListener('click', onClick);

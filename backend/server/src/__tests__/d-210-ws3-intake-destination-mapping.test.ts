@@ -299,6 +299,97 @@ const drainOnce = async (input: {
   return { fired, result, outcome: row?.processing_outcome };
 };
 
+describe('choice labels in the held review payload', () => {
+  it('writes a choice into the title and details as the visitor read it, and keeps the value in metadata', async () => {
+    const { fired } = await drainOnce({
+      config: {
+        display_name: 'Client inquiry',
+        success_message: 'Thanks.',
+        form_definition: {
+          form_definition_id: 'fd_ws3',
+          fields: [
+            {
+              name: 'service_interest',
+              type: 'enum',
+              label: 'What can I help with?',
+              required: true,
+              values: ['consulting', 'other'],
+              value_labels: { consulting: 'Consulting' },
+            },
+            { name: 'your_name', type: 'text', label: 'Your name', required: true },
+            {
+              name: 'budget_range',
+              type: 'enum',
+              label: 'Budget range',
+              required: false,
+              values: ['under_10k'],
+              value_labels: { under_10k: 'Under 10k' },
+            },
+          ],
+        },
+        submission_processing_rule: {
+          target_kind: 'task',
+          fields_to_include_in_target: ['service_interest', 'your_name'],
+          fields_to_attach_as_metadata: ['budget_range'],
+        },
+        anti_spam: {
+          honeypot_fields: [],
+          rate_limit_per_ip: 20,
+          require_proof_of_work: false,
+          require_captcha: false,
+        },
+        required_visitor_fields: { email: 'required' },
+      },
+      fields: { service_interest: 'consulting', your_name: 'Pat', budget_range: 'under_10k' },
+    });
+    expect(fired).toHaveLength(1);
+    const payload = fired[0]!.payload as { title: string; body: string; metadata: Record<string, unknown> };
+    // The first included answer titles the review: the choice as the visitor read it.
+    expect(payload.title).toBe('Consulting');
+    expect(payload.body).toBe('What can I help with?: Consulting\nYour name: Pat');
+    // A recipe or a filter compares metadata, so it keeps the stored value.
+    expect(payload.metadata.budget_range).toBe('under_10k');
+  });
+
+  it('shows a choice without a label as its value', async () => {
+    const { fired } = await drainOnce({
+      config: {
+        display_name: 'Client inquiry',
+        success_message: 'Thanks.',
+        form_definition: {
+          form_definition_id: 'fd_ws3',
+          fields: [
+            {
+              name: 'service_interest',
+              type: 'enum',
+              label: 'What can I help with?',
+              required: true,
+              values: ['consulting', 'other'],
+              value_labels: { consulting: 'Consulting' },
+            },
+          ],
+        },
+        submission_processing_rule: {
+          target_kind: 'task',
+          fields_to_include_in_target: ['service_interest'],
+          fields_to_attach_as_metadata: [],
+        },
+        anti_spam: {
+          honeypot_fields: [],
+          rate_limit_per_ip: 20,
+          require_proof_of_work: false,
+          require_captcha: false,
+        },
+        required_visitor_fields: { email: 'required' },
+      },
+      fields: { service_interest: 'other' },
+    });
+    const payload = fired[0]!.payload as { title: string; body: string };
+    expect(payload.title).toBe('other');
+    expect(payload.body).toBe('What can I help with?: other');
+  });
+});
+
 describe('D-210 WS3 — the resolved slots reach the held review payload', () => {
   it('carries start / duration / timezone for a timed calendar target', async () => {
     const { fired, outcome } = await drainOnce({

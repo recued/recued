@@ -14,6 +14,7 @@
 
 import type { ConnectionKind } from '@recued/contracts';
 import { CONNECTION_NAME_REGEX } from '@recued/ui-shared';
+import { readWebLockProvider } from '../runtime/web-locks.js';
 
 export const CREDENTIAL_ROTATION_TAB_CHANNEL_NAME =
   'recued.webclient.connection-credential-rotation.v1' as const;
@@ -551,13 +552,11 @@ export const createBrowserCredentialRotationTabConvergence = (
     }
   }
 
-  const lockCandidate = options.ownershipLockProvider !== undefined
-    ? options.ownershipLockProvider
-    : view.navigator?.locks ?? null;
-  const ownershipLockProvider = lockCandidate !== null
-    && typeof lockCandidate.request === 'function'
-    ? lockCandidate
-    : null;
+  const ownershipLockProvider = readWebLockProvider(() =>
+    options.ownershipLockProvider !== undefined
+      ? options.ownershipLockProvider
+      : view.navigator?.locks,
+  );
 
   const listeners = new Set<(hint: CredentialRotationTabHint) => void>();
   const ownershipLeases = new Map<string, CredentialRotationOwnershipLease>();

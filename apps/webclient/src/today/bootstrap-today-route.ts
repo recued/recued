@@ -48,12 +48,9 @@ export interface TodayRoute {
   hasInFlightWork: () => boolean;
   /** Start a fresh read. No-op while one is already running. */
   refresh: () => void;
-  /** Is what is on screen a complete, current answer? Carried over from the
-   *  Data route VERBATIM (`todayRefreshing || snapshot === null ||
-   *  issues.length > 0`) — the recovery-intent machinery compares surfaces, so
-   *  a surface that computed freshness its own way would report "current"
-   *  where its predecessor reported "unavailable" and quietly change what a
-   *  recovery return decides. */
+  /** Is what is on screen a complete, current answer? Pending reads, source
+   * issues, and a view waiting for its reschedule editor to close are unavailable
+   * to recovery continuity; a fresh snapshot alone cannot qualify an old paint. */
   getRecoveryContextFreshness: () => 'current' | 'unavailable';
   /** Test seam — settles the in-flight read. */
   whenLoaded: () => Promise<void>;
@@ -61,6 +58,50 @@ export interface TodayRoute {
 
 const errMessage = (err: unknown): string =>
   err instanceof Error && err.message ? err.message : 'Something went wrong.';
+
+/** Replace the siblings along the due field's path without disconnecting any
+ * ancestor. Native date controls keep partial segments outside `value`; even
+ * reinserting the same input resets which segment receives the next keystroke.
+ * A different path shape is handled by keeping the editor in its current place. */
+const renderAroundDueField = (
+  current: Element, next: Element, due: HTMLInputElement, nextDue: HTMLInputElement,
+): boolean => {
+  const path = (leaf: Element, host: Element): Element[] => {
+    const nodes: Element[] = [];
+    for (let node: Element | null = leaf; node !== host; node = node.parentElement) {
+      if (node === null) return [];
+      nodes.unshift(node);
+    }
+    return nodes;
+  };
+  const before = path(due, current); const after = path(nextDue, next);
+  if (before.length === 0 || before.length !== after.length
+    || before.some((node, index) => node.tagName !== after[index]!.tagName)) return false;
+  const attributes = (target: Element, source: Element): void => {
+    for (const attr of Array.from(target.attributes)) {
+      if (target === due && attr.name === 'value') continue;
+      if (!source.hasAttribute(attr.name)) target.removeAttribute(attr.name);
+    }
+    for (const attr of Array.from(source.attributes)) {
+      if (target === due && attr.name === 'value') continue;
+      if (target.getAttribute(attr.name) !== attr.value) target.setAttribute(attr.name, attr.value);
+    }
+  };
+  for (let index = 0; index < before.length; index++) {
+    const parent = index === 0 ? current : before[index - 1]!;
+    const nextParent = index === 0 ? next : after[index - 1]!;
+    const branch = before[index]!; const nextBranch = after[index]!;
+    attributes(parent, nextParent);
+    for (const node of Array.from(parent.childNodes)) if (node !== branch) parent.removeChild(node);
+    let following = false;
+    for (const node of Array.from(nextParent.childNodes)) {
+      if (node === nextBranch) { following = true; continue; }
+      parent.insertBefore(node, following ? null : branch);
+    }
+  }
+  attributes(due, nextDue);
+  return true;
+};
 
 export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRoute => {
   const doc = opts.container.ownerDocument ?? globalThis.document;
@@ -87,13 +128,16 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
   let pending: Promise<void> = Promise.resolve();
   let sourcesOpen: boolean | undefined;
   let sphereFilter: TodaySphereFilter = 'all';
+  let deferredViewPaint = false;
 
   const render = (): void => {
     if (disposed) return;
     // Preserve the sources disclosure across a repaint — the snapshot changing
     // is not a reason to collapse something the owner opened.
     sourcesOpen = root.querySelector?.<HTMLDetailsElement>('.today-sources')?.open ?? sourcesOpen;
-    // ⛔⛔ EVERY PAINT REPLACES THE DOM, SO EVERY PAINT MUST HAND FOCUS BACK.
+    // Most paints replace the DOM, so restore the focused control by identity.
+    // An open date field and its ancestry stay connected instead: native
+    // partial values and the active segment cannot be reconstructed from text.
     // A repaint here is usually something the owner did NOT ask for — a live
     // broadcast, the minute clock, the read that follows a task write — and
     // `innerHTML =` destroys the focused node, dropping focus to <body>.
@@ -117,7 +161,7 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
     const heldSources = held?.tagName === 'SUMMARY';
     const heldNotice = held?.hasAttribute('data-today-task-notice') === true;
     const heldError = held?.hasAttribute('data-today-task-error') === true;
-    root.innerHTML = renderToday(
+    const html = renderToday(
       controller.snapshot(),
       controller.refreshing(),
       TODAY_ROUTE_ACTION_ATTR,
@@ -136,7 +180,28 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
       },
       sphereFilter,
     );
+    const due = root.querySelector<HTMLInputElement>(`[${TODAY_ROUTE_ACTION_ATTR}="today-task-due"]`);
+    deferredViewPaint = false;
+    if (due !== null) {
+      const next = doc.createElement('div');
+      for (const attr of Array.from(root.attributes)) next.setAttribute(attr.name, attr.value);
+      next.innerHTML = html;
+      const nextDue = next.querySelector<HTMLInputElement>(`[${TODAY_ROUTE_ACTION_ATTR}="today-task-due"]`);
+      if (nextDue === null) root.innerHTML = html;
+      else if (!renderAroundDueField(root, next, due, nextDue)) {
+        // A task can leave the list (or its sphere) during an edit. Keep its
+        // native control in place, update errors/busy state, and make the
+        // pending view explicit until Save or Cancel can retire the editor.
+        const editor = due.closest('[data-today-task-editor]');
+        const nextEditor = nextDue.closest('[data-today-task-editor]');
+        if (editor && nextEditor) renderAroundDueField(editor, nextEditor, due, nextDue);
+        deferredViewPaint = true;
+        const updated = root.querySelector('.today-updated');
+        if (updated) updated.textContent = 'Finish or cancel rescheduling to show the latest results.';
+      }
+    } else root.innerHTML = html;
     if (held === null) return;
+    if (held === due && doc.activeElement === due) return;
     const find = (selector: string, match: (el: HTMLElement) => boolean): HTMLElement | null =>
       Array.from(root.querySelectorAll?.<HTMLElement>(selector) ?? []).find(match) ?? null;
     const refresh = (): HTMLElement | null =>
@@ -150,9 +215,6 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
       root.querySelector?.<HTMLElement>(heldRefresh ? '.today-refresh' : '.today-sources summary')
         ?.focus?.({ preventScroll: true });
     } else if (heldAction?.startsWith('today-task-') === true || heldAction?.startsWith('today-commitment-') === true) {
-      // ⚠ The due-date INPUT lands here too. Its draft lives in the
-      // controller's `edit`, so the re-rendered field already carries the typed
-      // value — what the repaint would otherwise lose is only the caret.
       (find(`[${TODAY_ROUTE_ACTION_ATTR}]`, (el) =>
         el.getAttribute(TODAY_ROUTE_ACTION_ATTR) === heldAction
         && el.getAttribute('data-today-task') === heldTaskKey)
@@ -335,7 +397,7 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
     refresh: () => { pending = load(); },
     getRecoveryContextFreshness: () => {
       const snap = controller.snapshot();
-      return disposed || controller.refreshing() || snap === null || snap.issues.length > 0
+      return disposed || deferredViewPaint || controller.refreshing() || snap === null || snap.issues.length > 0
         ? 'unavailable' : 'current';
     },
     whenLoaded: () => pending,

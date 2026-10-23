@@ -289,6 +289,196 @@ const makeDeps = () => {
   };
 };
 
+describe('Housekeeping initial-load recovery', () => {
+  it.each(['runConfigRead', 'runStatusRead', 'runTrustRead'] as const)('retries all required reads after %s fails without writing settings', async (reader) => {
+    const fakeHost = makeFakeHost();
+    const deps = makeDeps();
+    deps.runTrustRead.mockResolvedValue({ rows: [trustRow()] });
+    deps[reader].mockRejectedValueOnce(new Error('Initial read unavailable.'));
+    const mount = mountHousekeepingPanel({ host: fakeHost.host, ...deps });
+    expect(fakeHost.getHtml()).toContain('role="status"');
+    expect(fakeHost.getHtml()).not.toContain('role="alert"');
+    await mount.whenLoaded();
+    expect(fakeHost.getHtml()).toContain('role="alert"');
+    expect(fakeHost.getHtml()).toContain('Retry loading housekeeping');
+    fakeHost.clickAction('housekeeping-load-retry');
+    await mount.whenLoaded();
+    expect(mount.getState().error).toBeNull();
+    expect(mount.getState().config?.preset).toBe('balanced');
+    expect(mount.getState().trustRows.summary).toEqual(trustRow());
+    for (const read of [deps.runConfigRead, deps.runStatusRead, deps.runTrustRead, deps.runRegistryDescribe, deps.runDriftRead]) {
+      expect(read).toHaveBeenCalledTimes(2);
+    }
+    for (const write of [deps.runConfigWrite, deps.runTrustWrite, deps.runRunNow, deps.runTopicReset]) {
+      expect(write).not.toHaveBeenCalled();
+    }
+    mount.dispose();
+  });
+
+  it('shares pending initial reads, including optional metadata, with refresh', async () => {
+    const fakeHost = makeFakeHost();
+    const deps = makeDeps();
+    const config = deferred<HousekeepingConfigRow>();
+    deps.runConfigRead.mockImplementationOnce(() => config.promise);
+    const mount = mountHousekeepingPanel({ host: fakeHost.host, ...deps });
+    const initial = mount.whenLoaded();
+    expect(mount.refresh()).toBe(initial);
+    expect(mount.refresh()).toBe(initial);
+    for (const read of [deps.runConfigRead, deps.runStatusRead, deps.runTrustRead, deps.runRegistryDescribe, deps.runDriftRead]) {
+      expect(read).toHaveBeenCalledTimes(1);
+    }
+    config.resolve(makeConfig());
+    await initial;
+    expect(mount.getState().loading).toBe(false);
+    mount.dispose();
+  });
+
+  it('coalesces Retry activations and refresh until the required read group settles', async () => {
+    const fakeHost = makeFakeHost();
+    const deps = makeDeps();
+    const config = deferred<HousekeepingConfigRow>();
+    deps.runConfigRead.mockRejectedValueOnce(new Error('Unavailable.')).mockImplementationOnce(() => config.promise);
+    const mount = mountHousekeepingPanel({ host: fakeHost.host, ...deps });
+    await mount.whenLoaded();
+    fakeHost.clickAction('housekeeping-load-retry');
+    const retry = mount.whenLoaded();
+    fakeHost.clickAction('housekeeping-load-retry');
+    expect(mount.refresh()).toBe(retry);
+    for (const read of [deps.runConfigRead, deps.runStatusRead, deps.runTrustRead, deps.runRegistryDescribe, deps.runDriftRead]) {
+      expect(read).toHaveBeenCalledTimes(2);
+    }
+    expect(fakeHost.getHtml()).toContain('Loading housekeeping…');
+    config.resolve(makeConfig('light'));
+    await retry;
+    expect(mount.getState().config?.preset).toBe('light');
+    expect(fakeHost.getHtml()).not.toContain('housekeeping-load-retry');
+    mount.dispose();
+  });
+
+  it('keeps a second failure recoverable and escapes its alert text', async () => {
+    const fakeHost = makeFakeHost();
+    const deps = makeDeps();
+    deps.runTrustRead.mockRejectedValueOnce(new Error('First failure.')).mockRejectedValueOnce(new Error('<Second failure>'));
+    const mount = mountHousekeepingPanel({ host: fakeHost.host, ...deps });
+    await mount.whenLoaded();
+    fakeHost.clickAction('housekeeping-load-retry');
+    await mount.whenLoaded();
+    expect(fakeHost.getHtml()).toContain('&lt;Second failure&gt;');
+    expect(fakeHost.getHtml()).toContain('Retry loading housekeeping');
+    fakeHost.clickAction('housekeeping-load-retry');
+    await mount.whenLoaded();
+    expect(mount.getState().error).toBeNull();
+    expect(deps.runConfigRead).toHaveBeenCalledTimes(3);
+    mount.dispose();
+  });
+
+  it('does not substitute a background status refresh for a failed required read group', async () => {
+    const fakeHost = makeFakeHost();
+    const deps = makeDeps();
+    deps.runTrustRead.mockRejectedValueOnce(new Error('Trust unavailable.'));
+    const mount = mountHousekeepingPanel({ host: fakeHost.host, ...deps });
+    await mount.whenLoaded();
+    deps.fireCycle();
+    await mount.whenLoaded();
+    expect(mount.getState().config).toBeNull();
+    expect(mount.getState().error).toBe('Trust unavailable.');
+    expect(fakeHost.getHtml()).toContain('Retry loading housekeeping');
+    fakeHost.clickAction('housekeeping-load-retry');
+    await mount.whenLoaded();
+    expect(mount.getState().config).not.toBeNull();
+    mount.dispose();
+  });
+
+  it.each(['before', 'after'] as const)('retires an older cycle that settles %s Retry completes', async (order) => {
+    const fakeHost = makeFakeHost();
+    const deps = makeDeps();
+    deps.runConfigRead.mockRejectedValueOnce(new Error('Unavailable.'));
+    const mount = mountHousekeepingPanel({ host: fakeHost.host, ...deps });
+    await mount.whenLoaded();
+    const cycle = deferred<{ tasks: HousekeepingTaskStatus[] }>();
+    deps.runStatusRead.mockImplementationOnce(() => cycle.promise);
+    deps.fireCycle();
+    const pendingCycle = mount.whenLoaded();
+    const config = deferred<HousekeepingConfigRow>();
+    deps.runConfigRead.mockImplementationOnce(() => config.promise);
+    fakeHost.clickAction('housekeeping-load-retry');
+    const retry = mount.whenLoaded();
+    const older = { ...aiTask(), meta: { ...aiTask().meta, description: 'Older cycle' } };
+    if (order === 'before') {
+      cycle.resolve({ tasks: [older] });
+      await pendingCycle;
+      expect(mount.getState().tasks).toEqual([]);
+    }
+    config.resolve(makeConfig());
+    await retry;
+    if (order === 'after') { cycle.resolve({ tasks: [older] }); await pendingCycle; }
+    expect(mount.getState().tasks[0]?.meta.description).toBe('Mail summary digest');
+    mount.dispose();
+  });
+
+  it.each(['success', 'failure'] as const)('a newer cycle %s preserves initial-load completion and its current task snapshot', async (outcome) => {
+    const fakeHost = makeFakeHost();
+    const deps = makeDeps();
+    const config = deferred<HousekeepingConfigRow>();
+    deps.runConfigRead.mockImplementationOnce(() => config.promise);
+    const mount = mountHousekeepingPanel({ host: fakeHost.host, ...deps });
+    const initial = mount.whenLoaded();
+    if (outcome === 'success') deps.runStatusRead.mockResolvedValueOnce({ tasks: [] });
+    else deps.runStatusRead.mockRejectedValueOnce(new Error('Cycle unavailable.'));
+    deps.fireCycle();
+    expect(mount.whenLoaded()).toBe(initial);
+    let settled = false;
+    void initial.then(() => { settled = true; });
+    await flush();
+    expect(settled).toBe(false);
+    expect(mount.getState().loading).toBe(true);
+    config.resolve(makeConfig());
+    await initial;
+    expect(mount.getState().loading).toBe(false);
+    expect(mount.getState().error).toBeNull();
+    expect(mount.getState().tasks).toEqual(outcome === 'success' ? [] : [aiTask()]);
+    mount.dispose();
+  });
+
+  it.each(['success', 'failure'] as const)('ignores a pending Retry %s after disposal', async (outcome) => {
+    const fakeHost = makeFakeHost();
+    const deps = makeDeps();
+    const config = deferred<HousekeepingConfigRow>();
+    deps.runConfigRead.mockRejectedValueOnce(new Error('Unavailable.')).mockImplementationOnce(() => config.promise);
+    const mount = mountHousekeepingPanel({ host: fakeHost.host, ...deps });
+    await mount.whenLoaded();
+    fakeHost.clickAction('housekeeping-load-retry');
+    const pending = mount.whenLoaded();
+    mount.dispose();
+    if (outcome === 'success') config.resolve(makeConfig());
+    else config.reject(new Error('Late failure.'));
+    await pending;
+    fakeHost.clickAction('housekeeping-load-retry');
+    deps.fireCycle();
+    await mount.refresh();
+    expect(fakeHost.getHtml()).toBe('');
+    expect(fakeHost.listenerCount()).toBe(0);
+    expect(deps.runConfigRead).toHaveBeenCalledTimes(2);
+    expect(deps.runRegistryDescribe).toHaveBeenCalledTimes(2);
+  });
+
+  it('retires Retry after recovery without changing a new schedule draft', async () => {
+    const fakeHost = makeFakeHost();
+    const deps = makeDeps();
+    const mount = mountHousekeepingPanel({ host: fakeHost.host, ...deps });
+    await mount.whenLoaded();
+    fakeHost.changeAction('housekeeping-preset-pick', { value: 'custom' });
+    fakeHost.changeAction('housekeeping-custom-budget', { value: '65000' });
+    const draft = mount.getState().customDraft;
+    fakeHost.clickAction('housekeeping-load-retry');
+    expect(deps.runConfigRead).toHaveBeenCalledTimes(1);
+    expect(mount.getState().draftPreset).toBe('custom');
+    expect(mount.getState().customDraft).toEqual(draft);
+    expect(deps.runConfigWrite).not.toHaveBeenCalled();
+    mount.dispose();
+  });
+});
+
 describe('mountHousekeepingPanel — trust-core slice', () => {
   it('floors the run-policy control so its three labels cannot close up', () => {
     // The control lives in a grid cell whose track is `minmax(0, 1fr)` and
@@ -348,7 +538,7 @@ describe('mountHousekeepingPanel — trust-core slice', () => {
     const fakeHost = makeFakeHost();
     const deps = makeDeps();
     const mount = mountHousekeepingPanel({ host: fakeHost.host, now: () => NOW, ...deps });
-    expect(fakeHost.getHtml()).toContain('<h2>Housekeeping</h2>');
+    expect(fakeHost.getHtml()).toMatch(/<h2\b[^>]*>Housekeeping<\/h2>/);
     expect(fakeHost.getHtml()).toContain('Loading housekeeping…');
     await mount.whenLoaded();
     expect(deps.runConfigRead).toHaveBeenCalledTimes(1);
@@ -373,7 +563,7 @@ describe('mountHousekeepingPanel — trust-core slice', () => {
     deps.runConfigRead.mockRejectedValueOnce(new Error('config read failed'));
     const mount = mountHousekeepingPanel({ host: fakeHost.host, now: () => NOW, ...deps });
     await mount.whenLoaded();
-    expect(fakeHost.getHtml()).toContain('<h2>Housekeeping</h2>');
+    expect(fakeHost.getHtml()).toMatch(/<h2\b[^>]*>Housekeeping<\/h2>/);
     expect(fakeHost.getHtml()).toContain('config read failed');
     mount.dispose();
   });

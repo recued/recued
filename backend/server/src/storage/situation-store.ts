@@ -1,6 +1,8 @@
 import type Database from 'better-sqlite3';
 import type { SituationRevision, SituationSnapshot, SituationState } from '@recued/contracts';
 import type { WarehouseEvent, WarehouseEventBus } from '@recued/warehouse-events';
+import type { AssetPlacementReadBatch } from './sphere-store.js';
+import { observeSqliteReadBatch } from './sqlite-read-batch.js';
 
 export const ensureSituationSchema = (db: Database.Database): void => {
   db.exec(`
@@ -61,12 +63,18 @@ export const situationRevisionEvent = (revision: SituationRevision): WarehouseEv
   prev: { record: revision.before, revision: revision.revision, cause: revision.cause, changed_fields: revision.changed_fields },
 });
 const states: ReadonlySet<SituationState> = new Set(['new', 'proposed', 'accepted', 'dismissed', 'resolved']);
+export interface PublicationSituationBatch {
+  /** A native asset projection without user callbacks, run in this save's view. */
+  save(project: () => SituationSnapshot, cause: SituationRevision['cause'], at: number,
+    wrote?: (rows: number, connection: Database.Database) => void): SituationRevision | null;
+}
 export interface SituationStore {
   get(id: string): { snapshot: SituationSnapshot; revision: number } | null;
   list(limit?: number): Array<{ snapshot: SituationSnapshot; revision: number }>;
   walk(after_id?: string, limit?: number): Array<{ snapshot: SituationSnapshot; revision: number }>;
   /** Owns its transaction: the durable revision precedes every doorbell. */
-  save(snapshot: SituationSnapshot, cause: SituationRevision['cause'], at: number): SituationRevision | null;
+  save(snapshot: SituationSnapshot, cause: SituationRevision['cause'], at: number, wrote?: (rows: number, connection: Database.Database) => void): SituationRevision | null;
+  prefetchForPublication?(ids: readonly string[], placements: AssetPlacementReadBatch): PublicationSituationBatch | undefined;
   /** §4.9 — a forgotten situation keeps its revision numbers and states, and nothing
    * else, so the withdrawal that follows carries no copy of what was forgotten. */
   forget(situation_id: string): void;
@@ -131,8 +139,82 @@ export const createSituationStore = (db: Database.Database, bus?: Pick<Warehouse
         ON CONFLICT(subscriber_id) DO UPDATE SET revision=excluded.revision`).run(subscriber, revision);
     })();
   };
-  return {
-    get,
+  const validate = (snapshot: SituationSnapshot, cause: SituationRevision['cause'], at: number) => {
+    if (!snapshot.id || snapshot.id !== snapshot.cluster.id || !states.has(snapshot.state)
+      || !Number.isSafeInteger(at) || !cause.source?.trim()) throw new Error('Invalid situation snapshot or cause');
+    if (snapshot.state === 'dismissed' && !['not_now', 'not_this_one', 'never_this_kind', 'wrong'].includes(snapshot.dismissal ?? '')) throw new Error('A dismissal needs a code');
+  };
+  const commit = (read: () => { snapshot: SituationSnapshot; before: SituationSnapshot | null },
+    cause: SituationRevision['cause'], at: number, wrote?: (rows: number, connection: Database.Database) => void): SituationRevision | null => {
+    let writes = 0;
+    const revision = db.transaction(() => {
+      const { snapshot, before } = read();
+      if (before && stable(before) === stable(snapshot)) return null;
+      const changed_fields = before === null ? Object.keys(snapshot).sort()
+        : [...new Set([...Object.keys(before), ...Object.keys(snapshot)])].filter(key => stable(before[key as keyof SituationSnapshot]) !== stable(snapshot[key as keyof SituationSnapshot])).sort();
+      const result = db.prepare(`INSERT INTO situation_revisions(situation_id,at,cause,changed_fields,before_snapshot,after_snapshot)
+        VALUES(?,?,?,?,?,?)`).run(snapshot.id, at, JSON.stringify(cause), JSON.stringify(changed_fields), before ? JSON.stringify(before) : null, JSON.stringify(snapshot));
+      const number = Number(result.lastInsertRowid);
+      const saved = db.prepare(`INSERT INTO situations(id,snapshot,revision,updated_at) VALUES(?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET snapshot=excluded.snapshot,revision=excluded.revision,updated_at=excluded.updated_at`)
+        .run(snapshot.id, JSON.stringify(snapshot), number, at);
+      writes = result.changes + saved.changes;
+      return { revision: number, situation_id: snapshot.id, at, cause, changed_fields, before, after: snapshot };
+    })();
+    // Report these writes before a synchronous listener may change other facts.
+    wrote?.(writes, db);
+    if (revision) { try { bus?.emit(situationRevisionEvent(revision)); } catch { /* Durable feed owns catch-up. */ } }
+    return revision;
+  };
+  const save: SituationStore['save'] = (snapshot, cause, at, wrote) => {
+    if (db.inTransaction) throw new Error('Situation save owns the commit before publishing');
+    validate(snapshot, cause, at);
+    return commit(() => ({ snapshot, before: get(snapshot.id)?.snapshot ?? null }), cause, at, wrote);
+  };
+  function prefetchForPublication(this: SituationStore, ids: readonly string[], placements: AssetPlacementReadBatch): PublicationSituationBatch | undefined {
+    const owner = this;
+    const native = () => owner === store && Object.getOwnPropertyDescriptor(owner, 'save')?.value === save;
+    if (!native() || !ids.length) return undefined;
+    const unique = [...new Set(ids)], requested = new Set(unique); let values = new Map<string, string | null>();
+    const shared = observeSqliteReadBatch(placements, db, {
+      clear: () => values.clear(),
+      load(version) {
+        const loaded = new Map<string, string | null>();
+        for (let offset = 0; offset < unique.length; offset += 200) {
+          const page = unique.slice(offset, offset + 200);
+          const rows = db.prepare(`WITH publication_situation_requested(id) AS (VALUES ${page.map(() => '(?)').join(',')}),
+            publication_situation_version AS MATERIALIZED (
+              SELECT total_changes() AS writes,data_version,schema_version FROM pragma_data_version,pragma_schema_version)
+            SELECT requested.id,situations.snapshot,version.writes,version.data_version,version.schema_version
+            FROM publication_situation_requested requested LEFT JOIN situations ON situations.id=requested.id
+            CROSS JOIN publication_situation_version version`).all(...page) as Array<{
+              id: string; snapshot: string | null; writes: number; data_version: number; schema_version: number;
+            }>;
+          for (const row of rows) {
+            if (row.writes !== version.writes || row.data_version !== version.data_version || row.schema_version !== version.schema_version) throw new Error('Changed SQLite publication view');
+            if (requested.has(row.id) && (row.snapshot === null || typeof row.snapshot === 'string')) loaded.set(row.id, row.snapshot);
+          }
+        }
+        values = loaded;
+      },
+    });
+    if (!shared) return undefined;
+    return {
+      save(project, cause, at, wrote) {
+        if (!native() || db.inTransaction || !shared.usable()) {
+          values.clear(); return owner.save(project(), cause, at, wrote);
+        }
+        return commit(() => shared.inRead(() => {
+          const snapshot = project(); validate(snapshot, cause, at);
+          const value = values.get(snapshot.id); values.delete(snapshot.id);
+          const before = shared.current() && value !== undefined ? value === null ? null : JSON.parse(value) as SituationSnapshot : get(snapshot.id)?.snapshot ?? null;
+          return { snapshot, before };
+        }), cause, at, wrote);
+      },
+    };
+  }
+  const store: SituationStore = {
+    get, save, prefetchForPublication,
     walk: (after_id = '', limit = 500) => {
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) throw new Error('Invalid situation walk limit');
       return (db.prepare('SELECT snapshot,revision FROM situations WHERE id>? ORDER BY id LIMIT ?').all(after_id, limit) as { snapshot: string; revision: number }[])
@@ -142,27 +224,6 @@ export const createSituationStore = (db: Database.Database, bus?: Pick<Warehouse
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) throw new Error('Invalid situation list limit');
       return (db.prepare('SELECT snapshot,revision FROM situations ORDER BY updated_at DESC,id LIMIT ?').all(limit) as { snapshot: string; revision: number }[])
         .map(row => ({ snapshot: JSON.parse(row.snapshot), revision: row.revision }));
-    },
-    save(snapshot, cause, at) {
-      if (db.inTransaction) throw new Error('Situation save owns the commit before publishing');
-      if (!snapshot.id || snapshot.id !== snapshot.cluster.id || !states.has(snapshot.state)
-        || !Number.isSafeInteger(at) || !cause.source?.trim()) throw new Error('Invalid situation snapshot or cause');
-      if (snapshot.state === 'dismissed' && !['not_now', 'not_this_one', 'never_this_kind', 'wrong'].includes(snapshot.dismissal ?? '')) throw new Error('A dismissal needs a code');
-      const revision = db.transaction(() => {
-        const before = get(snapshot.id)?.snapshot ?? null;
-        if (before && stable(before) === stable(snapshot)) return null;
-        const changed_fields = before === null ? Object.keys(snapshot).sort()
-          : [...new Set([...Object.keys(before), ...Object.keys(snapshot)])].filter(key => stable(before[key as keyof SituationSnapshot]) !== stable(snapshot[key as keyof SituationSnapshot])).sort();
-        const result = db.prepare(`INSERT INTO situation_revisions(situation_id,at,cause,changed_fields,before_snapshot,after_snapshot)
-          VALUES(?,?,?,?,?,?)`).run(snapshot.id, at, JSON.stringify(cause), JSON.stringify(changed_fields), before ? JSON.stringify(before) : null, JSON.stringify(snapshot));
-        const number = Number(result.lastInsertRowid);
-        db.prepare(`INSERT INTO situations(id,snapshot,revision,updated_at) VALUES(?,?,?,?)
-          ON CONFLICT(id) DO UPDATE SET snapshot=excluded.snapshot,revision=excluded.revision,updated_at=excluded.updated_at`)
-          .run(snapshot.id, JSON.stringify(snapshot), number, at);
-        return { revision: number, situation_id: snapshot.id, at, cause, changed_fields, before, after: snapshot };
-      })();
-      if (revision) { try { bus?.emit(situationRevisionEvent(revision)); } catch { /* Durable feed owns catch-up. */ } }
-      return revision;
     },
     forget(id) {
       const bare = (value: string | null): string | null => {
@@ -247,4 +308,5 @@ export const createSituationStore = (db: Database.Database, bus?: Pick<Warehouse
       })();
     },
   };
+  return store;
 };

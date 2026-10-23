@@ -535,7 +535,7 @@ describe('composeSchedulers slot collection', () => {
 
     const bundle = composeSchedulers(ctx);
 
-    expect(SCHEDULER_REGISTRY.map((entry) => entry.name)).toEqual(['backup-health', 'restore-drills', 'unattended-backups', ...schedulerNames]);
+    expect(SCHEDULER_REGISTRY.map((entry) => entry.name)).toEqual(['backup-integrity', 'backup-health', 'backup-watchdog', 'restore-drills', 'unattended-backups', ...schedulerNames]);
     expect(bundle.list()).toEqual(schedulerNames);
     expect(ctx.registry.list({ kind: 'scheduler' })).toEqual(schedulerNames);
     expect(createScheduler).toHaveBeenCalledOnce();

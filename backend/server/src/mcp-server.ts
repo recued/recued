@@ -143,6 +143,7 @@ import type { HousekeepingStateStore } from './housekeeping/state-store.js';
 import type { AnnotationStore } from './storage/annotation-store.js';
 import type { ManifestRegistry } from './manifest-loader.js';
 import type { RecipeStore } from './recipe-store.js';
+import { SERVER_VERSION } from './server-version.js';
 import { readRootProjections, toTimelineRollup } from './records/root-projection.js';
 import {
   DIRECT_MCP_TOOL_CALL_BASE_RESERVATION_KEY,
@@ -197,7 +198,9 @@ interface JsonRpcNotification {
 // ────────────────────────────────────────────────────────────────
 
 const SERVER_NAME = 'recued';
-const SERVER_VERSION = '0.1.0';
+// The release's own version (`server-version.ts`), the one `recued --version`
+// prints. This was a hard-coded '0.1.0', which every client and directory
+// showed whatever the release.
 const SERVER_INFO = { name: SERVER_NAME, version: SERVER_VERSION } as const;
 
 /** Prefix every dynamically-generated per-ingredient tool with this. Keeps

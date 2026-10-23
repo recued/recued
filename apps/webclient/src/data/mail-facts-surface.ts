@@ -236,6 +236,8 @@ interface FactsState {
   readonly updating: boolean;
   readonly loadingMore: boolean;
   readonly error: string | null;
+  /** A failed append retries this cursor, keeping every page already shown. */
+  readonly failedPage: MailFactRowsCursor | null;
   readonly filters: Filters;
   readonly email: { readonly ref: MailFactEmailRef; readonly subject?: string } | null;
   /** One thing's facts, across the emails that told of it: what Today links to. */
@@ -520,17 +522,17 @@ const renderFacts = (state: FactsState, actionAttr: string, available: boolean, 
       : renderFilters(state)}
     ${state.error !== null
       ? `<p class="mail-facts-error" role="alert">${e(state.error)}
-          <button type="button" class="data-button" ${actionAttr}="mail-facts-retry" ${MAIL_FACTS_FOCUS_ATTR}="retry">Try again</button></p>`
+          <button type="button" class="data-button" ${actionAttr}="mail-facts-retry" ${MAIL_FACTS_FOCUS_ATTR}="retry"${state.loading || state.loadingMore ? ' aria-disabled="true" aria-busy="true"' : ''}>${state.loading || state.loadingMore ? 'Retrying…' : 'Try again'}</button></p>`
       : ''}
     ${state.loaded && state.updating ? '<p class="mail-facts-subtle" aria-live="polite">Updating…</p>' : ''}
     ${body}
-    ${state.next !== null
+    ${state.next !== null || state.rows.length > 0
       ? `<div class="data-list-footer">
-          <span class="data-list-count">${state.rows.length} ${state.rows.length === 1 ? 'fact' : 'facts'} shown</span>
-          <button type="button" class="data-button" ${actionAttr}="mail-facts-load-more"
-            ${MAIL_FACTS_FOCUS_ATTR}="load-more"${state.loadingMore || state.loading ? ' aria-disabled="true"' : ''}${state.loadingMore ? ' aria-busy="true"' : ''}>
+          <span class="data-list-count" role="status" tabindex="-1" ${MAIL_FACTS_FOCUS_ATTR}="list-count">${state.rows.length} ${state.rows.length === 1 ? 'fact' : 'facts'} shown</span>
+          ${state.next !== null ? `<button type="button" class="data-button" ${actionAttr}="mail-facts-load-more"
+            ${MAIL_FACTS_FOCUS_ATTR}="load-more"${state.loadingMore || state.loading || (state.error !== null && state.failedPage === null) ? ' aria-disabled="true"' : ''}${state.loadingMore ? ' aria-busy="true"' : ''}>
             ${state.loadingMore ? 'Loading…' : 'Load more'}
-          </button>
+          </button>` : ''}
         </div>`
       : ''}`;
 };
@@ -569,6 +571,7 @@ export const createMailFactsSurface = (deps: MailFactsSurfaceDeps): MailFactsSur
     updating: false,
     loadingMore: false,
     error: null,
+    failedPage: null,
     filters: {},
     email: null,
     thing: null,
@@ -579,6 +582,12 @@ export const createMailFactsSurface = (deps: MailFactsSurfaceDeps): MailFactsSur
   let pages = 0;
   let disposed = false;
   let pendingFocus: string | null = null;
+  /** Read replies can redirect only a control that still owns this view's focus. */
+  let pendingReadFocus: { key: string; from: readonly string[]; view: MailFactView } | null = null;
+  const pageFocusKey = (rows: readonly MailFactRow[], next: MailFactRowsCursor | null): string => {
+    const mail = rows.find(row => row.email !== null);
+    return mail !== undefined ? `mail:${mail.fact.fact_id}` : next !== null ? 'load-more' : 'list-count';
+  };
   /** The facts whose Data the owner opened: kept open across live refreshes. */
   const openData = new Set<string>();
 
@@ -599,7 +608,10 @@ export const createMailFactsSurface = (deps: MailFactsSurfaceDeps): MailFactsSur
     callers,
     actionAttr: deps.actionAttr,
     render: () => deps.render(),
-    focus: (key) => { pendingFocus = key; },
+    focus: (key, from) => {
+      if (from === undefined) pendingFocus = key;
+      else pendingReadFocus = { key, from: [from], view: 'senders' };
+    },
     makeTemplate: (email) => {
       pendingFocus = 'ed:title';
       void makeTemplateFrom(email);
@@ -607,11 +619,12 @@ export const createMailFactsSurface = (deps: MailFactsSurfaceDeps): MailFactsSur
     canMakeTemplate: callers.readEmail !== undefined && callers.createTemplate !== undefined,
   });
 
-  const loadFacts = async (silent: boolean): Promise<void> => {
+  const loadFacts = async (silent: boolean, retry = false): Promise<void> => {
     const listFacts = callers.listFacts;
     if (listFacts === undefined) return;
     const mine = ++seq;
-    facts = { ...facts, loading: true, updating: !silent, loadingMore: false, error: silent ? facts.error : null };
+    pendingReadFocus = null;
+    facts = { ...facts, loading: true, updating: !silent, loadingMore: false, failedPage: null, error: silent || retry ? facts.error : null };
     if (!silent) deps.render();
     try {
       const [page, named, owned] = await Promise.all([
@@ -634,6 +647,7 @@ export const createMailFactsSurface = (deps: MailFactsSurfaceDeps): MailFactsSur
         types: owned,
       };
       pages = 1;
+      if (retry) pendingReadFocus = { key: pageFocusKey(page.rows, facts.next), from: ['retry'], view: 'facts' };
     } catch (error) {
       if (disposed || mine !== seq) return;
       facts = { ...facts, loaded: true, loading: false, updating: false, error: humanizeRpcError(error) };
@@ -643,11 +657,12 @@ export const createMailFactsSurface = (deps: MailFactsSurfaceDeps): MailFactsSur
 
   const loadMore = async (): Promise<void> => {
     const listFacts = callers.listFacts;
-    if (listFacts === undefined || facts.next === null || facts.loadingMore || facts.loading) return;
+    const before = facts.failedPage ?? facts.next;
+    if (listFacts === undefined || before === null || facts.loadingMore || facts.loading
+      || (facts.error !== null && facts.failedPage === null)) return;
     const mine = ++seq;
-    const before = facts.next;
+    pendingReadFocus = null;
     facts = { ...facts, loadingMore: true };
-    pendingFocus = 'load-more';
     deps.render();
     try {
       const page = await listFacts(queryOf(facts, before));
@@ -660,15 +675,13 @@ export const createMailFactsSurface = (deps: MailFactsSurfaceDeps): MailFactsSur
         next: page.next_cursor ?? null,
         loadingMore: false,
         error: null,
+        failedPage: null,
       };
       pages += 1;
-      // Keep the owner's place: the first new row's email, or the button.
-      pendingFocus = added[0] !== undefined && added[0].email !== null
-        ? `mail:${added[0].fact.fact_id}`
-        : facts.next !== null ? 'load-more' : null;
+      pendingReadFocus = { key: pageFocusKey(added, facts.next), from: ['load-more', 'retry'], view: 'facts' };
     } catch (error) {
       if (disposed || mine !== seq) return;
-      facts = { ...facts, loadingMore: false, error: humanizeRpcError(error) };
+      facts = { ...facts, loadingMore: false, failedPage: before, error: humanizeRpcError(error) };
     }
     deps.render();
   };
@@ -722,8 +735,10 @@ export const createMailFactsSurface = (deps: MailFactsSurfaceDeps): MailFactsSur
       } else if (action === 'mail-facts-load-more') {
         void loadMore();
       } else if (action === 'mail-facts-retry') {
-        pendingFocus = 'retry';
-        void loadFacts(false);
+        if (!facts.loading && !facts.loadingMore) {
+          if (facts.failedPage !== null) void loadMore();
+          else void loadFacts(false, true);
+        }
       } else if (action === 'mail-facts-show-all') {
         const wasThing = facts.thing !== null;
         facts = { ...facts, email: null, thing: null, rows: [], next: null, loaded: false };
@@ -799,7 +814,7 @@ export const createMailFactsSurface = (deps: MailFactsSurfaceDeps): MailFactsSur
     isBusy: () =>
       view === 'templates'
         ? templates.isBusy()
-        : view === 'senders' ? senders.isBusy() : facts.loading || facts.loadingMore || pages > 1,
+        : view === 'senders' ? senders.isBusy() : facts.loading || facts.loadingMore || facts.failedPage !== null || pages > 1,
 
     hasUnsavedChanges: () => templates.hasUnsavedChanges(),
 
@@ -811,16 +826,21 @@ export const createMailFactsSurface = (deps: MailFactsSurfaceDeps): MailFactsSur
     },
 
     restoreFocus: (root, key) => {
-      const wanted = pendingFocus ?? key;
+      if (disposed) return;
+      const request = pendingReadFocus;
+      pendingReadFocus = null;
+      const readOwned = request !== null && request.view === view && key !== null && request.from.includes(key);
+      const wanted = pendingFocus ?? (readOwned ? request.key : key);
       if (wanted === null) return;
-      const found = root.querySelector?.(`[${MAIL_FACTS_FOCUS_ATTR}="${wanted.replace(/["\\]/g, '\\$&')}"]`) as
-        | HTMLElement
-        | null
-        | undefined;
+      const control = (value: string): HTMLElement | null | undefined => root.querySelector?.(
+        `[${MAIL_FACTS_FOCUS_ATTR}="${value.replace(/["\\]/g, '\\$&')}"]`,
+      ) as HTMLElement | null | undefined;
+      const found = control(wanted) ?? (readOwned
+        ? (view === 'facts' ? control('list-count') : null) ?? control(`view:${view}`) : null);
       if (found !== null && found !== undefined) {
         // Putting focus back after a repaint must not move the page; moving it
         // somewhere new (the box a clicked value opens) must bring it into view.
-        found.focus?.({ preventScroll: pendingFocus === null });
+        found.focus?.({ preventScroll: pendingFocus === null && !readOwned });
         pendingFocus = null;
       } else if (pendingFocus !== null && !facts.loading && !facts.loadingMore) {
         pendingFocus = null;
@@ -829,6 +849,7 @@ export const createMailFactsSurface = (deps: MailFactsSurfaceDeps): MailFactsSur
 
     dispose: () => {
       disposed = true;
+      pendingReadFocus = null;
       templates.dispose();
       senders.dispose();
     },

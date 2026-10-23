@@ -256,6 +256,8 @@ export const mountTlsRenewPanel = (
   // Track the in-flight renew so the test seam can await completion
   // even though the click handler itself is sync.
   let pendingRenewPromise: Promise<void> | null = null;
+  let renderGeneration = 0;
+  let focusTarget: HTMLElement | null = null;
 
   // ── Wrapper ──────────────────────────────────────────────────────
   const wrapper = doc.createElement('div');
@@ -267,9 +269,14 @@ export const mountTlsRenewPanel = (
   // ── Transitions ──────────────────────────────────────────────────
   const transitionTo = (next: TlsRenewPanelState): void => {
     if (disposed) return;
+    // Rebuilds remove the focused control. Carry focus only while this
+    // inline flow owns it, including when an asynchronous result arrives.
+    const keepFocus = doc.activeElement != null &&
+      wrapper.contains?.(doc.activeElement) === true;
     state = next;
     wrapper.setAttribute(TLS_RENEW_PANEL_STATE_ATTR, state);
     render();
+    if (keepFocus && wrapper.isConnected !== false) focusTarget?.focus?.();
   };
 
   const runRenew = async (): Promise<void> => {
@@ -327,7 +334,12 @@ export const mountTlsRenewPanel = (
     btn.textContent = label;
     btn.className = `rx-btn rx-btn-${variant} rx-btn-sm tls-renew-btn tls-renew-btn-${variant}`;
     if (disabledFlag) btn.disabled = true;
-    btn.addEventListener('click', onClick);
+    // A removed control must not act on a later render of the same state.
+    const generation = renderGeneration;
+    btn.addEventListener('click', () => {
+      if (disposed || generation !== renderGeneration || btn.disabled) return;
+      onClick();
+    });
     return btn;
   };
 
@@ -342,11 +354,10 @@ export const mountTlsRenewPanel = (
 
     const actions = doc.createElement('div');
     actions.className = 'tls-renew-actions';
-    actions.appendChild(
-      makeButton('Renew now', TLS_RENEW_RENEW_BTN_ATTR, 'primary', () =>
-        transitionTo('confirm'),
-      ),
+    focusTarget = makeButton(
+      'Renew now', TLS_RENEW_RENEW_BTN_ATTR, 'primary', () => transitionTo('confirm'),
     );
+    actions.appendChild(focusTarget);
 
     wrapper.appendChild(heading);
     wrapper.appendChild(help);
@@ -366,11 +377,10 @@ export const mountTlsRenewPanel = (
 
     const actions = doc.createElement('div');
     actions.className = 'tls-renew-actions';
-    actions.appendChild(
-      makeButton('Cancel', TLS_RENEW_CANCEL_BTN_ATTR, 'secondary', () =>
-        transitionTo('idle'),
-      ),
+    focusTarget = makeButton(
+      'Cancel', TLS_RENEW_CANCEL_BTN_ATTR, 'secondary', () => transitionTo('idle'),
     );
+    actions.appendChild(focusTarget);
     actions.appendChild(
       makeButton('Yes, renew', TLS_RENEW_CONFIRM_BTN_ATTR, 'primary', () => {
         pendingRenewPromise = runRenew();
@@ -391,7 +401,10 @@ export const mountTlsRenewPanel = (
     status.className = 'tls-renew-help tls-renew-help-busy';
     status.setAttribute(TLS_RENEW_STATUS_ATTR, '');
     status.setAttribute('role', 'status');
+    status.setAttribute('tabindex', '-1');
+    status.setAttribute('aria-atomic', 'true');
     status.textContent = COPY.busy;
+    focusTarget = status;
 
     const actions = doc.createElement('div');
     actions.className = 'tls-renew-actions';
@@ -459,11 +472,10 @@ export const mountTlsRenewPanel = (
 
     const actions = doc.createElement('div');
     actions.className = 'tls-renew-actions';
-    actions.appendChild(
-      makeButton('Close', TLS_RENEW_CLOSE_BTN_ATTR, 'secondary', () =>
-        transitionTo('idle'),
-      ),
+    focusTarget = makeButton(
+      'Close', TLS_RENEW_CLOSE_BTN_ATTR, 'secondary', () => transitionTo('idle'),
     );
+    actions.appendChild(focusTarget);
 
     wrapper.appendChild(heading);
     wrapper.appendChild(body);
@@ -503,11 +515,10 @@ export const mountTlsRenewPanel = (
         transitionTo('idle'),
       ),
     );
-    actions.appendChild(
-      makeButton('Retry', TLS_RENEW_RETRY_BTN_ATTR, 'primary', () =>
-        transitionTo('confirm'),
-      ),
+    focusTarget = makeButton(
+      'Retry', TLS_RENEW_RETRY_BTN_ATTR, 'primary', () => transitionTo('confirm'),
     );
+    actions.appendChild(focusTarget);
 
     wrapper.appendChild(heading);
     wrapper.appendChild(hint);
@@ -517,6 +528,8 @@ export const mountTlsRenewPanel = (
 
   const render = (): void => {
     if (disposed) return;
+    renderGeneration += 1;
+    focusTarget = null;
     clearChildren();
     switch (state) {
       case 'idle':

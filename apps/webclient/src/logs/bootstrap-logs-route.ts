@@ -60,6 +60,14 @@ import {
   runYieldIsTotalRefusal,
 } from '@recued/contracts';
 import { programDisplayName } from '../settings/pack-programs-controls.js';
+import {
+  LOGS_RUN_SUMMARY_ATTR,
+  LOGS_RUN_SUMMARY_STATUS_ATTR,
+  RUN_SUMMARY_COPY_MESSAGES,
+  logsRunSummary,
+  renderLogsRunSummary,
+  type RunSummaryCopyState,
+} from './run-summary.js';
 
 import {
   REFERENCE_PROVENANCE_STYLES,
@@ -216,6 +224,10 @@ export interface RunsFilters {
   recipe_id: string;
   time_range: RunsTimeRange;
 }
+
+const defaultRunsFilters = (): RunsFilters => ({
+  status: 'all', origin: 'all', recipe_id: '', time_range: 'all',
+});
 
 export interface BootstrapLogsRouteOptions {
   root: HTMLElement;
@@ -472,6 +484,51 @@ const LOGS_ROUTE_STYLES = `
   gap: 8px;
   align-items: end;
   margin-bottom: 12px;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-filter-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-run-summary {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  margin: 12px 0;
+  font-size: 12px;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-run-summary > button {
+  justify-self: start;
+  max-width: 100%;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-run-summary > p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-run-summary summary {
+  cursor: pointer;
+  min-height: 36px;
+  box-sizing: border-box;
+  padding: 8px 0;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-run-summary textarea {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  margin-top: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--fg);
+  font: 12px/1.5 var(--mono, monospace);
+  resize: vertical;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-run-summary :is(summary, textarea):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 [${LOGS_ROUTE_HOST_ATTR}] .logs-field {
   display: grid;
@@ -1066,6 +1123,12 @@ const LOGS_ROUTE_STYLES = `
   [${LOGS_ROUTE_HOST_ATTR}] .logs-layout,
   [${LOGS_ROUTE_HOST_ATTR}] .logs-filters {
     grid-template-columns: 1fr;
+  }
+  [${LOGS_ROUTE_HOST_ATTR}] .logs-filter-actions .logs-button {
+    min-height: 44px;
+  }
+  [${LOGS_ROUTE_HOST_ATTR}] .logs-run-summary :is(button, summary) {
+    min-height: 44px;
   }
   /* R17 — the History table collapses to label-prefixed cards. */
   [${LOGS_ROUTE_HOST_ATTR}] .logs-table,
@@ -2132,6 +2195,7 @@ const renderFilters = (
   recipePickerHtml: string,
   feedBusy: boolean,
   applyingFilters: boolean,
+  clearingFilters: boolean,
 ): string => {
   const applyStateAttrs = feedBusy
     ? ' aria-disabled="true" aria-busy="true"'
@@ -2167,8 +2231,12 @@ const renderFilters = (
         ).join('')}
       </select>
     </label>
-    <button type="button" class="logs-button logs-button--primary"
-      ${LOGS_ROUTE_ACTION_ATTR}="apply-filters"${applyStateAttrs}>${applyLabel}</button>
+    <div class="logs-filter-actions">
+      <button type="button" class="logs-button logs-button--primary"
+        ${LOGS_ROUTE_ACTION_ATTR}="apply-filters"${applyStateAttrs}>${applyLabel}</button>
+      <button type="button" class="logs-button"
+        ${LOGS_ROUTE_ACTION_ATTR}="clear-filters"${applyStateAttrs}>${clearingFilters ? 'Clearing…' : 'Clear filters'}</button>
+    </div>
   </div>
 `;
 };
@@ -2788,6 +2856,7 @@ const renderDetail = (
   error: string | undefined,
   returnToChat?: ChatPlanAddress,
   returnToReception?: string,
+  summaryHtml = '',
 ): string => {
   if (error !== undefined) {
     return `<aside ${LOGS_ROUTE_DETAIL_ATTR} aria-label="Run detail"><h2 ${LOGS_ROUTE_DETAIL_HEADING_ATTR}="${e(selectedRunId ?? '')}" tabindex="-1">Run detail</h2><p ${LOGS_ROUTE_ERROR_ATTR} role="alert">${e(error)}</p>${selectedRunId === null
@@ -2812,6 +2881,7 @@ const renderDetail = (
     <aside ${LOGS_ROUTE_DETAIL_ATTR}="${e(audit.run_id)}" aria-label="Run detail">
       <h2 ${LOGS_ROUTE_DETAIL_HEADING_ATTR}="${e(audit.run_id)}" tabindex="-1">${e(audit.recipe_id)}</h2>
       ${renderOutcome(detail)}
+      ${summaryHtml}
       ${renderAffectedItems(detail, returnToChat, returnToReception)}
       <div class="logs-detail-meta">
         <span>run ${e(audit.run_id)}</span>
@@ -2914,12 +2984,10 @@ export const bootstrapLogsRoute = (
   const view: 'logs' | 'active' = opts.initialView ?? 'logs';
 
   let filters: RunsFilters = {
-    status: 'all',
-    origin: 'all',
+    ...defaultRunsFilters(),
     // R24 follow-on — a `#logs/recipe/<id>` deep link opens pre-scoped to that
     // recipe (buildQuery sends it; resolveRecipeSelection shows it in the picker).
     recipe_id: opts.initialRecipeId ?? '',
-    time_range: 'all',
   };
   let runs: ReadonlyArray<RunFeedRow> = [];
   let nextCursor: ExecutionListCursor | null = null;
@@ -2973,6 +3041,7 @@ export const bootstrapLogsRoute = (
   // Apply can own the keyboard action with precise progress copy while every
   // feed read still shares one visible, single-flight boundary.
   let applyingFilters = false;
+  let clearingFilters = false;
   let pendingLoadMoreFocus = false;
   let pendingLoadedRunFocusId: string | null = null;
   let loadingDetail = false;
@@ -2983,6 +3052,15 @@ export const bootstrapLogsRoute = (
   let pendingDetailFocusRunId: string | null = null;
   let errors: RunsLoadErrors = {};
   let disposed = false;
+  let runSummaryCopyState: RunSummaryCopyState = 'idle';
+  let runSummaryCopySeq = 0;
+  let cancelRunSummaryCopy: (() => void) | null = null;
+  const resetRunSummaryCopy = (): void => {
+    runSummaryCopySeq += 1;
+    cancelRunSummaryCopy?.();
+    cancelRunSummaryCopy = null;
+    runSummaryCopyState = 'idle';
+  };
   let feedSeq = 0;
   let detailSeq = 0;
   // D-181 slice 5b — the live Active section.
@@ -3052,12 +3130,39 @@ export const bootstrapLogsRoute = (
 
   const render = (): void => {
     const activeElement = doc.activeElement as HTMLElement | null | undefined;
+    const summaryRunId = selectedRun !== null && !loadingDetail
+      && errors.detail === undefined && selectedRun.audit.run_id === selectedRunId
+      ? selectedRunId : null;
+    const oldSummary = routeRoot.querySelector?.(`[${LOGS_RUN_SUMMARY_ATTR}]`);
+    const sameSummary = summaryRunId !== null
+      && oldSummary?.getAttribute(LOGS_RUN_SUMMARY_ATTR) === summaryRunId;
+    const focusedSummaryTag = sameSummary && activeElement != null
+      && oldSummary?.contains(activeElement)
+      ? activeElement.tagName.toLowerCase() : null;
+    const summaryOpen = sameSummary
+      && oldSummary?.querySelector('details')?.open === true;
+    const summaryField = sameSummary ? oldSummary?.querySelector('textarea') : null;
+    const summaryViewport = summaryField
+      ? { height: summaryField.style.height, scrollTop: summaryField.scrollTop }
+      : null;
+    const summarySelection = focusedSummaryTag === 'textarea'
+      ? { start: (activeElement as HTMLTextAreaElement).selectionStart,
+          end: (activeElement as HTMLTextAreaElement).selectionEnd,
+          direction: (activeElement as HTMLTextAreaElement).selectionDirection }
+      : null;
+    if (focusedSummaryTag !== null) {
+      pendingInitialRunFocus = false;
+      pendingDetailFocusRunId = null;
+    }
     const focusedDetailRunId = activeElement?.getAttribute?.(
       LOGS_ROUTE_DETAIL_HEADING_ATTR,
     ) ?? null;
     const focusedApply = activeElement?.getAttribute?.(
       LOGS_ROUTE_ACTION_ATTR,
     ) === 'apply-filters';
+    const focusedClear = activeElement?.getAttribute?.(
+      LOGS_ROUTE_ACTION_ATTR,
+    ) === 'clear-filters';
     const focusedLoadMore = activeElement?.getAttribute?.(
       LOGS_ROUTE_ACTION_ATTR,
     ) === 'load-more';
@@ -3232,6 +3337,7 @@ export const bootstrapLogsRoute = (
         ),
         loadingFeed || loadingMore,
         applyingFilters,
+        clearingFilters,
       )}
       <div class="logs-layout">
         <section class="logs-panel">
@@ -3253,6 +3359,9 @@ export const bootstrapLogsRoute = (
           errors.detail,
           chatReturn,
           receptionReturn,
+          selectedRun !== null && summaryRunId !== null
+            ? renderLogsRunSummary(selectedRun, runSummaryCopyState, summaryOpen)
+            : '',
         )}
       </div>
     `;
@@ -3267,6 +3376,25 @@ export const bootstrapLogsRoute = (
       }
     }
     mountRecipePicker();
+    const replacementSummaryField = summaryViewport === null ? null
+      : routeRoot.querySelector<HTMLTextAreaElement>(`[${LOGS_RUN_SUMMARY_ATTR}] textarea`);
+    if (replacementSummaryField !== null && summaryViewport !== null) {
+      replacementSummaryField.style.height = summaryViewport.height;
+    }
+    if (focusedSummaryTag === 'button' || focusedSummaryTag === 'summary' || focusedSummaryTag === 'textarea') {
+      const replacement = routeRoot.querySelector<HTMLElement>(
+        `[${LOGS_RUN_SUMMARY_ATTR}] ${focusedSummaryTag}`,
+      );
+      replacement?.focus({ preventScroll: true });
+      if (summarySelection !== null && replacement !== null) {
+        (replacement as HTMLTextAreaElement).setSelectionRange(
+          summarySelection.start, summarySelection.end, summarySelection.direction,
+        );
+      }
+    }
+    if (replacementSummaryField !== null && summaryViewport !== null) {
+      replacementSummaryField.scrollTop = summaryViewport.scrollTop;
+    }
     if (focusedFilterKind !== null) {
       const replacement = routeRoot.querySelector?.(
         `[${LOGS_ROUTE_FILTER_KIND_ATTR}="${focusedFilterKind}"]`,
@@ -3293,9 +3421,9 @@ export const bootstrapLogsRoute = (
         );
       }
     }
-    if (focusedApply) {
+    if (focusedApply || focusedClear) {
       const replacement = routeRoot.querySelector?.(
-        `[${LOGS_ROUTE_ACTION_ATTR}="apply-filters"]`,
+        `[${LOGS_ROUTE_ACTION_ATTR}="${focusedClear ? 'clear-filters' : 'apply-filters'}"]`,
       ) as HTMLElement | null | undefined;
       replacement?.focus?.({ preventScroll: true });
     }
@@ -3387,6 +3515,55 @@ export const bootstrapLogsRoute = (
     }
   };
 
+  const paintRunSummaryCopy = (): void => {
+    const host = routeRoot.querySelector?.(`[${LOGS_RUN_SUMMARY_ATTR}]`);
+    if (!host || host.getAttribute(LOGS_RUN_SUMMARY_ATTR) !== selectedRunId) return;
+    const button = host.querySelector('[data-recued-logs-action="copy-run-summary"]');
+    const status = host.querySelector(`[${LOGS_RUN_SUMMARY_STATUS_ATTR}]`);
+    if (status) status.textContent = RUN_SUMMARY_COPY_MESSAGES[runSummaryCopyState];
+    if (runSummaryCopyState === 'copying') {
+      button?.setAttribute('aria-busy', 'true');
+      button?.setAttribute('aria-disabled', 'true');
+    } else {
+      button?.removeAttribute('aria-busy');
+      button?.removeAttribute('aria-disabled');
+    }
+    if (runSummaryCopyState === 'manual') {
+      const details = host.querySelector('details');
+      if (details) details.open = true;
+      const field = host.querySelector('textarea');
+      if (field && doc.activeElement === button) { field.focus(); field.select(); }
+    }
+  };
+
+  const copyRunSummary = async (): Promise<void> => {
+    const run = selectedRun;
+    if (disposed || loadingDetail || errors.detail !== undefined || run === null
+      || run.audit.run_id !== selectedRunId || runSummaryCopyState === 'copying') return;
+    pendingInitialRunFocus = false;
+    pendingDetailFocusRunId = null;
+    const seq = ++runSummaryCopySeq;
+    const current = (): boolean => !disposed && seq === runSummaryCopySeq && selectedRun === run;
+    runSummaryCopyState = 'copying';
+    paintRunSummaryCopy();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const clipboard = doc.defaultView?.navigator?.clipboard;
+      if (typeof clipboard?.writeText !== 'function') throw new Error('Clipboard unavailable');
+      const deadline = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('Clipboard timed out')), 5_000);
+        cancelRunSummaryCopy = () => reject(new Error('Run changed'));
+      });
+      await Promise.race([clipboard.writeText(logsRunSummary(run)), deadline]);
+      if (current()) { runSummaryCopyState = 'copied'; paintRunSummaryCopy(); }
+    } catch {
+      if (current()) { runSummaryCopyState = 'manual'; paintRunSummaryCopy(); }
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      if (current()) cancelRunSummaryCopy = null;
+    }
+  };
+
   /** Delay focus until the feed and exact detail have both settled; otherwise
    * the last parallel hydration paint can replace the focused outcome. */
   const focusInitialRunOutcome = (): void => {
@@ -3426,17 +3603,19 @@ export const bootstrapLogsRoute = (
 
   const loadFeed = async (
     mode: 'replace' | 'append',
-    owner: 'background' | 'filters' = 'background',
+    owner: 'background' | 'filters' | 'clear-filters' = 'background',
   ): Promise<void> => {
     if (mode === 'append' && loadingMore) return;
     if (opts.listCaller === undefined) {
       applyingFilters = false;
+      clearingFilters = false;
       errors = { ...errors, feed: 'execution.list caller is not wired in this host.' };
       render();
       return;
     }
     const seq = ++feedSeq;
     applyingFilters = mode === 'replace' && owner === 'filters';
+    clearingFilters = mode === 'replace' && owner === 'clear-filters';
     if (mode === 'replace') {
       loadingFeed = true;
       nextCursor = null;
@@ -3475,6 +3654,7 @@ export const bootstrapLogsRoute = (
         loadingFeed = false;
         loadingMore = false;
         applyingFilters = false;
+        clearingFilters = false;
         render();
       }
     }
@@ -3501,6 +3681,7 @@ export const bootstrapLogsRoute = (
       || (loadingDetail && selectedRunId === run_id)
     ) return;
     const openingFromList = selectedRunId === null;
+    resetRunSummaryCopy();
     pendingDetailFocusRunId = focusDetail ? run_id : null;
     if (run_id !== initialFocusRunId) pendingInitialRunFocus = false;
     if (chatReturn !== undefined && run_id !== chatReturnRunId) {
@@ -3755,8 +3936,27 @@ export const bootstrapLogsRoute = (
     const target = targetWithAction(ev);
     if (target === null) return;
     const action = target.getAttribute(LOGS_ROUTE_ACTION_ATTR);
+    if (action === 'copy-run-summary') {
+      void copyRunSummary();
+      return;
+    }
     if (action === 'apply-filters') {
       if (!loadingFeed && !loadingMore) void loadFeed('replace', 'filters');
+      return;
+    }
+    if (action === 'clear-filters') {
+      if (loadingFeed || loadingMore) return;
+      // This newer action owns focus, even if an earlier run read is pending.
+      pendingInitialRunFocus = false;
+      pendingDetailFocusRunId = null;
+      filters = defaultRunsFilters();
+      recipePicker?.setValue(null);
+      // Drop a recipe-only list address without remounting the route. An
+      // exact run and its return context stay open while its history resets.
+      if (selectedRunId === null) {
+        logsHistory.navigate(hierarchicalAddress('logs'), { intent: 'replace' });
+      }
+      void loadFeed('replace', 'clear-filters');
       return;
     }
     if (action === 'load-more') {
@@ -3944,6 +4144,7 @@ export const bootstrapLogsRoute = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      resetRunSummaryCopy();
       if (activeRefreshTimer !== null) {
         clearTimeout(activeRefreshTimer);
         activeRefreshTimer = null;

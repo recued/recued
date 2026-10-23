@@ -4,6 +4,13 @@ import { PROACTIVE_PROPOSAL_KINDS, type ProactiveProposal, type ProactiveProposa
 
 const boundedText = (value: unknown, max: number): value is string => typeof value === 'string' && value.trim().length > 0 && value.length <= max;
 const validRef = (ref: SituationRef) => ref && boundedText(ref.collection, 200) && boundedText(ref.id, 2000);
+type ProposalKeyReader = (key: string) => ProactiveProposal | null | undefined;
+interface PrefetchedProposalKey { value: string | null; tombstoned?: boolean }
+const nativeEventReaders = new WeakMap<object, unknown>();
+export const hasNativeProposalEvents = (store: object): boolean => {
+  const reader = nativeEventReaders.get(store);
+  return reader !== undefined && Object.getOwnPropertyDescriptor(store, 'pendingEvents')?.value === reader;
+};
 export const validateProposal = (input: ProactiveProposalInput): void => {
   if (!input || !PROACTIVE_PROPOSAL_KINDS.includes(input.kind) || !boundedText(input.key, 2000)
     || !boundedText(input.title, 1000) || typeof input.explanation !== 'string' || input.explanation.length > 4000
@@ -39,6 +46,18 @@ export const createProactiveProposalStore = (db: Database.Database) => {
     const row = db.prepare('SELECT value FROM proactive_proposals WHERE dedupe_key=?').get(key) as { value: string } | undefined;
     return row ? JSON.parse(row.value) : null;
   };
+  // Native ensure generated a new ID. A strict insert avoids a previous-row
+  // read and rejects collisions without replacing an earlier proposal.
+  const insert = (proposal: ProactiveProposal): ProactiveProposal => {
+    validateProposal(proposal);
+    return db.transaction(() => {
+      const value = JSON.stringify(proposal);
+      db.prepare(`INSERT INTO proactive_proposals(id,dedupe_key,state,kind,origin,created_at,updated_at,value) VALUES(?,?,?,?,?,?,?,?)`)
+        .run(proposal.id, proposal.key, proposal.state, proposal.kind, proposal.origin, proposal.created_at, proposal.updated_at, value);
+      db.prepare('INSERT INTO proactive_proposal_events(at,value) VALUES(?,?)').run(proposal.updated_at, value);
+      return proposal;
+    })();
+  };
   const save = (proposal: ProactiveProposal): ProactiveProposal => {
     validateProposal(proposal);
     const previous = read(proposal.id);
@@ -64,26 +83,63 @@ export const createProactiveProposalStore = (db: Database.Database) => {
     const row = db.prepare('SELECT value FROM proactive_intake_settings WHERE key=?').get(key) as { value: string } | undefined;
     return row ? JSON.parse(row.value) as T : fallback;
   };
-  return {
-    read, byKey, list, save, setting, suppressions,
-    pendingEvents(limit = 100): Array<{ revision: number; at: number; proposal: ProactiveProposal }> {
-      return (db.prepare('SELECT revision,at,value FROM proactive_proposal_events WHERE delivered=0 ORDER BY revision LIMIT ?').all(Math.max(1, Math.min(1000, limit))) as { revision: number; at: number; value: string }[])
-        .map(({ value, ...row }) => ({ ...row, proposal: JSON.parse(value) }));
+  const keyBatches = new WeakMap<ProposalKeyReader, Map<string, PrefetchedProposalKey>>();
+  const ensure = (input: ProactiveProposalInput, at: number, prefetched?: ProposalKeyReader): ProactiveProposal => {
+    validateProposal(input);
+    // Only this store's unconsumed native entry can supply tombstone metadata.
+    const entry = prefetched && keyBatches.get(prefetched)?.get(input.key);
+    const cached = prefetched?.(input.key); const old = cached === undefined ? byKey(input.key) : cached;
+    if (!old && (entry?.tombstoned ?? !!db.prepare('SELECT 1 FROM proactive_proposal_tombstones WHERE dedupe_key=?').get(input.key))) return {
+      ...structuredClone(input), id: `deleted-proposal-${createHash('sha256').update(input.key).digest('hex')}`, state: 'dismissed', dismissal: 'not_this_one', created_at: at, updated_at: at,
+    };
+    // Owner edits and answers survive rescans. A changed extraction is offered
+    // afresh only if its producer gives it a new evidence/version key.
+    return old ?? insert({ ...structuredClone(input), id: `proposal-${randomUUID()}`, state: 'proposed', created_at: at, updated_at: at });
+  };
+  /** For one synchronous batch with no intervening edits to other keys. Decode
+   * only when ensure reaches a key, after validation, to retain error order.
+   * Each key and its tombstone state are consumed once; repeated, unrequested
+   * and custom readers retain point checks. Existing rows need no tombstone
+   * query. Customized ensure retains its path. */
+  function prefetchKeys(this: { ensure: typeof ensure }, keys: readonly string[]): ProposalKeyReader | undefined {
+    if (this?.ensure !== ensure) return undefined;
+    const unique = [...new Set(keys)]; const values = new Map<string, PrefetchedProposalKey>(unique.map(key => [key, { value: null }]));
+    for (let offset = 0; offset < unique.length; offset += 200) {
+      const page = unique.slice(offset, offset + 200);
+      const rows = db.prepare(`SELECT dedupe_key,value FROM proactive_proposals WHERE dedupe_key IN (${page.map(() => '?').join(',')})`).all(...page) as { dedupe_key: string; value: string }[];
+      for (const row of rows) values.set(row.dedupe_key, { value: row.value });
+    }
+    const missing = unique.filter(key => values.get(key)?.value === null);
+    try {
+      const states = new Map<string, boolean>();
+      for (let offset = 0; offset < missing.length; offset += 200) {
+        const page = missing.slice(offset, offset + 200);
+        const rows = db.prepare(`WITH proposal_tombstone_requested(dedupe_key) AS (VALUES ${page.map(() => '(?)').join(',')})
+          SELECT requested.dedupe_key,EXISTS(SELECT 1 FROM proactive_proposal_tombstones tombstone
+            WHERE tombstone.dedupe_key=requested.dedupe_key) AS tombstoned FROM proposal_tombstone_requested requested`)
+          .all(...page) as Array<{ dedupe_key: string; tombstoned: number }>;
+        for (const row of rows) if (row.tombstoned === 0 || row.tombstoned === 1) states.set(row.dedupe_key, row.tombstoned === 1);
+      }
+      for (const key of missing) { const state = states.get(key); if (state !== undefined) values.get(key)!.tombstoned = state; }
+    } catch { /* Keep the proposal prefetch; ensure retains ordered, current tombstone checks. */ }
+    const lookup: ProposalKeyReader = key => {
+      const entry = values.get(key); values.delete(key);
+      return entry === undefined ? undefined : entry.value === null ? null : JSON.parse(entry.value);
+    };
+    keyBatches.set(lookup, values); return lookup;
+  }
+  const pendingEvents = (limit = 100): Array<{ revision: number; at: number; proposal: ProactiveProposal }> =>
+    (db.prepare('SELECT revision,at,value FROM proactive_proposal_events WHERE delivered=0 ORDER BY revision LIMIT ?').all(Math.max(1, Math.min(1000, limit))) as { revision: number; at: number; value: string }[])
+      .map(({ value, ...row }) => ({ ...row, proposal: JSON.parse(value) }));
+  const store = {
+    read, byKey, list, save, setting, suppressions, ensure, prefetchKeys, pendingEvents,
+    acknowledgeEvent(revision: number, wrote?: (rows: number, connection: Database.Database) => void): void {
+      const result = db.prepare('UPDATE proactive_proposal_events SET delivered=1 WHERE revision=?').run(revision); wrote?.(result.changes, db);
     },
-    acknowledgeEvent(revision: number): void { db.prepare('UPDATE proactive_proposal_events SET delivered=1 WHERE revision=?').run(revision); },
-    allows(input: Pick<ProactiveProposalInput, 'kind' | 'payload'>): boolean {
+    /** Supply a suppression snapshot only within a synchronous refresh. Other callers read current rows. */
+    allows(input: Pick<ProactiveProposalInput, 'kind' | 'payload'>, currentSuppressions?: readonly ProactiveSuppression[]): boolean {
       const scope = String(input.payload.proposal_class ?? input.kind);
-      return !suppressions().some(row => row.kind === 'proposal_kind' && (row.value === scope || row.value === input.kind));
-    },
-    ensure(input: ProactiveProposalInput, at: number): ProactiveProposal {
-      validateProposal(input);
-      const old = byKey(input.key);
-      if (!old && db.prepare('SELECT 1 FROM proactive_proposal_tombstones WHERE dedupe_key=?').get(input.key)) return {
-        ...structuredClone(input), id: `deleted-proposal-${createHash('sha256').update(input.key).digest('hex')}`, state: 'dismissed', dismissal: 'not_this_one', created_at: at, updated_at: at,
-      };
-      // Owner edits and answers survive rescans. A changed extraction is offered
-      // afresh only if its producer gives it a new evidence/version key.
-      return old ?? save({ ...structuredClone(input), id: `proposal-${randomUUID()}`, state: 'proposed', created_at: at, updated_at: at });
+      return !(currentSuppressions ?? suppressions()).some(row => row.kind === 'proposal_kind' && (row.value === scope || row.value === input.kind));
     },
     /** A key offered once is not offered again: `ensure` returns the earlier proposal
      * or its tombstone. Only an offer its source withdrew is forgotten (`prune`). */
@@ -192,5 +248,6 @@ export const createProactiveProposalStore = (db: Database.Database) => {
     outcomes: (after = 0): Array<{ id: number; proposal_id: string; at: number; outcome: string; actor: string; value: string }> =>
       db.prepare('SELECT * FROM proactive_proposal_outcomes WHERE id>? ORDER BY id LIMIT 10000').all(after) as Array<{ id: number; proposal_id: string; at: number; outcome: string; actor: string; value: string }>,
   };
+  nativeEventReaders.set(store, pendingEvents); return store;
 };
 export type ProactiveProposalStore = ReturnType<typeof createProactiveProposalStore>;

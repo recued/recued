@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import { HARNESS_URL, installFullAppHooks, DRAWER_TOGGLE, DRAWER_ACTION } from './helpers/full-app.js';
 import { openChatHistory } from './helpers/chat-history.js';
 
@@ -10,6 +10,10 @@ declare global { interface Window {
   __assetHandoffWrites: import('@recued/contracts').YoursCommand[];
   __assetReportReading(id: string, field: string, value: number, unit: string, asOf: number): void;
   __assetSummaries: import('@recued/contracts').YoursAssetSummary[];
+  __lastTimeRecovery: {
+    reads: number; writes: Array<'on' | 'off'>;
+    release(kind: 'read' | 'save', reply: { result?: unknown; error?: { code: string; message: string } }): void;
+  };
 } }
 const captureAssetChatCalls = (page: Page) => page.evaluate(() => {
   window.__assetChatCalls.length = 0;
@@ -1445,9 +1449,9 @@ test('Settings → Privacy → Learning turns last time on and off and links to 
   const panel = page.locator('[data-last-time]'); const state = panel.locator('[data-last-time-state]');
   await expect(state).toHaveText('Recued is asking whether to allow it. Answer in the bell, or here.');
   await expect(panel.getByRole('link', { name: 'People, places and dates it never brings up', exact: true })).toHaveAttribute('href', '#yours/episodes');
-  await panel.getByRole('button', { name: 'Allow last time', exact: true }).click();
+  await panel.getByRole('button', { name: 'Allow last time', exact: true }).focus(); await page.keyboard.press('Enter');
   await expect(state).toHaveText('On. Your overview may offer flowers.'); await expect(panel.getByRole('status')).toHaveText('Last time is on.');
-  await panel.getByRole('button', { name: 'Turn last time off', exact: true }).click();
+  await panel.getByRole('button', { name: 'Turn last time off', exact: true }).focus(); await page.keyboard.press('Enter');
   await expect(state).toHaveText('Off. Recued does not ask again.');
   await expect(panel.getByRole('button', { name: 'Allow last time', exact: true })).toBeFocused();
   await page.evaluate(() => { location.hash = '#yours/episodes'; });
@@ -1455,6 +1459,70 @@ test('Settings → Privacy → Learning turns last time on and off and links to 
   await expect(recall.getByText('Off. A kind of offer reaches your overview only after at least five scored candidates', { exact: false })).toBeVisible();
   await expect(recall.getByRole('button', { name: 'Allow last time', exact: true })).toBeVisible();
 });
+
+for (const width of [390, 1280]) for (const scenario of ['initial-error', 'mismatch', 'outside-focus'] as const) {
+  test(`Last time Privacy ${scenario} recovers at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.addInitScript(scenario => {
+      type Reply = { result?: unknown; error?: { code: string; message: string } };
+      const pending: Array<{ kind: 'read' | 'save'; resolve(reply: Reply): void }> = [];
+      const controls = {
+        reads: 0, writes: [] as Array<'on' | 'off'>,
+        release(kind: 'read' | 'save', reply: Reply) {
+          const index = pending.findIndex(item => item.kind === kind);
+          if (index < 0) throw new Error('No pending Last time fixture reply.');
+          pending.splice(index, 1)[0]!.resolve(reply);
+        },
+      };
+      window.__lastTimeRecovery = controls;
+      Object.assign(window, { __connectionsFixture: async (method: string, args: unknown) => {
+        if (method === 'yours.learning') {
+          controls.reads++;
+          if (controls.reads === 1) return scenario === 'initial-error'
+            ? { error: { code: 'unavailable', message: 'Could not check Last time settings.' } }
+            : { result: { last_time: 'on', asked: false, classes: [] } };
+          return new Promise<Reply>(resolve => pending.push({ kind: 'read', resolve }));
+        }
+        const input = args as { action?: string; last_time?: 'on' | 'off' } | undefined;
+        if (method === 'yours.change' && input?.action === 'settings.update' && input.last_time) {
+          controls.writes.push(input.last_time);
+          return new Promise<Reply>(resolve => pending.push({ kind: 'save', resolve }));
+        }
+        return undefined;
+      } });
+    }, scenario);
+    await page.goto(`${HARNESS_URL}?yours=demo#settings/privacy`);
+    const panel = page.locator('[data-last-time]'); const notice = panel.locator('[data-last-time-message]');
+    const retry = panel.getByRole('button', { name: 'Retry Last time settings', exact: true });
+    const off = panel.getByRole('button', { name: 'Turn last time off', exact: true });
+    if (scenario === 'initial-error') {
+      await expect(panel.getByRole('heading')).toHaveText('Last time'); await expect(notice).toHaveAttribute('role', 'alert');
+      await retry.focus(); await page.keyboard.press('Enter');
+      await page.evaluate(() => window.__lastTimeRecovery.release('read', { result: { last_time: 'on', asked: false, classes: [] } }));
+      await expect(off).toBeFocused(); await expect(retry).toBeHidden();
+      expect(await page.evaluate(() => window.__lastTimeRecovery.writes)).toEqual([]);
+      return;
+    }
+    await off.focus(); await page.keyboard.press('Enter'); await expect(notice).toHaveText('Saving…');
+    const outside = page.locator('[data-recued-account-menu-trigger]');
+    if (scenario === 'outside-focus') { await outside.focus(); await expect(outside).toBeFocused(); }
+    await page.evaluate(() => window.__lastTimeRecovery.release('save', { result: {} }));
+    await expect.poll(() => page.evaluate(() => window.__lastTimeRecovery.reads)).toBe(2);
+    await page.evaluate(scenario => window.__lastTimeRecovery.release('read', {
+      result: { last_time: scenario === 'mismatch' ? 'on' : 'off', asked: false, classes: [] },
+    }), scenario);
+    if (scenario === 'mismatch') {
+      await expect(notice).toHaveAttribute('role', 'alert'); await expect(notice).toContainText('could not be confirmed');
+      await expect(panel.locator('[data-last-time-state]')).toContainText('On.'); await expect(off).toBeFocused();
+      await retry.focus(); await page.keyboard.press('Enter');
+      await page.evaluate(() => window.__lastTimeRecovery.release('read', { result: { last_time: 'off', asked: false, classes: [] } }));
+    }
+    await expect(notice).toHaveText('Last time is off.');
+    if (scenario === 'outside-focus') await expect(outside).toBeFocused();
+    else await expect(panel.getByRole('button', { name: 'Allow last time', exact: true })).toBeFocused();
+    expect(await page.evaluate(() => window.__lastTimeRecovery.writes)).toEqual(['off']);
+  });
+}
 
 test('The asset header says when its holder is no longer in your contacts', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=demo&yours_holder_gone=1#yours/asset/passport`);
@@ -1507,6 +1575,95 @@ test('Asset details save typed preferences, anchors and dated value history', as
   await route.getByRole('button', { name: 'Edit asset', exact: true }).click(); form = page.locator('[data-yours-editor]');
   await expect(form.getByLabel('Settings value type', { exact: true })).toHaveValue('Number'); await expect(form.getByLabel('Settings value', { exact: true })).toHaveValue('21');
   await expect(form.getByLabel('Latitude', { exact: true })).toHaveValue('37.78'); await expect(form.getByLabel('Amount', { exact: true })).toHaveValue('85.50'); await expect(form.getByLabel('Valued on', { exact: true })).toHaveValue('2026-10-10');
+});
+
+test.describe('Asset fact row focus', () => {
+  const kinds = [
+    { kind: 'setting', add: 'Add setting', field: 'Settings field name', remove: 'Remove setting' },
+    { kind: 'attribute', add: 'Add attribute', field: 'Attributes field name', remove: 'Remove attribute' },
+    { kind: 'place', add: 'Add place', field: 'Place name', remove: 'Remove anchor' },
+    { kind: 'identifier', add: 'Add identifier', field: 'Identifier scheme', remove: 'Remove anchor' },
+    { kind: 'instrument', add: 'Add instrument', field: 'Instrument identifier', remove: 'Remove anchor' },
+    { kind: 'valuation', add: 'Add value', field: 'Amount', remove: 'Remove value' },
+  ] as const;
+  const open = async (page: Page, width: number, create = false) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`${HARNESS_URL}?yours=demo#yours/${create ? 'new' : 'asset/passport'}`);
+    if (!create) await page.locator('[data-recued-yours]').getByRole('button', { name: 'Edit asset', exact: true }).click();
+    const form = page.locator('[data-yours-editor]');
+    await form.getByLabel('Name', { exact: true }).fill('Preserved passport draft');
+    if (create) await form.locator('[data-yours-asset-more] > summary').click();
+    return form;
+  };
+  const activate = async (control: Locator, page: Page) => { await control.focus(); await page.keyboard.press('Enter'); };
+  const remove = (field: Locator, name: string) => field.locator('xpath=ancestor::article[1]').getByRole('button', { name, exact: true });
+
+  for (const width of [390, 1280]) {
+    for (const item of kinds) {
+      test(`keyboard ${item.kind} rows keep focus through add, middle removal and last removal at ${width}px`, async ({ page }) => {
+        const form = await open(page, width); const add = form.getByRole('button', { name: item.add, exact: true });
+        const fields = form.getByLabel(item.field, { exact: true }); await expect(fields).toHaveCount(0);
+        const texts = item.kind === 'valuation' ? ['85.50', '90.00', '105.25'] : ['first_fact', 'second_fact', 'third_fact'];
+        for (const [index, text] of texts.entries()) {
+          await activate(add, page); await expect(fields).toHaveCount(index + 1);
+          await expect(fields.nth(index)).toBeFocused(); await expect(fields.nth(index)).toBeInViewport();
+          await page.keyboard.type(text); await expect(fields.nth(index)).toHaveValue(text);
+        }
+        // Prefer the next row, then the previous row, then this kind's Add.
+        await activate(remove(fields.nth(1), item.remove), page); await expect(fields).toHaveCount(2);
+        await expect(fields.nth(1)).toBeFocused(); await expect(fields.nth(1)).toHaveValue(texts[2]!);
+        await activate(remove(fields.nth(1), item.remove), page); await expect(fields).toHaveCount(1);
+        await expect(fields.first()).toBeFocused(); await expect(fields.first()).toHaveValue(texts[0]!);
+        await activate(remove(fields.first(), item.remove), page); await expect(fields).toHaveCount(0); await expect(add).toBeFocused();
+        await expect(form.getByLabel('Name', { exact: true })).toHaveValue('Preserved passport draft'); expect(await page.evaluate(() => window.__assetFactWrites)).toEqual([]);
+        await activate(form.getByRole('button', { name: 'Save', exact: true }), page); await expect(form).toHaveCount(0);
+        expect(await page.evaluate(() => window.__assetFactWrites)).toEqual([expect.objectContaining({ action: 'asset.update', patch: { name: 'Preserved passport draft' } })]);
+      });
+
+      test(`pointer ${item.kind} rows focus the new field and the matching Add after removal at ${width}px`, async ({ page }) => {
+        const form = await open(page, width); const add = form.getByRole('button', { name: item.add, exact: true });
+        await add.click(); const field = form.getByLabel(item.field, { exact: true });
+        await expect(field).toBeFocused(); await expect(field).toBeInViewport();
+        await remove(field, item.remove).click(); await expect(field).toHaveCount(0); await expect(add).toBeFocused();
+        await expect(form.getByLabel('Name', { exact: true })).toHaveValue('Preserved passport draft');
+      });
+    }
+
+    test(`scripted fact actions respect another field's focus and selection at ${width}px`, async ({ page }) => {
+      const form = await open(page, width); const name = form.getByLabel('Name', { exact: true });
+      await name.focus(); await name.evaluate(input => (input as HTMLInputElement).setSelectionRange(2, 7));
+      for (const item of kinds) {
+        await form.getByRole('button', { name: item.add, exact: true }).evaluate(button => (button as HTMLButtonElement).click());
+        await expect(name).toBeFocused(); const field = form.getByLabel(item.field, { exact: true }); await expect(field).toHaveCount(1);
+        await remove(field, item.remove).evaluate(button => (button as HTMLButtonElement).click()); await expect(name).toBeFocused();
+        expect(await name.evaluate(input => [(input as HTMLInputElement).selectionStart, (input as HTMLInputElement).selectionEnd])).toEqual([2, 7]);
+      }
+      expect(await page.evaluate(() => window.__assetFactWrites)).toEqual([]);
+    });
+
+    test(`new asset optional facts keep their keyboard place and the main draft at ${width}px`, async ({ page }) => {
+      const form = await open(page, width, true);
+      for (const item of kinds) {
+        const add = form.getByRole('button', { name: item.add, exact: true }); await activate(add, page);
+        const field = form.getByLabel(item.field, { exact: true }); await expect(field).toBeFocused(); await expect(field).toBeInViewport();
+        await activate(remove(field, item.remove), page); await expect(add).toBeFocused();
+      }
+      const more = form.locator('[data-yours-asset-more]'); await more.locator('summary').click(); await expect(more).not.toHaveAttribute('open');
+      await expect(form.getByLabel('Name', { exact: true })).toHaveValue('Preserved passport draft');
+      expect(await page.evaluate(() => window.__assetFactWrites)).toEqual([]);
+    });
+  }
+
+  test('mixed anchor rows return focus to a neighboring kind before their own Add', async ({ page }) => {
+    const form = await open(page, 390);
+    for (const title of ['Add place', 'Add identifier', 'Add instrument']) await activate(form.getByRole('button', { name: title, exact: true }), page);
+    await activate(remove(form.getByLabel('Identifier scheme', { exact: true }), 'Remove anchor'), page);
+    await expect(form.getByLabel('Instrument identifier', { exact: true })).toBeFocused();
+    await activate(remove(form.getByLabel('Instrument identifier', { exact: true }), 'Remove anchor'), page);
+    await expect(form.getByLabel('Place name', { exact: true })).toBeFocused();
+    await activate(remove(form.getByLabel('Place name', { exact: true }), 'Remove anchor'), page);
+    await expect(form.getByRole('button', { name: 'Add place', exact: true })).toBeFocused();
+  });
 });
 
 test('Occurrences closes the original commitment through its semantic action', async ({ page }) => {
@@ -1571,6 +1728,378 @@ test('Today links a bill to its own facts and reports opening it from Today', as
     .toEqual([{ action: 'navigation.open', ref: { collection: 'mail_fact', id: 'mthing_bill' }, from: 'today' }]);
 });
 
+const overviewPanel = (page: Page) => page.locator('[data-situation-delivery]');
+const overviewTime = (page: Page) => overviewPanel(page).getByLabel('Time', { exact: true });
+const overviewDraftPrompt = 'Discard the unsaved overview schedule?';
+const overviewWorkPrompt = 'An overview action is still in progress. Leave Settings anyway?';
+const openOverviewSettings = async (page: Page, width: number) => {
+  await page.setViewportSize({ width, height: 900 });
+  await page.goto(`${HARNESS_URL}?yours=demo&notifications=ready#settings/notifications`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await expect(overviewTime(page)).toHaveValue('08:00');
+};
+const overviewWouldBlockUnload = (page: Page) => page.evaluate(() => {
+  const event = new Event('beforeunload', { cancelable: true });
+  window.dispatchEvent(event);
+  return event.defaultPrevented;
+});
+const leaveOverviewSettings = (page: Page) => page.evaluate(() => window.__app.setHash('#yours/assets'));
+const overviewTimezoneLink = (page: Page) => overviewPanel(page).getByRole('link', { name: 'server timezone', exact: true });
+const openOverviewTimezone = async (page: Page, width: number) => {
+  await page.addInitScript(() => {
+    Object.assign(window, { __connectionsFixture: async (method: string) => {
+      if (method === 'server.timezone.get') return { result: {
+        setting: { mode: 'fixed', zone: 'Europe/London', updated_at: 1 },
+        resolved_zone: 'Europe/London', host_zone: 'Europe/London',
+      } };
+      return undefined;
+    } });
+  });
+  await openOverviewSettings(page, width);
+};
+const expectOverviewTimezone = async (page: Page) => {
+  await expect(page).toHaveURL(/#settings\/server\/timezone$/u);
+  await expect(page.getByRole('tab', { name: 'Timezone', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('[data-recued-server-timezone-panel]')).toBeVisible();
+  expect(await page.evaluate(() => window.__app.rpcCallCount('server.timezone.set'))).toBe(0);
+};
+
+for (const width of [390, 1280]) {
+  test(`Coming up timezone link opens Timezone and preserves Back and Forward at ${width}px`, async ({ page }) => {
+    await openOverviewTimezone(page, width);
+    const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
+    await overviewTimezoneLink(page).press('Enter'); await expectOverviewTimezone(page);
+    await page.goBack(); await expect(page).toHaveURL(/#settings\/notifications$/u); await expect(overviewTime(page)).toHaveValue('08:00');
+    await page.goForward(); await expectOverviewTimezone(page);
+    expect(dialogs).toEqual([]); expect(await page.evaluate(() => window.__app.rpcCallCount('yours.change'))).toBe(0);
+  });
+
+  test(`Coming up timezone link keeps edited times and focus through repeated cancellation at ${width}px`, async ({ page }) => {
+    await openOverviewTimezone(page, width); await overviewTime(page).fill('10:30'); const original = await overviewTime(page).elementHandle();
+    const dialogs: string[] = []; let accept = false;
+    page.on('dialog', dialog => { dialogs.push(dialog.message()); void (accept ? dialog.accept() : dialog.dismiss()); });
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      await overviewTimezoneLink(page).press('Enter'); await expect.poll(() => dialogs).toHaveLength(attempt);
+      await expect(page).toHaveURL(/#settings\/notifications$/u); await expect(overviewTime(page)).toHaveValue('10:30');
+      await expect(overviewTimezoneLink(page)).toBeFocused(); expect(await original!.evaluate(input => input.isConnected)).toBe(true);
+      expect(await overviewWouldBlockUnload(page)).toBe(true);
+    }
+    accept = true; await overviewTimezoneLink(page).press('Enter'); await expectOverviewTimezone(page);
+    await page.goBack(); await expect(overviewTime(page)).toHaveValue('08:00');
+    await page.goForward(); await expectOverviewTimezone(page);
+    expect(dialogs).toEqual([overviewDraftPrompt, overviewDraftPrompt, overviewDraftPrompt]);
+    expect(await page.evaluate(() => window.__app.rpcCallCount('yours.change'))).toBe(0);
+  });
+
+  test(`Coming up timezone link retains an incomplete native minute after cancellation at ${width}px`, async ({ page }) => {
+    await openOverviewTimezone(page, width); const field = overviewTime(page); await field.fill('09:30');
+    const selectMinute = async () => {
+      await field.focus(); for (let step = 0; step < 4; step++) await page.keyboard.press('ArrowLeft'); await page.keyboard.press('ArrowRight');
+    };
+    await selectMinute(); await page.keyboard.press('Backspace'); const original = await field.elementHandle();
+    const dialogs: string[] = []; let accept = false;
+    page.on('dialog', dialog => { dialogs.push(dialog.message()); void (accept ? dialog.accept() : dialog.dismiss()); });
+    await overviewTimezoneLink(page).press('Enter'); await expect.poll(() => dialogs).toEqual([overviewDraftPrompt]);
+    await expect(page).toHaveURL(/#settings\/notifications$/u); await expect(overviewTimezoneLink(page)).toBeFocused();
+    expect(await field.evaluate((input: HTMLInputElement) => input.validity.badInput && input.value === '')).toBe(true);
+    expect(await original!.evaluate(input => input.isConnected)).toBe(true);
+    await selectMinute(); await page.keyboard.type('45'); await expect(field).toHaveValue('09:45');
+    accept = true; await overviewTimezoneLink(page).press('Enter'); await expectOverviewTimezone(page);
+    expect(dialogs).toEqual([overviewDraftPrompt, overviewDraftPrompt]);
+    expect(await page.evaluate(() => window.__app.rpcCallCount('yours.change'))).toBe(0);
+  });
+
+  test(`Coming up timezone link leaves a fully restored schedule without a warning at ${width}px`, async ({ page }) => {
+    await openOverviewTimezone(page, width); await overviewTime(page).fill('10:30'); await overviewTime(page).fill('08:00');
+    const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
+    expect(await overviewWouldBlockUnload(page)).toBe(false); await overviewTimezoneLink(page).press('Enter'); await expectOverviewTimezone(page);
+    expect(dialogs).toEqual([]); expect(await page.evaluate(() => window.__app.rpcCallCount('yours.change'))).toBe(0);
+  });
+
+  for (const kind of ['save', 'send'] as const) {
+    for (const phase of ['write', 'confirmation'] as const) {
+      test(`Coming up timezone link ignores a late ${kind} ${phase} reply after accepted navigation at ${width}px`, async ({ page }) => {
+        await openOverviewTimezone(page, width); if (kind === 'save') await overviewTime(page).fill('10:30');
+        await page.evaluate(() => window.__app.holdRpcResponses?.('yours.change'));
+        if (phase === 'confirmation') await page.evaluate(() => window.__app.holdRpcResponses?.('yours.delivery'));
+        const beforeReads = await page.evaluate(() => window.__app.rpcCallCount('yours.delivery'));
+        await overviewPanel(page).getByRole('button', { name: kind === 'save' ? 'Save overview schedule' : 'Send now', exact: true }).press('Enter');
+        await expect(overviewTime(page)).toBeDisabled(); const original = await overviewTime(page).elementHandle();
+        if (phase === 'confirmation') {
+          expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('yours.change'))).toBe(1);
+          await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('yours.delivery'))).toBe(beforeReads + 1);
+        }
+        const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.accept(); });
+        await overviewTimezoneLink(page).press('Enter'); await expectOverviewTimezone(page); expect(dialogs).toEqual([overviewWorkPrompt]);
+        expect(await original!.evaluate(input => input.isConnected)).toBe(false);
+        if (phase === 'confirmation') {
+          await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('yours.delivery'))).toBe(beforeReads + 2);
+          expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('yours.delivery', 1))).toBe(1);
+        }
+        const zone = page.getByLabel('Server timezone', { exact: true }); await zone.fill('Asia/Tokyo'); await zone.focus();
+        const fresh = await zone.elementHandle(), reads = await page.evaluate(() => window.__app.rpcCallCount('yours.delivery'));
+        expect(await page.evaluate(method => window.__app.releaseRpcResponses?.(method), phase === 'write' ? 'yours.change' : 'yours.delivery')).toBe(1);
+        await expectOverviewTimezone(page); await expect(zone).toHaveValue('Asia/Tokyo'); await expect(zone).toBeFocused();
+        expect(await fresh!.evaluate(input => input.isConnected && input === document.activeElement)).toBe(true);
+        expect(await page.evaluate(() => window.__app.rpcCallCount('yours.delivery'))).toBe(reads);
+        expect(await page.evaluate(() => window.__app.rpcCallCount('yours.change'))).toBe(1); expect(dialogs).toEqual([overviewWorkPrompt]);
+      });
+    }
+
+    test(`Coming up timezone link guards a pending ${kind} and its confirmation read at ${width}px`, async ({ page }) => {
+      await openOverviewTimezone(page, width); if (kind === 'save') await overviewTime(page).fill('10:30');
+      await page.evaluate(() => { window.__app.holdRpcResponses?.('yours.change'); window.__app.holdRpcResponses?.('yours.delivery'); });
+      const beforeReads = await page.evaluate(() => window.__app.rpcCallCount('yours.delivery'));
+      await overviewPanel(page).getByRole('button', { name: kind === 'save' ? 'Save overview schedule' : 'Send now', exact: true }).press('Enter');
+      const original = await overviewTime(page).elementHandle();
+      const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
+      for (const phase of ['write', 'confirmation'] as const) {
+        await expect(overviewTime(page)).toBeDisabled(); await overviewTimezoneLink(page).press('Enter');
+        await expect.poll(() => dialogs).toHaveLength(phase === 'write' ? 1 : 2); await expect(page).toHaveURL(/#settings\/notifications$/u);
+        await expect(overviewTimezoneLink(page)).toBeFocused(); expect(await original!.evaluate(input => input.isConnected)).toBe(true);
+        if (phase === 'write') {
+          expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('yours.change'))).toBe(1);
+          await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('yours.delivery'))).toBe(beforeReads + 1);
+        }
+      }
+      expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('yours.delivery'))).toBe(1);
+      await expect(overviewPanel(page).getByRole('status')).toContainText(kind === 'save' ? 'Overview schedule saved.' : 'Checked.');
+      expect(await overviewWouldBlockUnload(page)).toBe(false); await overviewTimezoneLink(page).press('Enter'); await expectOverviewTimezone(page);
+      expect(dialogs).toEqual([overviewWorkPrompt, overviewWorkPrompt]);
+      expect(await page.evaluate(() => window.__app.rpcCallCount('yours.change'))).toBe(1);
+    });
+  }
+
+  for (const field of ['Overview', 'Weekly day', 'Time', 'Day-of notes'] as const) {
+    test(`Coming up reverted ${field} leaves without an unsaved warning at ${width}px`, async ({ page }) => {
+      await openOverviewSettings(page, width); const control = overviewPanel(page).getByLabel(field, { exact: true });
+      const original = await control.elementHandle();
+      if (field === 'Overview') await control.selectOption('daily');
+      else if (field === 'Weekly day') await control.selectOption('4');
+      else if (field === 'Time') await control.fill('10:30');
+      else await control.uncheck();
+      expect(await overviewWouldBlockUnload(page)).toBe(true);
+      if (field === 'Overview') await control.selectOption('weekly');
+      else if (field === 'Weekly day') await control.selectOption('1');
+      else if (field === 'Time') await control.fill('08:00');
+      else await control.check();
+      expect(await overviewWouldBlockUnload(page)).toBe(false);
+      expect(await original!.evaluate(node => node.isConnected)).toBe(true);
+      expect(await page.evaluate(() => window.__app.rpcCallCount('yours.change'))).toBe(0);
+      const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
+      await leaveOverviewSettings(page); await expect(page.locator('[data-recued-yours]')).toBeVisible(); expect(dialogs).toEqual([]);
+    });
+  }
+
+  test(`Coming up partial reverts stay guarded until the whole schedule is restored at ${width}px`, async ({ page }) => {
+    await openOverviewSettings(page, width); const panel = overviewPanel(page);
+    await panel.getByLabel('Overview', { exact: true }).selectOption('daily');
+    await panel.getByLabel('Weekly day', { exact: true }).selectOption('4');
+    await overviewTime(page).fill('10:30'); await panel.getByLabel('Day-of notes', { exact: true }).uncheck();
+    await panel.getByLabel('Overview', { exact: true }).selectOption('weekly');
+    await panel.getByLabel('Weekly day', { exact: true }).selectOption('1'); await overviewTime(page).fill('08:00');
+    expect(await overviewWouldBlockUnload(page)).toBe(true);
+    const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
+    await leaveOverviewSettings(page); await expect.poll(() => dialogs).toEqual([overviewDraftPrompt]);
+    await expect(page).toHaveURL(/#settings\/notifications$/u);
+    await expect(panel.getByLabel('Day-of notes', { exact: true })).not.toBeChecked();
+    await panel.getByLabel('Day-of notes', { exact: true }).check(); expect(await overviewWouldBlockUnload(page)).toBe(false);
+    expect(await page.evaluate(() => window.__app.rpcCallCount('yours.change'))).toBe(0);
+    await page.reload(); await page.waitForFunction(() => window.__app?.ready === true); await expect(overviewTime(page)).toHaveValue('08:00');
+    expect(dialogs).toEqual([overviewDraftPrompt]); expect(await overviewWouldBlockUnload(page)).toBe(false);
+    await leaveOverviewSettings(page); await expect(page.locator('[data-recued-yours]')).toBeVisible(); expect(dialogs).toEqual([overviewDraftPrompt]);
+  });
+
+  for (const [segment, index, originalValue] of [['hour', 0, '08'], ['minute', 1, '00']] as const) {
+    test(`Coming up reverts keep an incomplete ${segment} guarded until its saved value is restored at ${width}px`, async ({ page }) => {
+      await openOverviewSettings(page, width); const field = overviewTime(page);
+      const selectSegment = async () => {
+        await field.focus(); for (let step = 0; step < 4; step++) await page.keyboard.press('ArrowLeft');
+        for (let step = 0; step < index; step++) await page.keyboard.press('ArrowRight');
+      };
+      await selectSegment(); await page.keyboard.press('Backspace'); const original = await field.elementHandle();
+      const frequency = overviewPanel(page).getByLabel('Overview', { exact: true });
+      await frequency.selectOption('daily'); await frequency.selectOption('weekly');
+      expect(await field.evaluate((input: HTMLInputElement) => input.validity.badInput && input.value === '')).toBe(true);
+      expect(await overviewWouldBlockUnload(page)).toBe(true);
+      const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
+      await leaveOverviewSettings(page); await expect.poll(() => dialogs).toEqual([overviewDraftPrompt]);
+      await expect(page).toHaveURL(/#settings\/notifications$/u); expect(await original!.evaluate(node => node.isConnected)).toBe(true);
+      await selectSegment(); await page.keyboard.type(originalValue); await expect(field).toHaveValue('08:00');
+      expect(await overviewWouldBlockUnload(page)).toBe(false);
+      expect(await page.evaluate(() => window.__app.rpcCallCount('yours.change'))).toBe(0);
+      await leaveOverviewSettings(page); await expect(page.locator('[data-recued-yours]')).toBeVisible(); expect(dialogs).toEqual([overviewDraftPrompt]);
+    });
+  }
+
+  test(`Coming up navigation protects a draft through cancelled and accepted native reloads at ${width}px`, async ({ page }) => {
+    await openOverviewSettings(page, width); const field = overviewTime(page);
+    await field.fill('10:30'); const original = await field.elementHandle();
+    const dialogs: string[] = []; let accept = false;
+    page.on('dialog', dialog => { dialogs.push(dialog.type()); void (accept ? dialog.accept() : dialog.dismiss()); });
+    await page.evaluate(() => { window.location.reload(); });
+    await expect.poll(() => dialogs).toEqual(['beforeunload']);
+    await expect(field).toHaveValue('10:30');
+    expect(await original!.evaluate(node => node.isConnected && node === document.querySelector('[data-situation-delivery] input[name="time"]'))).toBe(true);
+    accept = true; await page.reload(); await page.waitForFunction(() => window.__app?.ready === true);
+    await expect(field).toHaveValue('08:00'); expect(dialogs).toEqual(['beforeunload', 'beforeunload']);
+  });
+
+  test(`Coming up navigation preserves Back history through repeated cancellation at ${width}px`, async ({ page }) => {
+    await openOverviewSettings(page, width);
+    await leaveOverviewSettings(page); await expect(page.locator('[data-recued-yours]')).toBeVisible();
+    await page.evaluate(() => window.__app.setHash('#settings/notifications')); await expect(overviewTime(page)).toHaveValue('08:00');
+    await overviewTime(page).fill('10:30'); const original = await overviewTime(page).elementHandle();
+    const dialogs: string[] = []; let accept = false;
+    page.on('dialog', dialog => { dialogs.push(dialog.message()); void (accept ? dialog.accept() : dialog.dismiss()); });
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      await page.goBack(); await expect.poll(() => dialogs).toHaveLength(attempt);
+      await expect(page).toHaveURL(/#settings\/notifications$/u); await expect(overviewTime(page)).toHaveValue('10:30');
+      expect(await original!.evaluate(node => node.isConnected)).toBe(true);
+    }
+    accept = true; await page.goBack(); await expect(page.locator('[data-recued-yours]')).toBeVisible();
+    expect(dialogs).toEqual([overviewDraftPrompt, overviewDraftPrompt, overviewDraftPrompt]);
+    await page.goForward(); await expect(page).toHaveURL(/#settings\/notifications$/u);
+    await expect(overviewTime(page)).toHaveValue('08:00');
+  });
+
+  test(`Coming up navigation still protects edits after Send now succeeds at ${width}px`, async ({ page }) => {
+    await openOverviewSettings(page, width); const field = overviewTime(page);
+    await field.fill('10:30'); const original = await field.elementHandle();
+    await overviewPanel(page).getByRole('button', { name: 'Send now', exact: true }).press('Enter');
+    await expect(overviewPanel(page).getByRole('status')).toContainText('Checked.');
+    await expect(field).toHaveValue('10:30');
+    const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
+    await leaveOverviewSettings(page); await expect.poll(() => dialogs).toEqual([overviewDraftPrompt]);
+    await expect(page).toHaveURL(/#settings\/notifications$/u);
+    expect(await original!.evaluate(node => node.isConnected)).toBe(true);
+    await overviewPanel(page).getByRole('button', { name: 'Save overview schedule', exact: true }).press('Enter');
+    await expect(overviewPanel(page).getByRole('status')).toHaveText('Overview schedule saved.');
+    await leaveOverviewSettings(page); await expect(page.locator('[data-recued-yours]')).toBeVisible();
+    expect(dialogs).toEqual([overviewDraftPrompt]);
+  });
+
+  test(`Coming up navigation keeps an unsaved schedule when leaving is declined at ${width}px`, async ({ page }) => {
+    await openOverviewSettings(page, width);
+    const panel = overviewPanel(page), field = overviewTime(page);
+    await panel.getByLabel('Overview', { exact: true }).selectOption('daily');
+    await panel.getByLabel('Weekly day', { exact: true }).selectOption('4');
+    await panel.getByLabel('Day-of notes', { exact: true }).uncheck();
+    await field.fill('10:30'); await field.focus(); const original = await field.elementHandle();
+    const dialogs: string[] = []; let accept = false;
+    page.on('dialog', dialog => { dialogs.push(dialog.message()); void (accept ? dialog.accept() : dialog.dismiss()); });
+    expect(await overviewWouldBlockUnload(page)).toBe(true);
+    await leaveOverviewSettings(page); await expect.poll(() => dialogs).toEqual([overviewDraftPrompt]);
+    await expect(page).toHaveURL(/#settings\/notifications$/u); await expect(field).toBeFocused();
+    await expect(field).toHaveValue('10:30');
+    await expect(panel.getByLabel('Overview', { exact: true })).toHaveValue('daily');
+    await expect(panel.getByLabel('Weekly day', { exact: true })).toHaveValue('4');
+    await expect(panel.getByLabel('Day-of notes', { exact: true })).not.toBeChecked();
+    expect(await original!.evaluate(node => node.isConnected && node === document.activeElement)).toBe(true);
+    accept = true; await leaveOverviewSettings(page); await expect(page.locator('[data-recued-yours]')).toBeVisible();
+    expect(dialogs).toEqual([overviewDraftPrompt, overviewDraftPrompt]);
+    await page.evaluate(() => window.__app.setHash('#settings/notifications')); await expect(field).toHaveValue('08:00');
+  });
+
+  test(`Coming up navigation allows untouched and confirmed schedules without a prompt at ${width}px`, async ({ page }) => {
+    await openOverviewSettings(page, width);
+    const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
+    expect(await overviewWouldBlockUnload(page)).toBe(false);
+    await leaveOverviewSettings(page); await expect(page.locator('[data-recued-yours]')).toBeVisible();
+    await page.evaluate(() => window.__app.setHash('#settings/notifications')); await expect(overviewTime(page)).toHaveValue('08:00');
+    await overviewTime(page).fill('10:30');
+    await overviewPanel(page).getByRole('button', { name: 'Save overview schedule', exact: true }).press('Enter');
+    await expect(overviewPanel(page).getByRole('status')).toHaveText('Overview schedule saved.');
+    expect(await overviewWouldBlockUnload(page)).toBe(false);
+    await leaveOverviewSettings(page); await expect(page.locator('[data-recued-yours]')).toBeVisible();
+    expect(dialogs).toEqual([]);
+  });
+
+  for (const kind of ['save', 'send'] as const) {
+    test(`Coming up navigation guards a pending ${kind} through its confirmation read at ${width}px`, async ({ page }) => {
+      await openOverviewSettings(page, width);
+      if (kind === 'save') await overviewTime(page).fill('10:30');
+      await page.evaluate(() => { window.__app.holdRpcResponses?.('yours.change'); window.__app.holdRpcResponses?.('yours.delivery'); });
+      const before = await page.evaluate(() => ({ writes: window.__app.rpcCallCount('yours.change'), reads: window.__app.rpcCallCount('yours.delivery') }));
+      const original = await overviewTime(page).elementHandle();
+      const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
+      await overviewPanel(page).getByRole('button', { name: kind === 'save' ? 'Save overview schedule' : 'Send now', exact: true }).press('Enter');
+      await expect(overviewTime(page)).toBeDisabled(); expect(await overviewWouldBlockUnload(page)).toBe(true);
+      await leaveOverviewSettings(page); await expect.poll(() => dialogs).toEqual([overviewWorkPrompt]);
+      await expect(page).toHaveURL(/#settings\/notifications$/u);
+      expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('yours.change'))).toBe(1);
+      await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('yours.delivery'))).toBe(before.reads + 1);
+      await expect(overviewTime(page)).toBeDisabled(); expect(await overviewWouldBlockUnload(page)).toBe(true);
+      await leaveOverviewSettings(page); await expect.poll(() => dialogs).toEqual([overviewWorkPrompt, overviewWorkPrompt]);
+      await expect(page).toHaveURL(/#settings\/notifications$/u);
+      expect(await original!.evaluate(node => node.isConnected && node === document.querySelector('[data-situation-delivery] input[name="time"]'))).toBe(true);
+      expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('yours.delivery'))).toBe(1);
+      await expect(overviewPanel(page).getByRole('status')).toContainText(kind === 'save' ? 'Overview schedule saved.' : 'Checked.');
+      expect(await overviewWouldBlockUnload(page)).toBe(false);
+      expect(await page.evaluate(() => window.__app.rpcCallCount('yours.change'))).toBe(before.writes + 1);
+      await leaveOverviewSettings(page); await expect(page.locator('[data-recued-yours]')).toBeVisible();
+      expect(dialogs).toEqual([overviewWorkPrompt, overviewWorkPrompt]);
+    });
+
+    for (const phase of ['write', 'confirmation'] as const) {
+      test(`Coming up navigation ignores a late ${kind} ${phase} reply after an accepted leave at ${width}px`, async ({ page }) => {
+        await openOverviewSettings(page, width);
+        if (kind === 'save') await overviewTime(page).fill('10:30');
+        await page.evaluate(() => window.__app.holdRpcResponses?.('yours.change'));
+        const original = await overviewTime(page).elementHandle();
+        const beforeReads = await page.evaluate(() => window.__app.rpcCallCount('yours.delivery'));
+        if (phase === 'confirmation') await page.evaluate(() => window.__app.holdRpcResponses?.('yours.delivery'));
+        await overviewPanel(page).getByRole('button', { name: kind === 'save' ? 'Save overview schedule' : 'Send now', exact: true }).press('Enter');
+        await expect(overviewTime(page)).toBeDisabled();
+        if (phase === 'confirmation') {
+          expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('yours.change'))).toBe(1);
+          await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('yours.delivery'))).toBe(beforeReads + 1);
+        }
+        const dialogs: string[] = []; let accept = true;
+        page.on('dialog', dialog => { dialogs.push(dialog.message()); void (accept ? dialog.accept() : dialog.dismiss()); });
+        await leaveOverviewSettings(page); await expect(page.locator('[data-recued-yours]')).toBeVisible();
+        expect(dialogs).toEqual([overviewWorkPrompt]);
+        expect(await original!.evaluate(node => node.isConnected)).toBe(false);
+        await page.evaluate(() => window.__app.setHash('#settings/notifications'));
+        if (phase === 'confirmation') {
+          await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('yours.delivery'))).toBe(beforeReads + 2);
+          expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('yours.delivery', 1))).toBe(1);
+        }
+        await expect(overviewTime(page)).toBeEnabled();
+        await overviewTime(page).fill('11:45'); await overviewTime(page).focus(); const fresh = await overviewTime(page).elementHandle();
+        const currentReads = await page.evaluate(() => window.__app.rpcCallCount('yours.delivery'));
+        expect(await page.evaluate(method => window.__app.releaseRpcResponses?.(method), phase === 'write' ? 'yours.change' : 'yours.delivery')).toBe(1);
+        await expect(overviewTime(page)).toHaveValue('11:45'); await expect(overviewTime(page)).toBeFocused();
+        expect(await fresh!.evaluate(node => node.isConnected && node === document.activeElement)).toBe(true);
+        expect(await page.evaluate(() => window.__app.rpcCallCount('yours.delivery'))).toBe(currentReads);
+        accept = false; await leaveOverviewSettings(page);
+        await expect.poll(() => dialogs).toEqual([overviewWorkPrompt, overviewDraftPrompt]);
+        await expect(overviewTime(page)).toHaveValue('11:45');
+      });
+    }
+  }
+
+  for (const [segment, index, typed, expected] of [['hour', 0, '10', '10:30'], ['minute', 1, '45', '09:45']] as const) {
+    test(`Coming up navigation retains an incomplete native ${segment} edit after cancellation at ${width}px`, async ({ page }) => {
+      await openOverviewSettings(page, width); const field = overviewTime(page);
+      const selectSegment = async () => {
+        await field.focus(); for (let step = 0; step < 4; step++) await page.keyboard.press('ArrowLeft');
+        for (let step = 0; step < index; step++) await page.keyboard.press('ArrowRight');
+      };
+      await field.fill('09:30'); await selectSegment(); await page.keyboard.press('Backspace');
+      expect(await field.evaluate((input: HTMLInputElement) => input.validity.badInput && input.value === '')).toBe(true);
+      const original = await field.elementHandle();
+      const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
+      expect(await overviewWouldBlockUnload(page)).toBe(true);
+      await leaveOverviewSettings(page); await expect.poll(() => dialogs).toEqual([overviewDraftPrompt]);
+      await expect(page).toHaveURL(/#settings\/notifications$/u); await expect(field).toBeFocused();
+      expect(await original!.evaluate(node => node.isConnected && node === document.activeElement)).toBe(true);
+      expect(await field.evaluate((input: HTMLInputElement) => input.validity.badInput && input.value === '')).toBe(true);
+      await selectSegment(); await page.keyboard.type(typed); await expect(field).toHaveValue(expected);
+    });
+  }
+}
+
 test('Approval & notifications saves the overview schedule and shows its last sent values', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?yours=demo&notifications=ready#settings/notifications`);
   const panel = page.locator('[data-situation-delivery]');
@@ -1578,6 +2107,12 @@ test('Approval & notifications saves the overview schedule and shows its last se
   await panel.getByLabel('Weekly day', { exact: true }).selectOption('4');
   await panel.getByLabel('Time', { exact: true }).fill('10:30');
   await panel.getByLabel('Day-of notes', { exact: true }).uncheck();
+  await panel.getByRole('button', { name: 'Send now', exact: true }).focus(); await page.keyboard.press('Enter');
+  await expect(panel.getByRole('status')).toContainText('Checked.');
+  await expect(panel.getByLabel('Overview', { exact: true })).toHaveValue('daily');
+  await expect(panel.getByLabel('Weekly day', { exact: true })).toHaveValue('4');
+  await expect(panel.getByLabel('Time', { exact: true })).toHaveValue('10:30');
+  await expect(panel.getByLabel('Day-of notes', { exact: true })).not.toBeChecked();
   await panel.getByRole('button', { name: 'Save overview schedule', exact: true }).focus(); await page.keyboard.press('Enter');
   await expect(panel.getByRole('status')).toHaveText('Overview schedule saved.');
   await expect(panel.getByRole('button', { name: 'Save overview schedule', exact: true })).toBeFocused();
@@ -1586,6 +2121,48 @@ test('Approval & notifications saves the overview schedule and shows its last se
   await panel.getByRole('button', { name: 'Send now', exact: true }).click();
   await panel.getByText('What it sent', { exact: true }).click(); await expect(panel).toContainText('Lisbon trip · Passport expiry');
 });
+
+for (const width of [390, 1280]) {
+  const openHousehold = async (page: Page) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`${HARNESS_URL}?yours=demo&notifications=ready#settings/notifications`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await expect(page.locator('[data-household-delivery]').getByRole('button', { name: 'Save household Telegram', exact: true })).toBeEnabled();
+  };
+  for (const label of ['Household group', 'Other member user IDs', 'Home Assistant connection', 'To-do entity ID'] as const) {
+    test(`Household draft reverting ${label} leaves without an unsaved warning at ${width}px`, async ({ page }) => {
+      await openHousehold(page); const field = page.locator('[data-household-delivery]').getByLabel(label, { exact: true });
+      const initial = await field.inputValue(), original = await field.elementHandle(); expect(await overviewWouldBlockUnload(page)).toBe(false);
+      if (label === 'Household group' || label === 'Home Assistant connection') await field.selectOption(initial === '' ? '0' : '');
+      else await field.fill(label === 'Other member user IDs' ? '3003' : 'todo.edited');
+      expect(await overviewWouldBlockUnload(page)).toBe(true);
+      if (label === 'Household group' || label === 'Home Assistant connection') await field.selectOption(initial);
+      else await field.fill(initial);
+      expect(await overviewWouldBlockUnload(page)).toBe(false); expect(await original!.evaluate(node => node.isConnected)).toBe(true);
+      expect(await page.evaluate(() => window.__app.rpcCallCount('yours.change'))).toBe(0);
+      const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
+      await leaveOverviewSettings(page); await expect(page.locator('[data-recued-yours]')).toBeVisible(); expect(dialogs).toEqual([]);
+    });
+  }
+
+  test(`Household draft partial reverts protect the other form until both are restored at ${width}px`, async ({ page }) => {
+    await openHousehold(page); const panel = page.locator('[data-household-delivery]');
+    const group = panel.getByLabel('Household group', { exact: true }), members = panel.getByLabel('Other member user IDs', { exact: true });
+    const connection = panel.getByLabel('Home Assistant connection', { exact: true }), entity = panel.getByLabel('To-do entity ID', { exact: true });
+    const before = { group: await group.inputValue(), members: await members.inputValue(), connection: await connection.inputValue(), entity: await entity.inputValue() };
+    await group.selectOption('0'); await members.fill('3003'); await connection.selectOption('0'); await entity.fill('todo.edited');
+    await group.selectOption(before.group); await members.fill(before.members); expect(await overviewWouldBlockUnload(page)).toBe(true);
+    const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
+    await leaveOverviewSettings(page); await expect.poll(() => dialogs).toEqual(['Discard the unsaved household delivery settings?']);
+    await expect(page).toHaveURL(/#settings\/notifications$/u); await expect(entity).toHaveValue('todo.edited'); await expect(connection).toHaveValue('0');
+    await connection.selectOption(before.connection); expect(await overviewWouldBlockUnload(page)).toBe(true);
+    await entity.fill(before.entity); expect(await overviewWouldBlockUnload(page)).toBe(false);
+    expect(await page.evaluate(() => window.__app.rpcCallCount('yours.change'))).toBe(0);
+    await page.reload(); await page.waitForFunction(() => window.__app?.ready === true); await expect(members).toHaveValue(before.members);
+    expect(dialogs).toEqual(['Discard the unsaved household delivery settings?']); expect(await overviewWouldBlockUnload(page)).toBe(false);
+    await leaveOverviewSettings(page); await expect(page.locator('[data-recued-yours]')).toBeVisible(); expect(dialogs).toHaveLength(1);
+  });
+}
 
 test('Household Telegram saves an enrolled group and member ids separately from private channels', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 740 }); await page.goto(`${HARNESS_URL}?yours=demo&notifications=ready#settings/notifications`);

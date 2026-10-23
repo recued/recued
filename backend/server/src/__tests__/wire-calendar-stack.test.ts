@@ -321,6 +321,37 @@ describe('composeCalendarBoot', () => {
     expect(contactStore.observeBatch).toHaveBeenCalledWith(observations);
   });
 
+  // Every start's scan lists each stored event again, and observing them all
+  // again bumped every attendee's interaction_count, each boot.
+  it('observes only the people an event did not involve before', () => {
+    const contactStore = makeContactStore();
+    const ada = { email: 'ada@example.com', source: 'calendar_attendee', event_at: 1_700_000_000_000 };
+    const bob = { email: 'bob@example.com', source: 'calendar_attendee', event_at: 1_700_000_000_000 };
+    composeCalendarBoot(buildDeps({ contactStore }));
+    const [, storage] = lastComposeCall();
+    const payload = eventPayload();
+
+    // Listed again as it was: the previous event, then this one.
+    vi.mocked(deriveContactsFromCalendar)
+      .mockReturnValueOnce([ada] as ReturnType<typeof deriveContactsFromCalendar>)
+      .mockReturnValueOnce([ada] as ReturnType<typeof deriveContactsFromCalendar>);
+    storage.onEventUpserted?.(payload, payload.event);
+    expect(contactStore.observeBatch).not.toHaveBeenCalled();
+
+    // Bob invited since: only Bob is observed.
+    vi.mocked(deriveContactsFromCalendar)
+      .mockReturnValueOnce([ada] as ReturnType<typeof deriveContactsFromCalendar>)
+      .mockReturnValueOnce([ada, bob] as ReturnType<typeof deriveContactsFromCalendar>);
+    storage.onEventUpserted?.(payload, payload.event);
+    expect(contactStore.observeBatch).toHaveBeenCalledTimes(1);
+    expect(contactStore.observeBatch).toHaveBeenCalledWith([bob]);
+
+    // A first sighting observes everyone.
+    vi.mocked(deriveContactsFromCalendar).mockReturnValueOnce([ada, bob] as ReturnType<typeof deriveContactsFromCalendar>);
+    storage.onEventUpserted?.(payload, null);
+    expect(contactStore.observeBatch).toHaveBeenLastCalledWith([ada, bob]);
+  });
+
   it('does not observe contacts when derivation returns no observations', () => {
     const contactStore = makeContactStore();
     vi.mocked(deriveContactsFromCalendar).mockReturnValueOnce([]);

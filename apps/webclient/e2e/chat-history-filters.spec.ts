@@ -3,9 +3,10 @@ import { build } from 'esbuild';
 import { mkdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import type { ChatMessageSearchRequest } from '@recued/contracts';
+import type { ChatMessageSearchRequest, InstancePrefs } from '@recued/contracts';
 import type { createMessengerListFixture as CreateFixture } from './harness/chat-messenger-list-backend.js';
 import type { MessengerSessionListReply } from '../src/chat/messenger-session-list.js';
+import { openChatHistory } from './helpers/chat-history.js';
 
 let createFixture: typeof CreateFixture;
 test.beforeAll(async () => {
@@ -215,4 +216,142 @@ test('unavailable status clears scoped hits and a failed preference save can be 
     unavailable = false; await expect(hits(page)).toHaveCount(1);
     await expect(filter(page, 'vendor')).toHaveValue('telegram');
   } finally { await page.unrouteAll({ behavior: 'wait' }); fixture.close(); }
+});
+
+type SaveOutcome = 'success' | 'error' | 'mismatch';
+const withHeldPreferences = async (page: Page, run: (state: {
+  writes: Array<Partial<InstancePrefs>>;
+  release(index: number, outcome?: SaveOutcome): Promise<void>;
+}) => Promise<void>): Promise<void> => {
+  const fixture = createFixture({ emit: () => {} });
+  const writes: Array<Partial<InstancePrefs>> = [];
+  const pending: Array<{ release(outcome: SaveOutcome): void; done: Promise<void> }> = [];
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  let closing = false;
+  try {
+    await page.route('**/d265-rpc', async route => {
+      const { method, args } = route.request().postDataJSON();
+      if (method !== 'prefs.set') {
+        await route.fulfill({ json: { result: await fixture.rpc(method, args) } }); return;
+      }
+      writes.push(args.patch);
+      let finish!: () => void;
+      const done = new Promise<void>(resolve => { finish = resolve; });
+      const wait = new Promise<SaveOutcome>(release => { pending.push({ release, done }); if (closing) release('error'); });
+      try {
+        const outcome = await wait;
+        if (outcome === 'error') await route.fulfill({ json: { error: 'fixture preference save failed' } });
+        else await route.fulfill({ json: { result: await fixture.rpc(outcome === 'mismatch' ? 'prefs.get' : method, args) } });
+      } finally { finish(); }
+    });
+    await page.goto('/chat-queue-harness.html');
+    await expect(page.locator('body')).toHaveAttribute('data-ready', 'true');
+    await openChatHistory(page);
+    const panel = page.locator('.chat-history-filter-panel');
+    if (!await panel.evaluate(element => (element as HTMLDetailsElement).open)) await panel.locator('summary').click();
+    await run({ writes, release: async (index, outcome = 'success') => {
+      await expect.poll(() => pending.length).toBeGreaterThan(index);
+      pending[index]!.release(outcome); await pending[index]!.done;
+    } });
+    expect(errors).toEqual([]);
+  } finally {
+    closing = true; for (const request of pending) request.release('error');
+    await page.unrouteAll({ behavior: 'wait' }); fixture.close();
+  }
+};
+const saveNotice = (page: Page) => page.locator('.chat-history-filter-note');
+const retrySave = async (page: Page) => { await filter(page, 'retry').focus(); await page.keyboard.press('Enter'); };
+
+for (const width of [390, 1280]) {
+  test(`keyboard retry announces saving and saved and returns to the edited filter at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await withHeldPreferences(page, async ({ writes, release }) => {
+      await expect(saveNotice(page)).toBeHidden(); await filter(page, 'vendor').selectOption('telegram');
+      await expect(saveNotice(page)).toHaveText('Saving chat filters…');
+      await expect(filter(page, 'vendor')).toBeEnabled(); await expect(filter(page, 'retry')).toBeHidden();
+      await release(0, 'error'); await expect(saveNotice(page)).toContainText('Recued will forget them');
+      await retrySave(page); await expect(saveNotice(page)).toHaveText('Saving chat filters…');
+      await expect(filter(page, 'retry')).toBeFocused(); await expect(filter(page, 'retry')).toHaveAttribute('aria-disabled', 'true');
+      await page.keyboard.press('Enter'); await page.keyboard.press('Space'); expect(writes).toHaveLength(2);
+      await release(1); await expect(saveNotice(page)).toHaveText('Chat filters saved.');
+      await expect(saveNotice(page)).toHaveAttribute('role', 'status'); await expect(filter(page, 'retry')).toBeHidden();
+      await expect(filter(page, 'vendor')).toBeFocused(); await expect(filter(page, 'vendor')).toHaveValue('telegram');
+      expect(writes[1]).toEqual(writes[0]);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    });
+  });
+
+  test(`a retry failure keeps keyboard recovery available at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await withHeldPreferences(page, async ({ writes, release }) => {
+      await filter(page, 'vendor').selectOption('telegram'); await release(0, 'error');
+      await expect(filter(page, 'retry')).toBeVisible(); await retrySave(page); await release(1, 'error');
+      await expect(saveNotice(page)).toContainText('Recued will forget them'); await expect(filter(page, 'retry')).toBeFocused();
+      await expect(filter(page, 'retry')).toHaveAttribute('aria-disabled', 'false');
+      await page.keyboard.press('Enter'); await release(2); await expect(saveNotice(page)).toHaveText('Chat filters saved.');
+      await expect(filter(page, 'vendor')).toBeFocused(); expect(writes).toHaveLength(3);
+    });
+  });
+
+  for (const outcome of ['success', 'error'] as const) {
+    test(`retry ${outcome} respects focus moved to search at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 900 });
+      await withHeldPreferences(page, async ({ release }) => {
+        await filter(page, 'vendor').selectOption('telegram'); await release(0, 'error');
+        await expect(filter(page, 'retry')).toBeVisible(); await retrySave(page); await search(page).focus();
+        await release(1, outcome);
+        await expect(saveNotice(page)).toHaveText(outcome === 'success' ? 'Chat filters saved.' : 'These work now, but Recued will forget them.');
+        await expect(search(page)).toBeFocused(); await expect(filter(page, 'vendor')).toHaveValue('telegram');
+      });
+    });
+  }
+
+  test(`recovery returns to each filter and rejects an unconfirmed save at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await withHeldPreferences(page, async ({ writes, release }) => {
+      const edits = [
+        ['source', () => filter(page, 'source').selectOption('webclient')],
+        ['vendor', () => filter(page, 'vendor').selectOption('telegram')],
+        ['attention', () => filter(page, 'attention').check()],
+        ['scope', () => filter(page, 'scope').selectOption('current')],
+        ['clear', () => filter(page, 'clear').click()],
+      ] as const;
+      for (const [index, [id, edit]] of edits.entries()) {
+        await edit(); await release(index * 2, 'mismatch'); await expect(saveNotice(page)).toContainText('Recued will forget them');
+        await retrySave(page); await release(index * 2 + 1); await expect(saveNotice(page)).toHaveText('Chat filters saved.');
+        await expect(filter(page, id)).toBeFocused(); await expect(filter(page, 'retry')).toBeHidden();
+        expect(writes[index * 2 + 1]).toEqual(writes[index * 2]);
+      }
+    });
+  });
+
+  for (const olderOutcome of ['success', 'error'] as const) {
+    test(`an older retry ${olderOutcome} waits for newer filter edits before reporting saved at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 900 });
+      await withHeldPreferences(page, async ({ writes, release }) => {
+        await filter(page, 'vendor').selectOption('telegram'); await release(0, 'error');
+        await expect(filter(page, 'retry')).toBeVisible(); await retrySave(page);
+        await filter(page, 'vendor').selectOption('discord'); await filter(page, 'scope').selectOption('current');
+        expect(writes).toHaveLength(2); await release(1, olderOutcome);
+        await expect.poll(() => writes.length).toBe(3); await expect(saveNotice(page)).toHaveText('Saving chat filters…');
+        expect(writes[2]).toMatchObject({ 'ui.chat.history.vendor': 'discord', 'ui.chat.history.scope': 'current' });
+        await release(2); await expect(saveNotice(page)).toHaveText('Chat filters saved.');
+        await expect(filter(page, 'vendor')).toHaveValue('discord'); await expect(filter(page, 'scope')).toHaveValue('current');
+        await expect(filter(page, 'scope')).toBeFocused(); await expect(filter(page, 'retry')).toBeHidden();
+      });
+    });
+  }
+}
+
+test('disposing Chat stops queued filter writes and late feedback', async ({ page }) => {
+  await withHeldPreferences(page, async ({ writes, release }) => {
+    await filter(page, 'vendor').selectOption('telegram');
+    await expect.poll(() => writes.length).toBe(1); await filter(page, 'vendor').selectOption('discord');
+    await page.evaluate(() => (window as unknown as { queueTestRePair(): Promise<void> }).queueTestRePair());
+    await expect(filter(page, 'vendor')).toHaveValue('all'); await expect(saveNotice(page)).toBeHidden();
+    await release(0);
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    expect(writes).toHaveLength(1); await expect(saveNotice(page)).toBeHidden();
+  });
 });

@@ -32,6 +32,9 @@ const options: BootstrapWebclientOptions = { root: document.getElementById('app'
   hashSource: { getHash: () => location.hash, setHash: hash => { location.hash = hash; },
     onChange: listener => { hashListeners.add(listener); return () => hashListeners.delete(listener); } },
   exposureProfile: 'community-shareable', enablePassportFetchVerify: false,
+  // The fake server above leaves every call outside its list open forever, which
+  // would fill the app's 64 call slots; a real server answers every call.
+  rpcMaxInFlight: Number.POSITIVE_INFINITY,
 };
 let app = await bootstrapWebclient(options);
 Object.assign(window, { queueTestEvent: (event: unknown) => { for (const listener of messages) listener(event); },

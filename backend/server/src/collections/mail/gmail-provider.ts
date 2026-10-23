@@ -1671,6 +1671,9 @@ export const createGmailProvider = (
   return {
     kind: 'gmail',
     slug: opts.slug,
+    // The history id persists in the account store, and an expired one lists
+    // the window again (the history 404 path).
+    resumesFromCursor: true,
     sendCapable,
     mutationCapable,
     // D-264 — creating a draft needs the same grant mutation does

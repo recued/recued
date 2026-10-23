@@ -11,6 +11,7 @@ import {
   type RecordsExportRequest,
   type RecordsGlobalQuotaSetRequest,
   type RecordsChangeQuery,
+  type RecordsNamespaceView,
   type RecordsOutboxListRequest,
   type RecordsOutboxRetireRequest,
   type RecordsOwnerDeleteRequest,
@@ -28,7 +29,28 @@ import type { WsClient } from './ws-server.js';
 
 export interface RecordsRpcDeps {
   store: RecordsStore;
+  /** The owning pack's name, for `records.namespace.list` (`display_name`). Null or absent ⇒
+   *  the namespace is listed without one; a throw names none rather than failing the list. */
+  packName?: (owner: RecordsPackRef) => string | null;
 }
+
+/** Each namespace with its pack's name, when the server knows it. One lookup per pack. */
+const withPackNames = (
+  namespaces: RecordsNamespaceView[],
+  packName: RecordsRpcDeps['packName'],
+): RecordsNamespaceView[] => {
+  if (packName === undefined) return namespaces;
+  return namespaces.map((namespace) => {
+    let name: string | null = null;
+    try {
+      name = packName(namespace.owner);
+    } catch {
+      name = null;
+    }
+    const display_name = typeof name === 'string' ? name.trim() : '';
+    return display_name === '' ? namespace : { ...namespace, display_name };
+  });
+};
 
 const requireRegisteredClient = (client: WsClient): void => {
   if (!client.instance_id) {
@@ -135,7 +157,7 @@ export const makeRecordsRpcHandlers = (
       'records.namespace.list': async (_args, client) => {
         requireRegisteredClient(client);
         return fromStore(() => ({
-          namespaces: deps.store.listNamespaces(),
+          namespaces: withPackNames(deps.store.listNamespaces(), deps.packName),
           global_quota: deps.store.getGlobalQuota(),
         }));
       },

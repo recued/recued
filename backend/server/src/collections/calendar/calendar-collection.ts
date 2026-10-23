@@ -36,6 +36,7 @@ import type { StorageGate } from '@recued/storage-gate';
 import type { AuditLogStore } from '@recued/storage';
 import type {
   CalendarCollectionHealth,
+  CanonicalEvent,
   CollectionHealth,
   CollectionListQuery,
   CollectionRecord,
@@ -112,8 +113,10 @@ export interface CreateCalendarCollectionOptions {
    *  `data.contact` rows from organizer + attendees; left undefined
    *  the collection runs unchanged. Errors thrown by the hook are
    *  swallowed via `bumpError` so a contact write failure never
-   *  rolls back a verified calendar ingest. */
-  onEventUpserted?: (payload: ProviderEventPayload) => void;
+   *  rolls back a verified calendar ingest.
+   *  `prev` is the event as its row held it before this upsert, `null` for a
+   *  first sighting: every start's scan lists each stored event again. */
+  onEventUpserted?: (payload: ProviderEventPayload, prev?: CanonicalEvent | null) => void;
   /** D-124 Phase 2.1 — instance store reference used to flip
    *  `collection_instances.backfill_complete` to true after the
    *  provider's `initialScan` resolves successfully. Optional so test
@@ -364,7 +367,7 @@ export const createCalendarCollection = (
       // to persist a newer cursor is not.
       assertActive();
       if (opts.onEventUpserted) {
-        try { afterLocalCommit(db, () => withLocalMutationScope(undefined, () => opts.onEventUpserted!(payload))); }
+        try { afterLocalCommit(db, () => withLocalMutationScope(undefined, () => opts.onEventUpserted!(payload, prev?.event ?? null))); }
         catch (err) { bumpError(`calendar onEventUpserted hook failed for ${payload.event.source_id}`, err); }
       }
     };
@@ -380,9 +383,10 @@ export const createCalendarCollection = (
     withLocalMutationScope(undefined, () => emitter.deleted(recordId, result.prior!.hot as unknown as Record<string, unknown>));
   };
 
-  /** CalDAV: remove the rows inside the window that the provider no longer
-   *  makes — of one event (`ical_uid`), or of a whole calendar after a scan
-   *  that read all of it. Read in full before any is removed, so a page
+  /** Remove the rows inside the window that the provider no longer makes — of
+   *  one event (`ical_uid`, CalDAV), or of a whole calendar after a listing
+   *  that read all of it (CalDAV's scan; Google's and Outlook's listing after
+   *  an expired cursor). Read in full before any is removed, so a page
    *  boundary cannot skip one. */
   const reconcileRows = (snapshot: CalendarSeriesSnapshot | CalendarSnapshot): void => {
     const keep = new Set(snapshot.keep);
@@ -419,6 +423,12 @@ export const createCalendarCollection = (
         reconcileRows(event.series);
         return;
       }
+      if (event.kind === 'calendar') {
+        if (!event.calendar) throw new Error(`calendar sync snapshot '${event.source_id}' is missing its rows`);
+        if (!shouldContinue()) throw new Error('calendar sync generation is no longer active');
+        reconcileRows(event.calendar);
+        return;
+      }
       if (!event.payload) {
         bumpError(`calendar sync ${event.kind} event missing payload`, null);
         throw new Error(
@@ -430,7 +440,7 @@ export const createCalendarCollection = (
       // A resolved callback is an acknowledgement to cursor-bearing providers.
       // Keep the collection diagnostic but reject so gcal/Graph/CalDAV retain
       // the event's checkpoint and retry it instead of silently skipping it.
-      if (event.payload !== undefined || event.kind === 'deleted' || event.kind === 'series') {
+      if (event.payload !== undefined || event.kind === 'deleted' || event.kind === 'series' || event.kind === 'calendar') {
         bumpError(`calendar sync ingest failed for ${event.source_id}`, err);
       }
       throw err;

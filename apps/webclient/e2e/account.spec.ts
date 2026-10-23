@@ -1,6 +1,6 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type BrowserContext, type Locator, type Page } from '@playwright/test';
 import {
-  ACCOUNT_MENU_TRIGGER, ARTIFACTS, ATTENTION_CLOSE, ATTENTION_DIALOG,
+  ACCOUNT_MENU_TRIGGER, ATTENTION_CLOSE, ATTENTION_DIALOG,
   CHAT_ANSWER_WAITING, CHAT_HISTORY_LANDING, CHAT_INPUT, CHAT_SEND,
   CONNECTION_BANNER, FIXED_NOW, HARNESS_URL, SHELL_HOST, installFullAppHooks,
 } from './helpers/full-app.js';
@@ -84,7 +84,7 @@ const SERVER_PROFILE_ANNOUNCER = 'data-recued-server-switcher-announcer';
 
 installFullAppHooks();
 
-test('the Account popover closes when keyboard focus leaves it', async ({ page }) => {
+test('the Account popover closes when keyboard focus leaves it', async ({ page, browserName }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?server_profiles=multiple`);
   await page.waitForFunction(() => window.__app?.ready === true);
@@ -106,7 +106,7 @@ test('the Account popover closes when keyboard focus leaves it', async ({ page }
     name: 'Add another server…',
   });
   await addServer.focus();
-  await page.keyboard.press('Tab');
+  await page.keyboard.press(browserName === 'webkit' ? 'Alt+Tab' : 'Tab');
 
   await expect(dialog).toBeHidden();
   // On a phone the next control is the button that opens the chat list.
@@ -254,12 +254,12 @@ test('bounded verification lands on one exact Account diagnosis and returns expl
   const controlReceipt = diagnosis.locator(
     `[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECEIPT}]`,
   );
-  await serverControls.getByRole('button', { name: 'Pause server' }).click();
+  await serverControls.getByRole('button', { name: 'Pause server' }).press('Enter');
   const confirmPause = serverControls.getByRole('button', {
     name: 'Confirm pause',
   });
   await expect(confirmPause).toBeFocused();
-  await confirmPause.click();
+  await confirmPause.press('Enter');
   await expect(controlReceipt).toBeVisible();
   await expect(controlReceipt).toHaveAttribute('data-action', 'pause');
   await expect(controlReceipt).toHaveAttribute('data-phase', 'confirmed');
@@ -272,7 +272,7 @@ test('bounded verification lands on one exact Account diagnosis and returns expl
   const resumeServer = serverControls.getByRole('button', { name: 'Resume' });
   await expect(resumeServer).toBeFocused();
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-account-diagnosis-controls-mobile.png`,
+    path: test.info().outputPath(`full-app-account-diagnosis-controls-mobile.png`),
     fullPage: false,
   });
 
@@ -463,7 +463,7 @@ test('carries a safe server receipt into Attention without replaying it after re
   expect(await page.evaluate(() =>
     window.__app.rpcCallCount('server.setPaused'))).toBe(1);
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-attention-server-outcome-mobile.png`,
+    path: test.info().outputPath(`full-app-attention-server-outcome-mobile.png`),
     fullPage: false,
   });
 
@@ -610,7 +610,7 @@ test('reconciles an unresolved receipt with current server state without replayi
   expect(await page.evaluate(() =>
     window.__app.rpcCallCount('server.setPaused'))).toBe(1);
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-attention-unresolved-server-re-review-mobile.png`,
+    path: test.info().outputPath(`full-app-attention-unresolved-server-re-review-mobile.png`),
     fullPage: false,
   });
   const reconcile = diagnosis.locator(
@@ -807,7 +807,7 @@ test('reconciles an unresolved receipt with current server state without replayi
     `[${ATTENTION_RECOVERY_INTENT_SERVER_OUTCOME}]`,
   )).toHaveCount(0);
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-attention-reconciliation-reentry-mobile.png`,
+    path: test.info().outputPath(`full-app-attention-reconciliation-reentry-mobile.png`),
     fullPage: false,
   });
   await page.evaluate(() => window.__app.fireState('reconnecting'));
@@ -950,7 +950,7 @@ test('expires a deferred check into one quiet intent-free current-area review', 
   });
   await expect(reviewCurrent).toHaveText('Review current Contracts');
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-attention-deferred-expiry-mobile.png`,
+    path: test.info().outputPath(`full-app-attention-deferred-expiry-mobile.png`),
     fullPage: false,
   });
 
@@ -1097,7 +1097,7 @@ test('keeps one quiet route-owned retry when an expired current-area review is u
     name: /Retry current Contracts; no expired intent or prior action will replay/,
   });
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-attention-expired-review-retry-mobile.png`,
+    path: test.info().outputPath(`full-app-attention-expired-review-retry-mobile.png`),
     fullPage: false,
   });
 
@@ -1220,7 +1220,7 @@ test('bounds a repeated expired-area retry to direct route diagnosis', async ({ 
     name: /Open current Contracts; no expired intent or prior action will replay/,
   });
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-attention-expired-review-diagnosis-mobile.png`,
+    path: test.info().outputPath(`full-app-attention-expired-review-diagnosis-mobile.png`),
     fullPage: false,
   });
 
@@ -1362,7 +1362,7 @@ test('bounds a repeated offline expired-area retry to exact server diagnosis', a
   );
   await expect(finish).toHaveText('Choose: check, or close');
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-attention-expired-review-server-diagnosis-mobile.png`,
+    path: test.info().outputPath(`full-app-attention-expired-review-server-diagnosis-mobile.png`),
     fullPage: false,
   });
   expect(await page.evaluate(() =>
@@ -1388,7 +1388,7 @@ test('bounds a repeated offline expired-area retry to exact server diagnosis', a
   const closeReview = expiry.getByRole('button', { name: 'Close review' });
   await expect(closeReview).toBeVisible();
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-attention-expired-review-outcome-mobile.png`,
+    path: test.info().outputPath(`full-app-attention-expired-review-outcome-mobile.png`),
     fullPage: false,
   });
   expect(await page.evaluate(() =>
@@ -1704,7 +1704,7 @@ test('Account server profiles own connection status, recovery, and the return on
     expect(target.height).toBeGreaterThanOrEqual(44);
   }
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-account-server-recovery-mobile.png`,
+    path: test.info().outputPath(`full-app-account-server-recovery-mobile.png`),
     fullPage: false,
   });
 
@@ -1792,7 +1792,7 @@ test('a deliberate server switch protects the draft boundary and returns to a cl
     'Chats, records, runs and links belong to one server and stay there',
   );
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-deliberate-server-switch-mobile.png`,
+    path: test.info().outputPath(`full-app-deliberate-server-switch-mobile.png`),
     fullPage: false,
   });
   const switchTargets = await review.locator('button').evaluateAll((buttons) =>
@@ -1839,6 +1839,176 @@ test('a deliberate server switch protects the draft boundary and returns to a cl
   )).toContainText('Office server');
   expect(pageErrors).toEqual([]);
 });
+
+const COPY_DRAFT_TEXT = 'Private draft for this source server\nKeep this 😀 and the line breaks.';
+declare global {
+  interface Window {
+    __serverSwitchDraftCopy?: { texts: string[]; resolve?: () => void; reject?: () => void };
+  }
+}
+
+const switchToOtherSavedServer = async (page: Page): Promise<void> => {
+  await page.locator(`[${ACCOUNT_MENU_TRIGGER}]`).click();
+  const account = page.locator(`[${ACCOUNT_MENU_POPOVER}]`);
+  await account.locator(`[${SERVER_PROFILE_ITEM}]:not([aria-current="true"])`).first().click();
+  const navigation = page.waitForNavigation({ waitUntil: 'domcontentloaded' });
+  await account.locator(`[${SERVER_PROFILE_SWITCH_COMMIT}]`).click();
+  await navigation;
+  await page.waitForFunction(() => window.__app?.ready === true);
+};
+
+const withDraftCopyHandoff = async (
+  { page, context }: { page: Page; context: BrowserContext },
+  mode: string,
+  run: (handoff: { dirty: Page; dialog: Locator; field: Locator; copy: Locator; commit: Locator }) => Promise<void>,
+): Promise<void> => {
+  const dirty = await context.newPage();
+  const errors: Error[] = [];
+  dirty.on('pageerror', error => errors.push(error));
+  try {
+    await dirty.setViewportSize({ width: 390, height: 844 });
+    if (mode !== 'native') await dirty.addInitScript(clipboardMode => {
+      const state = window.__serverSwitchDraftCopy = { texts: [] } as NonNullable<Window['__serverSwitchDraftCopy']>;
+      const denied = (): never => { throw new Error('private clipboard policy detail'); };
+      if (clipboardMode === 'navigator getter') {
+        Object.defineProperty(window, 'navigator', { configurable: true, get: denied });
+      } else {
+        const clipboard = clipboardMode === 'missing' ? undefined
+          : clipboardMode === 'writeText getter' ? Object.defineProperty({}, 'writeText', { get: denied })
+            : { writeText: (text: string): Promise<void> => {
+              state.texts.push(text);
+              if (clipboardMode === 'synchronous throw') return denied();
+              if (clipboardMode === 'pending') return new Promise<void>((resolve, reject) => {
+                state.resolve = resolve; state.reject = () => reject(new Error('private clipboard policy detail'));
+              });
+              return Promise.reject(new Error('private clipboard policy detail'));
+            } };
+        Object.defineProperty(navigator, 'clipboard', {
+          configurable: true,
+          ...(clipboardMode === 'clipboard getter' ? { get: denied } : { value: clipboard }),
+        });
+      }
+    }, mode);
+    const base = `${HARNESS_URL}?server_profiles=multiple&chat=session`;
+    await page.goto(`${base}#connections`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await dirty.goto(`${base}#chat/session/chat_1`);
+    await dirty.waitForFunction(() => window.__app?.ready === true);
+    await dirty.locator(`[${CHAT_INPUT}]`).fill(COPY_DRAFT_TEXT);
+    await switchToOtherSavedServer(page);
+    const dialog = dirty.locator(`[${SERVER_SWITCH_CONVERGENCE_DIALOG}]`);
+    await expect(dialog).toBeVisible();
+    await dirty.bringToFront();
+    await run({ dirty, dialog, field: dialog.locator(`[${SERVER_SWITCH_CONVERGENCE_DRAFT}]`),
+      copy: dialog.getByRole('button', { name: 'Copy draft', exact: true }),
+      commit: dialog.locator(`[${SERVER_SWITCH_CONVERGENCE_COMMIT}]`) });
+  } finally {
+    await dirty.close({ runBeforeUnload: false });
+    expect(errors, `uncaught draft-copy errors: ${errors.map(error => error.message).join(' | ')}`).toEqual([]);
+  }
+};
+
+for (const mode of ['missing', 'navigator getter', 'clipboard getter', 'writeText getter', 'synchronous throw', 'rejection']) {
+  test(`server-switch Copy draft selects the message when clipboard access fails with ${mode}`, async ({ page, context }) => {
+    await withDraftCopyHandoff({ page, context }, mode, async ({ dirty, dialog, field, copy }) => {
+      await copy.focus(); await dirty.keyboard.press('Enter');
+      await expect(field).toHaveValue(COPY_DRAFT_TEXT);
+      await expect(field).toHaveAttribute('readonly', '');
+      await expect(field).toBeFocused();
+      expect(await field.evaluate((node: HTMLTextAreaElement) => [node.selectionStart, node.selectionEnd]))
+        .toEqual([0, COPY_DRAFT_TEXT.length]);
+      await expect(dialog.locator(`[${SERVER_SWITCH_CONVERGENCE_STATUS}]`)).toContainText('message is selected');
+      await expect(dialog).not.toContainText('private clipboard policy detail');
+      await expect(dirty).toHaveURL(/#chat\/session\/chat_1$/);
+      await expect(dirty.locator(`[${SHELL_HOST}]`)).toHaveAttribute('inert', '');
+      expect(await dirty.evaluate(() => window.__app.rpcCallCount('chat.send'))).toBe(0);
+      expect(await dirty.evaluate(() => JSON.stringify([Object.entries(localStorage), Object.entries(sessionStorage)])))
+        .not.toContain('Private draft for this source server');
+    });
+  });
+}
+
+for (const width of [375, 1280]) {
+  test(`server-switch Copy draft writes the native clipboard from the keyboard at ${width}px`, async ({ page, context, browserName }) => {
+    await withDraftCopyHandoff({ page, context }, 'native', async ({ dirty, dialog, copy }) => {
+      await dirty.setViewportSize({ width, height: 900 });
+      // WebKit writes during native activation and exposes only the read grant.
+      const permissions = browserName === 'webkit' ? ['clipboard-read'] : ['clipboard-read', 'clipboard-write'];
+      await context.grantPermissions(permissions, { origin: new URL(dirty.url()).origin });
+      await copy.focus(); await dirty.keyboard.press('Enter');
+      await expect(dialog.locator(`[${SERVER_SWITCH_CONVERGENCE_STATUS}]`)).toContainText('still not saved on the new server');
+      await expect(copy).toBeFocused();
+      expect(await dirty.evaluate(() => navigator.clipboard.readText())).toBe(COPY_DRAFT_TEXT);
+      await expect(dirty).toHaveURL(/#chat\/session\/chat_1$/);
+      expect(await dirty.evaluate(() => window.__app.rpcCallCount('chat.send'))).toBe(0);
+      expect(await dirty.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    });
+  });
+}
+
+test('server-switch Copy draft stays single-flight and preserves later keyboard focus after denial', async ({ page, context }) => {
+  await withDraftCopyHandoff({ page, context }, 'pending', async ({ dirty, dialog, field, copy, commit }) => {
+    await copy.focus(); await dirty.keyboard.press('Enter'); await dirty.keyboard.press('Enter');
+    await expect(copy).toHaveAttribute('aria-busy', 'true');
+    await expect(copy).toHaveAttribute('aria-disabled', 'true');
+    await expect(copy).not.toHaveAttribute('disabled');
+    expect(await dirty.evaluate(() => window.__serverSwitchDraftCopy?.texts)).toEqual([COPY_DRAFT_TEXT]);
+    await commit.focus(); await dirty.evaluate(() => window.__serverSwitchDraftCopy?.reject?.());
+    await expect(dialog.locator(`[${SERVER_SWITCH_CONVERGENCE_STATUS}]`)).toContainText('message is selected');
+    await expect(commit).toBeFocused();
+    expect(await field.evaluate((node: HTMLTextAreaElement) => [node.selectionStart, node.selectionEnd]))
+      .toEqual([0, COPY_DRAFT_TEXT.length]);
+    await expect(copy).not.toHaveAttribute('aria-busy');
+    await expect(copy).not.toHaveAttribute('aria-disabled');
+  });
+});
+
+for (const outcome of ['rejection', 'timeout']) {
+  test(`server-switch Copy draft preserves a later manual selection after ${outcome}`, async ({ page, context }) => {
+    await withDraftCopyHandoff({ page, context }, 'pending', async ({ dirty, dialog, field, copy }) => {
+      await copy.focus(); await dirty.keyboard.press('Enter');
+      await field.evaluate((node: HTMLTextAreaElement) => { node.focus(); node.setSelectionRange(2, 14, 'backward'); });
+      if (outcome === 'rejection') await dirty.evaluate(() => window.__serverSwitchDraftCopy?.reject?.());
+      await expect(copy).not.toHaveAttribute('aria-busy');
+      expect(await field.evaluate((node: HTMLTextAreaElement) => [node.selectionStart, node.selectionEnd, node.selectionDirection]))
+        .toEqual([2, 14, 'backward']);
+      await expect(field).toBeFocused();
+      await expect(field).toHaveValue(COPY_DRAFT_TEXT);
+      await expect(dialog.locator(`[${SERVER_SWITCH_CONVERGENCE_STATUS}]`)).toContainText('could not copy');
+      expect(await dirty.evaluate(() => window.__app.rpcCallCount('chat.send'))).toBe(0);
+    });
+  });
+}
+
+test('server-switch Copy draft selects a stalled write and ignores its late success', async ({ page, context }) => {
+  await withDraftCopyHandoff({ page, context }, 'pending', async ({ dirty, dialog, field, copy, commit }) => {
+    await copy.focus(); await dirty.keyboard.press('Enter');
+    await expect(dialog.locator(`[${SERVER_SWITCH_CONVERGENCE_STATUS}]`)).toContainText('message is selected');
+    await expect(field).toBeFocused();
+    expect(await field.evaluate((node: HTMLTextAreaElement) => [node.selectionStart, node.selectionEnd]))
+      .toEqual([0, COPY_DRAFT_TEXT.length]);
+    await commit.focus(); await dirty.evaluate(() => window.__serverSwitchDraftCopy?.resolve?.());
+    await expect(commit).toBeFocused();
+    await expect(dialog.locator(`[${SERVER_SWITCH_CONVERGENCE_STATUS}]`)).toContainText('message is selected');
+  });
+});
+
+for (const outcome of ['resolve', 'reject'] as const) {
+  test(`server-switch Copy draft ignores a late ${outcome} after the source server is restored`, async ({ page, context }) => {
+    await withDraftCopyHandoff({ page, context }, 'pending', async ({ dirty, dialog, copy }) => {
+      await copy.focus(); await dirty.keyboard.press('Enter');
+      await switchToOtherSavedServer(page);
+      await expect(dialog).toHaveCount(0);
+      await dirty.bringToFront();
+      const input = dirty.locator(`[${CHAT_INPUT}]`);
+      await input.focus();
+      await dirty.evaluate(result => window.__serverSwitchDraftCopy?.[result]?.(), outcome);
+      await expect(input).toBeFocused(); await expect(input).toHaveValue(COPY_DRAFT_TEXT);
+      await expect(dirty.locator(`[${SHELL_HOST}]`)).not.toHaveAttribute('inert');
+      expect(await dirty.evaluate(() => window.__app.rpcCallCount('chat.send'))).toBe(0);
+    });
+  });
+}
 
 test('a deliberate server switch converges clean and dirty sibling tabs without crossing work', async ({ page, context }) => {
   const clean = await context.newPage();
@@ -2015,7 +2185,7 @@ test('a deliberate server switch converges clean and dirty sibling tabs without 
     expect(target.width).toBeGreaterThanOrEqual(44);
     expect(target.height).toBeGreaterThanOrEqual(44);
     await dirty.screenshot({
-      path: `${ARTIFACTS}/full-app-multi-tab-server-switch-draft-boundary-mobile.png`,
+      path: test.info().outputPath(`full-app-multi-tab-server-switch-draft-boundary-mobile.png`),
       fullPage: false,
     });
 

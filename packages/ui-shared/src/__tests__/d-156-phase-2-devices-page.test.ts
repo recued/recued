@@ -16,7 +16,7 @@
  *  original `d-121-phase-7-devices-page.test.ts` at `649ac948` minus every
  *  tier-aware widget retired by D-148 P12. */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   renderDevicesPage,
   type DevicesPageRow,
@@ -367,5 +367,53 @@ describe('renderDevicesPage — inline revoke-confirm panel', () => {
     });
     expect(html).not.toContain('<img src=x');
     expect(html).toContain('&lt;img');
+  });
+});
+
+describe('renderDevicesPage — optional freshness controls', () => {
+  it('keeps successful checks usable when locale APIs are unavailable', () => {
+    const intl = vi.spyOn(Intl, 'DateTimeFormat').mockImplementation(() => { throw new RangeError('Locale unavailable'); });
+    const locale = vi.spyOn(Date.prototype, 'toLocaleString').mockImplementation(() => { throw new Error('Locale blocked'); });
+    try {
+      const html = renderDevicesPage(state({ refresh: { pending: false, lastSuccessfulAt: NOW } }));
+      expect(html).toContain(`<time datetime="${new Date(NOW).toISOString()}">Unknown time</time>`);
+      expect(html).toContain('data-action="refresh-devices"');
+      expect(html).toContain('Paired devices');
+    } finally { intl.mockRestore(); locale.mockRestore(); }
+  });
+
+  it('requires the host to opt in before showing a Refresh control', () => {
+    const html = renderDevicesPage(state());
+    expect(html).not.toContain('data-action="refresh-devices"');
+    expect(html).not.toContain('data-devices-last-checked');
+  });
+
+  it('keeps the pending Refresh button focusable before the first successful check', () => {
+    const html = renderDevicesPage(state({ refresh: { pending: true } }));
+    const button = /<button[^>]*data-action="refresh-devices"[^>]*>[^<]*<\/button>/.exec(html)?.[0];
+    expect(button).toContain('aria-label="Refresh devices"');
+    expect(button).toContain('aria-disabled="true"');
+    expect(button).toContain('aria-busy="true"');
+    expect(button).not.toContain(' disabled');
+    expect(button).toContain('Refreshing…');
+    expect(html).toContain('Not checked yet');
+    expect(html).not.toContain('<time');
+  });
+
+  it('offers Refresh even when the successful roster is empty', () => {
+    const html = renderDevicesPage(state({ rows: [], refresh: { pending: false, lastSuccessfulAt: NOW } }));
+    expect(html).toContain('data-action="refresh-devices"');
+    expect(html).not.toContain('aria-busy="true"');
+    expect(html).toContain('No paired devices yet');
+    expect(html.indexOf('data-action="refresh-devices"')).toBeLessThan(html.indexOf('<table'));
+  });
+
+  it.each([0, NOW])('uses an absolute successful check time (%s), retained while busy', lastSuccessfulAt => {
+    const html = renderDevicesPage(state({ refresh: { pending: true, lastSuccessfulAt } }));
+    expect(html).toContain(`Last successful check: <time datetime="${new Date(lastSuccessfulAt).toISOString()}">`);
+    const visibleTime = /<time datetime="[^"]+">([^<]+)<\/time>/.exec(html)?.[1];
+    expect(visibleTime).toBeTruthy();
+    expect(visibleTime).not.toBe(new Date(lastSuccessfulAt).toISOString());
+    expect(html).not.toContain('Not checked yet');
   });
 });

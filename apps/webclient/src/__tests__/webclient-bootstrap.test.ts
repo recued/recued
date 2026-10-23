@@ -41,7 +41,7 @@ import type {
 } from '@recued/contracts';
 // ⚠ VALUE import, deliberately separate from the type block above — the
 // first cut folded it in there and it arrived `undefined` at runtime.
-import { CHAT_HISTORY_WINDOW, LIST_PAGE_DEFAULT_LIMIT } from '@recued/contracts';
+import { CHAT_HISTORY_WINDOW, LIST_PAGE_DEFAULT_LIMIT, RPC_WS_MAX_IN_FLIGHT_PER_CLIENT } from '@recued/contracts';
 import { RECIPES_ROUTE_RECIPE_CARD_ATTR, type RecipeExecuteCaller } from '../recipes/bootstrap-recipes-route.js';
 import { RunModal } from '@recued/ui-shared';
 import { generateRecoveryKey } from '@recued/crypto';
@@ -224,6 +224,8 @@ import {
   SELLER_CUSTOMER_FORM_SUBMIT_ATTR,
   SELLER_DIRECTORY_ROW_ATTR,
   SELLER_OFFER_STATE_ACTION_ATTR,
+  SELLER_OFFER_CHECKOUT_ACTION_ATTR,
+  SELLER_OFFER_CHECKOUT_INPUT_ATTR,
   SELLER_SETTINGS_FORM_FIELD_ATTR,
   SELLER_SETTINGS_FORM_SUBMIT_ATTR,
   SELLER_TIER_REAPPLY_PREVIEW_ATTR,
@@ -266,6 +268,7 @@ interface FakeElement extends HTMLElement {
   parentRef: FakeElement | null;
   focusCallCount: number;
   value: string;
+  validity: ValidityState;
   fireAttributeClick(attrs: Record<string, string>): void;
   fireInput(value: string): void;
   fireConnectionField(key: string, value: string, tagName?: string): void;
@@ -313,6 +316,21 @@ const makeFakeElement = (tag: string): FakeElement => {
     parentRef: null,
     focusCallCount: 0,
     value: '',
+    // Native inputs expose this even before the user edits them. Settings'
+    // leave guard reads badInput for an incomplete time entry.
+    validity: {
+      badInput: false,
+      customError: false,
+      patternMismatch: false,
+      rangeOverflow: false,
+      rangeUnderflow: false,
+      stepMismatch: false,
+      tooLong: false,
+      tooShort: false,
+      typeMismatch: false,
+      valid: true,
+      valueMissing: false,
+    },
     get parentElement(): FakeElement | null {
       return (el as FakeElement).parentRef;
     },
@@ -756,6 +774,12 @@ const buildOpts = () => {
       hashSource,
       document: fakeDoc,
       now: () => 1_700_000_000_000,
+      // This fake server answers only what a test answers and leaves every
+      // other call open, which no server does. Under the app's limit of 64
+      // running calls, a busy page's unanswered reads would hold every slot
+      // and the call a test is about would never go out. "calls running at
+      // once" below checks the limit itself.
+      rpcMaxInFlight: Number.POSITIVE_INFINITY,
     },
   };
 };
@@ -1244,6 +1268,42 @@ describe('D-148 § A.4 — bootstrapWebclient: pair-state hydration', () => {
     );
     await handle.dispose();
   });
+
+  it.each((['navigator', 'clipboard', 'writeText', 'platform'] as const)
+    .flatMap(blocked => ['#reception', '#chat/new'].map(hash => ({ blocked, hash }))))(
+    'starts $hash when optional browser access fails at $blocked', async ({ blocked, hash }) => {
+      const fixture = buildOpts();
+      fixture.hashSource.setHash(hash);
+      const denied = (): never => { throw new Error('Private browser policy detail'); };
+      const clipboard = blocked === 'writeText'
+        ? Object.defineProperty({}, 'writeText', { get: denied }) : {};
+      const navigator = blocked === 'clipboard'
+        ? Object.defineProperty({}, 'clipboard', { get: denied }) : { clipboard };
+      if (blocked === 'platform') Object.defineProperty(navigator, 'platform', { get: denied });
+      const view = blocked === 'navigator'
+        ? Object.defineProperty({}, 'navigator', { get: denied }) : { navigator };
+      (fixture.fakeDoc as { defaultView?: unknown }).defaultView = view;
+
+      const handle = await bootstrapWebclient(fixture.opts);
+      try {
+        expect(fixture.transportControls.openCount()).toBe(1);
+        expect(handle.activeRoute()).toBe(parseRouteFromHash(hash));
+        if (blocked === 'navigator' || blocked === 'platform') {
+          expect(findByAttr(fixture.root, GLOBAL_RUN_PALETTE_TRIGGER_ATTR)?.getAttribute('title'))
+            .toBe('Run a Recipe (Ctrl K)');
+        }
+        fixture.hashSource.setHash('#chat/new');
+        await flush();
+        const find = findAllByAttr(fixture.root, 'data-recued-chat-route-composer-action')
+          .find(button => button.getAttribute('data-recued-chat-route-composer-action') === 'find');
+        expect(find).toBeDefined();
+        if (blocked === 'navigator' || blocked === 'platform') {
+          expect(find?.getAttribute('title')).toBe('Search everything on this server (Ctrl /)');
+        }
+        expect(subtreeText(fixture.root)).not.toContain('Private browser policy detail');
+      } finally { await handle.dispose(); }
+    },
+  );
 
   it('keeps passive sibling recovery silent while restoring its work context', async () => {
     const fixture = buildOpts();
@@ -3034,6 +3094,95 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
     await handle.dispose();
   });
 
+  it('D-207 ruling (C) wires an offer’s checkout link to its owner-only Seller RPC', async () => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#settings/seller/offers/detail/client-kit');
+    const handle = await bootstrapWebclient(fixture.opts);
+    const sellerPage = handle.settingsRoute()?.sellerPage();
+    expect(sellerPage).not.toBeNull();
+    await flush();
+
+    const rpcCall = (method: string) => fixture.transportControls.sendCalls().find(
+      (s) =>
+        s !== null
+        && typeof s === 'object'
+        && (s as { type?: unknown }).type === 'rpc'
+        && (s as { method?: unknown }).method === method,
+    ) as { request_id?: unknown; args?: unknown } | undefined;
+    const overviewCall = rpcCall('server.seller.getOverview');
+    if (typeof overviewCall?.request_id !== 'string') {
+      throw new Error('missing Seller overview request');
+    }
+    const kit = {
+      offer_id: 'client-kit',
+      kind: 'document' as const,
+      display_name: 'Client kit',
+      description: '',
+      pricing_kind: 'fixed' as const,
+      amount_minor: 2_900,
+      currency: 'USD',
+      fulfillment_recipe_id: null,
+      checkout_url: null,
+      fulfillment_config: null,
+      state: 'active' as const,
+      created_by_recipe_id: null,
+      created_at: 1,
+      updated_at: 1,
+    };
+    const initial: SellerOverview = {
+      settings: {
+        default_grace_hours: 72,
+        sender_mail_instance_id: null,
+        status_policy_json: {},
+        email_policy_json: {},
+        llm_gateway_paid_ack_at: null,
+        llm_gateway_paid_ack_version: null,
+        created_at: 0,
+        updated_at: 0,
+      },
+      counts: {
+        tiers: 0,
+        active_tiers: 0,
+        customers: 0,
+        active_customers: 0,
+        grace_customers: 0,
+        closed_customers: 0,
+      },
+      readiness: [],
+      llm_gateway: {
+        configured: false,
+        config_readable: true,
+        default_route: null,
+        model_alias: null,
+        paid_ack_at: null,
+        paid_acknowledged: false,
+      },
+      tiers: [],
+      customers: [],
+      usage_rollups: [],
+      offers: [kit],
+    };
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: overviewCall.request_id,
+      result: initial,
+    });
+    await sellerPage!.whenLoaded();
+
+    const input = findChildByAttr(fixture.root, SELLER_OFFER_CHECKOUT_INPUT_ATTR);
+    if (input === null) throw new Error('missing checkout link input');
+    input.value = 'https://buy.stripe.com/test_kit2900';
+    findChildByAttrValue(fixture.root, SELLER_OFFER_CHECKOUT_ACTION_ATTR, 'save')?.click();
+    await flush();
+
+    expect(rpcCall('server.seller.setOfferCheckoutUrl')?.args).toEqual({
+      offer_id: 'client-kit',
+      expected_updated_at: 1,
+      checkout_url: 'https://buy.stripe.com/test_kit2900',
+    });
+    await handle.dispose();
+  });
+
   it('D-196 S2 wires Settings -> Seller settings update by default', async () => {
     const fixture = buildOpts();
     fixture.hashSource.setHash('#settings/seller/setup/defaults');
@@ -4635,6 +4784,80 @@ describe('D-148 § A.4 DD#8 — bootstrapWebclient: events.subscribe wiring', ()
     )).toContain('Action outcome needs reviewThe outcome needs review after restart.');
     expect(deliveryStorage.data.size).toBe(1);
     await handle.dispose();
+  });
+
+  it('shows a notice sent while the app was closed, read after the live subscription', async () => {
+    // Two visits from one browser, sharing its storage.
+    const storage = memorySessionStorage();
+    const T = 1_792_000_000_000;
+    const visit = async (notifications: unknown[]) => {
+      const fixture = buildOpts();
+      const timers: Array<{ handler: () => void; cancelled: boolean }> = [];
+      const handle = await bootstrapWebclient({
+        ...fixture.opts,
+        actionReceiptDeliveryStorage: storage,
+        setNoticeCatchUpTimer: (handler) => {
+          const timer = { handler, cancelled: false };
+          timers.push(timer);
+          return { cancel: () => { timer.cancelled = true; } };
+        },
+      });
+      await flush();
+      const recent = () => fixture.transportControls.sendCalls().filter(
+        (call): call is { request_id: string; args: Record<string, unknown> } =>
+          (call as { method?: unknown })?.method === 'notification.recent',
+      );
+      // Nothing read before the server has installed this socket's live subscription.
+      expect(recent()).toEqual([]);
+      const subscribeCall = fixture.transportControls.sendCalls().find(
+        (call): call is { request_id: string } =>
+          (call as { method?: unknown })?.method === 'events.subscribe'
+          && typeof (call as { request_id?: unknown }).request_id === 'string',
+      )!;
+      fixture.transportControls.fireMessage({
+        type: 'rpc_result',
+        request_id: subscribeCall.request_id,
+        result: { cursor: 10, replay_count: 0, fell_off_ring: false },
+      });
+      await flush();
+      // Not during the page's own startup reads: after a short wait.
+      expect(recent()).toEqual([]);
+      for (const timer of timers.splice(0)) if (!timer.cancelled) timer.handler();
+      await flush();
+      expect(recent()).toHaveLength(1);
+      expect(recent()[0]!.args).toEqual({ limit: 50 });
+      fixture.transportControls.fireMessage({
+        type: 'rpc_result',
+        request_id: recent()[0]!.request_id,
+        result: { notifications },
+      });
+      await flush();
+      // The settle wait, then what was missed.
+      for (const timer of timers.splice(0)) if (!timer.cancelled) timer.handler();
+      await flush();
+      const stack = subtreeText(findChildByAttr(fixture.root, NOTIFY_TOASTS_HOST_ATTR)!);
+      await handle.dispose();
+      return stack;
+    };
+    const older = {
+      id: 'n-old', title: 'Saved view updated', text: 'Three new rows.', fired_at: T, link_url: '#views/view_1',
+    };
+
+    // The first visit records where the history stands; it shows nothing it never saw.
+    expect(await visit([older])).not.toContain('Saved view updated');
+
+    // The buyer is turned away while the app is closed. The next visit shows it.
+    const stack = await visit([{
+      id: 'reception-turned-away:sub_1',
+      title: 'A buyer could not pay for Freelance Client Kit',
+      text: 'Someone sent your form “Buy the kit” to buy Freelance Client Kit.',
+      link_url: 'https://me.example/#settings/seller/offers/detail/client-kit',
+      ui_link_url: '#settings/seller/offers/detail/client-kit',
+      fired_at: T + 60_000,
+    }, older]);
+    expect(stack).toContain('A buyer could not pay for Freelance Client Kit');
+    expect(stack).toContain('Someone sent your form “Buy the kit” to buy Freelance Client Kit. Sent ');
+    expect(stack).not.toContain('Saved view updated');
   });
 
   it('polls durable action outcomes while connected after the live-subscription barrier', async () => {
@@ -15081,5 +15304,35 @@ describe('D-209 — a dish save that moved a webhook door is told, whichever scr
     await flush();
     expect(toastText()).not.toContain('Not a change');
     await handle.dispose();
+  });
+});
+
+describe('bootstrapWebclient: calls running at once', () => {
+  // Settings sends more reads on load than the server runs per socket, and this
+  // fake server answers none of them.
+  const openRpcCount = async (rpcMaxInFlight?: number): Promise<number> => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#settings/server');
+    const opts: Parameters<typeof bootstrapWebclient>[0] = { ...fixture.opts };
+    delete opts.rpcMaxInFlight; // the app's own limit, unless the case lifts it
+    if (rpcMaxInFlight !== undefined) opts.rpcMaxInFlight = rpcMaxInFlight;
+    const handle = await bootstrapWebclient(opts);
+    await flush();
+    await flush();
+    const ids = new Set<string>();
+    for (const sent of fixture.transportControls.sendCalls()) {
+      const call = sent as { type?: unknown; request_id?: unknown } | null;
+      if (call?.type === 'rpc' && typeof call.request_id === 'string') ids.add(call.request_id);
+    }
+    await handle.dispose();
+    return ids.size;
+  };
+
+  it('keeps no more running than the server runs per socket, and holds the rest', async () => {
+    expect(await openRpcCount()).toBe(RPC_WS_MAX_IN_FLIGHT_PER_CLIENT);
+  });
+
+  it('sends them all when a test server that never answers lifts the limit', async () => {
+    expect(await openRpcCount(Number.POSITIVE_INFINITY)).toBeGreaterThan(RPC_WS_MAX_IN_FLIGHT_PER_CLIENT);
   });
 });

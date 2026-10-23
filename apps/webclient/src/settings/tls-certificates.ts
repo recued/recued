@@ -318,6 +318,10 @@ export { TLS_CERT_MIN_VALIDITY_MS };
 /** Stable DOM hooks. */
 export const TLS_CERTS_PANEL_ATTR = 'data-recued-tls-certs-panel';
 export const TLS_CERTS_STATUS_ATTR = 'data-recued-tls-certs-status';
+export const TLS_CERTS_READ_RETRY_ATTR = 'data-recued-tls-certs-read-retry';
+export const TLS_CERTS_READ_HEADING_ATTR = 'data-recued-tls-certs-read-heading';
+export const TLS_CERTS_REMOVAL_RESULT_ATTR = 'data-recued-tls-certs-removal-result';
+export const TLS_CERTS_STALE_ATTR = 'data-recued-tls-certs-stale';
 export const TLS_CERTS_ERROR_ATTR = 'data-recued-tls-certs-error';
 export const TLS_CERTS_EMPTY_ATTR = 'data-recued-tls-certs-empty';
 export const TLS_CERTS_ROW_ATTR = 'data-recued-tls-certs-row';
@@ -390,6 +394,8 @@ export interface TlsCertificatesPanelState {
 
 export interface TlsCertificatesPanelMount {
   getState(): TlsCertificatesPanelState;
+  hasUnsavedChanges(): boolean;
+  hasInFlightWork(): boolean;
   refresh(): Promise<void>;
   whenLoaded(): Promise<void>;
   dispose(): void;
@@ -470,14 +476,58 @@ export const mountTlsCertificatesPanel = (
   let disposed = false;
   let loadGeneration = 0;
   let pendingLoad: Promise<void> = Promise.resolve();
+  let loadStarted = false;
+  let readFocusTarget: HTMLElement | null = null;
+  let uploadSubmitButton: HTMLButtonElement | null = null;
+  let uploadCancelButton: HTMLButtonElement | null = null;
+  let uploadForm: HTMLElement | null = null;
+  let uploadFeedback: HTMLElement | null = null;
+  let uploadOpenButton: HTMLButtonElement | null = null;
+  let uploadSeedDomain = '';
+  let lastRemoval: { domain: string; removed: boolean } | null = null;
 
   const wrapper = doc.createElement('div');
   wrapper.setAttribute(TLS_CERTS_PANEL_ATTR, '');
   wrapper.className = 'tls-certs-panel';
   opts.host.appendChild(wrapper);
 
+  // Reads replace only this region. Upload inputs stay mounted so a Retry
+  // cannot interrupt typing, selection, composition, undo, or a file import.
+  const inventory = doc.createElement('div');
+  inventory.className = 'tls-certs-inventory';
+  wrapper.appendChild(inventory);
+  const writeResults = doc.createElement('div');
+  writeResults.className = 'tls-certs-write-results';
+  wrapper.appendChild(writeResults);
+  const uploadHost = doc.createElement('div');
+  uploadHost.className = 'tls-certs-upload-host';
+  wrapper.appendChild(uploadHost);
+  const uploadActions = doc.createElement('div');
+  uploadActions.className = 'tls-certs-upload-actions';
+  wrapper.appendChild(uploadActions);
+
+  const uploadFields = new Map<
+    keyof TlsCertificatesUploadFormValues,
+    HTMLInputElement | HTMLTextAreaElement
+  >();
+  const uploadFiles = new Map<keyof TlsCertificatesUploadFormValues, HTMLInputElement>();
+  const pendingFileReads = new Map<keyof TlsCertificatesUploadFormValues, FileReader>();
+  let uploadMessages: HTMLElement[] = [];
+
   const clearChildren = (el: HTMLElement): void => {
     while (el.firstChild) el.removeChild(el.firstChild);
+  };
+
+  const retireUploadForm = (): void => {
+    uploadForm?.remove();
+    uploadForm = null;
+    uploadFeedback = null;
+    uploadFields.clear();
+    uploadFiles.clear();
+    pendingFileReads.clear();
+    uploadMessages = [];
+    uploadSubmitButton = null;
+    uploadCancelButton = null;
   };
 
   const makeButton = (
@@ -493,8 +543,16 @@ export const mountTlsCertificatesPanel = (
     btn.className = `rx-btn rx-btn-${variant} rx-btn-sm`;
     btn.textContent = label;
     btn.setAttribute(attr, attrValue);
-    btn.disabled = disabled;
-    btn.addEventListener('click', onClick);
+    const writeAction = attr === TLS_CERTS_UPLOAD_OPEN_BTN_ATTR ||
+      attr === TLS_CERTS_UPLOAD_SUBMIT_BTN_ATTR || attr === TLS_CERTS_REMOVE_OPEN_BTN_ATTR ||
+      attr === TLS_CERTS_REMOVE_CONFIRM_BTN_ATTR;
+    btn.disabled = disabled || (writeAction && state.loading);
+    btn.addEventListener('click', () => {
+      if (disposed || btn.disabled || btn.isConnected === false) return;
+      onClick();
+    });
+    if (attr === TLS_CERTS_UPLOAD_SUBMIT_BTN_ATTR) uploadSubmitButton = btn;
+    if (attr === TLS_CERTS_UPLOAD_OPEN_BTN_ATTR && attrValue === '') uploadOpenButton = btn;
     return btn;
   };
 
@@ -559,7 +617,10 @@ export const mountTlsCertificatesPanel = (
     area.placeholder = placeholder;
     area.value = state.upload.values[field];
     area.setAttribute(TLS_CERTS_UPLOAD_FIELD_ATTR, field);
-    area.addEventListener('input', () => onInput(area.value));
+    uploadFields.set(field, area);
+    area.addEventListener('input', () => {
+      if (uploadFields.get(field) === area) onInput(area.value);
+    });
     label.appendChild(area);
     wrap.appendChild(label);
 
@@ -567,20 +628,31 @@ export const mountTlsCertificatesPanel = (
     file.type = 'file';
     file.className = 'tls-certs-file';
     file.setAttribute(TLS_CERTS_UPLOAD_FILE_ATTR, field);
+    uploadFiles.set(field, file);
     file.addEventListener('change', () => {
+      if (disposed || !state.upload.open || uploadFiles.get(field) !== file) return;
+      pendingFileReads.delete(field);
       const picked = (file as { files?: { length: number; [i: number]: unknown } | null }).files;
       const first = picked && picked.length > 0 ? picked[0] : null;
       if (first === null || first === undefined) return;
       const ReaderCtor = (globalThis as { FileReader?: typeof FileReader }).FileReader;
       if (ReaderCtor === undefined) return;
       const reader = new ReaderCtor();
+      pendingFileReads.set(field, reader);
       reader.addEventListener('load', () => {
-        if (disposed) return;
+        // Only the latest choice for this live field may complete. Cancel,
+        // reopening, clearing the picker, or typing retires the older read.
+        if (disposed || !state.upload.open || uploadFiles.get(field) !== file
+          || pendingFileReads.get(field) !== reader) return;
+        pendingFileReads.delete(field);
         const text = typeof reader.result === 'string' ? reader.result : '';
         if (text === '') return;
-        // Route through the same setter the textarea uses so the state
-        // update, the error clear and the re-render are identical either way.
+        // Route through the same setter the textarea uses so the draft,
+        // visible value and validation feedback stay in sync.
         handle.setUploadField(field, text);
+      });
+      reader.addEventListener('loadend', () => {
+        if (pendingFileReads.get(field) === reader) pendingFileReads.delete(field);
       });
       reader.readAsText(first as Blob);
     });
@@ -592,7 +664,8 @@ export const mountTlsCertificatesPanel = (
     const model = state.model;
     if (model === null) return;
     if (model.rows.length === 0) {
-      wrapper.appendChild(
+      if (state.error !== null) return;
+      inventory.appendChild(
         makeNote(
           'No certificates installed. Upload one for any hostname whose cert source is "Upload my own certificate".',
           'tls-certs-muted',
@@ -700,12 +773,37 @@ export const mountTlsCertificatesPanel = (
 
       list.appendChild(el);
     }
-    wrapper.appendChild(list);
+    inventory.appendChild(list);
+  };
+
+  const updateUploadForm = (): void => {
+    if (uploadFeedback === null) return;
+    clearChildren(uploadFeedback);
+    uploadMessages = [];
+    if (state.upload.error !== null) {
+      const message = makeNote(state.upload.error, 'tls-certs-error', TLS_CERTS_ERROR_ATTR);
+      uploadMessages.push(message);
+      uploadFeedback.appendChild(message);
+    }
+    for (const issue of state.upload.issues) {
+      const message = makeNote(issue.copy, 'tls-certs-issue');
+      message.setAttribute(TLS_CERTS_ISSUE_ATTR, issue.code);
+      uploadMessages.push(message);
+      uploadFeedback.appendChild(message);
+    }
+    if (uploadSubmitButton) {
+      uploadSubmitButton.disabled = state.loading || state.upload.saving || state.remove.saving;
+      const label = state.upload.saving ? 'Uploading…' : 'Upload certificate';
+      if (uploadSubmitButton.textContent !== label) uploadSubmitButton.textContent = label;
+    }
+    if (uploadCancelButton) uploadCancelButton.disabled = state.upload.saving;
   };
 
   const renderUploadForm = (): void => {
-    if (!state.upload.open) return;
+    if (!state.upload.open) { retireUploadForm(); return; }
+    if (uploadForm !== null) { updateUploadForm(); return; }
     const form = doc.createElement('div');
+    uploadForm = form;
     form.className = 'tls-certs-form';
     form.setAttribute(TLS_CERTS_UPLOAD_FORM_ATTR, '');
 
@@ -716,16 +814,9 @@ export const mountTlsCertificatesPanel = (
       ),
     );
 
-    if (state.upload.error !== null) {
-      form.appendChild(
-        makeNote(state.upload.error, 'tls-certs-error', TLS_CERTS_ERROR_ATTR),
-      );
-    }
-    for (const issue of state.upload.issues) {
-      const p = makeNote(issue.copy, 'tls-certs-issue');
-      p.setAttribute(TLS_CERTS_ISSUE_ATTR, issue.code);
-      form.appendChild(p);
-    }
+    uploadFeedback = doc.createElement('div');
+    uploadFeedback.className = 'tls-certs-upload-feedback';
+    form.appendChild(uploadFeedback);
 
     const domainWrap = doc.createElement('div');
     domainWrap.className = 'tls-certs-field';
@@ -740,8 +831,9 @@ export const mountTlsCertificatesPanel = (
     domainInput.placeholder = 'server.example.com';
     domainInput.value = state.upload.values.domain;
     domainInput.setAttribute(TLS_CERTS_UPLOAD_FIELD_ATTR, 'domain');
+    uploadFields.set('domain', domainInput);
     domainInput.addEventListener('input', () => {
-      handle.setUploadField('domain', domainInput.value);
+      if (uploadFields.get('domain') === domainInput) handle.setUploadField('domain', domainInput.value);
     });
     domainLabel.appendChild(domainInput);
     domainWrap.appendChild(domainLabel);
@@ -774,45 +866,97 @@ export const mountTlsCertificatesPanel = (
 
     const actions = doc.createElement('div');
     actions.className = 'tls-certs-actions';
-    actions.appendChild(
-      makeButton('Cancel', TLS_CERTS_UPLOAD_CANCEL_BTN_ATTR, 'secondary', () => {
-        handle.cancelUpload();
-      }, state.upload.saving),
+    uploadCancelButton = makeButton('Cancel', TLS_CERTS_UPLOAD_CANCEL_BTN_ATTR, 'secondary', () => {
+      handle.cancelUpload();
+    }, state.upload.saving);
+    actions.appendChild(uploadCancelButton);
+    uploadSubmitButton = makeButton(
+      state.upload.saving ? 'Uploading…' : 'Upload certificate',
+      TLS_CERTS_UPLOAD_SUBMIT_BTN_ATTR,
+      'primary',
+      () => {
+        void handle.submitUpload();
+      },
+      state.upload.saving,
     );
-    actions.appendChild(
-      makeButton(
-        state.upload.saving ? 'Uploading…' : 'Upload certificate',
-        TLS_CERTS_UPLOAD_SUBMIT_BTN_ATTR,
-        'primary',
-        () => {
-          void handle.submitUpload();
-        },
-        state.upload.saving,
-      ),
-    );
+    actions.appendChild(uploadSubmitButton);
     form.appendChild(actions);
-    wrapper.appendChild(form);
+    uploadHost.appendChild(form);
+    updateUploadForm();
   };
 
-  const render = (): void => {
+  const focusReadTarget = (): void => {
+    if (readFocusTarget && readFocusTarget.isConnected !== false &&
+        (readFocusTarget.getClientRects?.().length ?? 1) > 0) readFocusTarget.focus?.();
+  };
+
+  const renderInventory = (keepFocus = doc.activeElement != null &&
+    inventory.contains?.(doc.activeElement) === true): void => {
     if (disposed) return;
-    clearChildren(wrapper);
+    clearChildren(inventory);
 
     const heading = doc.createElement('h4');
     heading.className = 'tls-certs-title';
     heading.textContent = 'Installed certificates';
-    wrapper.appendChild(heading);
+    heading.setAttribute(TLS_CERTS_READ_HEADING_ATTR, '');
+    heading.setAttribute('tabindex', '-1');
+    inventory.appendChild(heading);
+    readFocusTarget = heading;
+    inventory.setAttribute('aria-busy', String(state.loading));
+    const writesBlocked = state.loading || state.upload.saving || state.remove.saving;
+    if (uploadSubmitButton) uploadSubmitButton.disabled = writesBlocked;
+    if (uploadOpenButton) uploadOpenButton.disabled = writesBlocked;
 
     if (state.loading) {
-      wrapper.appendChild(
-        makeNote('Loading certificates…', 'tls-certs-muted', TLS_CERTS_STATUS_ATTR),
-      );
+      const status = makeNote('Loading certificates…', 'tls-certs-muted', TLS_CERTS_STATUS_ATTR);
+      status.setAttribute('role', 'status');
+      status.setAttribute('aria-atomic', 'true');
+      status.setAttribute('tabindex', '-1');
+      inventory.appendChild(status);
+      readFocusTarget = status;
+      if (keepFocus) focusReadTarget();
       return;
     }
     if (state.error !== null) {
-      wrapper.appendChild(
-        makeNote(state.error, 'tls-certs-error', TLS_CERTS_ERROR_ATTR),
+      const refreshing = state.model !== null || state.upload.result !== null || lastRemoval !== null;
+      inventory.appendChild(
+        makeNote(`${refreshing ? 'Could not refresh certificates.' : 'Could not load certificates.'} ${state.error}`,
+          'tls-certs-error', TLS_CERTS_ERROR_ATTR),
       );
+      const retry = makeButton('Retry', TLS_CERTS_READ_RETRY_ATTR, 'secondary', () => {
+        if (readFocusTarget !== retry) return;
+        void load();
+      }, state.upload.saving || state.remove.saving);
+      retry.setAttribute('aria-label', 'Retry loading certificates');
+      inventory.appendChild(retry);
+      readFocusTarget = retry;
+      if (state.model !== null && state.model.rows.length > 0) {
+        inventory.appendChild(makeNote('These certificates were loaded earlier. Retry to check for changes.',
+          'tls-certs-muted', TLS_CERTS_STALE_ATTR));
+      }
+    }
+    renderRows();
+    if (keepFocus) focusReadTarget();
+  };
+
+  const render = (): void => {
+    if (disposed) return;
+    const keepReadFocus = readFocusTarget !== null && doc.activeElement === readFocusTarget;
+    uploadOpenButton = null;
+    // Keep the native form connected through validation and write feedback:
+    // rebuilding it would discard selected files and their draft guard.
+    clearChildren(writeResults);
+    clearChildren(uploadActions);
+    renderInventory(false);
+
+    if (lastRemoval !== null) {
+      const result = makeNote(lastRemoval.removed
+        ? `Certificate removed for ${lastRemoval.domain}.`
+        : `No certificate is installed for ${lastRemoval.domain}.`,
+      'tls-certs-ok', TLS_CERTS_REMOVAL_RESULT_ATTR);
+      result.setAttribute('role', 'status');
+      result.setAttribute('aria-atomic', 'true');
+      writeResults.appendChild(result);
     }
 
     if (state.upload.result !== null) {
@@ -831,28 +975,30 @@ export const mountTlsCertificatesPanel = (
       makeMetaPair(meta, 'Covers', result.san.join(', ') || 'none');
       block.appendChild(makeNote('Certificate installed.', 'tls-certs-ok'));
       block.appendChild(meta);
-      wrapper.appendChild(block);
+      writeResults.appendChild(block);
     }
 
-    renderRows();
     renderUploadForm();
 
     if (!state.upload.open) {
       const actions = doc.createElement('div');
       actions.className = 'tls-certs-actions';
-      actions.appendChild(
-        makeButton('Upload a certificate', TLS_CERTS_UPLOAD_OPEN_BTN_ATTR, 'primary', () => {
-          handle.openUpload();
-        }),
-      );
-      wrapper.appendChild(actions);
+      uploadOpenButton = makeButton('Upload a certificate', TLS_CERTS_UPLOAD_OPEN_BTN_ATTR, 'primary', () => {
+        handle.openUpload();
+      }, state.loading || state.upload.saving || state.remove.saving);
+      actions.appendChild(uploadOpenButton);
+      uploadActions.appendChild(actions);
     }
+    if (keepReadFocus) focusReadTarget();
   };
 
   const load = (): Promise<void> => {
+    if (disposed) return Promise.resolve();
+    if ((loadStarted && state.loading) || state.upload.saving || state.remove.saving) return pendingLoad;
+    loadStarted = true;
     const gen = ++loadGeneration;
     state = { ...state, loading: true, error: null };
-    render();
+    renderInventory();
     pendingLoad = (async () => {
       try {
         const res = await opts.runList();
@@ -870,23 +1016,37 @@ export const mountTlsCertificatesPanel = (
         if (disposed || gen !== loadGeneration) return;
         state = { ...state, loading: false, error: humanizeRpcError(err) };
       }
-      render();
+      renderInventory();
     })();
     return pendingLoad;
   };
 
   const handle: TlsCertificatesPanelMount = {
     getState: () => state,
+    hasUnsavedChanges: () => !disposed && state.upload.open && (
+      state.upload.values.domain !== uploadSeedDomain
+      || state.upload.values.cert_pem !== ''
+      || state.upload.values.private_key_pem !== ''
+      || state.upload.values.chain_pem !== ''
+      // A selected file is a draft even before its read completes, or when
+      // the file is empty and leaves the corresponding textarea unchanged.
+      || [...uploadFiles.values()].some(file => (file.files?.length ?? 0) > 0)
+    ),
+    hasInFlightWork: () => !disposed && (state.upload.saving || state.remove.saving),
     refresh: () => load(),
     whenLoaded: () => pendingLoad,
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      retireUploadForm();
       if (wrapper.parentNode) wrapper.parentNode.removeChild(wrapper);
     },
 
     openUpload: (domain) => {
-      if (disposed) return;
+      if (disposed || state.loading || state.upload.saving || state.remove.saving) return;
+      retireUploadForm();
+      uploadSeedDomain = domain ?? '';
+      lastRemoval = null;
       state = {
         ...state,
         upload: {
@@ -904,6 +1064,7 @@ export const mountTlsCertificatesPanel = (
 
     cancelUpload: () => {
       if (disposed) return;
+      uploadSeedDomain = '';
       state = {
         ...state,
         upload: {
@@ -920,6 +1081,7 @@ export const mountTlsCertificatesPanel = (
 
     setUploadField: (field, value) => {
       if (disposed) return;
+      pendingFileReads.delete(field);
       state = {
         ...state,
         upload: {
@@ -929,11 +1091,18 @@ export const mountTlsCertificatesPanel = (
           values: { ...state.upload.values, [field]: value },
         },
       };
-      render();
+      // Keep the browser-owned editing control mounted: replacing it loses
+      // focus, selection, composition and undo history after the first input.
+      // File imports and public setters also update the visible control, but
+      // a native input event already put its value there; do not reassign it.
+      const input = uploadFields.get(field);
+      if (input !== undefined && input.value !== value) input.value = value;
+      for (const message of uploadMessages) message.remove();
+      uploadMessages = [];
     },
 
     submitUpload: async () => {
-      if (disposed || state.upload.saving) return;
+      if (disposed || state.loading || state.upload.saving || state.remove.saving) return;
       const values = state.upload.values;
       const domain = values.domain.trim();
       const cert_pem = values.cert_pem.trim();
@@ -976,8 +1145,11 @@ export const mountTlsCertificatesPanel = (
           source: 'byo_upload',
         });
         if (disposed) return;
+        uploadSeedDomain = '';
         state = {
           ...state,
+          model: null,
+          error: null,
           upload: {
             open: false,
             saving: false,
@@ -991,6 +1163,8 @@ export const mountTlsCertificatesPanel = (
             values: { ...EMPTY_UPLOAD_VALUES },
           },
         };
+        lastRemoval = null;
+        render();
         if (opts.onUploaded !== undefined) {
           try {
             opts.onUploaded(domain, result);
@@ -1020,7 +1194,8 @@ export const mountTlsCertificatesPanel = (
     },
 
     openRemove: (domain) => {
-      if (disposed) return;
+      if (disposed || state.loading || state.upload.saving || state.remove.saving) return;
+      lastRemoval = null;
       state = { ...state, remove: { domain, saving: false, error: null } };
       render();
     },
@@ -1032,20 +1207,24 @@ export const mountTlsCertificatesPanel = (
     },
 
     confirmRemove: async () => {
-      if (disposed || state.remove.saving) return;
+      if (disposed || state.loading || state.remove.saving || state.upload.saving) return;
       const domain = state.remove.domain;
       const runRemove = opts.runRemove;
       if (domain === null || runRemove === undefined) return;
       state = { ...state, remove: { ...state.remove, saving: true, error: null } };
       render();
       try {
-        await runRemove({ domain });
+        const result = await runRemove({ domain });
         if (disposed) return;
+        lastRemoval = { domain, removed: result.removed };
         state = {
           ...state,
+          model: null,
+          error: null,
           remove: { domain: null, saving: false, error: null },
           upload: { ...state.upload, result: null },
         };
+        render();
         await load();
         return;
       } catch (err) {
@@ -1059,16 +1238,26 @@ export const mountTlsCertificatesPanel = (
     },
   };
 
+  render();
   void load();
   return handle;
 };
 
 export const TLS_CERTIFICATES_PANEL_STYLES = `
-[${TLS_CERTS_PANEL_ATTR}] {
+[${TLS_CERTS_PANEL_ATTR}],
+[${TLS_CERTS_PANEL_ATTR}] .tls-certs-inventory {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+[${TLS_CERTS_PANEL_ATTR}] {
   font-size: 13px;
+}
+[${TLS_CERTS_PANEL_ATTR}] .tls-certs-write-results,
+[${TLS_CERTS_PANEL_ATTR}] .tls-certs-upload-host,
+[${TLS_CERTS_PANEL_ATTR}] .tls-certs-upload-actions,
+[${TLS_CERTS_PANEL_ATTR}] .tls-certs-upload-feedback {
+  display: contents;
 }
 [${TLS_CERTS_PANEL_ATTR}] .tls-certs-title {
   margin: 0;

@@ -4,10 +4,10 @@
  *  of the bridge's OS notification. On each `notification.notify` bus frame a
  *  toast appears at the app root and auto-dismisses. This is the SOLE webclient
  *  surface for a `notify`: the durable Settings feed was retired (R31 delta D —
- *  a one-way notice is not audit-log material). A missed / auto-dismissed toast
- *  is not data loss — the server persists every fired notify as a
- *  `notification_fired` audit row, and the Bridge side panel keeps its own
- *  notify list.
+ *  a one-way notice is not audit-log material). The server persists every fired
+ *  notify as a `notification_fired` audit row, the Bridge side panel keeps its
+ *  own notify list, and a toast the owner was not there to see is shown again,
+ *  once, by `notice-catch-up.ts`.
  *
  *  ── Why mounted at the app root, not a route ────────────────────────────
  *  A notify can fire while the user is on EITHER webclient route
@@ -17,7 +17,9 @@
  *
  *  ── Notify input is bus-only ──────────────────────────────────────────
  *  The stack consumes each `notification.notify` bus payload DIRECTLY — it's
- *  ephemeral, so there's no `notification.recent` round-trip.
+ *  ephemeral, so there's no `notification.recent` round-trip. A notice the
+ *  owner was not looking at is shown again, once, by `notice-catch-up.ts`,
+ *  which reads that history and `push`es what was missed.
  *  Optional links accept HTTP(S) or a saved-view route, with every other
  *  scheme rejected. The public `push` seam lets other durable,
  *  owner-only projections reuse the same accessible presentation without
@@ -72,8 +74,8 @@ export interface MountNotifyToastsOptions {
    *  auto-dismiss (manual / programmatic dismissal only). */
   durationMs?: number;
   /** Max simultaneously-visible toasts; older ones evict (oldest-first)
-   *  when a new toast would exceed this. Default 4. The durable feed keeps
-   *  the full record, so an evicted toast is never lost. */
+   *  when a new toast would exceed this. Default 4. ⚠ An evicted toast is gone
+   *  from this page: the durable feed this once pointed to was retired. */
   maxVisible?: number;
   /** `setTimeout`-compatible seam (returns an opaque handle). Defaults to
    *  `globalThis.setTimeout`. */
@@ -93,8 +95,10 @@ export interface NotifyToastsMount {
    * stack. Used by durable action-receipt invalidations; it does not turn the
    * source event into a `notification.notify`. `sticky` keeps it until the
    * owner dismisses it — for news that must not vanish unread, such as a
-   * webhook that stopped working (`webhook-door-notices.ts`). */
-  push(toast: { title?: string; text: string; sticky?: boolean }): void;
+   * webhook that stopped working (`webhook-door-notices.ts`) or a notice the
+   * owner missed (`notice-catch-up.ts`). `link_url` passes the same allowlist
+   * as a live notice's link; one it does not know is dropped. */
+  push(toast: { title?: string; text: string; sticky?: boolean; link_url?: string }): void;
   /** Tear down: clear every timer, drop the subscription, remove the
    *  container. Idempotent. */
   dispose(): void;
@@ -140,6 +144,11 @@ const safeNotifyLink = (value: unknown): string | undefined => {
   // D-325 — occasion reminders, the last-time opt-in and the extension's open link.
   if (/^#yours\/(?:occasions\/occasion|episodes\/episode)\/(?:[A-Za-z0-9._~-]|%[0-9a-fA-F]{2})+$/.test(value)) return value;
   if (value === '#yours/episodes' || value === '#yours/occurrences' || value === '#yours/proposals') return value;
+  // D-207 — a selling form turned a buyer away: the offer to fix, the recipe whose settings
+  // name it, or the requests list.
+  if (/^#settings\/seller\/offers\/detail\/(?:[A-Za-z0-9._~-]|%[0-9a-fA-F]{2})+$/.test(value)) return value;
+  if (/^#recipes\/(?:[A-Za-z0-9._~-]|%[0-9a-fA-F]{2})+$/.test(value)) return value;
+  if (value === '#reception/records') return value;
   try {
     const url = new URL(value);
     return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : undefined;
@@ -364,8 +373,9 @@ export const mountNotifyToasts = (
       timer: null,
     };
     // Evict oldest beyond the cap BEFORE appending the new one, cancelling
-    // their timers. The feed keeps the full record, so eviction is a
-    // display bound, not data loss.
+    // their timers. ⚠ There is no feed behind this any more (R31 delta D): an
+    // evicted card is gone from this page. That is why a catch-up folds what it
+    // cannot show one by one into a summary rather than pushing past the cap.
     const focusedId = focusedToastId();
     let evictedFocusedToast = false;
     while (!reminder && toasts.filter(toast => !toast.ask_id).length >= maxVisible) {
@@ -428,7 +438,7 @@ export const mountNotifyToasts = (
     dismiss: (id) => dismiss_(id),
     push: (toast) => {
       if (typeof toast.text !== 'string') return;
-      push(nonBlankTitle(toast.title), toast.text, undefined, toast.sticky === true);
+      push(nonBlankTitle(toast.title), toast.text, safeNotifyLink(toast.link_url), toast.sticky === true);
     },
     dispose: () => {
       if (disposed) return;

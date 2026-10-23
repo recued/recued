@@ -58,7 +58,17 @@ interface FakeMessage {
 interface FakeFolder {
   path: string;
   messages: FakeMessage[];
+  /** UIDNEXT as SELECT reports it; defaults to one past the highest UID. */
+  uidNext?: number;
 }
+
+/** An IMAP UID set (`3`, `2:4`, `5:*`, `1,4,9`) against the folder's UIDs;
+ *  `*` is the highest UID, and a range's ends may come in either order. */
+const inUidSet = (set: string, uid: number, highest: number): boolean =>
+  set.split(',').some((part) => {
+    const [a, b = a] = part.split(':').map((end) => (end === '*' ? highest : Number(end)));
+    return uid >= Math.min(a, b) && uid <= Math.max(a, b);
+  });
 
 interface FakeState {
   folders: Map<string, FakeFolder>;
@@ -69,6 +79,11 @@ interface FakeState {
   mailboxOpenErrorPath?: string;
   fetchThrows?: boolean;
   fetches: Array<{ range: string | number[]; uidMode: boolean }>;
+  /** UIDVALIDITY as SELECT reports it; 1 when unset. */
+  uidValidity?: number;
+  /** Messages the open folder claims beyond those it holds: a FETCH then
+   *  comes back short of its EXISTS count. */
+  phantomExists?: number;
 }
 
 class FakeClient extends EventEmitter implements ImapClient {
@@ -105,12 +120,23 @@ class FakeClient extends EventEmitter implements ImapClient {
       throw this.state.mailboxOpenError;
     }
     this.path = path;
+    const folder = this.state.folders.get(path);
+    const highest = Math.max(0, ...(folder?.messages.map((m) => m.uid) ?? []));
     return {
       path,
       delimiter: '/',
       flags: new Set(),
-      exists: this.state.folders.get(path)?.messages.length ?? 0,
+      exists: folder?.messages.length ?? 0,
+      uidValidity: BigInt(this.state.uidValidity ?? 1),
+      uidNext: folder?.uidNext ?? highest + 1,
     } as unknown as MailboxObject;
+  }
+
+  /** The open folder as the server last described it, as imapflow keeps it. */
+  get mailbox(): MailboxObject | false {
+    const folder = this.path ? this.state.folders.get(this.path) : undefined;
+    if (!folder) return false;
+    return { path: this.path, exists: folder.messages.length + (this.state.phantomExists ?? 0) } as unknown as MailboxObject;
   }
 
   async list(): Promise<Array<{ path: string; specialUse?: string }>> {
@@ -121,11 +147,14 @@ class FakeClient extends EventEmitter implements ImapClient {
     const folder = this.state.folders.get(this.path);
     if (!folder) return [];
     const since = query.since ? new Date(query.since as string) : null;
-    if (!since) return folder.messages.map((m) => m.uid);
+    const uidSet = typeof query.uid === 'string' ? query.uid : null;
+    const highest = Math.max(0, ...folder.messages.map((m) => m.uid));
     const out: number[] = [];
     for (const m of folder.messages) {
       const when = m.internalDate ?? new Date(0);
-      if (when.getTime() >= since.getTime()) out.push(m.uid);
+      if (since && when.getTime() < since.getTime()) continue;
+      if (uidSet !== null && !inUidSet(uidSet, m.uid, highest)) continue;
+      out.push(m.uid);
     }
     return out;
   }
@@ -139,12 +168,15 @@ class FakeClient extends EventEmitter implements ImapClient {
     this.state.fetches.push({ range, uidMode: _o?.uid === true });
     const folder = this.state.folders.get(this.path);
     if (!folder) return;
+    const highest = Math.max(0, ...folder.messages.map((m) => m.uid));
     const selected = Array.isArray(range)
       ? (_o?.uid === true
           ? range.map((uid) => folder.messages.find((message) => message.uid === uid))
           : range.map((seq) => folder.messages.find(
               (message, index) => (message.seq ?? index + 1) === seq,
             )))
+      : _o?.uid === true
+        ? folder.messages.filter((message) => inUidSet(range, message.uid, highest))
       : range.split(',').flatMap((part) => {
           const seq = Number.parseInt(part, 10);
           if (!Number.isSafeInteger(seq)) return [];
@@ -268,6 +300,7 @@ const newHarness = (opts: {
   mailboxes?: Array<{ path: string; specialUse?: string }>;
   deliveryStore?: OAuthAccountStore;
   sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
 } = {}): Harness => {
   const state: FakeState = {
     folders: new Map(),
@@ -289,6 +322,7 @@ const newHarness = (opts: {
     clientFactory: makeFactory(state),
     sleep: opts.sleep ?? (() => Promise.resolve()),
     ...(opts.deliveryStore ? { deliveryStore: opts.deliveryStore } : {}),
+    ...(opts.now ? { now: opts.now } : {}),
   });
   const events: ProviderSyncEvent[] = [];
   const cb: ProviderSyncCallback = async (e) => { events.push(e); };
@@ -327,6 +361,13 @@ afterEach(async () => { await h?.provider.close(); });
 // ────────────────────────────────────────────────────────────────
 
 describe('ImapProvider — connect', () => {
+  it('does not resume before it is connected, nor without a stored cursor', async () => {
+    h = newHarness();
+    expect(h.provider.resumesFromCursor).toBe(false);
+    await h.provider.connect();
+    expect(h.provider.resumesFromCursor).toBe(false);
+  });
+
   it('opens one client per configured folder', async () => {
     h = newHarness({ seed: { INBOX: [], Archive: [] } });
     await h.provider.connect();
@@ -512,8 +553,9 @@ describe('ImapProvider — live sync', () => {
     });
     first.state.clients[0].emit('exists', { count: 1, prevCount: 0, path: 'INBOX' });
 
-    expect(await waitForCondition(() => deliveryStore.data.size === 1)).toBe(true);
-    expect([...deliveryStore.data.keys()][0]).toContain('pending_delivery');
+    // The folder's UID cursor is kept beside the journal.
+    const journal = (): string[] => [...deliveryStore.data.keys()].filter((key) => key.includes('.pending_delivery.'));
+    expect(await waitForCondition(() => journal().length === 1)).toBe(true);
     await first.provider.close();
 
     const recovered = newHarness({
@@ -534,7 +576,7 @@ describe('ImapProvider — live sync', () => {
       (event) => event.kind === 'created' && event.source_id === '41@INBOX',
     );
     expect(replayed).toBeDefined();
-    expect(deliveryStore.data.size).toBe(0);
+    expect(journal()).toHaveLength(0);
   });
 
   it('drains an admitted IDLE callback before the sync stop resolves', async () => {
@@ -603,6 +645,195 @@ describe('ImapProvider — live sync', () => {
 // ────────────────────────────────────────────────────────────────
 // Reconnect on close
 // ────────────────────────────────────────────────────────────────
+
+// IDLE reports only what happens while it is attached: mail that came while a
+// folder's connection was down was counted into its size and never fetched
+// until a restart's re-list, and a message expunged meanwhile stayed.
+describe('ImapProvider — catching up on what it missed', () => {
+  const DAY = 86_400_000;
+  const T0 = Date.UTC(2026, 9, 21, 12);
+  const mail = (uid: number, at: number): FakeMessage => ({
+    uid,
+    source: makeRfc822({ subject: `uid ${uid}`, messageId: `<uid-${uid}@example.com>` }),
+    internalDate: new Date(at),
+  });
+  const reconnect = async (): Promise<void> => {
+    const before = h.state.clients.length;
+    h.state.clients[before - 1].emit('close');
+    expect(await waitForCondition(() => h.state.clients.length > before)).toBe(true);
+  };
+  const scan = async (days: number): Promise<void> => {
+    await h.provider.initialScan({ backfill_days: days, onMessage: async () => true });
+  };
+
+  it('fetches the mail that arrived while the connection was down', async () => {
+    h = newHarness({ seed: { INBOX: [mail(1, Date.now())] } });
+    await h.provider.connect();
+    await scan(30);
+    await h.provider.startSync(h.cb);
+    h.state.folders.get('INBOX')!.messages.push(mail(2, Date.now()));
+    await reconnect();
+    expect(await waitForEvent(h.events, (e) => e.kind === 'created' && e.source_id === '2@INBOX')).toBeDefined();
+    await sleep(50);
+    expect(h.events.filter((e) => e.source_id === '2@INBOX')).toHaveLength(1);
+    expect(h.events.some((e) => e.source_id === '1@INBOX')).toBe(false);
+  });
+
+  it('reports a message expunged meanwhile, and not one that only left the window', async () => {
+    let now = T0;
+    h = newHarness({ seed: { INBOX: [mail(1, T0 - 2 * DAY), mail(2, T0)] }, now: () => now });
+    await h.provider.connect();
+    await scan(3);
+    await h.provider.startSync(h.cb);
+    // Two days on, uid 1 is older than the window; uid 2 was deleted.
+    now = T0 + 2 * DAY;
+    const inbox = h.state.folders.get('INBOX')!;
+    inbox.messages = inbox.messages.filter((m) => m.uid !== 2);
+    await reconnect();
+    expect(await waitForEvent(h.events, (e) => e.kind === 'deleted' && e.source_id === '2@INBOX')).toBeDefined();
+    await sleep(50);
+    expect(h.events.some((e) => e.source_id === '1@INBOX')).toBe(false);
+  });
+
+  it('fetches mail that arrived after the first scan, before IDLE attached', async () => {
+    h = newHarness({ seed: { INBOX: [mail(1, Date.now())] } });
+    await h.provider.connect();
+    await scan(30);
+    h.state.folders.get('INBOX')!.messages.push(mail(2, Date.now()));
+    await h.provider.startSync(h.cb);
+    expect(await waitForEvent(h.events, (e) => e.kind === 'created' && e.source_id === '2@INBOX')).toBeDefined();
+    expect(h.events.some((e) => e.source_id === '1@INBOX')).toBe(false);
+  });
+
+  // A restart: the stored UID cursor reaches what was added while the server
+  // was down, so the collection lists only the days since the last sync.
+  describe('across a restart, from the stored cursor', () => {
+    const cursorOf = (store: ReturnType<typeof makeDeliveryStore>): number | undefined => {
+      const raw = store.data.get(`imap.work.cursor.${Buffer.from('INBOX', 'utf8').toString('base64url')}`);
+      return raw === undefined ? undefined : (JSON.parse(raw) as { uid_next: number }).uid_next;
+    };
+    const firstSession = async (store: ReturnType<typeof makeDeliveryStore>): Promise<void> => {
+      h = newHarness({ seed: { INBOX: [mail(1, Date.now())] }, deliveryStore: store });
+      await h.provider.connect();
+      expect(h.provider.resumesFromCursor).toBe(false);
+      await scan(30);
+      await h.provider.startSync(h.cb);
+      expect(await waitForCondition(() => cursorOf(store) === 2)).toBe(true);
+      await h.provider.close();
+    };
+
+    it('fetches mail moved in while the server was down, though its date is older than the listed days', async () => {
+      const store = makeDeliveryStore();
+      await firstSession(store);
+      // While down: a message moved in from another folder (its date is old)
+      // and one that arrived today.
+      h = newHarness({ seed: { INBOX: [mail(1, Date.now()), mail(2, Date.now() - 200 * DAY), mail(3, Date.now())] }, deliveryStore: store });
+      await h.provider.connect();
+      expect(h.provider.resumesFromCursor).toBe(true);
+      const scanned: string[] = [];
+      await h.provider.initialScan({ backfill_days: 2, onMessage: async (m) => { scanned.push(m.source_id); return true; } });
+      await h.provider.startSync(h.cb);
+      expect(await waitForEvent(h.events, (e) => e.kind === 'created' && e.source_id === '2@INBOX')).toBeDefined();
+      expect(scanned.sort()).toEqual(['1@INBOX', '3@INBOX']);
+      expect(h.events.some((e) => e.source_id === '3@INBOX')).toBe(false);
+      expect(await waitForCondition(() => cursorOf(store) === 4)).toBe(true);
+    });
+
+    it('does not resume a mailbox renumbered while the server was down', async () => {
+      const store = makeDeliveryStore();
+      await firstSession(store);
+      h = newHarness({ seed: { INBOX: [mail(5, Date.now())] }, deliveryStore: store });
+      h.state.uidValidity = 2;
+      await h.provider.connect();
+      expect(h.provider.resumesFromCursor).toBe(false);
+    });
+
+    it('moves past what IDLE delivers, and holds after a batch it could not deliver', async () => {
+      const store = makeDeliveryStore();
+      await firstSession(store);
+      h = newHarness({ seed: { INBOX: [mail(1, Date.now())] }, deliveryStore: store });
+      await h.provider.connect();
+      await scan(2);
+      let refuse = false;
+      await h.provider.startSync(async (event) => {
+        if (refuse) throw new Error('collection unavailable');
+        h.events.push(event);
+      });
+      const inbox = h.state.folders.get('INBOX')!;
+      inbox.messages.push(mail(2, Date.now()));
+      h.state.clients[h.state.clients.length - 1].emit('exists', { count: 2, prevCount: 1, path: 'INBOX' });
+      expect(await waitForCondition(() => cursorOf(store) === 3)).toBe(true);
+
+      refuse = true;
+      inbox.messages.push(mail(3, Date.now()));
+      h.state.clients[h.state.clients.length - 1].emit('exists', { count: 3, prevCount: 2, path: 'INBOX' });
+      await sleep(100);
+      expect(cursorOf(store)).toBe(3);
+    });
+
+    const flagged = (message: FakeMessage, ...flags: string[]): FakeMessage => ({ ...message, flags: new Set(flags) });
+    const firstOfThree = async (store: ReturnType<typeof makeDeliveryStore>): Promise<void> => {
+      h = newHarness({ seed: { INBOX: [mail(1, Date.now() - 90 * DAY), mail(2, Date.now() - 60 * DAY), mail(3, Date.now() - 30 * DAY)] }, deliveryStore: store });
+      await h.provider.connect();
+      await scan(400);
+      await h.provider.startSync(h.cb);
+      expect(await waitForCondition(() => cursorOf(store) === 4)).toBe(true);
+      // A first start has no numbering to check its rows against.
+      expect(h.events.some((e) => e.kind === 'folder')).toBe(false);
+      await h.provider.close();
+    };
+
+    it('reads every message\'s flags once, and hands the folder to the collection', async () => {
+      const store = makeDeliveryStore();
+      await firstOfThree(store);
+      // While down, on another client: 1 read, 2 deleted, 3 starred.
+      h = newHarness({
+        seed: { INBOX: [flagged(mail(1, Date.now() - 90 * DAY), '\\Seen'), flagged(mail(3, Date.now() - 30 * DAY), '\\Flagged')] },
+        deliveryStore: store,
+      });
+      await h.provider.connect();
+      await scan(2);
+      const before = h.state.fetches.length;
+      await h.provider.startSync(h.cb);
+      const folder = await waitForEvent(h.events, (e) => e.kind === 'folder');
+      expect(folder).toMatchObject({ source_id: 'INBOX', folder: { folder: 'INBOX' } });
+      expect([...folder!.folder!.messages]).toEqual([
+        ['1@INBOX', { is_read: true, is_flagged: false }],
+        ['3@INBOX', { is_read: false, is_flagged: true }],
+      ]);
+      // One FETCH of flags, not one per message; and the provider reports no
+      // deletion of its own: the collection decides from the rows it holds.
+      expect(h.state.fetches.slice(before)).toEqual([{ range: '1:*', uidMode: true }]);
+      expect(h.events.filter((e) => e.kind !== 'folder')).toEqual([]);
+    });
+
+    it('hands over nothing when the read comes back short of what the folder holds', async () => {
+      const store = makeDeliveryStore();
+      await firstOfThree(store);
+      h = newHarness({ seed: { INBOX: [mail(1, Date.now() - 90 * DAY)] }, deliveryStore: store });
+      h.state.phantomExists = 1;
+      await h.provider.connect();
+      await scan(2);
+      await h.provider.startSync(h.cb);
+      expect(await waitForCondition(() => h.state.fetches.some((f) => f.range === '1:*'))).toBe(true);
+      await sleep(50);
+      expect(h.events).toEqual([]);
+      expect(h.provider.health().error_count_24h).toBeGreaterThan(0);
+    });
+  });
+
+  it('compares nothing when the mailbox was renumbered (UIDVALIDITY changed)', async () => {
+    h = newHarness({ seed: { INBOX: [mail(1, Date.now())] } });
+    await h.provider.connect();
+    await scan(30);
+    await h.provider.startSync(h.cb);
+    h.state.uidValidity = 2;
+    h.state.folders.get('INBOX')!.messages = [mail(7, Date.now())];
+    await reconnect();
+    await sleep(100);
+    expect(h.events).toEqual([]);
+  });
+});
 
 describe('ImapProvider — reconnect', () => {
   it('re-opens the client when the underlying connection drops', async () => {

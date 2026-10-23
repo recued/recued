@@ -231,7 +231,7 @@ describe('D-163 Slice B — composeNotificationBlock channel wiring', () => {
       clientTokens: stubClientTokens(1),
       bridgeSink,
     });
-    block.bindBridgeReminders({ ready: async () => true, destinations: async () => [], deliver: async () => ({ outcome: 'not_delivered' }), withdraw: async () => true });
+    block.bindBridgeReminders({ ready: async () => true, legacyConnected: () => false, connectedIds: () => new Set(), destinations: async () => [], deliver: async () => ({ outcome: 'not_delivered' }), withdraw: async () => true });
 
     const toggleResult = await block.setNotificationChannelMode('bridge', { notification: true });
     expect(toggleResult.ok).toBe(true);
@@ -269,7 +269,7 @@ describe('D-163 Slice B — ChannelReadinessProbe wiring (I-5)', () => {
     const rows = await block.describeNotificationChannels();
     const bridgeRow = rows.find((r) => r.channel === 'bridge');
     expect(bridgeRow!.ready).toBe(false);
-    block.bindBridgeReminders({ ready: async () => true, destinations: async () => [], deliver: async () => ({ outcome: 'not_delivered' }), withdraw: async () => true });
+    block.bindBridgeReminders({ ready: async () => true, legacyConnected: () => false, connectedIds: () => new Set(), destinations: async () => [], deliver: async () => ({ outcome: 'not_delivered' }), withdraw: async () => true });
     expect((await block.describeNotificationChannels()).find(row => row.channel === 'bridge')!.ready).toBe(true);
   });
 
@@ -315,10 +315,43 @@ describe('D-163 Slice B — ChannelReadinessProbe wiring (I-5)', () => {
 
   it('accepts setChannel(bridge, true) once a paired bridge confirms its OS notification adapter', async () => {
     const { block } = composeHarness({ clientTokens: stubClientTokens(2) });
-    block.bindBridgeReminders({ ready: async () => true, destinations: async () => [], deliver: async () => ({ outcome: 'not_delivered' }), withdraw: async () => true });
+    block.bindBridgeReminders({ ready: async () => true, legacyConnected: () => false, connectedIds: () => new Set(), destinations: async () => [], deliver: async () => ({ outcome: 'not_delivered' }), withdraw: async () => true });
 
     const result = await block.setNotificationChannelMode('bridge', { notification: true });
     expect(result.ok).toBe(true);
+  });
+
+  // Bridge 0.0.2 (the Chrome Web Store build) drops the probe unanswered, so
+  // `ready` is false for it forever. A fresh pair starts with delivery off, so
+  // without this its owner could never switch notifications on.
+  it('accepts setChannel(bridge, true) for a connected Bridge too old to confirm, and refuses when none is', async () => {
+    const { block } = composeHarness({ clientTokens: stubClientTokens(1) });
+    let legacy = false;
+    block.bindBridgeReminders({ ready: async () => false, legacyConnected: () => legacy, connectedIds: () => new Set(), destinations: async () => [], deliver: async () => ({ outcome: 'not_delivered' }), withdraw: async () => true });
+
+    const refused = await block.setNotificationChannelMode('bridge', { notification: true });
+    expect(refused.ok).toBe(false);
+    expect((await block.describeNotificationChannels()).find(row => row.channel === 'bridge')!.ready).toBe(false);
+
+    legacy = true;
+    expect((await block.describeNotificationChannels()).find(row => row.channel === 'bridge')!.ready).toBe(true);
+    const accepted = await block.setNotificationChannelMode('bridge', { notification: true });
+    expect(accepted.ok).toBe(true);
+  });
+
+  // Settings' per-Bridge Online / Offline. It read a dep no caller ever passed,
+  // so every paired Bridge showed "Offline" whether it was connected or not.
+  it('marks a paired Bridge Online only while the bound port reports it connected', async () => {
+    const { block } = composeHarness({ clientTokens: stubClientTokens(2) });
+    expect((await block.describeNotificationBridges()).map(row => row.connected)).toEqual([false, false]);
+
+    const connected = new Set(['bridge-1']);
+    block.bindBridgeReminders({ ready: async () => false, legacyConnected: () => false, connectedIds: () => connected, destinations: async () => [], deliver: async () => ({ outcome: 'not_delivered' }), withdraw: async () => true });
+    expect((await block.describeNotificationBridges()).map(row => [row.client_token_id, row.connected]))
+      .toEqual([['bridge-0', false], ['bridge-1', true]]);
+
+    connected.delete('bridge-1');
+    expect((await block.describeNotificationBridges()).some(row => row.connected)).toBe(false);
   });
 });
 

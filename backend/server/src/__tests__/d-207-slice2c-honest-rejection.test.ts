@@ -45,6 +45,8 @@ import {
   intakeFormSubmitResponse,
   INTAKE_FORM_DOMAIN_REJECTED_MESSAGE,
   INTAKE_FORM_NOT_PROCESSED_MESSAGE,
+  type CoordinateIntakeFormPairedRun,
+  type IntakeFormTurnedAwayEvent,
 } from '../ports/reception/handlers/intake-form.js';
 import { resolveReceptionIntakeRecipePair } from '../ports/reception/intake-recipe-pair.js';
 import { deriveReceptionIntakeRecipePairBinding } from '../reception-intake-recipe-pair-derivation.js';
@@ -276,6 +278,9 @@ const submit = async (input: {
   readonly renders: boolean;
   readonly honeypot: boolean;
   readonly email: string;
+  /** What the paired run answers. Defaults to a completed run. */
+  readonly coordinate?: CoordinateIntakeFormPairedRun;
+  readonly noticeTurnedAway?: (event: IntakeFormTurnedAwayEvent) => void;
 }) => {
   const db = new Database(':memory:');
   ensureReceptionSchema(db);
@@ -332,7 +337,9 @@ const submit = async (input: {
     resolveRecipePair,
     // The paired recipe never runs on spam / rejected_domain — the coordinator is
     // gated on `pending` — so its absence here is faithful to those paths.
-    coordinatePairedRun: async () => ({ kind: 'completed' as const, render: [] }),
+    coordinatePairedRun: input.coordinate
+      ?? (async () => ({ kind: 'completed' as const, render: [] })),
+    ...(input.noticeTurnedAway ? { noticeTurnedAway: input.noticeTurnedAway } : {}),
     now: () => NOW,
   })(
     fakeReq('POST', new URLSearchParams({
@@ -351,6 +358,8 @@ const submit = async (input: {
     body: postRes.body,
     outcome: (db.prepare('SELECT processing_outcome FROM reception_form_submission LIMIT 1')
       .get() as { processing_outcome: string } | undefined)?.processing_outcome,
+    submission_id: (db.prepare('SELECT submission_id FROM reception_form_submission LIMIT 1')
+      .get() as { submission_id: string } | undefined)?.submission_id,
   };
 };
 
@@ -389,5 +398,93 @@ describe('END TO END — the handler really computes it and really hands it over
     const rejected = await submit({ renders: true, honeypot: true, email: 'bot@example.com' });
     const accepted = await submit({ renders: true, honeypot: false, email: 'lead@example.com' });
     expect(accepted.outcome).toBe('pending');
+  });
+});
+
+describe('…and the OWNER is told exactly when the visitor is turned away', () => {
+  // The page below says "contact us and we will pick it up from here". Until the owner
+  // was told, nobody could: no inbox row, no Form response, no tray item, and no run when
+  // the refusal came before the recipe started (live drive, 2026-10-22).
+  const REFUSAL = {
+    reason: 'no_checkout_link',
+    offer_id: 'client-kit',
+    recipe_id: 'lead-capture',
+  } as const;
+
+  it('tells the owner, with the reason the run gave, when the visitor gets the error page', async () => {
+    const told: IntakeFormTurnedAwayEvent[] = [];
+    const seen = await submit({
+      renders: true,
+      honeypot: false,
+      email: 'buyer@example.com',
+      coordinate: async () => ({ kind: 'refused' as const, refusal: REFUSAL }),
+      noticeTurnedAway: (event) => { told.push(event); },
+    });
+
+    expect(seen.status).toBe(503);
+    expect(seen.body).toContain('could not start the payment');
+    expect(told).toEqual([{
+      endpoint_id: ENDPOINT_ID,
+      submission_id: seen.submission_id,
+      form_name: 'Talk to us',
+      at: NOW,
+      refusal: REFUSAL,
+    }]);
+    // Nothing the visitor typed rides along: their answers stay sealed.
+    expect(JSON.stringify(told)).not.toMatch(/buyer@example\.com|Acme/);
+  });
+
+  it('tells the owner when the run refused for a reason they cannot fix on the offer', async () => {
+    const told: IntakeFormTurnedAwayEvent[] = [];
+    await submit({
+      renders: true,
+      honeypot: false,
+      email: 'buyer@example.com',
+      coordinate: async () => ({ kind: 'refused' as const }),
+      noticeTurnedAway: (event) => { told.push(event); },
+    });
+    expect(told).toHaveLength(1);
+    expect(told[0]).not.toHaveProperty('refusal');
+  });
+
+  it('tells the owner when the run could not even start (unavailable)', async () => {
+    const told: IntakeFormTurnedAwayEvent[] = [];
+    const seen = await submit({
+      renders: true,
+      honeypot: false,
+      email: 'buyer@example.com',
+      coordinate: async () => { throw new Error('runner down'); },
+      noticeTurnedAway: (event) => { told.push(event); },
+    });
+    expect(seen.status).toBe(503);
+    expect(told).toHaveLength(1);
+  });
+
+  it('says nothing when the visitor was not turned away', async () => {
+    const told: IntakeFormTurnedAwayEvent[] = [];
+    const noticeTurnedAway = (event: IntakeFormTurnedAwayEvent) => { told.push(event); };
+    await submit({ renders: true, honeypot: false, email: 'lead@example.com', noticeTurnedAway });
+    await submit({
+      renders: true,
+      honeypot: false,
+      email: 'lead@example.com',
+      coordinate: async () => ({ kind: 'held' as const }),
+      noticeTurnedAway,
+    });
+    // Spam is turned away on purpose, with its own page — not the owner's problem to fix.
+    await submit({ renders: true, honeypot: true, email: 'bot@example.com', noticeTurnedAway });
+    expect(told).toEqual([]);
+  });
+
+  it('never costs the visitor their page when telling the owner throws', async () => {
+    const seen = await submit({
+      renders: true,
+      honeypot: false,
+      email: 'buyer@example.com',
+      coordinate: async () => ({ kind: 'refused' as const, refusal: REFUSAL }),
+      noticeTurnedAway: () => { throw new Error('notifier gone'); },
+    });
+    expect(seen.status).toBe(503);
+    expect(seen.body).toContain('could not start the payment');
   });
 });

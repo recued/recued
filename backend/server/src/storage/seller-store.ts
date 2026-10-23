@@ -18,6 +18,8 @@ import {
   SELLER_OFFER_PRICING_KINDS,
   sellerOfferPricingRequiresAmount,
   SELLER_OFFER_STATES,
+  SELLER_ORDER_HANDLE_BYTES,
+  SELLER_ORDER_HANDLE_PREFIX,
   SELLER_ORDER_ORIGIN_KINDS,
   SELLER_ORDER_PHASES,
   SELLER_USAGE_KINDS,
@@ -31,6 +33,8 @@ import {
   isSellerOfferState,
   isSellerOfferStateTransitionAllowed,
   isReceptionLinkButtonUrl,
+  RECEPTION_LINK_BUTTON_URL_MAX,
+  receptionCheckoutUrl,
   isSellerUsageKind,
   isSellerUsagePeriodGranularity,
   type SellerAccessState,
@@ -45,6 +49,8 @@ import {
   type SellerOfferState,
   type SellerOfferStateTransitionRequest,
   type SellerOfferStateTransitionResult,
+  type SellerOfferCheckoutUrlUpdateRequest,
+  type SellerOfferCheckoutUrlUpdateResult,
   type SellerSettings,
   type SellerTier,
   type SellerUsageKind,
@@ -685,6 +691,40 @@ export interface SellerOfferStateTransitionInput
   readonly now: number;
 }
 
+export interface SellerOfferCheckoutUrlUpdateInput
+  extends SellerOfferCheckoutUrlUpdateRequest {
+  readonly now: number;
+}
+
+/** Every order handle has the same length, so stamping this one onto a link
+ *  measures exactly what the reception runner will stamp at sale time. */
+const CHECKOUT_URL_PROBE_HANDLE =
+  SELLER_ORDER_HANDLE_PREFIX + 'f'.repeat(SELLER_ORDER_HANDLE_BYTES * 2);
+
+/** Why the store refuses a checkout link, or `null` when it can hold one. The
+ *  owner's handler asks first so it can answer in the owner's words; the store
+ *  still asks, because the rule is the store's. */
+export type SellerOfferCheckoutUrlProblem = 'not_a_link' | 'too_long';
+
+export const sellerOfferCheckoutUrlProblem = (
+  checkout_url: string,
+): SellerOfferCheckoutUrlProblem | null => {
+  // Length first: the renderer's predicate fails past its cap too, and telling an
+  // owner that a long, well-formed link is not a link sends them after the wrong
+  // mistake.
+  if (checkout_url.length > RECEPTION_LINK_BUTTON_URL_MAX) return 'too_long';
+  // The SAME predicate the public renderer applies: the store never holds a link
+  // the page would refuse to render.
+  if (!isReceptionLinkButtonUrl(checkout_url)) return 'not_a_link';
+  // The runner adds the order's reference to the link at sale time and refuses a
+  // result the page would not render. Ask that question now, while the owner is
+  // here, instead of on a buyer's submission.
+  const stamped = receptionCheckoutUrl(checkout_url, {
+    client_reference_id: CHECKOUT_URL_PROBE_HANDLE,
+  });
+  return stamped === null || !isReceptionLinkButtonUrl(stamped) ? 'too_long' : null;
+};
+
 export interface SellerTierUpsertInput {
   readonly tier_id: string;
   readonly door_id: string;
@@ -801,6 +841,11 @@ export interface SellerStore {
   transitionOfferState(
     input: SellerOfferStateTransitionInput,
   ): SellerOfferStateTransitionResult;
+  /** D-207 ruling (C) — owner-only: set, change or remove an offer's pre-created
+   *  hosted-checkout link. Optimistic on `updated_at`, like a state change. */
+  setOfferCheckoutUrl(
+    input: SellerOfferCheckoutUrlUpdateInput,
+  ): SellerOfferCheckoutUrlUpdateResult;
   getOffer(offer_id: string): SellerOffer | null;
   listOffers(query?: SellerOfferListQuery): SellerOffer[];
   upsertTier(input: SellerTierUpsertInput): SellerTier;
@@ -1332,6 +1377,13 @@ export const createSellerStore = (db: Database.Database): SellerStore => {
        AND state = @expected_state
        AND updated_at = @expected_updated_at
   `);
+  const setOfferCheckoutUrlStmt = db.prepare(`
+    UPDATE ${SELLER_OFFERS_TABLE}
+       SET checkout_url = @checkout_url,
+           updated_at = @updated_at
+     WHERE offer_id = @offer_id
+       AND updated_at = @expected_updated_at
+  `);
   const attachOfferFulfillmentRecipeStmt = db.prepare(`
     UPDATE ${SELLER_OFFERS_TABLE}
        SET fulfillment_recipe_id = @recipe_id,
@@ -1678,7 +1730,12 @@ export const createSellerStore = (db: Database.Database): SellerStore => {
           // Omitting this would make a re-ensure with a DIFFERENT checkout URL
           // return `existing` carrying the OLD one — the caller would believe it
           // had set the target, and the button would keep pointing somewhere else.
-          && existing.checkout_url === checkout_url
+          // ⛔ But only when the caller NAMES one. The owner sets the link from
+          // Settings → Seller (D-207 ruling C), and a recipe re-ensuring its offer
+          // on every run cannot name a link at all — `seller-offer-ensure` does not
+          // take one. Comparing anyway would break that recipe the moment the owner
+          // gave its offer a link.
+          && (input.checkout_url === undefined || existing.checkout_url === checkout_url)
           // Same rationale for the fulfillment config: a re-ensure that changed it
           // must conflict, never quietly hand back the stale config. Both sides are
           // the serialized column string (deterministic for a stable object).
@@ -1833,6 +1890,83 @@ export const createSellerStore = (db: Database.Database): SellerStore => {
         }
         throw new SellerStoreConflictError(
           `offer_id '${offer_id}' changed during state transition`,
+        );
+      }
+      return {
+        result: 'updated',
+        offer: offerFromRow(readOffer(offer_id)!),
+      };
+    },
+    setOfferCheckoutUrl(input) {
+      const offer_id = cleanOfferId(input.offer_id);
+      const expected_updated_at = requireWholeNumber(
+        input.expected_updated_at,
+        'expected_updated_at',
+      );
+      const now = requireWholeNumber(input.now, 'now');
+      if (!Number.isSafeInteger(expected_updated_at)) {
+        throw new SellerStoreValidationError(
+          'expected_updated_at must be a safe integer',
+        );
+      }
+      if (!Number.isSafeInteger(now)) {
+        throw new SellerStoreValidationError('now must be a safe integer');
+      }
+      const checkout_url = input.checkout_url;
+      const problem = checkout_url === null
+        ? null
+        : sellerOfferCheckoutUrlProblem(checkout_url);
+      if (problem === 'not_a_link') {
+        throw new SellerStoreValidationError(
+          'checkout_url must be an absolute HTTPS link',
+        );
+      }
+      if (problem === 'too_long') {
+        throw new SellerStoreValidationError(
+          'checkout_url is too long once Recued adds the order reference to it',
+        );
+      }
+
+      const existing = readOffer(offer_id);
+      if (!existing) {
+        throw new SellerStoreValidationError(
+          `offer_id '${offer_id}' does not exist`,
+        );
+      }
+      if (existing.checkout_url === checkout_url) {
+        return { result: 'unchanged', offer: offerFromRow(existing) };
+      }
+      // An archived offer is put away for good; nothing about it changes again.
+      if (existing.state === 'archived') {
+        throw new SellerStoreValidationError(
+          `offer_id '${offer_id}' is archived and cannot change`,
+        );
+      }
+      if (existing.updated_at !== expected_updated_at) {
+        throw new SellerStoreConflictError(
+          `offer_id '${offer_id}' expected updated_at '${expected_updated_at}' but found '${existing.updated_at}'`,
+        );
+      }
+      if (!Number.isSafeInteger(existing.updated_at + 1)) {
+        throw new SellerStoreValidationError(
+          `offer_id '${offer_id}' cannot advance its optimistic row token`,
+        );
+      }
+      const updated_at = Math.max(now, existing.updated_at + 1);
+
+      const update = setOfferCheckoutUrlStmt.run({
+        offer_id,
+        expected_updated_at,
+        checkout_url,
+        updated_at,
+      });
+      if (update.changes !== 1) {
+        const settled = readOffer(offer_id);
+        if (settled?.checkout_url === checkout_url) {
+          return { result: 'unchanged', offer: offerFromRow(settled) };
+        }
+        throw new SellerStoreConflictError(
+          `offer_id '${offer_id}' changed while its checkout link was being saved`,
         );
       }
       return {

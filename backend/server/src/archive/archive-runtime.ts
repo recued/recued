@@ -27,6 +27,9 @@ import { createHash, randomBytes } from 'node:crypto';
 import { deriveArchiveBackupRoot } from './archive-crypto.js';
 import { ArchiveBackupSetupError, createArchiveOperationGate, createUnattendedBackups, type ArchiveBackupCapability } from './unattended-backups.js';
 import { createBackupHealth } from './backup-health.js';
+import { createBackupWatchdog } from './backup-watchdog.js';
+import { createServerBackupHealthSource } from './server-backup-health.js';
+import { createBackupIntegrity } from './backup-integrity.js';
 import { createRestoreDrills } from './restore-drills.js';
 import type Database from 'better-sqlite3';
 import {
@@ -1175,8 +1178,14 @@ export const composeArchiveRpcDeps = (
     canRun: () => lifecycle.machine.state === 'running', now: opts.now });
   const backupHealth = createBackupHealth({ dbPath: opts.dbPath, schedule: () => unattendedBackups.status(),
     notify: opts.notifyBackupFailure ?? (async () => false), canRun: () => lifecycle.machine.state === 'running', now: opts.now });
+  const backupIntegrity = createBackupIntegrity({ dbPath: opts.dbPath, schedule: () => unattendedBackups.status(), remoteBackups,
+    notify: opts.notifyBackupFailure ?? (async () => false), canRun: () => lifecycle.machine.state === 'running', now: opts.now });
+  const evidence = createServerBackupHealthSource({ backupHealth, backupIntegrity }, opts.now);
+  const backupWatchdog = createBackupWatchdog({ dbPath: opts.dbPath,
+    getEncryptionKey: () => opts.getKeys?.()?.keyProvider('archive-backup')() ?? null,
+    readEvidence: (fresh = false) => evidence(fresh), canRun: () => lifecycle.machine.state === 'running', now: opts.now });
   return {
-    runtime, remoteBackups, operationGate, unattendedBackups, restoreDrills, backupHealth,
+    runtime, remoteBackups, operationGate, unattendedBackups, restoreDrills, backupHealth, backupIntegrity, backupWatchdog,
     dataPath,
     now: opts.now,
     ...(opts.auditLog ? { auditLog: opts.auditLog } : {}),

@@ -892,6 +892,19 @@ const deleteCalendar = async (deps: CalendarEnrollDeps, slug: string): Promise<{
 // resync
 // ────────────────────────────────────────────────────────────────
 
+/** The owner's Re-sync on a calendar: its access is checked again (the probe
+ *  refreshes `caps` and `auth_state`), then its live connection is rebuilt and
+ *  its sync starts again, as at a restart. The window is listed again, Google
+ *  and Outlook replay what changed since their cursor (and, after an expired
+ *  one, remove what the listing lacks), and CalDAV compares every resource. The
+ *  stop and restart a credential change makes, under the same per-account
+ *  lock, so it cannot race a repair or a removal, and a locked vault still
+ *  holds the sync. Resolves once the calendar is live; the listing runs on in
+ *  the background.
+ *
+ *  ⛔ It used to do only the probe, then set `last_synced_at` to now, so the
+ *  page said the calendar had just synced when nothing was read. The clock is
+ *  the collection's, moved when a sync succeeds (`touchSyncClock`). */
 export const handleCalendarResync = async (
   deps: CalendarEnrollDeps,
   args: { slug?: unknown },
@@ -901,47 +914,62 @@ export const handleCalendarResync = async (
   auth_state: CollectionAuthState;
 }> => {
   const slug = requireSlug(args.slug);
-  const existing = deps.instances.get('calendar', slug);
-  if (!existing) {
-    throw new RpcError(
-      'not_found',
-      `collection.calendar.resync: instance '${slug}' not found`,
-      404,
-    );
-  }
-  const factory = deps.adapters.get(existing.adapter_type);
-  if (!factory) {
-    throw new RpcError('bad_request', `unknown adapter '${existing.adapter_type}'`, 400);
-  }
-  let caps: CalendarCollectionCaps = existing.caps as CalendarCollectionCaps;
-  let auth_state: CollectionAuthState = existing.auth_state;
-  try {
-    caps = await probeCalendarAdapter(factory, {
-      slug,
-      config: existing.config,
-      getAccountValue: async (key) =>
-        deps.accountStore.get(`${existing.adapter_type}.${slug}.${key}`),
-    });
-    auth_state = 'healthy';
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (/auth|credential|token|401|403/i.test(msg)) {
-      auth_state = 'expired';
-    } else {
-      auth_state = 'degraded';
+  return withCollectionAuthenticationLock(deps.instances.authenticationLocks, 'calendar:' + slug, async () => {
+    const existing = deps.instances.get('calendar', slug);
+    if (!existing) {
+      throw new RpcError(
+        'not_found',
+        `collection.calendar.resync: instance '${slug}' not found`,
+        404,
+      );
     }
-  }
+    const factory = deps.adapters.get(existing.adapter_type);
+    if (!factory) {
+      throw new RpcError('bad_request', `unknown adapter '${existing.adapter_type}'`, 400);
+    }
+    const lifecycle = deps.authenticationChange;
+    if (!lifecycle) {
+      throw new RpcError('not_configured', 'collection.calendar.resync requires the calendar composition root', 503);
+    }
+    let caps: CalendarCollectionCaps = existing.caps as CalendarCollectionCaps;
+    let auth_state: CollectionAuthState = existing.auth_state;
+    try {
+      caps = await probeCalendarAdapter(factory, {
+        slug,
+        config: existing.config,
+        getAccountValue: async (key) =>
+          deps.accountStore.get(`${existing.adapter_type}.${slug}.${key}`),
+      });
+      auth_state = 'healthy';
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/auth|credential|token|401|403/i.test(msg)) {
+        auth_state = 'expired';
+      } else {
+        auth_state = 'degraded';
+      }
+    }
 
-  deps.instances.upsert({
-    platform: 'calendar',
-    slug,
-    adapter_type: existing.adapter_type,
-    config: existing.config,
-    caps,
-    auth_state,
-    last_synced_at: (deps.now ?? Date.now)(),
+    deps.instances.upsert({
+      platform: 'calendar',
+      slug,
+      adapter_type: existing.adapter_type,
+      config: existing.config,
+      caps,
+      auth_state,
+      last_synced_at: existing.last_synced_at,
+    });
+
+    // A stop that fails has already taken the calendar out of service, and the
+    // stack logs why: the restart below rebuilds it either way.
+    await lifecycle.stop(slug).catch(() => undefined);
+    try {
+      await lifecycle.restart(slug);
+    } catch {
+      throw new RpcError('restart_failed', 'The calendar could not be started again. Try again, or restart the server.', 500);
+    }
+    return { ok: true, caps, auth_state };
   });
-  return { ok: true, caps, auth_state };
 };
 
 // ────────────────────────────────────────────────────────────────

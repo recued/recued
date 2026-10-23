@@ -42,6 +42,18 @@
  *  pending entry; a late-arriving response is dropped silently (the
  *  pending map's `delete` already cleared the timer, so no leak).
  *
+ *  ── In-flight limit ────────────────────────────────────────────────
+ *  The server runs at most `RPC_WS_MAX_IN_FLIGHT_PER_CLIENT` (64) calls per
+ *  socket and refuses the next with `rpc_overloaded` before running it. A
+ *  Settings page load alone sends more (88 in a live load), and a refused one showed the
+ *  owner the server's raw "Too many RPC calls are already running" text. So
+ *  the conn hands at most that many to the socket and holds the rest, in call
+ *  order, until one settles. A refusal can still come (the server's limit
+ *  across all clients, or a server with a lower limit). The call did not
+ *  run, so it is sent again after a short wait, until its own timeout. Calls
+ *  sent on a socket that has since been replaced no longer count: the server
+ *  dropped them with that socket.
+ *
  *  ── Lifecycle ──────────────────────────────────────────────────────
  *  `dispose()` rejects every in-flight pending entry with
  *  `'transport_disposed'`, then detaches the ws-client message
@@ -50,6 +62,7 @@
  *  Spec: D-148 § A.4.2 + § A.4.4 (lifecycle). */
 
 import {
+  RPC_WS_MAX_IN_FLIGHT_PER_CLIENT,
   RpcError,
   createPendingMap,
   type Conn,
@@ -86,6 +99,13 @@ export const WEBCLIENT_RPC_DEFAULT_TIMEOUT_MS = 30_000;
  *  is gone: a dropped connection fails a waiting call at once
  *  (`failPendingOffline`), and the Run button says "Running..." throughout. */
 export const WEBCLIENT_RUN_RPC_TIMEOUT_MS = 300_000;
+
+/** How long a call the server refused `rpc_overloaded` waits before it is
+ *  sent again. Doubles with each refusal, up to
+ *  {@link WEBCLIENT_RPC_OVERLOAD_RETRY_MAX_MS}; the call's own timeout still
+ *  bounds the whole wait. */
+export const WEBCLIENT_RPC_OVERLOAD_RETRY_INITIAL_MS = 250;
+export const WEBCLIENT_RPC_OVERLOAD_RETRY_MAX_MS = 4_000;
 
 /** Outbound rpc envelope shape — mirrors the backend `ws-server.ts`
  *  contract (`Extension → Server: { type: 'rpc', request_id, method,
@@ -144,6 +164,10 @@ interface WebclientRpcConnOptions {
   >;
   /** Override the per-call default timeout (tests; long-haul recipes). */
   default_timeout_ms?: number;
+  /** Override how many calls may be out on the socket at once (tests).
+   *  Defaults to the server's per-socket limit,
+   *  {@link RPC_WS_MAX_IN_FLIGHT_PER_CLIENT}. */
+  max_in_flight?: number;
   /** Override request-id minting (tests). Default uses
    *  `crypto.randomUUID()`. */
   randomId?: () => string;
@@ -174,8 +198,20 @@ interface WebclientPending extends PendingEntry {
    *  so a call queued while disconnected becomes in-doubt the moment it can
    *  be drained, not safe-to-retry. Drives the offline sweep's code choice:
    *  never-delivered → `server_offline` (safe to retry), delivered-or-in-
-   *  doubt → `connection_lost` (outcome unknown). */
+   *  doubt → `connection_lost` (outcome unknown). Read only while
+   *  `stage === 'out'`. */
   sent: boolean;
+  /** `out`: handed to the ws-client. `waiting`: held for a free slot.
+   *  `refused`: the server refused it `rpc_overloaded` and it waits to be sent
+   *  again. Only an `out` call can have run. */
+  stage: 'out' | 'waiting' | 'refused';
+  /** The socket whose slot an `out` call holds, counted in `connected`
+   *  transitions: the current one when it went straight to the transport, the
+   *  next one when it went into the ws-client's offline queue. */
+  slot: number;
+  /** How many times the server refused it `rpc_overloaded`. */
+  refusals: number;
+  envelope: WebclientRpcRequestEnvelope;
 }
 
 const defaultRandomId = (): string => {
@@ -223,8 +259,93 @@ export const createWebclientRpcConn = <R extends RpcRegistry = ServerRpcRegistry
   const defaultTimeoutMs =
     options.default_timeout_ms ?? WEBCLIENT_RPC_DEFAULT_TIMEOUT_MS;
   const mintId = options.randomId ?? defaultRandomId;
+  const maxInFlight = Math.max(1, options.max_in_flight ?? RPC_WS_MAX_IN_FLIGHT_PER_CLIENT);
   const pending: PendingMap<WebclientPending> = createPendingMap<WebclientPending>();
   let disposed = false;
+  /** `connected` transitions so far — names the socket a call went out on. */
+  let sockets = 0;
+  /** Whether `sockets` already counts the socket the ws-client is on. */
+  let counted = false;
+  /** The socket a call handed over now reaches: the current one while
+   *  connected, else the next. ⚠ Read on every hand-over, not only in the
+   *  state listener below: a listener that runs before ours on a `connected`
+   *  transition (the connection-status controller re-arming subscriptions)
+   *  sends calls onto the new socket before we hear of it, and counting those
+   *  against the old one let 70 calls out at once. */
+  const socketNow = (): number => {
+    if (options.ws.state() !== 'connected') {
+      counted = false;
+      return sockets + 1;
+    }
+    if (!counted) {
+      sockets += 1;
+      counted = true;
+    }
+    return sockets;
+  };
+
+  const sendFailure = (err: unknown, method: string): RpcError => {
+    if (err instanceof WebclientNotConnectedError) {
+      return new RpcError('server_offline', err.message, undefined, method);
+    }
+    if (err instanceof WebclientReauthRequiredError) {
+      return new RpcError(
+        'webclient_reauth_required',
+        err.message,
+        undefined,
+        method,
+      );
+    }
+    return new RpcError(
+      'transport',
+      err instanceof Error ? err.message : String(err),
+      undefined,
+      method,
+    );
+  };
+
+  // Hand a call to the ws-client and take a slot on the socket it will reach.
+  const handOff = (entry: WebclientPending): void => {
+    // Capture delivery disposition synchronously, BEFORE `ws.send`:
+    // `connected` now → the envelope dispatches to the transport;
+    // otherwise it lands in the ws-client's offline queue and reaches the
+    // NEXT socket. Read here so it matches exactly what `ws.send` sees (no
+    // await in between), and so the offline sweep can pick an honest error
+    // code per entry.
+    entry.stage = 'out';
+    entry.sent = options.ws.state() === 'connected';
+    entry.slot = socketNow();
+    // ws-client.send already queues while disconnected + drains on
+    // `connected`. A reauth-blocked send throws
+    // `WebclientReauthRequiredError`; we catch + reject the pending
+    // entry with a typed `RpcError` so callers can switch on
+    // `code === 'webclient_reauth_required'`.
+    const dispatch = options.nonReplayMethods?.has(entry.method)
+      ? options.ws.send(entry.envelope, { queue: false })
+      : options.ws.send(entry.envelope);
+    void dispatch.catch((err: unknown) => {
+      if (pending.get(entry.id) !== entry) return; // already settled (timeout / abort raced)
+      pending.delete(entry.id);
+      entry.reject(sendFailure(err, entry.method));
+      pump();
+    });
+  };
+
+  // Send waiting calls, oldest first, while the socket they would reach has
+  // a free slot.
+  const pump = (): void => {
+    const slot = socketNow();
+    let out = 0;
+    for (const entry of pending.values()) {
+      if (entry.stage === 'out' && entry.slot === slot) out += 1;
+    }
+    for (const entry of pending.values()) {
+      if (out >= maxInFlight) return;
+      if (entry.stage !== 'waiting') continue;
+      handOff(entry);
+      out += 1;
+    }
+  };
 
   // Subscribe to inbound rpc_result envelopes. Other message kinds
   // (broadcast bus events handled by the subscriber, etc.) flow through
@@ -235,12 +356,37 @@ export const createWebclientRpcConn = <R extends RpcRegistry = ServerRpcRegistry
     if (!isRpcResultEnvelope(message)) return;
     const entry = pending.get(message.request_id);
     if (!entry) return; // late reply (timed out / aborted) — drop silently
+    if (message.error?.code === 'rpc_overloaded' && entry.stage === 'out') {
+      // The server refused it before running it, so sending it again is safe
+      // for any method, a write included. It waits, then takes its turn in
+      // call order, ahead of calls made after it.
+      // A call settled meanwhile (timeout, abort, offline, dispose) has left
+      // the map, so `pump` never sends it.
+      entry.stage = 'refused';
+      entry.refusals += 1;
+      setTimeout(() => {
+        entry.stage = 'waiting';
+        pump();
+      }, Math.min(
+        WEBCLIENT_RPC_OVERLOAD_RETRY_MAX_MS,
+        WEBCLIENT_RPC_OVERLOAD_RETRY_INITIAL_MS * 2 ** (entry.refusals - 1),
+      ));
+      pump();
+      return;
+    }
     pending.delete(message.request_id); // clears the timer
     if (message.error) {
       entry.reject(buildRpcErrorFromEnvelope(message.error, entry.method));
-      return;
+    } else {
+      entry.resolve(message.result);
     }
-    entry.resolve(message.result);
+    pump();
+  });
+
+  // A new socket has no calls running on the server, so calls that went out
+  // on the old one hold none of its slots: let waiting calls go.
+  const detachSockets = options.ws.onState(() => {
+    pump();
   });
 
   // Fail every in-flight + queued caller the instant the connection
@@ -260,13 +406,15 @@ export const createWebclientRpcConn = <R extends RpcRegistry = ServerRpcRegistry
   //     the drop; the server MAY have processed it and the reply was
   //     lost with the connection → `connection_lost`. Outcome unknown;
   //     the caller must not blind-retry a non-idempotent write.
+  //   - not `out` — still waiting for a slot, or refused `rpc_overloaded`
+  //     and waiting to be sent again: it did not run → `server_offline`.
   const failPendingOffline = (): void => {
     const stranded = [...pending.values()];
     if (stranded.length === 0) return;
     for (const entry of stranded) {
       pending.delete(entry.id); // clears the timer + removes from the map
       entry.reject(
-        entry.sent
+        entry.stage === 'out' && entry.sent
           ? new RpcError(
               'connection_lost',
               `webclient rpc: connection lost — '${entry.method}' was sent but its reply was lost; its outcome is unknown`,
@@ -349,16 +497,38 @@ export const createWebclientRpcConn = <R extends RpcRegistry = ServerRpcRegistry
         pending.delete(requestId);
       };
 
-      const onTimeout = (): void => {
-        cleanup();
-        reject(
-          new RpcError(
-            'timeout',
-            `webclient rpc: method '${method}' did not respond within ${timeoutMs}ms`,
+      // Honest about delivery: a call that never got out, or that the server
+      // only ever refused, did not run.
+      const timedOut = (entry: WebclientPending | undefined): RpcError => {
+        if (entry !== undefined && entry.stage !== 'out' && entry.refusals > 0) {
+          return new RpcError(
+            'rpc_overloaded',
+            `webclient rpc: the server was too busy to run '${method}' within ${timeoutMs}ms; it did not run`,
             undefined,
             method,
-          ),
+          );
+        }
+        if (entry !== undefined && entry.stage === 'waiting') {
+          return new RpcError(
+            'timeout',
+            `webclient rpc: '${method}' waited ${timeoutMs}ms for a free call slot and was not sent`,
+            undefined,
+            method,
+          );
+        }
+        return new RpcError(
+          'timeout',
+          `webclient rpc: method '${method}' did not respond within ${timeoutMs}ms`,
+          undefined,
+          method,
         );
+      };
+
+      const onTimeout = (): void => {
+        const entry = pending.get(requestId);
+        cleanup();
+        reject(timedOut(entry));
+        pump();
       };
       const timer = setTimeout(onTimeout, timeoutMs);
 
@@ -374,6 +544,7 @@ export const createWebclientRpcConn = <R extends RpcRegistry = ServerRpcRegistry
             method,
           ),
         );
+        pump();
       };
       if (opts?.signal) {
         if (opts.signal.aborted) {
@@ -391,16 +562,19 @@ export const createWebclientRpcConn = <R extends RpcRegistry = ServerRpcRegistry
         opts.signal.addEventListener('abort', onAbort, { once: true });
       }
 
-      // Capture delivery disposition synchronously, BEFORE `ws.send`:
-      // `connected` now → the envelope dispatches to the transport;
-      // otherwise it lands in the ws-client's offline queue. Read here so
-      // it matches exactly what `ws.send` sees (no await in between), and
-      // so the offline sweep can pick an honest error code per entry.
-      const sent = options.ws.state() === 'connected';
       pending.set(requestId, {
         method,
         id: requestId,
-        sent,
+        sent: false,
+        stage: 'waiting',
+        slot: 0,
+        refusals: 0,
+        envelope: {
+          type: 'rpc',
+          request_id: requestId,
+          method,
+          args,
+        },
         resolve: (value) => {
           if (opts?.signal) opts.signal.removeEventListener('abort', onAbort);
           resolve(value);
@@ -411,50 +585,9 @@ export const createWebclientRpcConn = <R extends RpcRegistry = ServerRpcRegistry
         },
         timeout: timer,
       });
-
-      const envelope: WebclientRpcRequestEnvelope = {
-        type: 'rpc',
-        request_id: requestId,
-        method,
-        args,
-      };
-      // ws-client.send already queues while disconnected + drains on
-      // `connected`. A reauth-blocked send throws
-      // `WebclientReauthRequiredError`; we catch + reject the pending
-      // entry with a typed `RpcError` so callers can switch on
-      // `code === 'webclient_reauth_required'`.
-      const dispatch = options.nonReplayMethods?.has(method)
-        ? options.ws.send(envelope, { queue: false })
-        : options.ws.send(envelope);
-      void dispatch
-        .catch((err: unknown) => {
-          const entry = pending.get(requestId);
-          if (!entry) return; // already cleaned up (timeout / abort raced)
-          pending.delete(requestId);
-          if (err instanceof WebclientNotConnectedError) {
-            entry.reject(new RpcError('server_offline', err.message, undefined, method));
-            return;
-          }
-          if (err instanceof WebclientReauthRequiredError) {
-            entry.reject(
-              new RpcError(
-                'webclient_reauth_required',
-                err.message,
-                undefined,
-                method,
-              ),
-            );
-            return;
-          }
-          entry.reject(
-            new RpcError(
-              'transport',
-              err instanceof Error ? err.message : String(err),
-              undefined,
-              method,
-            ),
-          );
-        });
+      // Goes out at once when its socket has a free slot (the usual case),
+      // else waits its turn behind earlier calls.
+      pump();
     });
   }) as unknown as Conn<R>;
 
@@ -466,6 +599,7 @@ export const createWebclientRpcConn = <R extends RpcRegistry = ServerRpcRegistry
       disposed = true;
       pending.clear('webclient rpc conn disposed');
       if (detachStatus !== null) detachStatus();
+      detachSockets();
       detach();
     },
   };

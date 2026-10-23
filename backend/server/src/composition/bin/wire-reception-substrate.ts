@@ -49,7 +49,9 @@ import { createCustomerPaymentReceiptService,type CustomerPaymentReceiptService 
  *  pre-extraction pattern. */
 
 import type { AuditLogStore } from '@recued/storage';
+import type { NotificationBlock } from '@recued/notification';
 import type { TrustFooterDeploymentMode } from '@recued/contracts';
+import { createReceptionTurnedAwayNotice } from '../../reception-turned-away-notice.js';
 import type { EventBus } from '../../events/bus.js';
 import type { KeyManager } from '../../key-manager.js';
 import type {
@@ -193,6 +195,12 @@ export interface ComposeReceptionSubstrateDeps {
    *  offer). Also serves the rpc handler's offer read (`getSellerOfferStore`). */
   readonly sellerOfferStore?: Pick<SellerStore, 'getOffer'> | undefined;
   readonly sellerOrderStore?: Pick<SellerOrderStore, 'openOrder'> | undefined;
+  /** D-207 — the owner's notification block. Present ⇒ a visitor a paired form turns away
+   *  is told to the owner (`reception-turned-away-notice.ts`); absent ⇒ nobody is told. */
+  readonly notifier?: Pick<NotificationBlock, 'notify'> | undefined;
+  /** The owner's own address, for the link in a notice that leaves the server. Read per
+   *  notice: it can appear or change while the server runs. */
+  readonly getOwnerBaseUrl?: () => string | null;
   readonly sharedStore?: Pick<SharedStore, 'read' | 'compareAndSet'> | undefined;
   /** D-173 P3 § A.7 — the review-then-approve dispatch seam (the SINGLE path
    *  for REVIEW-mode endpoints, the default). Threaded into both drain
@@ -1153,6 +1161,23 @@ export const composeReceptionSubstrate = async (
     };
   }
 
+  // D-207 — the owner hears when a paired form turns a visitor away. Not awaited by the
+  // visitor's request: their page never waits on the owner's channels.
+  const noticeTurnedAway = deps.notifier
+    ? createReceptionTurnedAwayNotice({
+        auditLog,
+        notifier: deps.notifier,
+        ...(deps.sellerOfferStore
+          ? { getOffer: (offerId: string) => deps.sellerOfferStore!.getOffer(offerId) }
+          : {}),
+        ...(deps.getOwnerBaseUrl ? { getPublicBaseUrl: deps.getOwnerBaseUrl } : {}),
+      })
+    : undefined;
+  const noticeIntakeFormTurnedAway: ReceptionPortHandlerDeps['noticeIntakeFormTurnedAway'] =
+    noticeTurnedAway
+      ? (event) => { void noticeTurnedAway(event).catch(() => undefined); }
+      : undefined;
+
   // D-220 Slice B — pack-shipped intake templates are read from the SAME contract
   // store the pack install wrote them into. A local alias so the closure holds a
   // stable reference, not the wider optional binding.
@@ -1199,6 +1224,7 @@ export const composeReceptionSubstrate = async (
     ...(coordinateIntakeFormPairedRun
       ? { coordinateIntakeFormPairedRun }
       : {}),
+    ...(noticeIntakeFormTurnedAway ? { noticeIntakeFormTurnedAway } : {}),
     getIntakeFormSubmissionPiiKey,
     // D-149 P7 § A.5.4 — drop_link deps.
     ...(deps.dropBlobStore ? { getDropBlobStore: () => deps.dropBlobStore! } : {}),

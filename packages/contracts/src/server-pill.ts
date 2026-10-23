@@ -9,7 +9,7 @@
  *  Severity order (most → least severe):
  *    red      — kill switch active OR lifecycle `crashed` OR any gate halted
  *    orange   — lifecycle draining / restarting / shutting_down OR writes_blocked
- *    amber    — any gate pressure_managed OR any collection in `error`
+ *    amber    — gate pressure_managed, collection error, or backup warning
  *    gray     — no heartbeat received in ≥ HEARTBEAT_STALE_MS
  *    green    — steady-state running
  *
@@ -19,6 +19,7 @@
 import type { LifecycleState, ResolvedSupervisorMode } from './lifecycle.js';
 import type { PressureDetails, StorageState } from './pressure.js';
 import type { CollectionHealth } from './collections.js';
+import { serverBackupHealthView, type ServerBackupHealthSnapshot } from './server-backup-health.js';
 
 /** Max age (ms) a snapshot can be before the pill turns gray/offline. */
 export const HEARTBEAT_STALE_MS = 30_000;
@@ -61,6 +62,8 @@ export interface ServerHeartbeatSnapshot {
   paused?: boolean;
   pressure_details?: PressureDetails;
   collections?: readonly CollectionHealth[];
+  /** Passive, cached receipt summaries; optional for older servers. */
+  backup_health?: ServerBackupHealthSnapshot;
   /** True iff a reclaim is in-flight on any surface right now. The
    *  server doesn't currently emit this on heartbeat — reserved for a
    *  future extension that pipes the in-flight reclaim map through. */
@@ -234,6 +237,11 @@ export const computePillState = (
       aria: 'Server busy — reclaim in progress',
     };
   }
+
+  const backup = serverBackupHealthView(snapshot.backup_health, now - snapshot.last_seen_at);
+  if (backup?.warnings.length) return {
+    dot: 'amber', label: 'attention', uptime_s: uptime, aria: `Server attention — ${backup.aria}`,
+  };
 
   // Green — steady state.
   return {

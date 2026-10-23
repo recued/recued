@@ -237,6 +237,45 @@ describe('D-169 P2 Slice 2 history handlers', () => {
     });
   });
 
+  it('gives a notice’s link as an in-app address too when it points into this server’s own app', async () => {
+    const listActivities = vi.fn(async () => [
+      activityEntry({
+        activity_id: 'own',
+        timestamp: 1_800_000_004_000,
+        detail: JSON.stringify({ text: 'Fix the offer', link_url: 'https://me.example/#settings/seller/offers/detail/kit' }),
+      }),
+      activityEntry({
+        activity_id: 'route',
+        timestamp: 1_800_000_003_000,
+        detail: JSON.stringify({ text: 'Open the view', link_url: '#views/view_1' }),
+      }),
+      activityEntry({
+        activity_id: 'elsewhere',
+        timestamp: 1_800_000_002_000,
+        // ⛔ Another site's fragment is not a route in the owner's app.
+        detail: JSON.stringify({ text: 'Status', link_url: 'https://status.example.com/#today' }),
+      }),
+    ]);
+
+    const out = await handleNotificationRecent(
+      { auditLog: fakeAuditLog({ listActivities }), ownerBaseUrl: () => 'https://me.example/' },
+      {},
+    );
+
+    expect(out.notifications.map((row) => [row.id, row.link_url, row.ui_link_url])).toEqual([
+      ['own', 'https://me.example/#settings/seller/offers/detail/kit', '#settings/seller/offers/detail/kit'],
+      ['route', '#views/view_1', '#views/view_1'],
+      ['elsewhere', 'https://status.example.com/#today', undefined],
+    ]);
+
+    // No address of its own (or one it cannot read): only a link already in-app gets one.
+    const noAddress = await handleNotificationRecent(
+      { auditLog: fakeAuditLog({ listActivities }), ownerBaseUrl: () => { throw new Error('no address'); } },
+      {},
+    );
+    expect(noAddress.notifications.map((row) => row.ui_link_url)).toEqual([undefined, '#views/view_1', undefined]);
+  });
+
   it('returns an empty notification slice when auditLog is absent', async () => {
     await expect(handleNotificationRecent({}, { limit: 10 })).resolves.toEqual({
       notifications: [],

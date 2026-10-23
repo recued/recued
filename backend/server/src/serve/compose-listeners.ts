@@ -122,6 +122,7 @@ import {
   openFormSubmissionField,
 } from '../ports/reception/form-pii.js';
 import { deriveReceptionPepperFromSubDek } from '../ports/reception/server-secret-pepper.js';
+import { openReceptionRecordBlob } from '../ports/reception/open-reception-record.js';
 import { createReceptionAttachFileSeam } from '../ports/reception/projection/reception-attach-file.js';
 import { composeTelegramCallbackAck } from '../composition/bin/wire-telegram-callback-ack.js';
 import { composeSlackPressReply } from '../composition/bin/wire-slack-press-reply.js';
@@ -211,7 +212,7 @@ import { forgetTimeRelativeWatcherRecipe } from '../watchers/time-relative-watch
 import { forgetHttpWatcherRecipe } from '../watchers/http-watcher-memory.js';
 import { createDishAutomation } from '../dish-automation.js';
 import { mainDishFor } from '../dish-handler.js';
-import { bundledPacksShippingRecipe } from '../bundled-pack-source.js';
+import { bundledPackName, bundledPacksShippingRecipe } from '../bundled-pack-source.js';
 import { startsOnItsOwn } from '@recued/contracts';
 import { createUnattendedSettingsGate } from '../unattended-settings-gate.js';
 import { deleteSchedule, listSchedules, updateSchedule } from '../schedule-handler.js';
@@ -1517,6 +1518,8 @@ export const composeListeners = async (
 
   const historyDeps: HistoryDeps = {
     ...(storage.auditLog ? { auditLog: storage.auditLog } : {}),
+    // So `notification.recent` can give a notice's link as an in-app address too.
+    ownerBaseUrl: () => storage.publicAddress.baseUrl('root'),
     ...(askCardDetails ? { resolveAskDetails: askCardDetails } : {}),
     // The card's "Action" row in the owner's words: the held action's name from
     // its manifest, or composed from a catalog operation's id.
@@ -1578,6 +1581,12 @@ export const composeListeners = async (
   // The counterparty (sealed email → contact id) and the title (endpoint
   // `display_name`) are each independently optional, so a partial substrate
   // costs the booking a FIELD, never the row.
+  // A reception endpoint's name as the owner set it — what Reception → Records calls a record's
+  // form, so it matches the notice that named it. Read live: a renamed form shows its new name.
+  const receptionFormName = (endpoint_id: string): string | null => {
+    const name = storage.publicEndpointRegistryStoreRef?.findById(endpoint_id)?.metadata.display_name;
+    return typeof name === 'string' ? name : null;
+  };
   const receptionBookingSeam =
     storage.workEntityStoreRef && storage.intakeFormSubmissionStoreRef && app.keys
       ? createReceptionBookingMintSeam({
@@ -4381,7 +4390,12 @@ export const composeListeners = async (
       : {}),
     // D-221 — #data Records uses this owner-pair control plane, never a
     // `data.records.*` resolver or the agent-facing Tier-P executor.
-    recordsRpcDeps: { store: storage.recordsStore },
+    recordsRpcDeps: {
+      store: storage.recordsStore,
+      // The owning pack's name for Data → Records, from the same roster the Packs screen
+      // reads. Only when the publisher matches: two packs may share a slug (D-221 full refs).
+      packName: (owner) => bundledPackName(owner, rpc.packInstallDeps?.packDir),
+    },
     ...(storage.mailWorkStore && app.cacheBlobs ? { mailWorkService: createMailWorkService({
       store: storage.mailWorkStore,
       registry: collection.collectionRegistry,
@@ -4524,23 +4538,42 @@ export const composeListeners = async (
           receptionRecordDeps: {
             getBookingStore: () => storage.intakeFormSubmissionStoreRef,
             getSubmissionStore: () => storage.intakeFormSubmissionStoreRef,
+            formName: receptionFormName,
+            // D-149 § N.6 — `reception.record.open`, the owner opening ONE record. Only with
+            // the reception key: without it the method stays unregistered (`not_configured`)
+            // rather than answering every record as unreadable.
+            ...(app.keys
+              ? {
+                  openRecord: {
+                    find: (record_id: string) => storage.intakeFormSubmissionStoreRef!.findById(record_id),
+                    open: (row: Parameters<typeof openReceptionRecordBlob>[0]['row']) =>
+                      openReceptionRecordBlob({
+                        key: deriveFormSubmissionPiiKeyFromSubDek(app.keys!.getSubDEK('reception')),
+                        row,
+                      }),
+                    formName: receptionFormName,
+                  },
+                }
+              : {}),
           },
         }
       : {}),
     // D-210 Appendix B — `reception.manage.mint`. Needs all three: the manage
-    // credential store (to issue), the booking store (event → booking `findById`),
-    // and the annotation store (the `scheduled-from` walk, same reader the
-    // notify-booking-visitor dispatcher uses). Any absent ⇒ the method is not
-    // registered rather than half-wired.
+    // credential store (to issue), the booking's work entity (`readBooking`, for
+    // its `reception_record_id`) and the submission store (`findById`). Any
+    // absent ⇒ the method is not registered rather than half-wired.
+    // ⚠ This object still passed the pre-A.2 `listInboundLinks` walk and no
+    // `readBooking` until 2026-10-21: `ServerConfig` never declared the key, so
+    // tsc checked nothing here and `server.ts` dropped it, and the method never
+    // answered on a live server.
     ...(app.receptionManageCredentialStoreRef
       && storage.intakeFormSubmissionStoreRef
-      && app.annotationStoreRef
+      && storage.workEntityStoreRef
       ? {
           receptionManageMintDeps: {
             getCredentialStore: () => app.receptionManageCredentialStoreRef!,
+            readBooking: (id: string) => storage.workEntityStoreRef!.readBooking(id),
             getBookingStore: () => storage.intakeFormSubmissionStoreRef!,
-            listInboundLinks: (filter: { to_collection: string; to_id: string }) =>
-              app.annotationStoreRef!.listLinks(filter),
             now: () => Date.now(),
           },
         }
@@ -4550,10 +4583,12 @@ export const composeListeners = async (
     // still exists (a record collected by retention whose link is still in
     // someone's inbox is exactly when a revoke is most wanted).
     //
-    // ⚠ THIS IS A CONDITIONAL SPREAD, so tsc will NOT catch a renamed key —
-    // the same shape that left `receptionManageMintDeps` dead on the wire, as
-    // the note at the top of this file records. The guard is not a type here; it
-    // is `d-240-slice6-lookup-revoke` asserting the METHOD IS REGISTERED.
+    // ⚠ THIS IS A CONDITIONAL SPREAD, so tsc will NOT catch a key `ServerConfig`
+    // does not declare — which is how this one, `receptionRecordDeps` and
+    // `receptionManageMintDeps` were all dropped until 2026-10-21 while
+    // `d-240-slice6-lookup-revoke` (which builds the slice directly) stayed
+    // green. The guards are `server-config-forwarding.test.ts` (every key here
+    // is declared) and `archive-rpc-wiring.test.ts` (the method answers live).
     ...(app.receptionManageCredentialStoreRef
       ? {
           receptionLookupRevokeDeps: {

@@ -48,10 +48,12 @@ export const CUSTOM_DOMAINS_CHECK_BTN_ATTR = 'data-recued-custom-domains-check';
 export const CUSTOM_DOMAINS_ADD_BTN_ATTR = 'data-recued-custom-domains-add';
 export const CUSTOM_DOMAINS_RECORD_ATTR = 'data-recued-custom-domains-record';
 export const CUSTOM_DOMAINS_COPY_BTN_ATTR = 'data-recued-custom-domains-copy';
+export const CUSTOM_DOMAINS_COPY_STATUS_ATTR = 'data-recued-custom-domains-copy-status';
 export const CUSTOM_DOMAINS_CHECK_ROW_ATTR = 'data-recued-custom-domains-check-row';
 export const CUSTOM_DOMAINS_APEX_ATTR = 'data-recued-custom-domains-apex';
 export const CUSTOM_DOMAINS_BLOCKER_ATTR = 'data-recued-custom-domains-blocker';
 export const CUSTOM_DOMAINS_ERROR_ATTR = 'data-recued-custom-domains-error';
+export const CUSTOM_DOMAINS_STATUS_ATTR = 'data-recued-custom-domains-status';
 /** D-235 — the relative-name hint; carries the relative form so a test can
  *  assert the thing the user is meant to paste. */
 export const CUSTOM_DOMAINS_RELATIVE_ATTR = 'data-recued-custom-domains-relative';
@@ -166,13 +168,15 @@ export interface MountCustomDomainsPanelOptions {
   /** Called after a successful enrolment so the sibling hostname list refreshes
    *  — the new row is the thing the user looks for next. */
   onEnrolled?: (hostname: string) => void;
-  /** Clipboard seam. Absent ⇒ copy buttons render but fall back to selecting
-   *  the text, which is what a browser without clipboard permission can do. */
+  /** Defaults to this document's browser clipboard. On failure, the value is
+   *  selected for manual copying while the copy button still owns focus. */
   writeClipboard?: (text: string) => Promise<void>;
 }
 
 export interface CustomDomainsPanelMount {
   destroy(): void;
+  hasUnsavedChanges(): boolean;
+  hasInFlightWork(): boolean;
   /** Test/debug read of the current state. */
   state(): CustomDomainsPanelState;
 }
@@ -191,6 +195,13 @@ export const CUSTOM_DOMAINS_PANEL_STYLES = `
   color: var(--muted);
   line-height: 1.5;
 }
+.custom-domains-results {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.custom-domains-results:empty, .custom-domains-status:empty { display: none; }
+.custom-domains-status { font-size: 13px; color: var(--muted); }
 .custom-domains-form {
   display: flex;
   gap: 8px;
@@ -234,6 +245,7 @@ export const CUSTOM_DOMAINS_PANEL_STYLES = `
   font-size: 12px;
   overflow-wrap: anywhere;
 }
+.custom-domains-record-row > .custom-domains-record-label { flex-shrink: 0; }
 .custom-domains-record-row {
   display: flex;
   gap: 8px;
@@ -322,6 +334,9 @@ export const mountCustomDomainsPanel = (
     enrolled: null,
   };
   let destroyed = false;
+  let savedHostname = '';
+  let checkGeneration = 0;
+  let resultsVersion = 0;
 
   const root = doc.createElement('div');
   root.setAttribute(CUSTOM_DOMAINS_PANEL_ATTR, '');
@@ -348,62 +363,138 @@ export const mountCustomDomainsPanel = (
     attr: string,
     onClick: () => void,
     disabled = false,
+    resultControl = true,
   ): HTMLButtonElement => {
     const button = doc.createElement('button');
     button.type = 'button';
+    button.className = `rx-btn rx-btn-${attr === CUSTOM_DOMAINS_ADD_BTN_ATTR ? 'primary' : 'secondary'}`;
     button.textContent = label;
     button.setAttribute(attr, '');
     button.disabled = disabled;
-    button.addEventListener('click', onClick);
+    const version = resultsVersion;
+    button.addEventListener('click', () => {
+      if (destroyed || button.disabled || root.isConnected === false) return;
+      if (resultControl && version !== resultsVersion) return;
+      onClick();
+    });
     return button;
   };
 
   const runCheck = async (): Promise<void> => {
+    if (destroyed || state.checking || state.enrolling) return;
     const hostname = normalize(state.hostname);
     if (hostname.length === 0) {
-      setState({ error: 'Type the name you want to use.' });
+      setState({ error: 'Type the name you want to use.', preflight: null, decision: null });
       return;
     }
-    setState({ checking: true, error: null, enrolled: null });
+    const generation = ++checkGeneration;
+    const isCurrent = (): boolean =>
+      !destroyed && generation === checkGeneration && normalize(state.hostname) === hostname;
+    setState({ checking: true, error: null, preflight: null, decision: null });
     try {
-      // Prefer the readiness call: it runs the SAME preflight and adds the
-      // gate's verdict, so asking twice cannot produce two different answers
-      // about one zone the user may be editing as we look.
-      if (opts.runReadiness) {
-        const result = await opts.runReadiness({ hostname });
-        if (destroyed) return;
-        setState({
-          checking: false,
-          preflight: result.preflight,
-          decision: result.decision,
-        });
-        return;
+      // Readiness includes the same preflight, so one request owns the zone's
+      // observations and verdict. Older drafts cannot settle the current read.
+      const result = opts.runReadiness
+        ? await opts.runReadiness({ hostname })
+        : { ...await opts.runPreflight({ hostname }), decision: null };
+      if (!isCurrent()) return;
+      if (normalize(result.preflight.hostname) !== hostname) {
+        throw new Error('This DNS result is for a different name. Check DNS again.');
       }
-      const result = await opts.runPreflight({ hostname });
-      if (destroyed) return;
-      setState({ checking: false, preflight: result.preflight, decision: null });
+      setState({ checking: false, preflight: result.preflight, decision: result.decision });
     } catch (err) {
-      if (destroyed) return;
+      if (!isCurrent()) return;
       setState({ checking: false, error: humanizeRpcError(err) });
     }
   };
 
   const runEnrol = async (): Promise<void> => {
-    if (!opts.runEnrol) return;
-    const hostname = normalize(state.hostname);
+    if (destroyed || !opts.runEnrol || state.checking || state.enrolling || state.enrolled !== null) return;
+    const draftHostname = state.hostname;
+    const hostname = normalize(draftHostname);
+    // DNS need not be ready yet: enrollment is allowed before the user finishes
+    // their records. It does need an accepted check for this exact draft.
+    if (state.preflight === null || normalize(state.preflight.hostname) !== hostname) return;
     setState({ enrolling: true, error: null });
     try {
       await opts.runEnrol({ hostname, cert_source: 'recued_acme_custom' });
-      if (destroyed) return;
-      setState({ enrolling: false, enrolled: hostname });
-      opts.onEnrolled?.(hostname);
-      // Re-check so the row's state reflects what the server now believes,
-      // rather than what we believed a moment before the write.
-      void runCheck();
     } catch (err) {
       if (destroyed) return;
       setState({ enrolling: false, error: humanizeRpcError(err) });
+      return;
     }
+    if (destroyed) return;
+    savedHostname = draftHostname;
+    setState({ enrolling: false, enrolled: hostname });
+    // A sibling refresh cannot turn an acknowledged write into a failed one.
+    try { opts.onEnrolled?.(hostname); } catch { /* best-effort registry refresh */ }
+    // Keep the enrollment acknowledgment even if this read fails.
+    void runCheck();
+  };
+
+  const appendCopyControl = (parent: HTMLElement, name: string, value: string, valueNode: HTMLElement): void => {
+    const version = resultsVersion;
+    const feedback = el('div', 'custom-domains-record-hint');
+    feedback.setAttribute(CUSTOM_DOMAINS_COPY_STATUS_ATTR, '');
+    feedback.setAttribute('role', 'status');
+    feedback.setAttribute('aria-atomic', 'true');
+    feedback.hidden = true;
+    let copying = false;
+    const isCurrent = (): boolean => !destroyed && version === resultsVersion && root.isConnected !== false;
+    const button = makeButton('Copy value', CUSTOM_DOMAINS_COPY_BTN_ATTR, () => {
+      if (copying) return;
+      copying = true;
+      // Keep the native button focusable while suppressing repeat activation.
+      button.setAttribute('aria-disabled', 'true');
+      feedback.hidden = false;
+      feedback.textContent = 'Copying value…';
+      const selection = doc.getSelection?.();
+      const before = selection ? {
+        anchorNode: selection.anchorNode, anchorOffset: selection.anchorOffset,
+        focusNode: selection.focusNode, focusOffset: selection.focusOffset,
+      } : null;
+      const finish = (copied: boolean): void => {
+        if (!isCurrent()) return;
+        copying = false;
+        button.setAttribute('aria-disabled', 'false');
+        if (copied) { feedback.textContent = 'Value copied.'; return; }
+        let selected = false;
+        // A delayed denial must not replace a newer selection or take focus
+        // from typing, another control, navigation, or a background tab.
+        if (doc.activeElement === button && !doc.hidden && doc.hasFocus?.() !== false
+          && button.getClientRects?.().length !== 0 && before !== null) {
+          try {
+            const current = doc.getSelection?.();
+            if (current && current.anchorNode === before.anchorNode && current.anchorOffset === before.anchorOffset
+              && current.focusNode === before.focusNode && current.focusOffset === before.focusOffset) {
+              const range = doc.createRange();
+              valueNode.tabIndex = -1;
+              valueNode.focus?.();
+              range.selectNodeContents(valueNode);
+              current.removeAllRanges(); current.addRange(range);
+              selected = true;
+            }
+          } catch { /* The visible value remains available for manual copying. */ }
+        }
+        feedback.textContent = selected ? 'Value selected. Copy it manually.'
+          : 'Could not copy this value. Copy it manually from the Value line above.';
+      };
+      try {
+        let write: Promise<void>;
+        if (opts.writeClipboard !== undefined) write = opts.writeClipboard(value);
+        else {
+          const clipboard = doc.defaultView?.navigator.clipboard;
+          if (clipboard?.writeText === undefined) { finish(false); return; }
+          write = clipboard.writeText(value);
+        }
+        // Invoke the writer in the activation event, before yielding its user
+        // gesture. Handle synchronous exceptions and rejected promises alike.
+        void Promise.resolve(write).then(() => finish(true), () => finish(false));
+      } catch { finish(false); }
+    });
+    button.setAttribute('aria-label', `Copy value for ${name}`);
+    parent.appendChild(button);
+    parent.appendChild(feedback);
   };
 
   const renderRecord = (
@@ -416,6 +507,7 @@ export const mountCustomDomainsPanel = (
     const box = el('div', 'custom-domains-record');
     box.setAttribute(CUSTOM_DOMAINS_RECORD_ATTR, label);
     box.appendChild(el('div', 'custom-domains-record-label', label));
+    const valueNode = el('span', 'custom-domains-record-value', record.value);
     for (const [field, value] of [
       ['Name', record.name],
       ['Type', record.type],
@@ -423,7 +515,7 @@ export const mountCustomDomainsPanel = (
     ] as const) {
       const row = el('div', 'custom-domains-record-row');
       row.appendChild(el('span', 'custom-domains-record-label', field));
-      row.appendChild(el('span', 'custom-domains-record-value', value));
+      row.appendChild(field === 'Value' ? valueNode : el('span', 'custom-domains-record-value', value));
       box.appendChild(row);
     }
     // ⛔ THE FULL NAME IS CORRECT AND IS THE WRONG THING TO PASTE. Every major
@@ -446,11 +538,7 @@ export const mountCustomDomainsPanel = (
       noteEl.setAttribute(CUSTOM_DOMAINS_RECORD_NOTE_ATTR, '');
       box.appendChild(noteEl);
     }
-    box.appendChild(
-      makeButton('Copy value', CUSTOM_DOMAINS_COPY_BTN_ATTR, () => {
-        void opts.writeClipboard?.(record.value);
-      }),
-    );
+    appendCopyControl(box, record.name, record.value, valueNode);
     parent.appendChild(box);
   };
 
@@ -495,13 +583,14 @@ export const mountCustomDomainsPanel = (
     );
 
     const pair = el('div', 'custom-domains-delegation-pair');
+    const valueNode = el('span', 'custom-domains-record-value', record.value);
     for (const [field, value] of [
       ['Name', record.name],
       ['Value', record.value],
     ] as const) {
       const row = el('div', 'custom-domains-record-row');
       row.appendChild(el('span', 'custom-domains-record-label', field));
-      row.appendChild(el('span', 'custom-domains-record-value', value));
+      row.appendChild(field === 'Value' ? valueNode : el('span', 'custom-domains-record-value', value));
       pair.appendChild(row);
     }
     box.appendChild(pair);
@@ -527,11 +616,7 @@ export const mountCustomDomainsPanel = (
     note.setAttribute(CUSTOM_DOMAINS_RECORD_NOTE_ATTR, '');
     box.appendChild(note);
 
-    box.appendChild(
-      makeButton('Copy value', CUSTOM_DOMAINS_COPY_BTN_ATTR, () => {
-        void opts.writeClipboard?.(record.value);
-      }),
-    );
+    appendCopyControl(box, record.name, record.value, valueNode);
     parent.appendChild(box);
   };
 
@@ -562,55 +647,93 @@ export const mountCustomDomainsPanel = (
     parent.appendChild(row);
   };
 
-  const render = (): void => {
-    root.textContent = '';
+  root.appendChild(
+    el(
+      'div',
+      'custom-domains-intro',
+      // ⚠ NO ORDINALS. The old copy said "two DNS records, and it is the
+      //   second one that does the work" — written when the panel rendered
+      //   two identical cards. With one card and a step, "the second one"
+      //   has nothing to point at until you scroll, and "two records" primes
+      //   you to hunt for a second card that is not there. Say the SHAPE
+      //   instead (one CNAME, entered twice), which is also what the step
+      //   below says, so the two never disagree.
+      //   § 2.5's warning stays — it is the last clause, and it is the whole
+      //   reason this panel exists.
+      'Use a domain you own. Recued gets and renews the certificate for you. '
+        + 'You add one record twice: once to point the domain at your server, '
+        + 'and once with _acme-challenge. in front, so Recued can prove it may get '
+        + 'certificates. Without the _acme-challenge one, your domain reaches your server, but '
+        + 'no certificate will ever work.',
+    ),
+  );
 
-    root.appendChild(
-      el(
-        'div',
-        'custom-domains-intro',
-        // ⚠ NO ORDINALS. The old copy said "two DNS records, and it is the
-        //   second one that does the work" — written when the panel rendered
-        //   two identical cards. With one card and a step, "the second one"
-        //   has nothing to point at until you scroll, and "two records" primes
-        //   you to hunt for a second card that is not there. Say the SHAPE
-        //   instead (one CNAME, entered twice), which is also what the step
-        //   below says, so the two never disagree.
-        //   § 2.5's warning stays — it is the last clause, and it is the whole
-        //   reason this panel exists.
-        'Use a domain you own. Recued gets and renews the certificate for you. '
-          + 'You add one record twice: once to point the domain at your server, '
-          + 'and once with _acme-challenge. in front, so Recued can prove it may get '
-          + 'certificates. Without the _acme-challenge one, your domain reaches your server, but '
-          + 'no certificate will ever work.',
-      ),
-    );
+  const form = el('div', 'custom-domains-form');
+  const input = doc.createElement('input');
+  input.type = 'text';
+  input.className = 'custom-domains-input';
+  input.placeholder = 'recued.your-domain.com';
+  input.value = state.hostname;
+  input.setAttribute(CUSTOM_DOMAINS_INPUT_ATTR, '');
+  let composingHostname = false;
+  input.addEventListener('compositionstart', () => { composingHostname = true; });
+  input.addEventListener('compositionend', () => { composingHostname = false; });
+  input.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' || event.defaultPrevented || event.isComposing || composingHostname
+      || event.keyCode === 229 || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
+      || destroyed || root.isConnected === false) return;
+    event.preventDefault();
+    // A held key must not start another read after a fast reply. Composition
+    // Enter belongs to the IME; an ordinary Enter uses the button's check path.
+    if (!event.repeat) void runCheck();
+  });
+  input.addEventListener('input', () => {
+    if (destroyed) return;
+    if (state.enrolling) { input.value = state.hostname; return; }
+    const changed = normalize(input.value) !== normalize(state.hostname);
+    state = { ...state, hostname: input.value };
+    if (changed) {
+      ++checkGeneration;
+      setState({ checking: false, preflight: null, decision: null, error: null, enrolled: null });
+    }
+  });
+  form.appendChild(input);
+  const checkButton = makeButton('Check DNS', CUSTOM_DOMAINS_CHECK_BTN_ATTR, () => { void runCheck(); }, false, false);
+  form.appendChild(checkButton);
+  root.appendChild(form);
 
-    const form = el('div', 'custom-domains-form');
-    const input = doc.createElement('input');
-    input.type = 'text';
-    input.className = 'custom-domains-input';
-    input.placeholder = 'recued.your-domain.com';
-    input.value = state.hostname;
-    input.setAttribute(CUSTOM_DOMAINS_INPUT_ATTR, '');
-    input.addEventListener('input', () => {
-      state = { ...state, hostname: input.value };
-    });
-    form.appendChild(input);
-    form.appendChild(
-      makeButton(
-        state.checking ? 'Checking…' : 'Check DNS',
-        CUSTOM_DOMAINS_CHECK_BTN_ATTR,
-        () => { void runCheck(); },
-        state.checking,
-      ),
-    );
-    root.appendChild(form);
+  // These nodes stay mounted through requests and draft changes. In particular,
+  // never replace the input: that would lose its selection, IME and undo stack.
+  const status = el('div', 'custom-domains-status');
+  status.setAttribute(CUSTOM_DOMAINS_STATUS_ATTR, '');
+  status.setAttribute('role', 'status');
+  status.setAttribute('aria-atomic', 'true');
+  status.tabIndex = -1;
+  root.appendChild(status);
+  const results = el('div', 'custom-domains-results');
+  root.appendChild(results);
+  let addButton: HTMLButtonElement | null = null;
 
+  const renderResults = (): void => {
+    results.textContent = '';
+    addButton = null;
     if (state.error !== null) {
       const error = el('div', 'custom-domains-error', state.error);
       error.setAttribute(CUSTOM_DOMAINS_ERROR_ATTR, '');
-      root.appendChild(error);
+      error.setAttribute('role', 'alert');
+      results.appendChild(error);
+    }
+
+    if (state.enrolled !== null) {
+      const acknowledgment = el(
+        'div',
+        'custom-domains-intro',
+        `${state.enrolled} added. Recued will get its certificate once the DNS checks pass, `
+          + 'and renew it from then on.',
+      );
+      acknowledgment.setAttribute('role', 'status');
+      acknowledgment.setAttribute('aria-atomic', 'true');
+      results.appendChild(acknowledgment);
     }
 
     const preflight = state.preflight;
@@ -636,7 +759,7 @@ export const mountCustomDomainsPanel = (
           + `recued.${preflight.hostname} avoids the whole problem and works everywhere.`,
       );
       apex.setAttribute(CUSTOM_DOMAINS_APEX_ATTR, '');
-      root.appendChild(apex);
+      results.appendChild(apex);
     }
 
     // ── the record, then the delegation step ───────────────────────────
@@ -648,12 +771,12 @@ export const mountCustomDomainsPanel = (
       preflight.hostname,
     );
     renderDelegationStep(records, preflight);
-    root.appendChild(records);
+    results.appendChild(records);
 
     // ── the checks ─────────────────────────────────────────────────────
     const checks = el('div', 'custom-domains-records');
     for (const check of preflight.checks) renderCheck(checks, check);
-    root.appendChild(checks);
+    results.appendChild(checks);
 
     // ── what is left to do ─────────────────────────────────────────────
     const decision = state.decision;
@@ -677,37 +800,56 @@ export const mountCustomDomainsPanel = (
           ),
         );
       }
-      if (blockers.childNodes.length > 0) root.appendChild(blockers);
-    }
-
-    if (state.enrolled !== null) {
-      root.appendChild(
-        el(
-          'div',
-          'custom-domains-intro',
-          `${state.enrolled} added. Recued will get its certificate once the checks above pass, `
-            + 'and renew it from then on.',
-        ),
-      );
+      if (blockers.childNodes.length > 0) results.appendChild(blockers);
     }
 
     if (opts.runEnrol !== undefined && state.enrolled === null) {
-      root.appendChild(
-        makeButton(
-          state.enrolling ? 'Adding…' : 'Add this domain',
-          CUSTOM_DOMAINS_ADD_BTN_ATTR,
-          () => { void runEnrol(); },
-          state.enrolling,
-        ),
+      addButton = makeButton(
+        state.enrolling ? 'Adding…' : 'Add this domain',
+        CUSTOM_DOMAINS_ADD_BTN_ATTR,
+        () => { void runEnrol(); },
+        state.enrolling || state.checking,
       );
+      results.appendChild(addButton);
     }
+  };
+
+  const render = (): void => {
+    const active = doc.activeElement;
+    const pending = state.checking || state.enrolling;
+    const ownsPendingFocus = active === checkButton || (addButton !== null && active === addButton);
+    const restoreCheckFocus = active === status && !pending;
+    // Increment before rendering: detached result controls must not act on a
+    // newer draft, or repeat an enrollment while its request is in flight.
+    ++resultsVersion;
+    input.disabled = state.enrolling;
+    checkButton.disabled = pending;
+    const checkLabel = state.checking ? 'Checking…' : 'Check DNS';
+    // Replacing an unchanged label on every keystroke splits Chromium's native
+    // undo transactions, even though the input itself stays mounted.
+    if (checkButton.textContent !== checkLabel) checkButton.textContent = checkLabel;
+    status.textContent = state.enrolling
+      ? `Adding ${normalize(state.hostname)}…`
+      : state.checking ? `Checking DNS for ${normalize(state.hostname)}…` : '';
+    renderResults();
+    if (destroyed || root.isConnected === false || doc.hidden || doc.hasFocus?.() === false) return;
+    // Only restore focus while the operation's status still owns it. Typing,
+    // navigation, a hidden tab, or choosing another control gives up ownership.
+    if (pending && ownsPendingFocus) status.focus?.();
+    else if (restoreCheckFocus) checkButton.focus?.();
   };
 
   render();
 
   return {
+    // Preserve exact edits while treating a cleared form or the last
+    // acknowledged enrollment as clean, even during its DNS refresh.
+    hasUnsavedChanges: () => !destroyed && state.hostname !== '' && state.hostname !== savedHostname,
+    hasInFlightWork: () => !destroyed && state.enrolling,
     destroy() {
       destroyed = true;
+      ++checkGeneration;
+      ++resultsVersion;
       root.remove();
     },
     state: () => state,

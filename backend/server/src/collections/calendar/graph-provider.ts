@@ -18,8 +18,10 @@ import { managedOAuthFetcherFor, type ManagedOAuthConsumers } from '../../manage
  *
  *  Incremental sync uses `calendarView/delta` with `@odata.deltaLink`.
  *  Like gcal, an expired deltaLink surfaces as 410 Gone → the adapter
- *  drops the cached link and re-runs a full-window scan on the next
- *  tick. Recurrence expansion is server-side (calendarView returns
+ *  seeds a new link over the window and replays its walk. That walk
+ *  reports no deletion, so a row in the window it does not hold is
+ *  removed (`CalendarSnapshot`); a window move's re-seed does the same.
+ *  Recurrence expansion is server-side (calendarView returns
  *  pre-expanded instances); seriesMaster / occurrence distinction is
  *  preserved via `seriesMasterId` → `recurring_event_id`.
  *
@@ -47,7 +49,7 @@ import {
   readProviderStringContinuation,
 } from '../../provider-pagination-guard.js';
 
-import { calendarSyncFailureOf } from './provider.js';
+import { calendarSyncFailureOf, listedWindow } from './provider.js';
 import type {
   CalendarProvider,
   CalendarProviderHealth,
@@ -446,6 +448,27 @@ export const createGraphCalProvider = (
 
   const deltaLinkKey = (calendarId: string): string =>
     `${keyPrefix('graph', opts.config.account_slug)}.cal_delta_link.${calendarIdKeySuffix(calendarId)}`;
+  /** When a calendar's delta link was seeded, and over which window. Under the
+   *  link's own key, so removing a mailbox's cursors removes it too. */
+  const deltaWindowKey = (calendarId: string): string => `${deltaLinkKey(calendarId)}.window`;
+
+  /** ⛔ Graph's calendarView delta reports changes only inside the window its
+   *  link was seeded with, and the link outlived it: seeded at the first scan
+   *  and replaced only on a 410, so an event past that window's end was never
+   *  seen by a poll again. Ninety days after enrolment no new meeting arrived
+   *  but through a restart's scan, and none deleted was removed. Due again once
+   *  half the forward horizon (at least a day) has passed, or when the window
+   *  is not on record: a link seeded before this rule. */
+  const deltaWindowDue = async (calendarId: string, now: number): Promise<boolean> => {
+    const raw = await opts.accountStore.get(deltaWindowKey(calendarId));
+    if (!raw) return true;
+    let seededAt: unknown;
+    try { seededAt = (JSON.parse(raw) as { seeded_at?: unknown }).seeded_at; }
+    catch { return true; }
+    if (typeof seededAt !== 'number' || !Number.isFinite(seededAt)) return true;
+    const reseedAfterMs = Math.max(86_400_000, (opts.config.expansion_future_days * 86_400_000) / 2);
+    return now - seededAt >= reseedAfterMs;
+  };
 
   const ensureToken = async (force: boolean): Promise<string | undefined> => {
     if (opts.managedFetcher) return undefined;
@@ -686,6 +709,8 @@ export const createGraphCalProvider = (
     });
     let terminalDeltaLink: string | undefined;
     let deliveryFailed = false;
+    // The ids the walk holds, when it is replayed.
+    const listed: string[] = [];
     while (url) {
       const page: GraphListResponse<GraphCalEvent> = await graphGet(
         pagination.claim(url),
@@ -693,6 +718,7 @@ export const createGraphCalProvider = (
       );
       if (recoveryCallback) {
         for (const event of page.value ?? []) {
+          if (!event['@removed'] && !event.isCancelled) listed.push(event.id);
           if (!(await emitDeltaEvent(calendar, event, recoveryCallback))) {
             deliveryFailed = true;
           }
@@ -721,7 +747,27 @@ export const createGraphCalProvider = (
       );
     }
     if (terminalDeltaLink === undefined) return null;
+    // A new link's first walk is the window's current state and reports no
+    // deletion, and on a 410 it replaces a link that would have: an event the
+    // walk did not hold is gone, so its row is removed (`CalendarSnapshot`).
+    // A rejection throws before the link is stored, so the walk runs again.
+    if (recoveryCallback) {
+      await recoveryCallback({
+        kind: 'calendar',
+        source_id: calendar.id,
+        calendar: {
+          calendar_id: calendar.id,
+          window: listedWindow(Date.parse(startDateTime), Date.parse(endDateTime)),
+          keep: listed,
+        },
+      });
+    }
     await opts.accountStore.set(deltaLinkKey(calendar.id), terminalDeltaLink);
+    await opts.accountStore.set(deltaWindowKey(calendar.id), JSON.stringify({
+      seeded_at: nowOf(),
+      start: startDateTime,
+      end: endDateTime,
+    }));
     return terminalDeltaLink;
   };
 
@@ -797,6 +843,8 @@ export const createGraphCalProvider = (
               } catch (recoveryErr) {
                 markError(`graph delta recovery failed calendar=${cal.id}`, recoveryErr);
                 clean = false;
+                // Not acknowledged: no window re-seed walks it again this tick.
+                deliveryFailed = true;
               }
               retry = false;
               break;
@@ -831,6 +879,21 @@ export const createGraphCalProvider = (
         if (!deliveryFailed && terminalDeltaLink !== undefined) {
           await opts.accountStore.set(deltaLinkKey(cal.id), terminalDeltaLink);
           link = terminalDeltaLink;
+        }
+        // Moving the window: the old link has just reported every change up to
+        // now, so a new one seeded over today's window takes over with no gap.
+        // Its first walk is the window's current state, replayed as the 410
+        // recovery does, which brings in the events past the old window's end.
+        // A failed seed keeps the old link, and the next tick tries again.
+        if (!deliveryFailed && await deltaWindowDue(cal.id, now)) {
+          try {
+            const seeded = await seedDeltaLink(cal, startDateTime, endDateTime, cb);
+            if (seeded === null) throw new Error('re-seeded delta sync returned no watermark');
+            link = seeded;
+          } catch (err) {
+            markError(`graph delta window re-seed failed calendar=${cal.id}`, err);
+            clean = false;
+          }
         }
         break;
       }

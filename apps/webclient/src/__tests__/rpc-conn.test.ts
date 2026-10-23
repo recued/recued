@@ -19,7 +19,7 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
-import { RpcError } from '@recued/contracts';
+import { RPC_WS_MAX_IN_FLIGHT_PER_CLIENT, RpcError } from '@recued/contracts';
 import {
   WebclientReauthRequiredError,
   type WebclientWsClient,
@@ -28,12 +28,14 @@ import {
 import type { WebclientConnectionStatus } from '../realtime/connection-status.js';
 import {
   WEBCLIENT_RPC_DEFAULT_TIMEOUT_MS,
+  WEBCLIENT_RPC_OVERLOAD_RETRY_INITIAL_MS,
   createWebclientRpcConn,
   type WebclientRpcRequestEnvelope,
   type WebclientRpcResultEnvelope,
 } from '../realtime/rpc-conn.js';
 import { createBroadcastSubscriber } from '../realtime/subscriber.js';
 import { createManagedOAuthCaller } from '../settings/managed-oauth-panel.js';
+import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 
 interface FakeWsControls {
   ws: WebclientWsClient;
@@ -45,6 +47,10 @@ interface FakeWsControls {
    *  pending entry's delivery disposition (`sent`). Defaults to
    *  `'connected'` so the existing tests are unaffected. */
   setState(state: WebclientWsState): void;
+  /** Like `setState`, and also tells the `onState` listeners, as the real
+   *  ws-client does on each transition (a new socket on `connected`). */
+  transition(state: WebclientWsState): void;
+  stateListenerCount(): number;
   /** How many times `clearSendQueue()` was invoked. */
   clearSendQueueCount(): number;
 }
@@ -52,6 +58,7 @@ interface FakeWsControls {
 const buildFakeWs = (): FakeWsControls => {
   const sent: unknown[] = [];
   const listeners = new Set<(m: unknown) => void>();
+  const stateListeners = new Set<(s: WebclientWsState) => void>();
   let sendErr: Error | null = null;
   let connState: WebclientWsState = 'connected';
   let clearCount = 0;
@@ -76,8 +83,9 @@ const buildFakeWs = (): FakeWsControls => {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    onState() {
-      return () => undefined;
+    onState(listener) {
+      stateListeners.add(listener);
+      return () => stateListeners.delete(listener);
     },
   };
   return {
@@ -93,6 +101,11 @@ const buildFakeWs = (): FakeWsControls => {
     setState: (state) => {
       connState = state;
     },
+    transition: (state) => {
+      connState = state;
+      for (const l of [...stateListeners]) l(state);
+    },
+    stateListenerCount: () => stateListeners.size,
     clearSendQueueCount: () => clearCount,
   };
 };
@@ -701,5 +714,339 @@ describe('webclient rpc conn: offline fast-fail', () => {
     expect(status.listenerCount()).toBe(0);
     // Firing offline after dispose is inert (no throw).
     expect(() => status.set('offline')).not.toThrow();
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════
+// In-flight limit + `rpc_overloaded`
+// ══════════════════════════════════════════════════════════════════
+
+/** The server refuses a socket's 65th running call with this, before it runs
+ *  (`ws-server.ts`). A Settings page load sent 88 calls against a live server. */
+describe('webclient rpc conn: in-flight limit', () => {
+  const ids = (controls: FakeWsControls): string[] =>
+    controls.sent().map((m) => (m as WebclientRpcRequestEnvelope).request_id);
+  const answer = (controls: FakeWsControls, id: string, result: unknown): void => {
+    controls.fireMessage({ type: 'rpc_result', request_id: id, result });
+  };
+  const refuse = (controls: FakeWsControls, id: string): void => {
+    controls.fireMessage({
+      type: 'rpc_result',
+      request_id: id,
+      error: { code: 'rpc_overloaded', message: 'Too many RPC calls are already running; retry shortly.' },
+    });
+  };
+  /** The call's failure, typed; a call that succeeds fails the test. */
+  const failure = (call: Promise<unknown>): Promise<RpcError> =>
+    call.then(
+      () => { throw new Error('expected the call to fail'); },
+      (err: unknown) => err as RpcError,
+    );
+  const sequence = (): (() => string) => {
+    let seq = 0;
+    return () => `req-${++seq}`;
+  };
+
+  it('by default sends as many calls at once as the server runs per socket, and holds the next', () => {
+    const controls = buildFakeWs();
+    const conn = createWebclientRpcConn({ ws: controls.ws, randomId: sequence() });
+    const calls = Array.from({ length: RPC_WS_MAX_IN_FLIGHT_PER_CLIENT + 1 }, () =>
+      conn.call('reception.endpoints.list' as never, {} as never));
+    for (const c of calls) c.catch(() => undefined);
+    expect(ids(controls)).toHaveLength(RPC_WS_MAX_IN_FLIGHT_PER_CLIENT);
+    expect(conn.pendingCount()).toBe(RPC_WS_MAX_IN_FLIGHT_PER_CLIENT + 1);
+    answer(controls, 'req-1', 'one');
+    expect(ids(controls)).toHaveLength(RPC_WS_MAX_IN_FLIGHT_PER_CLIENT + 1);
+    expect(ids(controls).at(-1)).toBe(`req-${RPC_WS_MAX_IN_FLIGHT_PER_CLIENT + 1}`);
+    conn.dispose();
+  });
+
+  it('holds calls past the limit and sends each as an earlier one settles, in call order', async () => {
+    const controls = buildFakeWs();
+    const conn = createWebclientRpcConn({ ws: controls.ws, randomId: sequence(), max_in_flight: 2 });
+    const calls = [1, 2, 3, 4].map(() => conn.call('reception.endpoints.list' as never, {} as never));
+    expect(ids(controls)).toEqual(['req-1', 'req-2']);
+    answer(controls, 'req-2', 'two');
+    expect(ids(controls)).toEqual(['req-1', 'req-2', 'req-3']);
+    answer(controls, 'req-1', 'one');
+    expect(ids(controls)).toEqual(['req-1', 'req-2', 'req-3', 'req-4']);
+    answer(controls, 'req-3', 'three');
+    answer(controls, 'req-4', 'four');
+    await expect(Promise.all(calls)).resolves.toEqual(['one', 'two', 'three', 'four']);
+    conn.dispose();
+  });
+
+  it('sends a refused call again after a short wait, and the caller only sees the answer', async () => {
+    vi.useFakeTimers();
+    const controls = buildFakeWs();
+    const conn = createWebclientRpcConn({ ws: controls.ws, randomId: () => 'req-1' });
+    try {
+      let settled: unknown = 'pending';
+      const result = conn.call('reception.endpoints.list' as never, {} as never);
+      void result.then((v) => { settled = v; }, (e: unknown) => { settled = e; });
+      refuse(controls, 'req-1');
+      await vi.advanceTimersByTimeAsync(WEBCLIENT_RPC_OVERLOAD_RETRY_INITIAL_MS - 1);
+      expect(ids(controls)).toEqual(['req-1']);
+      expect(settled).toBe('pending');
+      await vi.advanceTimersByTimeAsync(1);
+      expect(ids(controls)).toEqual(['req-1', 'req-1']);
+      answer(controls, 'req-1', { endpoints: [] });
+      await expect(result).resolves.toEqual({ endpoints: [] });
+    } finally {
+      conn.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('waits twice as long after each refusal, and at the call\'s timeout fails `rpc_overloaded` (it did not run), not `timeout`', async () => {
+    vi.useFakeTimers();
+    const controls = buildFakeWs();
+    const conn = createWebclientRpcConn({ ws: controls.ws, randomId: () => 'req-1', default_timeout_ms: 2_000 });
+    try {
+      const failed = conn.call('approval.resolve' as never, {} as never).then(
+        () => { throw new Error('expected a refusal'); },
+        (err: unknown) => err as RpcError,
+      );
+      refuse(controls, 'req-1'); // t=0
+      await vi.advanceTimersByTimeAsync(250); // t=250
+      expect(ids(controls)).toHaveLength(2);
+      refuse(controls, 'req-1');
+      await vi.advanceTimersByTimeAsync(499); // t=749
+      expect(ids(controls)).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(1); // t=750
+      expect(ids(controls)).toHaveLength(3);
+      refuse(controls, 'req-1');
+      await vi.advanceTimersByTimeAsync(1_000); // t=1750
+      expect(ids(controls)).toHaveLength(4);
+      refuse(controls, 'req-1');
+      await vi.advanceTimersByTimeAsync(250); // t=2000, the call's timeout
+      const err = await failed;
+      expect(err.code).toBe('rpc_overloaded');
+      expect(conn.pendingCount()).toBe(0);
+      expect(humanizeRpcError(err)).toBe('Your server is busy right now. Try again in a moment.');
+      // The resend that was due at t=3750 never goes out.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(ids(controls)).toHaveLength(4);
+    } finally {
+      conn.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('a refused call keeps its place ahead of calls made after it', async () => {
+    vi.useFakeTimers();
+    const controls = buildFakeWs();
+    const conn = createWebclientRpcConn({ ws: controls.ws, randomId: sequence(), max_in_flight: 1 });
+    try {
+      const a = conn.call('reception.endpoints.list' as never, {} as never);
+      const b = conn.call('reception.endpoints.list' as never, {} as never);
+      expect(ids(controls)).toEqual(['req-1']);
+      refuse(controls, 'req-1'); // its slot is free, so B goes
+      expect(ids(controls)).toEqual(['req-1', 'req-2']);
+      const c = conn.call('reception.endpoints.list' as never, {} as never);
+      await vi.advanceTimersByTimeAsync(WEBCLIENT_RPC_OVERLOAD_RETRY_INITIAL_MS);
+      expect(ids(controls)).toEqual(['req-1', 'req-2']); // A is due; B holds the slot
+      answer(controls, 'req-2', 'b');
+      expect(ids(controls)).toEqual(['req-1', 'req-2', 'req-1']); // A before C
+      answer(controls, 'req-1', 'a');
+      expect(ids(controls)).toEqual(['req-1', 'req-2', 'req-1', 'req-3']);
+      answer(controls, 'req-3', 'c');
+      await expect(Promise.all([a, b, c])).resolves.toEqual(['a', 'b', 'c']);
+    } finally {
+      conn.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('calls sent on a socket since replaced hold none of the new socket\'s slots', () => {
+    const controls = buildFakeWs();
+    const conn = createWebclientRpcConn({ ws: controls.ws, randomId: sequence(), max_in_flight: 2 });
+    const calls = [1, 2, 3, 4, 5].map(() => conn.call('reception.endpoints.list' as never, {} as never));
+    for (const c of calls) c.catch(() => undefined);
+    expect(ids(controls)).toEqual(['req-1', 'req-2']);
+    // The socket drops. req-1 and req-2 went with it, and their replies can no
+    // longer come; counted against the next socket they would hold both of its
+    // slots until their own timeouts, and the page would wait 30 s after every
+    // reconnect. The waiting calls go to the ws-client's queue for the next
+    // socket instead.
+    controls.transition('reconnecting');
+    expect(ids(controls)).toEqual(['req-1', 'req-2', 'req-3', 'req-4']);
+    controls.transition('connected'); // req-3 and req-4 hold its two slots
+    expect(ids(controls)).toEqual(['req-1', 'req-2', 'req-3', 'req-4']);
+    conn.dispose();
+  });
+
+  it('counts calls another listener sends as a socket opens against that socket', () => {
+    // The connection-status controller hears `connected` before this conn does,
+    // and re-arms its subscriptions at once: those calls are on the NEW socket.
+    // Booked to the old one, they let 70 of Settings' calls out at once.
+    const controls = buildFakeWs();
+    controls.setState('reconnecting');
+    let conn: ReturnType<typeof createWebclientRpcConn> | null = null;
+    controls.ws.onState((state) => {
+      const c = conn;
+      if (state !== 'connected' || c === null) return;
+      for (let i = 0; i < 3; i += 1) {
+        c.call('approval.subscribe' as never, {} as never).catch(() => undefined);
+      }
+    });
+    conn = createWebclientRpcConn({ ws: controls.ws, randomId: sequence(), max_in_flight: 2 });
+    controls.transition('connected');
+    expect(ids(controls)).toEqual(['req-1', 'req-2']);
+    conn.dispose();
+  });
+
+  it('calls queued while disconnected count against the socket they will reach', () => {
+    const controls = buildFakeWs();
+    controls.setState('reconnecting');
+    const conn = createWebclientRpcConn({ ws: controls.ws, randomId: sequence(), max_in_flight: 2 });
+    const calls = [1, 2, 3].map(() => conn.call('reception.endpoints.list' as never, {} as never));
+    for (const c of calls) c.catch(() => undefined);
+    // Two go into the ws-client's offline queue; the third waits.
+    expect(ids(controls)).toEqual(['req-1', 'req-2']);
+    controls.transition('connected'); // the queue drains onto this socket
+    expect(ids(controls)).toEqual(['req-1', 'req-2']);
+    answer(controls, 'req-1', 'one');
+    expect(ids(controls)).toEqual(['req-1', 'req-2', 'req-3']);
+    conn.dispose();
+  });
+
+  it('on going offline, a call still waiting for a slot fails as not delivered and is never sent', async () => {
+    const controls = buildFakeWs();
+    const status = buildFakeConnStatus('connected');
+    const conn = createWebclientRpcConn({
+      ws: controls.ws,
+      connectionStatus: status.status,
+      randomId: sequence(),
+      max_in_flight: 1,
+    });
+    const sentCall = failure(conn.call('approval.resolve' as never, {} as never));
+    const heldCall = failure(conn.call('approval.resolve' as never, {} as never));
+    // A `connected` status marks every call handed over as delivered; the
+    // waiting one was not handed over.
+    status.set('reconnecting');
+    status.set('connected');
+    status.set('offline');
+    expect((await sentCall).code).toBe('connection_lost');
+    expect((await heldCall).code).toBe('server_offline');
+    controls.transition('connected');
+    expect(ids(controls)).toEqual(['req-1']);
+    conn.dispose();
+  });
+
+  it('on going offline, a refused call waiting to be sent again fails as not delivered: it did not run', async () => {
+    vi.useFakeTimers();
+    const controls = buildFakeWs();
+    const status = buildFakeConnStatus('connected');
+    const conn = createWebclientRpcConn({
+      ws: controls.ws,
+      connectionStatus: status.status,
+      randomId: () => 'req-1',
+    });
+    try {
+      const failed = failure(conn.call('approval.resolve' as never, {} as never));
+      refuse(controls, 'req-1');
+      status.set('offline');
+      expect((await failed).code).toBe('server_offline');
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(ids(controls)).toEqual(['req-1']);
+    } finally {
+      conn.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('a call that fails to send, times out or is aborted frees its slot for the next', async () => {
+    vi.useFakeTimers();
+    const controls = buildFakeWs();
+    const conn = createWebclientRpcConn({
+      ws: controls.ws,
+      randomId: sequence(),
+      max_in_flight: 1,
+      default_timeout_ms: 1_000,
+    });
+    try {
+      controls.setSendError(new Error('socket write failed'));
+      const a = failure(conn.call('reception.endpoints.list' as never, {} as never));
+      const b = failure(conn.call('reception.endpoints.list' as never, {} as never));
+      const abortC = new AbortController();
+      const c = failure(conn.call('reception.endpoints.list' as never, {} as never, { signal: abortC.signal, timeout: 5_000 }));
+      const d = conn.call('reception.endpoints.list' as never, {} as never, { timeout: 5_000 });
+      expect((await a).code).toBe('transport');
+      expect(ids(controls)).toEqual(['req-2']); // A never reached the socket
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect((await b).code).toBe('timeout');
+      expect(ids(controls)).toEqual(['req-2', 'req-3']);
+      abortC.abort();
+      expect((await c).code).toBe('aborted');
+      expect(ids(controls)).toEqual(['req-2', 'req-3', 'req-4']);
+      answer(controls, 'req-4', 'd');
+      await expect(d).resolves.toBe('d');
+    } finally {
+      conn.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('a waiting call can be aborted, and is never sent', async () => {
+    const controls = buildFakeWs();
+    const conn = createWebclientRpcConn({ ws: controls.ws, randomId: sequence(), max_in_flight: 1 });
+    const first = conn.call('reception.endpoints.list' as never, {} as never);
+    const abort = new AbortController();
+    const held = failure(conn.call('reception.endpoints.list' as never, {} as never, { signal: abort.signal }));
+    abort.abort();
+    expect((await held).code).toBe('aborted');
+    answer(controls, 'req-1', 'one');
+    await expect(first).resolves.toBe('one');
+    expect(ids(controls)).toEqual(['req-1']);
+    expect(conn.pendingCount()).toBe(0);
+    conn.dispose();
+  });
+
+  it('a call that waits out its whole timeout for a slot fails `timeout` and says it was not sent', async () => {
+    vi.useFakeTimers();
+    const controls = buildFakeWs();
+    const conn = createWebclientRpcConn({
+      ws: controls.ws,
+      randomId: sequence(),
+      max_in_flight: 1,
+      default_timeout_ms: 1_000,
+    });
+    try {
+      const first = conn.call('reception.endpoints.list' as never, {} as never, { timeout: 5_000 });
+      const held = failure(conn.call('reception.endpoints.list' as never, {} as never));
+      await vi.advanceTimersByTimeAsync(1_000);
+      const err = await held;
+      expect(err.code).toBe('timeout');
+      expect(err.message).toContain('was not sent');
+      answer(controls, 'req-1', 'one');
+      await expect(first).resolves.toBe('one');
+      expect(ids(controls)).toEqual(['req-1']);
+    } finally {
+      conn.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('dispose fails waiting calls, cancels a due resend and stops following sockets', async () => {
+    vi.useFakeTimers();
+    const controls = buildFakeWs();
+    const conn = createWebclientRpcConn({ ws: controls.ws, randomId: sequence(), max_in_flight: 1 });
+    try {
+      const calls = [1, 2, 3].map(() =>
+        conn.call('reception.endpoints.list' as never, {} as never).catch((e: unknown) => e));
+      refuse(controls, 'req-1'); // B goes out; A waits to be sent again; C waits
+      expect(ids(controls)).toEqual(['req-1', 'req-2']);
+      expect(controls.stateListenerCount()).toBe(1);
+      conn.dispose();
+      expect(await Promise.all(calls)).toHaveLength(3);
+      expect(conn.pendingCount()).toBe(0);
+      expect(controls.stateListenerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(10_000);
+      controls.transition('connected');
+      expect(ids(controls)).toEqual(['req-1', 'req-2']);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

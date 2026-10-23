@@ -71,10 +71,12 @@ interface FakeElement {
   addEventListener(name: string, fn: (ev: unknown) => void): void;
   removeEventListener(name: string, fn: (ev: unknown) => void): void;
   click(): void;
+  focus(): void;
+  contains(node: FakeElement | null): boolean;
   type: string;
 }
 
-const makeFakeElement = (tagName: string): FakeElement => {
+const makeFakeElement = (tagName: string, doc?: FakeDocument): FakeElement => {
   const listeners = new Map<string, Array<(ev: unknown) => void>>();
   const attrs = new Map<string, string>();
   const children: FakeElement[] = [];
@@ -100,6 +102,7 @@ const makeFakeElement = (tagName: string): FakeElement => {
     removeChild: (target) => {
       const idx = children.indexOf(target);
       if (idx < 0) throw new Error('removeChild: not a child');
+      if (doc && target.contains(doc.activeElement)) doc.activeElement = null;
       children.splice(idx, 1);
       target.parent = null;
       return target;
@@ -125,17 +128,26 @@ const makeFakeElement = (tagName: string): FakeElement => {
       const arr = listeners.get('click') ?? [];
       for (const fn of arr) fn({ target: el });
     },
+    focus: () => {
+      if (doc && !el.disabled) doc.activeElement = el;
+    },
+    contains: (node) => node === el || children.some(child => child.contains(node)),
   };
   return el;
 };
 
 interface FakeDocument {
+  activeElement: FakeElement | null;
   createElement(tag: string): FakeElement;
 }
 
-const makeFakeDocument = (): FakeDocument => ({
-  createElement: (tag) => makeFakeElement(tag),
-});
+const makeFakeDocument = (): FakeDocument => {
+  const doc: FakeDocument = {
+    activeElement: null,
+    createElement: (tag) => makeFakeElement(tag, doc),
+  };
+  return doc;
+};
 
 const findByAttr = (root: FakeElement, attr: string): FakeElement | null => {
   if (root.hasAttribute(attr)) return root;
@@ -191,8 +203,8 @@ interface SetupResult {
 }
 
 const setupMount = (overrides: SetupOptions = {}): SetupResult => {
-  const host = makeFakeElement('div');
   const doc = makeFakeDocument();
+  const host = doc.createElement('div');
   const callerLog: Array<{ reason?: string }> = [];
 
   const defaultCaller: TlsRenewCaller = async (input) => {
@@ -472,6 +484,119 @@ describe('D-148 § A.6.5 — mountTlsRenewPanel: state machine', () => {
     await mount.clickConfirm();
     expect(callerLog).toEqual([{ reason: 'cron drift' }]);
   });
+});
+
+// ══════════════════════════════════════════════════════════════════
+// Focus ownership
+// ══════════════════════════════════════════════════════════════════
+
+describe('D-148 TLS renewal focus ownership', () => {
+  it('leaves existing focus alone on mount', () => {
+    const doc = makeFakeDocument();
+    const outside = doc.createElement('button');
+    outside.focus();
+    const mount = mountTlsRenewPanel({
+      host: doc.createElement('div') as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      runRenew: async () => SUCCESS_RESULT,
+    });
+    expect(doc.activeElement).toBe(outside);
+    mount.dispose();
+  });
+
+  it('starts on safe Cancel and restores Renew now when canceled', () => {
+    const { host, doc, mount, callerLog } = setupMount();
+    const oldRenew = findByAttr(host, TLS_RENEW_RENEW_BTN_ATTR)!;
+    oldRenew.focus();
+    mount.clickRenew();
+    expect(doc.activeElement).toBe(findByAttr(host, TLS_RENEW_CANCEL_BTN_ATTR));
+    mount.clickCancel();
+    expect(doc.activeElement).toBe(findByAttr(host, TLS_RENEW_RENEW_BTN_ATTR));
+    oldRenew.click();
+    expect(mount.getState()).toBe('idle');
+    expect(doc.activeElement).toBe(findByAttr(host, TLS_RENEW_RENEW_BTN_ATTR));
+    expect(callerLog).toEqual([]);
+  });
+
+  for (const outcome of ['success', 'refused', 'thrown'] as const) {
+    for (const owner of ['panel', 'outside', 'blurred'] as const) {
+      it(`${outcome} preserves ${owner} focus through pending and result states`, async () => {
+        let resolve!: (result: RotationResult) => void;
+        let reject!: (error: Error) => void;
+        const caller = vi.fn<TlsRenewCaller>(() => new Promise((yes, no) => {
+          resolve = yes;
+          reject = no;
+        }));
+        const { host, doc, mount } = setupMount({ caller });
+        const outside = doc.createElement('button');
+        const oldRenew = findByAttr(host, TLS_RENEW_RENEW_BTN_ATTR)!;
+        oldRenew.focus();
+        mount.clickRenew();
+        const oldCancel = findByAttr(host, TLS_RENEW_CANCEL_BTN_ATTR)!;
+        const oldConfirm = findByAttr(host, TLS_RENEW_CONFIRM_BTN_ATTR)!;
+        oldConfirm.focus();
+        const pending = mount.clickConfirm();
+        const status = findByAttr(host, TLS_RENEW_STATUS_ATTR)!;
+        expect(doc.activeElement).toBe(status);
+        expect(status.getAttribute('tabindex')).toBe('-1');
+        expect(status.getAttribute('aria-atomic')).toBe('true');
+        expect(findByAttr(host, TLS_RENEW_CONFIRM_BTN_ATTR)?.disabled).toBe(true);
+        expect(findByAttr(host, TLS_RENEW_CANCEL_BTN_ATTR)?.disabled).toBe(true);
+        // Retained controls must not restart, cancel, or replace an active RPC.
+        oldRenew.click();
+        oldCancel.click();
+        oldConfirm.click();
+        expect(mount.getState()).toBe('busy');
+        expect(caller).toHaveBeenCalledExactlyOnceWith({});
+        if (owner === 'outside') outside.focus();
+        if (owner === 'blurred') doc.activeElement = null;
+        if (outcome === 'thrown') reject(new Error('Synthetic transport failure'));
+        else resolve(outcome === 'success' ? SUCCESS_RESULT : FAILURE_RESULT('acme_helper_unavailable'));
+        await pending;
+        expect(mount.getState()).toBe(outcome === 'success' ? 'done' : 'error');
+        const result = findByAttr(host, outcome === 'success' ? TLS_RENEW_CLOSE_BTN_ATTR : TLS_RENEW_RETRY_BTN_ATTR)!;
+        expect(doc.activeElement).toBe(owner === 'panel' ? result : owner === 'outside' ? outside : null);
+        if (outcome !== 'success') {
+          result.focus();
+          mount.clickRetry();
+          expect(doc.activeElement).toBe(findByAttr(host, TLS_RENEW_CANCEL_BTN_ATTR));
+          oldConfirm.click();
+          expect(mount.getState()).toBe('confirm');
+          expect(doc.activeElement).toBe(findByAttr(host, TLS_RENEW_CANCEL_BTN_ATTR));
+          expect(caller).toHaveBeenCalledTimes(1);
+          mount.clickCancel();
+        } else {
+          result.focus();
+          mount.clickClose();
+        }
+        expect(doc.activeElement).toBe(findByAttr(host, TLS_RENEW_RENEW_BTN_ATTR));
+      });
+    }
+
+    it(`ignores a late ${outcome} after disposal`, async () => {
+      let resolve!: (result: RotationResult) => void;
+      let reject!: (error: Error) => void;
+      const onRenewed = vi.fn();
+      const { host, doc, mount } = setupMount({
+        caller: () => new Promise((yes, no) => { resolve = yes; reject = no; }),
+        onRenewed,
+      });
+      findByAttr(host, TLS_RENEW_RENEW_BTN_ATTR)!.focus();
+      mount.clickRenew();
+      findByAttr(host, TLS_RENEW_CONFIRM_BTN_ATTR)!.focus();
+      const pending = mount.clickConfirm();
+      mount.dispose();
+      const outside = doc.createElement('button');
+      outside.focus();
+      if (outcome === 'thrown') reject(new Error('Synthetic transport failure'));
+      else resolve(outcome === 'success' ? SUCCESS_RESULT : FAILURE_RESULT('acme_helper_unavailable'));
+      await pending;
+      expect(doc.activeElement).toBe(outside);
+      expect(host.children).toEqual([]);
+      expect(mount.getState()).toBe('busy');
+      expect(onRenewed).not.toHaveBeenCalled();
+    });
+  }
 });
 
 // ══════════════════════════════════════════════════════════════════

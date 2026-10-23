@@ -6,6 +6,7 @@
 import type { ArchiveImportOperationStatus } from '@recued/contracts';
 import type { WebclientLocalStore } from '../storage/local-store.js';
 import type { ArchiveImportCaller } from './archive-backup-panel.js';
+import { mountPostRestoreReadiness, type RestoreReadinessOptions } from './post-restore-readiness.js';
 
 export type ArchiveImportReceiptState = ArchiveImportOperationStatus['status'] | 'checking' | 'unavailable';
 export interface ArchiveImportReceiptStorage {
@@ -236,6 +237,7 @@ export const mountArchiveImportReceipt = (options: {
   host: HTMLElement;
   document: Document;
   controller: ArchiveImportReceiptController;
+  readiness?: RestoreReadinessOptions;
   onDismissFocus?: () => void;
 }): (() => void) => {
   const { host, document: doc, controller } = options;
@@ -274,5 +276,8 @@ export const mountArchiveImportReceipt = (options: {
     if (canClear || doc.activeElement === clear) { clear.removeAttribute('hidden'); note.removeAttribute('hidden'); }
     else { clear.setAttribute('hidden', ''); note.setAttribute('hidden', ''); }
   };
-  const detach = controller.subscribe(render); render(); return detach;
+  const readinessHost = doc.createElement('section'); host.appendChild(readinessHost);
+  const detachReadiness = options.readiness ? mountPostRestoreReadiness({ ...options.readiness,
+    host: readinessHost, document: doc, receipt: controller }) : () => undefined;
+  const detach = controller.subscribe(render); render(); return () => { detachReadiness(); detach(); };
 };

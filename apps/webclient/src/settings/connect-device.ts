@@ -767,6 +767,9 @@ export const CHECK_EXPOSURE_LABEL = 'Check from the internet';
 export const CHECK_CONNECTION_LABEL = 'Check my connection';
 export const CHECK_CONNECTION_NOTE =
   'Checks your address from the internet and from this device.';
+export const CHECK_CONNECTION_RUNNING_NOTE = 'Checking your connection…';
+export const CHECK_CONNECTION_FINISHED_NOTE =
+  'Check finished. See the results above.';
 
 export const CHECK_HERE_LABEL = 'Check from this device';
 export const CHECK_HERE_AGAIN_LABEL = 'Check again';

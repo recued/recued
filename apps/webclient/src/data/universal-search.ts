@@ -80,6 +80,8 @@ export interface UniversalSearchProps {
   query: string;
   /** In flight — a query is running. */
   loading?: boolean;
+  /** Installed recipes and packs are independent of the record search. */
+  capabilitiesLoading?: boolean;
   /** `collection.searchAll` groups, server-ordered by hit count. */
   groups?: ReadonlyArray<CollectionSearchGroup>;
   /** Installed recipes matching the same query — the owner's CAPABILITIES, as
@@ -323,15 +325,18 @@ export const renderUniversalSearch = (
     return `<div class="rq-search">${box}
 <p class="rq-hint">Type to search across everything on this server.</p></div>`;
   }
-  if (props.loading === true) {
-    return `<div class="rq-search">${box}
-<p class="rq-hint" role="status">Searching…</p></div>`;
-  }
   const groups = props.groups ?? [];
   const recipes = props.recipes ?? [];
   const packs = props.packs ?? [];
   const market = props.marketplace ?? [];
+  const pending = props.loading === true
+    ? props.capabilitiesLoading === true ? 'Searching…' : 'Searching records…'
+    : props.capabilitiesLoading === true ? 'Searching installed recipes and packs…' : '';
+  const progress = pending ? `<p class="rq-hint" role="status">${pending}</p>` : '';
   if (groups.length === 0 && recipes.length === 0 && packs.length === 0) {
+    // An unfinished local read cannot establish an empty result or justify
+    // offering a cloud search. Completed groups remain usable while it runs.
+    if (progress) return `<div class="rq-search">${box}${progress}</div>`;
     // ⛔ NAMES THE SCOPE IT SEARCHED. "No results" alone cannot be told apart
     // from "the search did not run", and an owner reading the shorter sentence
     // concludes their data is not there when it may simply not be synced.
@@ -349,6 +354,7 @@ ${market.length === 0 && props.marketplaceOffered === true
   const places = groups.length + (recipes.length > 0 ? 1 : 0) + (packs.length > 0 ? 1 : 0);
   return `<div class="rq-search">${box}
 <p class="rq-summary" role="status">${total + recipes.length + packs.length}${groups.some((g) => g.more) ? '+' : ''} in ${places} ${places === 1 ? 'place' : 'places'}</p>
+${progress}
 ${groups.map((g) => renderGroup(g, props.actionAttr, now)).join('')}
 ${packs.length > 0 ? renderPackGroup(packs, props.actionAttr) : ''}
 ${recipes.length > 0 ? renderRecipeGroup(recipes, props.actionAttr) : ''}

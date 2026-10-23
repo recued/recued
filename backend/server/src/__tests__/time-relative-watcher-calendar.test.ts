@@ -9,6 +9,8 @@
  *      fired at the first check);
  *    - it had no lookback, so after install every past occurrence in the
  *      warehouse fired once, one per check.
+ *  A third (2026-10-22): its ledger kept no date, so a meeting moved after
+ *  its notice never got one at its new time ("a meeting that moves").
  *
  *  ⚠ The suite's other time-relative tests use a registry whose `list()`
  *  ignores the query, so no window or page can be tested there. These run the
@@ -23,6 +25,7 @@ import {
   forgetTimeRelativeWatcherRecipe,
   handleTimeRelativeWatcher,
   TIME_RELATIVE_FIRST_CHECK_GRACE_MS,
+  TIME_RELATIVE_MOVED_GRACE_MS,
 } from '../watchers/time-relative-watcher.js';
 import { createTestCalendarStack } from './helpers/calendar-stack.js';
 import { createWatcherDispatcher } from '../watchers/index.js';
@@ -108,6 +111,22 @@ describe('time-relative-watcher on an ALL-DAY event (2026-10-07)', () => {
     expect(fired.should_run).toBe(true);
     expect(fired.anchor_at).toBe(Date.UTC(2026, 11, 24));
   });
+
+  it('moved to another day, it gets its "day before" again', async () => {
+    seedAllDay('holiday', Date.UTC(2026, 11, 24));
+    expect((await allDayCheck(Date.parse('2026-12-23T08:30:00Z'), 'America/Los_Angeles')).should_run).toBe(true);
+    seedAllDay('holiday', Date.UTC(2026, 11, 26));
+    const again = await allDayCheck(Date.parse('2026-12-25T08:30:00Z'), 'America/Los_Angeles');
+    expect(again.should_run).toBe(true);
+    expect(again.anchor_at).toBe(Date.parse('2026-12-26T08:00:00Z'));
+  });
+
+  it('⛔ a new zone for the owner repeats no fire: the ledger keeps the day as the event stores it', async () => {
+    seedAllDay('holiday', Date.UTC(2026, 11, 24));
+    expect((await allDayCheck(Date.parse('2026-12-23T08:30:00Z'), 'America/Los_Angeles')).should_run).toBe(true);
+    // In Honolulu its day before begins at 10:00 UTC: after that fire, and within the hour.
+    expect((await allDayCheck(Date.parse('2026-12-23T10:30:00Z'), 'Pacific/Honolulu')).should_run).toBe(false);
+  });
 });
 
 describe('time-relative-watcher on a calendar', () => {
@@ -174,6 +193,56 @@ describe('time-relative-watcher on a calendar', () => {
     seedEvent('conference', now - 2 * DAY, 3 * 24 * 60);
     seedEvent('standup', now + 20 * MINUTE);
     expect(await firesOver(3)).toEqual(['standup']);
+  });
+});
+
+/** 2026-10-22: the ledger kept no date, so a boundary that had fired never
+ *  fired again for its record, wherever the record's date went. */
+describe('a meeting that moves', () => {
+  it('⛔ moved later after its notice, it gets one at its new time, once', async () => {
+    seedEvent('review', now + 20 * MINUTE); // 09:20: its boundary crossed 10 minutes ago
+    expect(await firesOver(2)).toEqual(['review']);
+    seedEvent('review', now + 6 * HOUR); // moved to 15:00
+    expect(await firesOver(2)).toEqual([]);
+    now += 5 * HOUR + 30 * MINUTE; // 14:30
+    const out = await check();
+    expect(out.should_run).toBe(true);
+    expect(out.anchor_at).toBe(now + 30 * MINUTE);
+    expect(await firesOver(2)).toEqual([]);
+  });
+
+  it('moved earlier after its notice, it does not get a second one', async () => {
+    seedEvent('review', now + 30 * MINUTE); // 09:30: announced at 09:00
+    expect(await firesOver(1)).toEqual(['review']);
+    now += 5 * MINUTE;
+    seedEvent('review', now + 10 * MINUTE); // moved to 09:15, a boundary before that notice
+    expect(await firesOver(2)).toEqual([]);
+  });
+
+  it('a meeting moved to start soon still gets its notice; an edit to one that is over does not', async () => {
+    seedEvent('soon', now + 20 * MINUTE);
+    seedEvent('over', now + 25 * MINUTE);
+    expect(await firesOver(2)).toEqual(['soon', 'over']);
+    now += 6 * HOUR; // 15:00
+    seedEvent('soon', now + 10 * MINUTE); // its new boundary crossed 20 minutes ago
+    seedEvent('over', now - 2 * HOUR); // corrected to 13:00: its new boundary crossed 2½ hours ago
+    expect(TIME_RELATIVE_MOVED_GRACE_MS).toBe(HOUR);
+    expect(await firesOver(3)).toEqual(['soon']);
+  });
+
+  it('a ledger from before dates were kept gains the column, and its fires still count', async () => {
+    // The ledger as it was until 2026-10-22.
+    db.exec(`CREATE TABLE time_relative_watcher_state (
+      recipe_id TEXT NOT NULL, slug TEXT NOT NULL, record_id TEXT NOT NULL,
+      offset_label TEXT NOT NULL, fired_at INTEGER NOT NULL,
+      PRIMARY KEY (recipe_id, slug, record_id, offset_label))`);
+    seedEvent('review', now + 20 * MINUTE);
+    expect(await firesOver(1)).toEqual(['review']);
+    // A fire recorded then, or by an older server, has no date.
+    db.prepare('UPDATE time_relative_watcher_state SET stored_anchor = NULL').run();
+    seedEvent('review', now + 6 * HOUR);
+    now += 5 * HOUR + 30 * MINUTE;
+    expect(await firesOver(2)).toEqual([]);
   });
 });
 

@@ -39,15 +39,16 @@
  *  reconciles against `pair.list`; the accepted row disappears when
  *  that authoritative roster reports its `revoked_at` stamp. The
  *  delegated click path remains fire-and-forget, while the internal
- *  pipeline awaits reconciliation so it can preserve a useful focus
- *  owner across both renders. On rpc failure the mount surfaces an
+ *  pipeline awaits the current roster read, including one started by an
+ *  overlapping broadcast, so its busy state and focus follow reconciliation.
+ *  On rpc failure the mount surfaces an
  *  inline error + keeps the confirm panel expanded.
  *
  *  DD#4 — Auto-refresh on mount + live `pair.list_changed`. The mount
  *  fires `runPairList` once on construction so a cold-load Settings →
  *  Devices renders the current roster without the user clicking
- *  anything. A failure surfaces inline as "Couldn't load devices"; the
- *  user can refresh manually via a re-mount (settings route flip). When
+ *  anything. Refresh offers an explicit presence check; failed reads
+ *  keep the last successful roster and check time, with inline Retry. When
  *  the optional `subscribe` seam is wired (production threads the
  *  bootstrap's `subscriber.on`), the mount also subscribes to the
  *  `pair.list_changed` broadcast and re-calls `runPairList` on it — so a
@@ -94,8 +95,8 @@ export interface MountDevicesPageOptions {
   /** Element the renderer mounts into. Owned wholesale — innerHTML
    *  is overwritten on every state transition. */
   host: HTMLElement;
-  /** `pair.list` rpc caller. Fires once on mount + after every
-   *  successful revoke. */
+  /** `pair.list` rpc caller for mount, manual checks, broadcasts, and
+   *  reconciliation after a successful revoke. */
   runPairList: PairListCaller;
   /** `pair.revoke` rpc caller. Fires on the user's "Yes, revoke"
    *  click after the inline confirm. */
@@ -108,7 +109,7 @@ export interface MountDevicesPageOptions {
    *  this when they know it. */
   currentInstanceId?: string;
   /** Optional clock seam (tests). Defaults to `Date.now`. Threads
-   *  through to the renderer's relative-time formatter. */
+   *  through to the renderer and stamps successful roster reads. */
   now?: () => number;
   /** Optional sink fired when `pair.list` rejects. Best-effort —
    *  throws are swallowed by the mount. Defaults to no-op. */
@@ -117,16 +118,16 @@ export interface MountDevicesPageOptions {
    *  Production wires the bootstrap's `subscriber.on`; tests inject a
    *  fake or omit it. When present the mount subscribes to
    *  `pair.list_changed` and re-fetches the roster on it (DD#4), and
-   *  unsubscribes on `dispose()`. Absent ⇒ the mount is mount-fetch +
-   *  revoke-refresh only (the pre-D-156-follow-on behaviour). */
+   *  unsubscribes on `dispose()`. Manual checks remain available when
+   *  this seam is absent. */
   subscribe?: BroadcastSubscriber['on'];
 }
 
 export interface DevicesPageMount {
   /** Re-fetch the roster + re-render. Idempotent. */
   refresh(): Promise<void>;
-  /** A user-confirmed revoke whose authoritative roster refresh has not
-   *  settled. Initial, broadcast, and retry list reads are excluded. */
+  /** A user-confirmed revoke awaiting its command or current roster refresh.
+   *  Initial, broadcast, manual, and retry reads alone are excluded. */
   hasInFlightWork(): boolean;
   /** Synchronous teardown — clears host + detaches the click
    *  listener. */
@@ -145,6 +146,7 @@ interface MountState {
   revokeSucceeded?: boolean;
   listError?: string;
   listRetrying?: boolean;
+  lastSuccessfulAt?: number;
   loading: boolean;
 }
 
@@ -191,8 +193,7 @@ const toDevicesPageRow = (
 // Mount
 // ════════════════════════════════════════════════════════════════
 
-/** Render the devices roster + wire revoke. Fires `runPairList` once
- *  on mount + after every successful revoke. */
+/** Render the devices roster + wire refresh and revoke. */
 export const mountDevicesPage = (
   options: MountDevicesPageOptions,
 ): DevicesPageMount => {
@@ -204,6 +205,14 @@ export const mountDevicesPage = (
   };
   let disposed = false;
   let revokeInFlight = false;
+  let listRevision = 0;
+  let resolveRevokeRoster: (() => void) | null = null;
+
+  const settleRevokeRoster = (): void => {
+    const resolve = resolveRevokeRoster;
+    resolveRevokeRoster = null;
+    resolve?.();
+  };
 
   const findAction = (
     action: string,
@@ -230,24 +239,6 @@ export const mountDevicesPage = (
     candidate.focus({ preventScroll: true });
     candidate.scrollIntoView?.({ block: 'nearest' });
     return true;
-  };
-
-  const actionHasFocus = (action: string, instanceId?: string): boolean => {
-    // ⛔ `?? null` IS LOAD-BEARING. `ownerDocument?.activeElement` yields
-    // UNDEFINED when either is absent, and the cast claimed null-only — so the
-    // `active === null` clause below passed it through and `typeof
-    // active.getAttribute` threw on the very guard meant to protect the call.
-    // That unhandled TypeError aborted doRevoke between the resolved revoke and
-    // its roster refresh, so a revoked device stayed on the active roster.
-    const active = (host.ownerDocument?.activeElement ?? null) as HTMLElement | null;
-    if (active === null || typeof active.getAttribute !== 'function') {
-      return false;
-    }
-    return active.getAttribute('data-action') === action
-      && (
-        instanceId === undefined
-        || active.getAttribute('data-instance-id') === instanceId
-      );
   };
 
   const focusedRevokeAction = (
@@ -303,6 +294,12 @@ export const mountDevicesPage = (
     if (disposed) return;
     const pageState: DevicesPageState = {
       rows: state.rows,
+      refresh: {
+        pending: state.loading,
+        ...(state.lastSuccessfulAt !== undefined
+          ? { lastSuccessfulAt: state.lastSuccessfulAt }
+          : {}),
+      },
       ...(state.confirmingInstanceId !== undefined
         ? { confirmingInstanceId: state.confirmingInstanceId }
         : {}),
@@ -343,11 +340,37 @@ export const mountDevicesPage = (
     render();
   };
 
+  const setStatePreservingFocus = (patch: Partial<MountState>): void => {
+    // Async renders replace the entire table. Follow the control that owns
+    // focus at this render, including a confirmation opened during the read.
+    // Focus elsewhere on the page belongs to its owner and stays there.
+    const active = (host.ownerDocument?.activeElement ?? null) as HTMLElement | null;
+    const owned = active !== null
+      && (typeof host.contains !== 'function' || host.contains(active));
+    const action = owned ? active.getAttribute?.('data-action') : undefined;
+    const instanceId = owned ? active.getAttribute?.('data-instance-id') ?? undefined : undefined;
+    const restoreAction = action === 'refresh-devices' || action === 'retry-list'
+      || action === 'revoke-device' || action === 'cancel-revoke' || action === 'confirm-revoke';
+    const restoreReceipt = owned && active.hasAttribute?.('data-device-revoke-success');
+    setState(patch);
+    if (!focusIsUnowned()) return;
+    if (restoreAction) {
+      if (focusAction(action, instanceId)) return;
+      if (action === 'retry-list') focusRecoveredRoster();
+      else focusAction('refresh-devices');
+    } else if (restoreReceipt) {
+      focusSuccessReceipt();
+    }
+  };
+
   // ── Roster fetch ─────────────────────────────────────────────
   const refresh = async (fromRetry = false): Promise<void> => {
     if (disposed) return;
     if (fromRetry && state.listRetrying) return;
-    setState(fromRetry
+    // Mount, manual, broadcast, Retry, and post-revoke reads can overlap. Only the
+    // newest read may publish rows, errors, loading state, or focus changes.
+    const revision = ++listRevision;
+    setStatePreservingFocus(fromRetry
       ? { loading: true, listRetrying: true }
       : { loading: true, listError: undefined, listRetrying: false });
     if (fromRetry) focusAction('retry-list');
@@ -355,15 +378,13 @@ export const mountDevicesPage = (
     try {
       response = await runPairList();
     } catch (err) {
-      if (disposed) return;
-      const returnToRetry = fromRetry && actionHasFocus('retry-list');
+      if (disposed || revision !== listRevision) return;
       const wrapped = err instanceof Error ? err : new Error(String(err));
-      setState({
+      setStatePreservingFocus({
         loading: false,
         listError: LIST_ERROR_COPY,
         listRetrying: false,
       });
-      if (returnToRetry) focusAction('retry-list');
       if (options.onListError) {
         try {
           options.onListError(wrapped);
@@ -371,22 +392,23 @@ export const mountDevicesPage = (
           /* host sink failures are isolated — keep the mount alive */
         }
       }
+      if (revision === listRevision) settleRevokeRoster();
       return;
     }
-    if (disposed) return;
-    const advanceFromRetry = fromRetry && actionHasFocus('retry-list');
+    if (disposed || revision !== listRevision) return;
     // R30 — revoked devices drop off the active roster (they linger only
     // in the audit log; re-pairing returns them as a fresh row).
     const rows = response.devices
       .filter((d) => d.revoked_at === null)
       .map((d) => toDevicesPageRow(d, options.currentInstanceId));
-    setState({
+    setStatePreservingFocus({
       rows,
       loading: false,
       listError: undefined,
       listRetrying: false,
+      lastSuccessfulAt: (options.now ?? Date.now)(),
     });
-    if (advanceFromRetry && focusIsUnowned()) focusRecoveredRoster();
+    if (revision === listRevision) settleRevokeRoster();
   };
 
   // R30 defect #1 — self-revoke HARD guard. The renderer already omits the
@@ -420,7 +442,7 @@ export const mountDevicesPage = (
         if (disposed) return;
         const returnAction = focusedRevokeAction(instanceId);
         const detail = humanizeRpcError(err);
-        setState({
+        setStatePreservingFocus({
           revokingInstanceId: undefined,
           // Keep `confirmingInstanceId` set so the user can Cancel or
           // retry from the same expanded panel (DD#3).
@@ -434,15 +456,20 @@ export const mountDevicesPage = (
       // Render the accepted receipt immediately, then let pair.list reconcile
       // the row's authoritative `revoked_at` state. The receipt survives both
       // the loading render and the completed/error roster render.
-      setState({
+      setStatePreservingFocus({
         confirmingInstanceId: undefined,
         revokingInstanceId: undefined,
         revokeError: undefined,
         revokeSucceeded: true,
       });
-      const refreshPromise = refresh();
+      // A newer broadcast read can replace this first read. Follow the read
+      // that actually reconciles the roster, even if the old one is stalled.
+      const rosterSettled = new Promise<void>((resolve) => {
+        resolveRevokeRoster = resolve;
+      });
+      void refresh();
       if (advanceFocus) focusSuccessReceipt();
-      await refreshPromise;
+      await rosterSettled;
       if (disposed) return;
       if (advanceFocus && focusIsUnowned()) focusSuccessReceipt();
     } finally {
@@ -462,11 +489,17 @@ export const mountDevicesPage = (
     if (!actionEl) return;
     const action = actionEl.getAttribute('data-action');
     const instanceId = actionEl.getAttribute('data-instance-id') ?? '';
+    if (action === 'refresh-devices') {
+      if (state.loading) return;
+      void refresh();
+      focusAction('refresh-devices');
+      return;
+    }
     if (action === 'retry-list') {
       // R30 — the list-error banner offers an inline Retry (was reload-only
       // with stale rows beneath). Keep the Retry control as the focusable
       // single-flight owner while `refresh()` reconciles the roster.
-      if (state.listRetrying) return;
+      if (state.loading) return;
       void refresh(true);
       return;
     }
@@ -532,6 +565,7 @@ export const mountDevicesPage = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      settleRevokeRoster();
       if (unsubscribePairList) unsubscribePairList();
       host.removeEventListener('click', onClick);
       host.innerHTML = '';
@@ -552,6 +586,18 @@ export const mountDevicesPage = (
  *  `--wc-*` cascade from the shell host with literal fallbacks for
  *  non-shell (test / standalone) contexts. */
 export const DEVICES_PAGE_STYLES = `
+.account-devices-refresh {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-bottom: 12px;
+}
+.account-devices-last-checked {
+  margin: 0;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
 .account-devices-table-scroll {
   max-width: 100%;
   overflow-x: auto;

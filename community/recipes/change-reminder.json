@@ -1,7 +1,7 @@
 {
   "recipe_id": "change-reminder",
   "chat_exposed": true,
-  "version": 1,
+  "version": 2,
   "ttl": 60,
   "metadata": {
     "name": "Change a reminder",
@@ -38,7 +38,8 @@
       "input": "{{config.remind_at}}",
       "require_offset": true,
       "skip_when": "{{config.remind_at}} is_empty",
-      "fail_on": "{{step.due_at_ms}} is_null"
+      "fail_on": "{{step.due_at_ms}} is_null",
+      "fail_reason": "New time could not be read as a date and time with a time zone offset. Enter one with its offset, or leave it blank to keep the current time."
     },
     {
       "id": "change",

@@ -267,6 +267,61 @@ describe('runStep — skip_when / fail_on / guard', () => {
     expect(log.error?.message).toBe('Guard triggered');
   });
 
+  // `fail_reason` is the sentence the person who ran the recipe reads. Before it,
+  // every stop read "Guard triggered" under "Run returned errors".
+  it('a guard with a fail_reason stops with those words, under the same code', async () => {
+    const ctx = makeCtx(async () => null);
+    (ctx.stores.step as Record<string, unknown>).danger = true;
+    const step = {
+      id: 'project_guard',
+      guard: '{{step.danger}} equal true',
+      fail_reason: '  This booking does not say which projects it is about.  ',
+    } as unknown as RecipeStep;
+    const log = await runStep(step, ctx);
+    expect(log.error?.code).toBe('RECIPE_GUARD_TRIGGERED');
+    expect(log.error?.message).toBe('This booking does not say which projects it is about.');
+  });
+
+  it('a fail_on with a fail_reason fails with those words, and keeps its fail_kind', async () => {
+    const ctx = makeCtx(async () => null);
+    const step = {
+      id: 'checker',
+      transform: 'template',
+      template: 'bad',
+      fail_on: '{{step.checker}} equal bad',
+      fail_kind: 'config',
+      fail_reason: 'No calendar is connected.',
+    } as unknown as RecipeStep;
+    const log = await runStep(step, ctx);
+    expect(log.error?.code).toBe('RECIPE_FAIL_ON_TRIGGERED');
+    expect(log.error?.message).toBe('No calendar is connected.');
+    expect(log.error?.details).toEqual({ fail_kind: 'config' });
+  });
+
+  it('takes a fail_reason as written: a {{ref}} in it is not resolved', async () => {
+    // The validator refuses a ref (`fail_reason_ref`); an inline recipe is not
+    // validated, and a resolved value could put an address in the message.
+    const ctx = makeCtx(async () => null);
+    (ctx.stores.step as Record<string, unknown>).danger = 'someone@example.com';
+    const step = {
+      id: 'gate',
+      guard: '{{step.danger}} is_not_empty',
+      fail_reason: 'Stopped for {{step.danger}}',
+    } as unknown as RecipeStep;
+    const log = await runStep(step, ctx);
+    expect(log.error?.message).toBe('Stopped for {{step.danger}}');
+  });
+
+  it('a blank or non-text fail_reason keeps the default message', async () => {
+    for (const fail_reason of ['   ', 42]) {
+      const ctx = makeCtx(async () => null);
+      (ctx.stores.step as Record<string, unknown>).danger = true;
+      const step = { id: 'gate', guard: '{{step.danger}} equal true', fail_reason } as unknown as RecipeStep;
+      const log = await runStep(step, ctx);
+      expect(log.error?.message).toBe('Guard triggered');
+    }
+  });
+
   it('guard step that does NOT trigger → returns null, no error', async () => {
     const ctx = makeCtx(async () => null);
     (ctx.stores.step as Record<string, unknown>).danger = false;

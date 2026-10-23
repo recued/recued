@@ -26,7 +26,7 @@
  *   manifest.webmanifest            — copied from public/
  *   sw.js                           — copied from public/
  *   webclient-main.js               — bundled entrypoint (ESM)
- *   webclient-main.js.map           — linked sourcemap
+ *   webclient-main.js.map           — linked sourcemap (development builds only)
  *   webclient-bundle-manifest.json  — D-152 integrity manifest (sha256 per served file)
  *
  * The integrity manifest (last) lists every OTHER file in build/ with its
@@ -36,7 +36,7 @@
  * it is bundle metadata, not a served asset.
  *
  * Flags:
- *   --minify   Minify the bundle (production builds).
+ *   --minify   Minify the bundle and emit no source map (production builds).
  */
 
 import { build } from 'esbuild';
@@ -69,6 +69,12 @@ const OUT = join(PKG_ROOT, 'build');
 const REPO_ROOT = resolve(PKG_ROOT, '..', '..');
 
 const minify = process.argv.includes('--minify');
+// ⛔ NO SOURCE MAP IN A PRODUCTION BUILD (2026-10-21). Only a browser's developer
+// tools read one, and it was two thirds of the web app: 27.9 MB of 41.4 MB in
+// 26.10.21, about 37 MB of each self-hosted update once encoded into the
+// release's bundle file. The hosted app had already shipped without it. A
+// development build keeps its maps.
+const sourcemap = minify ? false : 'linked';
 
 console.log('[build-webclient] cleaning build/');
 if (existsSync(OUT)) rmSync(OUT, { recursive: true, force: true });
@@ -109,7 +115,7 @@ await build({
   // current source tree (same pattern as backend/server's build).
   resolveExtensions: ['.ts', '.tsx', '.mjs', '.js', '.json'],
   tsconfig: join(PKG_ROOT, 'tsconfig.json'),
-  sourcemap: 'linked',
+  sourcemap,
   minify,
   logLevel: 'info',
 });
@@ -117,7 +123,8 @@ await build({
 // R26.2 Option B — bundle the self-serve OAuth opener-relay entry (loaded by
 // the static public/oauth-callback.html copied above as a same-origin
 // `script-src 'self'` asset; IIFE so a plain <script> loads it). Built BEFORE
-// the manifest emission below so it + its map get hashed + listed.
+// the manifest emission below so it (and, in a development build, its map) get
+// hashed + listed.
 console.log('[build-webclient] bundling oauth-callback-relay.ts');
 await build({
   entryPoints: [join(SRC, 'connections/oauth-callback-relay.ts')],
@@ -128,7 +135,7 @@ await build({
   target: ['es2022', 'chrome120', 'firefox120', 'safari17'],
   resolveExtensions: ['.ts', '.tsx', '.mjs', '.js', '.json'],
   tsconfig: join(PKG_ROOT, 'tsconfig.json'),
-  sourcemap: 'linked',
+  sourcemap,
   minify,
   logLevel: 'info',
 });

@@ -273,6 +273,19 @@ export const bundledPacksShippingRecipe = (
     .filter((manifest) => manifest.recipes.some((ref) => ref.slug === recipe_id))
     .map((manifest) => ({ ref: `${manifest.publisher}.${manifest.slug}`, name: manifest.name }));
 
+/** A pack's name as its manifest gives it ("Decision Log"), for the pack a publisher + slug
+ *  names, or null when the roster has none from that publisher. ⛔ The publisher must match:
+ *  two publishers may ship the same slug (Records namespaces are full refs, D-221), and a
+ *  lookup by slug alone would put one publisher's name on the other's pack. */
+export const bundledPackName = (
+  owner: { readonly publisher: string; readonly pack_slug: string },
+  packDir?: string,
+): string | null => {
+  const manifest = resolveBundledPackManifest(packDir, owner.pack_slug);
+  if (manifest === null || manifest.publisher !== owner.publisher) return null;
+  return typeof manifest.name === 'string' && manifest.name.trim() !== '' ? manifest.name.trim() : null;
+};
+
 /** Resolve one pack by manifest `slug`, disk first, embed second.
  *
  *  The file name on disk does not have to match the manifest's `slug` — row

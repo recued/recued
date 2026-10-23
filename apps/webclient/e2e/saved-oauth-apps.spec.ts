@@ -1,8 +1,9 @@
+import { HARNESS_ORIGIN } from './helpers/harness-origin.js';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect,test,type Page } from '@playwright/test';
 import type {} from './harness/saved-oauth-apps-harness.js';
-const BASE=`${process.env.E2E_SAVED_APPS_HARNESS_URL??'http://127.0.0.1:4319'}/saved-oauth-apps-harness.html`;
+const BASE=`${process.env.E2E_SAVED_APPS_HARNESS_URL??HARNESS_ORIGIN}/saved-oauth-apps-harness.html`;
 const field=(page:Page,key:string)=>page.locator(`[data-conn-field="${key}"]`);
 const action=(page:Page,name:string)=>page.locator(`[data-action="${name}"]`);
 const name=async(page:Page)=>{await field(page,'name').fill('drive');await field(page,'display_name').fill('Drive');};

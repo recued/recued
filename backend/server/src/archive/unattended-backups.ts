@@ -34,16 +34,22 @@ const integer = (value: unknown, min: number, max = Number.MAX_SAFE_INTEGER): va
 const ISSUES = new Set<ArchiveUnattendedIssue>(['interrupted', 'export_failed', 'destination_unavailable', 'transfer_unconfirmed',
   'verification_failed', 'vault_unavailable', 'insufficient_storage', 'setup_required', 'history_unavailable', 'retention_pending']);
 const issue = (value: unknown): value is ArchiveUnattendedIssue => ISSUES.has(value as ArchiveUnattendedIssue);
+export const validateBackupSchedule = (value: unknown): ArchiveBackupSchedule => {
+  if (!object(value) || !only(value, ['cadence', 'hour_utc', 'minute_utc', 'weekday_utc'])
+    || (value.cadence !== 'daily' && value.cadence !== 'weekly') || !integer(value.hour_utc, 0, 23)
+    || !integer(value.minute_utc, 0, 59) || !integer(value.weekday_utc, 0, 6)) {
+    throw new RpcError('invalid_args', 'Choose a daily or weekly UTC time.', 400);
+  }
+  return { cadence: value.cadence, hour_utc: value.hour_utc, minute_utc: value.minute_utc, weekday_utc: value.weekday_utc };
+};
 export const validateUnattendedSettings = (value: unknown): ArchiveUnattendedSettings => {
   if (!object(value) || !only(value, ['enabled', 'connection_name', 'destination_id', 'keep_last', 'schedule'])
     || typeof value.enabled !== 'boolean' || typeof value.connection_name !== 'string' || !value.connection_name.trim()
     || value.connection_name.length > 256 || /[\u0000-\u001f\u007f]/u.test(value.connection_name)
-    || typeof value.destination_id !== 'string' || !HASH.test(value.destination_id) || !integer(value.keep_last, 1, 30)
-    || !object(value.schedule) || !only(value.schedule, ['cadence', 'hour_utc', 'minute_utc', 'weekday_utc'])
-    || !['daily', 'weekly'].includes(value.schedule.cadence as string) || !integer(value.schedule.hour_utc, 0, 23)
-    || !integer(value.schedule.minute_utc, 0, 59) || !integer(value.schedule.weekday_utc, 0, 6)) {
+    || typeof value.destination_id !== 'string' || !HASH.test(value.destination_id) || !integer(value.keep_last, 1, 30)) {
     throw new RpcError('invalid_args', 'Choose daily or weekly UTC time, an S3 destination, and 1 to 30 copies to keep.', 400);
   }
+  validateBackupSchedule(value.schedule);
   return structuredClone(value) as unknown as ArchiveUnattendedSettings;
 };
 export const nextBackupTime = (schedule: ArchiveBackupSchedule, after: number): number => {

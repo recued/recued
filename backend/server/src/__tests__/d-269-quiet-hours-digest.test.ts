@@ -218,3 +218,34 @@ describe('the digest reads a deadline stored as a DAY by its day', () => {
     expect(buildQuietHoursDigest(items, { from: 0, to: tuesday }, tuesday, 'America/Los_Angeles').already_passed).toBe(1);
   });
 });
+
+describe('⛔ the card says its times on the clock the digest was judged in, the owner\'s (2026-10-22)', () => {
+  // The server rendered it with no zone, so it read the server process's clock
+  // (UTC on a VPS): "Quiet hours ran 13:00 → 23:00." for a 22:00–08:00 window in Tokyo.
+  const TOKYO = 'Asia/Tokyo';
+  const from = Date.parse('2026-10-22T22:00:00+09:00');
+  const to = Date.parse('2026-10-23T08:00:00+09:00');
+  const item = (title: string, anchor_at: number) => ({ kind: 'task', id: title, title, anchor_at });
+
+  it('words the window, and a time later that day, on that clock', () => {
+    const d = buildQuietHoursDigest([item('Dentist', Date.parse('2026-10-23T09:30:00+09:00'))], { from, to }, to, TOKYO);
+    expect(d.time_zone).toBe(TOKYO);
+    expect(renderQuietHoursDigest(d)).toBe('Quiet hours ran 22:00 → 08:00.\n\nStill ahead:\n· Dentist — 09:30');
+  });
+
+  it('a deadline on a day names that day, and a time tomorrow names tomorrow', () => {
+    const d = buildQuietHoursDigest([
+      item('File the return', Date.UTC(2026, 9, 23)), // due Friday 23 October, as a day
+      item('renew the domain', Date.parse('2026-10-24T07:00:00+09:00')),
+    ], { from, to }, to, TOKYO);
+    expect(renderQuietHoursDigest(d).split('\n').slice(3)).toEqual([
+      '· File the return — Friday 23 October',
+      '· renew the domain — Saturday 24 October at 07:00',
+    ]);
+  });
+
+  it('a zone given still wins', () => {
+    expect(renderQuietHoursDigest(buildQuietHoursDigest([], { from, to }, to, TOKYO), 'UTC'))
+      .toBe('Quiet hours ran 13:00 → 23:00.');
+  });
+});

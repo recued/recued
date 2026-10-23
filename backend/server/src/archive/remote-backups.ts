@@ -66,12 +66,12 @@ export const createRemoteBackups = (options: {
     if (resolved.fingerprint !== row.destination_fingerprint) throw new RemoteBackupTransferError('destination_unavailable');
     return resolved;
   };
-  const abortParts = async (row: RemoteBackupRow, transport: RemoteBackupTransport): Promise<void> => {
+  const abortParts = async (row: RemoteBackupRow, transport: RemoteBackupTransport, signal?: AbortSignal): Promise<void> => {
     if (!row.multipart_id) return;
-    await transport.abort(row.object_key, row.multipart_id);
+    await transport.abort(row.object_key, row.multipart_id, signal);
     store.update(row.operation_id, current => { delete current.multipart_id; });
   };
-  const prune = async (verified: RemoteBackupRow, transport: RemoteBackupTransport): Promise<void> => {
+  const prune = async (verified: RemoteBackupRow, transport: RemoteBackupTransport, signal?: AbortSignal): Promise<void> => {
     const group = store.rows().filter(row => row.destination_fingerprint === verified.destination_fingerprint);
     // Reservation order survives clock changes. A delayed check of an older
     // backup cannot reinstate its old retention setting or delete newer ones.
@@ -89,16 +89,18 @@ export const createRemoteBackups = (options: {
       if (latest?.operation_id !== verified.operation_id || latest.state !== 'verified') return;
       if (running.has(row.operation_id) || fetching.has(row.operation_id) || drillReads.has(row.operation_id)) { pending = true; continue; }
       try {
+        signal?.throwIfAborted();
         if (!row.etag) { pending = true; continue; }
         store.update(row.operation_id, current => { current.state = 'pruning'; });
-        await transport.remove(row.object_key, row);
+        await transport.remove(row.object_key, row, signal);
         store.update(row.operation_id, current => { current.state = 'pruned'; delete current.issue; });
       } catch { pending = true; }
     }
     store.update(policy.operation_id, row => { if (pending) row.retention_pending = true; else delete row.retention_pending; });
   };
-  const verified = async (row: RemoteBackupRow, transport: RemoteBackupTransport): Promise<void> => {
-    const identity = await transport.verify(row.object_key, rowBytes(row), row);
+  const verified = async (row: RemoteBackupRow, transport: RemoteBackupTransport, signal?: AbortSignal): Promise<void> => {
+    const identity = await transport.verify(row.object_key, rowBytes(row), row, signal);
+    signal?.throwIfAborted();
     const settled = store.update(row.operation_id, current => {
       current.state = 'verified'; current.verified_at = now(); delete current.issue;
       if (identity.etag !== undefined) current.etag = identity.etag;
@@ -106,8 +108,26 @@ export const createRemoteBackups = (options: {
     });
     // Failure to remove old copies cannot turn a verified new copy into an
     // unverified one. Keep the separate cleanup result and exact victim intent.
-    try { await prune(settled, transport); }
+    try { await prune(settled, transport, signal); }
     catch { try { store.update(row.operation_id, current => { current.retention_pending = true; }); } catch { /* retain durable verdict */ } }
+  };
+  const beginCheck = (id: string, signal?: AbortSignal): Promise<ArchiveRemoteBackup> | undefined => {
+    const row = requireRow(id);
+    if (running.has(row.operation_id) || row.state === 'pruned' || row.state === 'pruning') return undefined;
+    rowBytes(row); signal?.throwIfAborted();
+    store.update(row.operation_id, current => { current.state = 'verifying'; });
+    running.add(row.operation_id);
+    return (async () => {
+      try {
+        const context = await resolveRow(row);
+        signal?.throwIfAborted();
+        try { await abortParts(row, context.transport, signal); } catch { /* Retry owned multipart cleanup on a later check. */ }
+        signal?.throwIfAborted();
+        await verified(row, context.transport, signal);
+      } catch (error) { service.failed(row.operation_id, signal?.aborted ? 'interrupted' : issueOf(error)); }
+      finally { running.delete(row.operation_id); }
+      return remoteBackupView(requireRow(row.operation_id));
+    })();
   };
   const service = {
     destinations: options.destinations,
@@ -196,21 +216,11 @@ export const createRemoteBackups = (options: {
       finally { running.delete(id); await unlink(pinned).catch(() => { /* exact owned ciphertext can be reclaimed at boot */ }); }
     },
     check(id: string): ArchiveRemoteBackup {
-      const row = requireRow(id); if (running.has(row.operation_id) || row.state === 'pruned' || row.state === 'pruning') return remoteBackupView(row);
-      rowBytes(row);
-      store.update(row.operation_id, current => { current.state = 'verifying'; });
-      running.add(row.operation_id);
-      void (async () => {
-        try {
-          const context = await resolveRow(row);
-          try { await abortParts(row, context.transport); } catch { /* retry cleanup on a later reconciliation */ }
-          await verified(row, context.transport);
-        }
-        catch (error) { service.failed(row.operation_id, issueOf(error)); }
-        finally { running.delete(row.operation_id); }
-      })();
-      return remoteBackupView(requireRow(row.operation_id));
+      void beginCheck(id)?.catch(() => { /* Durable uncertainty is shown by the next status read. */ });
+      return remoteBackupView(requireRow(id));
     },
+    /** Scheduler-only completion barrier; a busy/pruned copy is skipped. */
+    async recheck(id: string, signal: AbortSignal): Promise<ArchiveRemoteBackup | null> { return await beginCheck(id, signal) ?? null; },
     retrieve(id: string): Promise<{ staged_name: string }> {
       const row = requireRow(id), existing = fetching.get(row.operation_id); if (existing) return existing;
       if (row.state !== 'verified') throw new RpcError('conflict', 'Verify this remote backup before preparing a restore.', 409);

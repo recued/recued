@@ -189,6 +189,22 @@ export interface SellerOfferStateTransitionResult {
   readonly offer: SellerOffer;
 }
 
+/** D-207 ruling (C) — the owner sets, changes or removes an offer's pre-created
+ *  hosted-checkout link from Settings → Seller. Owner-only, like a state change: a
+ *  recipe can create an offer, but it never decides where the offer's buyers pay. */
+export interface SellerOfferCheckoutUrlUpdateRequest {
+  readonly offer_id: string;
+  /** Exact optimistic row token from the owner-visible row. */
+  readonly expected_updated_at: number;
+  /** An absolute HTTPS link, or `null` to remove it. */
+  readonly checkout_url: string | null;
+}
+
+export interface SellerOfferCheckoutUrlUpdateResult {
+  readonly result: 'updated' | 'unchanged';
+  readonly offer: SellerOffer;
+}
+
 /** Who drives a customer's access lifecycle. `manual` is the seller by hand;
  *  each provider member is a payment provider whose webhooks + read-backs
  *  issue, extend, swap and close access through the `core.seller.*` ops.
@@ -521,6 +537,11 @@ export interface SellerOverview {
 
 export interface SellerOfferStateTransitionResponse
   extends SellerOfferStateTransitionResult {
+  readonly overview: SellerOverview;
+}
+
+export interface SellerOfferCheckoutUrlUpdateResponse
+  extends SellerOfferCheckoutUrlUpdateResult {
   readonly overview: SellerOverview;
 }
 

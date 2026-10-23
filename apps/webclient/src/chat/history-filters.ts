@@ -18,6 +18,7 @@ export const CHAT_HISTORY_FILTER_STYLES = `
 `;
 
 export type ChatHistoryScope = 'all' | 'current';
+type HistoryFilterControl = 'source' | 'vendor' | 'attention' | 'scope' | 'clear';
 /** Per-pair preferences remember only the controls. Serial writes keep a slow
  * acknowledgement from overwriting the owner's latest selection. */
 export const createHistoryFilters = (options: {
@@ -31,8 +32,10 @@ export const createHistoryFilters = (options: {
   let revision = 0;
   let savedRevision = 0;
   let saving = false;
+  let retrying = false;
   let disposed = false;
   let error = '';
+  let lastChangedControl: HistoryFilterControl = 'source';
   let syncControls: (() => void) | undefined;
   const patch = (): Partial<InstancePrefs> => ({
     'ui.chat.history.source': filters.source,
@@ -41,28 +44,36 @@ export const createHistoryFilters = (options: {
     'ui.chat.history.scope': scope,
   });
   const save = async (): Promise<void> => {
-    if (saving || disposed) return;
+    if (saving || disposed || savedRevision === revision) return;
     saving = true;
-    while (savedRevision !== revision) {
+    retrying = error.length > 0;
+    error = '';
+    syncControls?.();
+    while (!disposed && savedRevision !== revision) {
       const ownRevision = revision;
       const wanted = patch();
       try {
         const reply = await options.save(wanted);
+        if (disposed) break;
         if (Object.entries(wanted).some(([key, value]) => reply.prefs?.[key as keyof InstancePrefs] !== value)) {
           throw new Error('Recued could not save what you picked');
         }
         savedRevision = ownRevision;
         error = '';
       } catch {
+        if (disposed) break;
         if (ownRevision !== revision) continue;
         error = 'These work now, but Recued will forget them.';
         break;
       }
     }
     saving = false;
+    retrying = false;
     if (!disposed) syncControls?.();
   };
-  const change = (): void => {
+  const change = (control: HistoryFilterControl): void => {
+    if (disposed) return;
+    lastChangedControl = control;
     touched = true; revision++; error = '';
     syncControls?.(); options.changed(); void save();
   };
@@ -82,13 +93,13 @@ export const createHistoryFilters = (options: {
     mount(host: HTMLElement): void {
       const doc = options.document;
       host.className = 'chat-history-filters';
-      const select = (id: string, title: string, values: readonly string[], label: (value: string) => string, changeValue: (value: string) => void) => {
+      const select = (id: HistoryFilterControl, title: string, values: readonly string[], label: (value: string) => string, changeValue: (value: string) => void) => {
         const wrapper = doc.createElement('label'); wrapper.textContent = title;
         const control = doc.createElement('select'); control.setAttribute(HISTORY_FILTER_ATTR, id);
         for (const value of values) {
           const option = doc.createElement('option'); option.value = value; option.textContent = label(value); control.appendChild(option);
         }
-        control.addEventListener('change', () => { changeValue(control.value); change(); });
+        control.addEventListener('change', () => { changeValue(control.value); change(id); });
         wrapper.appendChild(control); host.appendChild(wrapper); return control;
       };
       const source = select('source', 'Chats from', CHAT_HISTORY_SOURCES,
@@ -102,7 +113,7 @@ export const createHistoryFilters = (options: {
       const attentionLabel = doc.createElement('label'); attentionLabel.className = 'chat-history-attention';
       const attention = doc.createElement('input'); attention.type = 'checkbox'; attention.setAttribute(HISTORY_FILTER_ATTR, 'attention');
       attention.addEventListener('change', () => {
-        filters = { ...filters, needs_attention: attention.checked, ...(attention.checked && filters.source === 'webclient' ? { source: 'messenger' as const } : {}) }; change();
+        filters = { ...filters, needs_attention: attention.checked, ...(attention.checked && filters.source === 'webclient' ? { source: 'messenger' as const } : {}) }; change('attention');
       });
       const attentionText = doc.createElement('span'); attentionText.textContent = 'Needs attention';
       attentionLabel.appendChild(attention); attentionLabel.appendChild(attentionText); host.appendChild(attentionLabel);
@@ -110,14 +121,23 @@ export const createHistoryFilters = (options: {
         value => value === 'all' ? 'All matching chats' : 'Current conversation', value => { scope = value === 'current' ? 'current' : 'all'; });
       const clear = doc.createElement('button'); clear.type = 'button'; clear.className = 'chat-session-action';
       clear.setAttribute(HISTORY_FILTER_ATTR, 'clear'); clear.textContent = 'Clear filters';
-      clear.addEventListener('click', () => { filters = { ...DEFAULT_CHAT_HISTORY_FILTERS }; scope = 'all'; change(); }); host.appendChild(clear);
-      const note = doc.createElement('p'); note.className = 'chat-history-filter-note'; note.setAttribute('role', 'status'); host.appendChild(note);
+      clear.addEventListener('click', () => { filters = { ...DEFAULT_CHAT_HISTORY_FILTERS }; scope = 'all'; change('clear'); }); host.appendChild(clear);
+      const note = doc.createElement('p'); note.className = 'chat-history-filter-note'; note.setAttribute('role', 'status'); note.setAttribute('aria-atomic', 'true'); host.appendChild(note);
       const retry = doc.createElement('button'); retry.type = 'button'; retry.className = 'chat-session-action';
       retry.setAttribute(HISTORY_FILTER_ATTR, 'retry'); retry.textContent = 'Try saving again';
       retry.addEventListener('click', () => { void save(); }); host.appendChild(retry);
+      const controls: Record<HistoryFilterControl, HTMLElement> = { source, vendor, attention, scope: searchScope, clear };
       syncControls = () => {
         source.value = filters.source; vendor.value = filters.vendor; attention.checked = filters.needs_attention; searchScope.value = scope;
-        note.textContent = error; note.hidden = !error; retry.hidden = !error;
+        const message = saving ? 'Saving chat filters…' : error || (touched && savedRevision === revision ? 'Chat filters saved.' : '');
+        note.textContent = message; note.hidden = !message;
+        const showRetry = retrying || error.length > 0;
+        // Keep the retry connected and focusable during its request. Move only
+        // its current keyboard owner before hiding it after confirmation.
+        if (!showRetry && doc.activeElement === retry && host.isConnected) controls[lastChangedControl].focus({ preventScroll: true });
+        retry.hidden = !showRetry;
+        retry.textContent = saving ? 'Saving…' : 'Try saving again';
+        retry.setAttribute('aria-disabled', String(saving));
       };
       syncControls();
     },

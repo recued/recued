@@ -12,7 +12,8 @@
  */
 
 import type { RpcMethodSpec } from './types.js';
-import type { ArchiveRemoteBackup, ArchiveRemoteDestination, ArchiveRemoteTarget, ArchiveUnattendedSettings, ArchiveUnattendedStatus, ArchiveRestoreDrill, ArchiveBackupHealthPolicy, ArchiveBackupHealthStatus } from '../archive-remote.js';
+import type { ArchiveRemoteBackup, ArchiveRemoteDestination, ArchiveRemoteTarget, ArchiveUnattendedSettings, ArchiveUnattendedStatus, ArchiveRestoreDrill, ArchiveBackupHealthPolicy, ArchiveBackupIntegrityPolicy, ArchiveBackupIntegrityStatus, ArchiveBackupHealthStatus } from '../archive-remote.js';
+import type { BackupWatchdogDrillStart, BackupWatchdogDrillUpdate, BackupWatchdogSave, BackupWatchdogStatus } from '../backup-watchdog.js';
 import type {
   MailWorkCreateRequest, MailWorkDeleteRequest, MailWorkDeleteResult, MailWorkDetail, MailWorkListRequest, MailWorkListResult,
   MailWorkSearchResult, MailWorkUpdateRequest,
@@ -426,6 +427,8 @@ import type {
   SellerCreatePassTierResponse,
   SellerOfferStateTransitionRequest,
   SellerOfferStateTransitionResponse,
+  SellerOfferCheckoutUrlUpdateRequest,
+  SellerOfferCheckoutUrlUpdateResponse,
   SellerOverview,
   SellerSettingsUpdateRequest,
   SellerSettingsUpdateResponse,
@@ -970,6 +973,11 @@ export interface ServerRecentNotification {
   title?: string;
   text: string;
   link_url?: string;
+  /** The same link as an address inside the owner's app (`#settings/…`), when `link_url` points
+   *  into this server's own app. The Bridge opens `link_url`; the webclient opens this, so a
+   *  notice it shows late stays in the app the owner is using rather than opening the server's
+   *  public address in a page that is not paired. Absent for a link to anywhere else. */
+  ui_link_url?: string;
   fired_at: number;
 }
 
@@ -2124,6 +2132,14 @@ export type ServerRpcRegistry = {
   'server.seller.transitionOfferState': RpcMethodSpec<
     SellerOfferStateTransitionRequest,
     SellerOfferStateTransitionResponse
+  >;
+  /** D-207 ruling (C) — owner-only, optimistic: set, change or remove the offer's
+   *  pre-created hosted-checkout link. That link is the only way a public selling
+   *  form can take payment, so it is set on the owner's own surface and never by a
+   *  recipe (`core.seller.offer.ensure` does not accept it). */
+  'server.seller.setOfferCheckoutUrl': RpcMethodSpec<
+    SellerOfferCheckoutUrlUpdateRequest,
+    SellerOfferCheckoutUrlUpdateResponse
   >;
   /** D-196 S2 — owner-authored seller settings update. Stores grace, sender,
    *  status-policy, and email-policy knobs, returning the refreshed overview. */
@@ -6514,6 +6530,15 @@ export type ServerRpcRegistry = {
    *  via `onDeleted`. */
   'collection.mail.delete': RpcMethodSpec<{ slug: string }, { ok: true }>;
 
+  /** The owner's Re-sync on a mailbox: its live connection is rebuilt from the
+   *  saved settings and its sync starts again, as after a server restart. The
+   *  days since it last synced are listed again, Gmail and Outlook replay what
+   *  changed since their cursor, and an IMAP folder reads every message's flags,
+   *  which brings in what changed while a connection was down. Resolves once
+   *  the mailbox is live again; the listing runs on in the background. While
+   *  the vault is locked the sync waits for the unlock, as at boot. */
+  'collection.mail.resync': RpcMethodSpec<{ slug: string }, { ok: true }>;
+
   /** D-318 step 1 — the email chat door's settings: which connected mailbox is
    *  the chat mailbox (one per server, or none). It must be able to send, since
    *  the door answers from it. Its mail makes no mail facts or contacts and
@@ -6848,10 +6873,14 @@ export type ServerRpcRegistry = {
     { slug: string },
     { ok: true }
   >;
-  /** Re-probe caps + flip `auth_state`. Probe failure does NOT throw
-   *  — returns the existing caps + flips `auth_state` so the UI can
+  /** The owner's Re-sync on a calendar: re-probe caps + flip `auth_state`,
+   *  then rebuild its live connection and start its sync again, as after a
+   *  server restart, so its window is read again. Probe failure does NOT
+   *  throw — returns the existing caps + flips `auth_state` so the UI can
    *  render an "expired / degraded" pill without losing the cached
-   *  capability shape. */
+   *  capability shape. Resolves once the calendar is live again; the
+   *  listing runs on in the background. `last_synced_at` moves only when a
+   *  sync succeeds. */
   'collection.calendar.resync': RpcMethodSpec<
     { slug: string },
     {
@@ -6887,8 +6916,14 @@ export type ServerRpcRegistry = {
   /** Owner-only storage choices and durable remote delivery history. */
   'server.archive.destinations': RpcMethodSpec<Record<string, never>, { destinations: ArchiveRemoteDestination[] }>;
   'server.archive.backups': RpcMethodSpec<Record<string, never>, { backups: ArchiveRemoteBackup[] }>;
+  'server.archive.integrity.get': RpcMethodSpec<Record<string, never>, ArchiveBackupIntegrityStatus>;
+  'server.archive.integrity.save': RpcMethodSpec<{ policy: ArchiveBackupIntegrityPolicy }, ArchiveBackupIntegrityStatus>;
   'server.archive.health.get': RpcMethodSpec<Record<string, never>, ArchiveBackupHealthStatus>;
   'server.archive.health.save': RpcMethodSpec<{ policy: ArchiveBackupHealthPolicy }, ArchiveBackupHealthStatus>;
+  'server.archive.watchdog.drill.start': RpcMethodSpec<BackupWatchdogDrillStart, BackupWatchdogStatus>;
+  'server.archive.watchdog.drill.update': RpcMethodSpec<BackupWatchdogDrillUpdate, BackupWatchdogStatus>;
+  'server.archive.watchdog.get': RpcMethodSpec<Record<string, never>, BackupWatchdogStatus>;
+  'server.archive.watchdog.save': RpcMethodSpec<BackupWatchdogSave, BackupWatchdogStatus>;
   'server.archive.drills': RpcMethodSpec<Record<string, never>, { drills: ArchiveRestoreDrill[] }>;
   'server.archive.drill.start': RpcMethodSpec<{ operation_id: string; backup_operation_id: string; recoveryKey: string }, ArchiveRestoreDrill>;
   'server.archive.drill.cancel': RpcMethodSpec<{ operation_id: string }, ArchiveRestoreDrill>;
@@ -7813,6 +7848,12 @@ export type ServerRpcRegistry = {
     import('../reception-record.js').ReceptionRecordListInput | void,
     import('../reception-record.js').ReceptionRecordListResult
   >;
+  // D-149 § N.6 "Open submission detail" — ONE record, opened on the server for the paired
+  // owner: what the visitor answered, in the form's own labels. Off MCP by the reserved prefix.
+  'reception.record.open': RpcMethodSpec<
+    import('../reception-record.js').ReceptionRecordOpenInput,
+    import('../reception-record.js').ReceptionRecordOpenResult
+  >;
   'reception.approval.targets': RpcMethodSpec<void, import('../approval-workflow.js').ApprovalWorkflowTargetsResult>;
   'reception.signoff.quotes': RpcMethodSpec<void, import('../quote-signoff.js').QuoteSignoffQuotesResult>;
   'reception.signoff.prepare': RpcMethodSpec<import('../quote-signoff.js').QuoteSignoffPrepareInput,
@@ -8384,6 +8425,7 @@ export const SERVER_RPC_METHODS = [
   'server.seller.getOverview',
   'server.seller.listOrders',
   'server.seller.transitionOfferState',
+  'server.seller.setOfferCheckoutUrl',
   'server.seller.updateSettings',
   'server.seller.acknowledgeLlmGatewayPaid',
   'server.seller.upsertManualTier',
@@ -8941,6 +8983,7 @@ export const SERVER_RPC_METHODS = [
   'collection.mail.updateCredentials',
   'collection.mail.list',
   'collection.mail.delete',
+  'collection.mail.resync',
   'collection.mail.chat_door.get',
   'collection.mail.chat_door.set',
   'collection.mail.chat_door.check',
@@ -8992,8 +9035,14 @@ export const SERVER_RPC_METHODS = [
   'server.archive.export',
   'server.archive.destinations',
   'server.archive.backups',
+  'server.archive.integrity.get',
+  'server.archive.integrity.save',
   'server.archive.health.get',
   'server.archive.health.save',
+  'server.archive.watchdog.drill.start',
+  'server.archive.watchdog.drill.update',
+  'server.archive.watchdog.get',
+  'server.archive.watchdog.save',
   'server.archive.drills',
   'server.archive.drill.start',
   'server.archive.drill.cancel',
@@ -9132,6 +9181,7 @@ export const SERVER_RPC_METHODS = [
   // D-210 step 2a — the record read surface. Admin-only like every `reception.` method; the
   // reserved prefix keeps it off MCP.
   'reception.record.list',
+  'reception.record.open',
   'reception.signoff.quotes',
   'reception.signoff.prepare',
   'reception.signoff.prepare_addition',

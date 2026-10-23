@@ -649,6 +649,20 @@ export interface ServerConfig {
    *  Channel-isolation invariant — `reception.*` prefix is reserved
    *  (`MCP_RESERVED_RPC_PREFIXES`). */
   receptionInboxDeps?: import('./reception-inbox-handler.js').ReceptionInboxDeps;
+  /** D-210 step 2a — `reception.record.list`, the owner's list of bookings and
+   *  form submissions (Reception → Records). Absent → `not_configured`.
+   *  ⛔ These three were composed in `composeListeners` from the start and never
+   *  declared here, and a key inside a conditional spread escapes tsc's
+   *  excess-property check, so every server dropped them (26.10.21 answered all
+   *  three `not_configured`). `server-config-forwarding.test.ts` now fails on any
+   *  key the composition hands over that this type does not declare. */
+  receptionRecordDeps?: import('./reception-record-handler.js').ReceptionRecordDeps;
+  /** D-210 Appendix B — `reception.manage.mint`, the on-the-go reschedule link.
+   *  Absent → `not_configured`. */
+  receptionManageMintDeps?: import('./reception-manage-mint-handler.js').ReceptionManageMintDeps;
+  /** D-240 § D11 — `reception.lookup.revoke`, revoking one record's view-back
+   *  link. Absent → `not_configured`. */
+  receptionLookupRevokeDeps?: import('./reception-lookup-revoke-handler.js').ReceptionLookupRevokeDeps;
   /** D-165 enroll-host #1 (vendor OAuth popup) § A.12 — `/oauth/complete`
    *  path-handler deps. When supplied, `createServerHandlerSet` mounts
    *  the `createVendorOAuthCompletePortHandler` adapter on the `oauth`
@@ -1637,6 +1651,9 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
     s2sPreviewDeps: config.s2sPreviewDeps,
     receptionDeps: config.receptionRpcDeps,
     receptionInboxDeps: config.receptionInboxDeps,
+    receptionRecordDeps: config.receptionRecordDeps,
+    receptionManageMintDeps: config.receptionManageMintDeps,
+    receptionLookupRevokeDeps: config.receptionLookupRevokeDeps,
     chatDeps: config.chatDeps,
     ...(config.uploadDeps ? { uploadDeps: config.uploadDeps } : {}),
     ...(config.downloadDeps ? { downloadDeps: config.downloadDeps } : {}),

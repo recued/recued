@@ -137,6 +137,84 @@ const makeSetCaller = () =>
   }));
 
 describe('mountTransparencyPanel', () => {
+  const retryAttr = 'data-recued-transparency-retry';
+  const loadStatusAttr = 'data-recued-transparency-load-status';
+  const click = (element: FakeEl) => { for (const listener of element.listeners.get('click') ?? []) listener(); };
+  const retry = (host: FakeEl) => {
+    const element = collectByAttr(host, retryAttr)[0];
+    expect(element, 'A failed preference read needs an in-place Retry').toBeDefined();
+    return element!;
+  };
+
+  it('retries only the read, keeps one request pending, and recovers non-default preferences after repeated failures', async () => {
+    const doc = makeFakeDocument(), host = doc.createElement('div');
+    let fail!: (error: Error) => void;
+    const prefs = mergePrefs({ 'ui.transparency.enabled': false, 'ui.transparency.class.orchestration': true, 'ui.transparency.max_redaction_tier': 'none' });
+    const runPrefsGet = vi.fn<() => Promise<{ prefs: InstancePrefs }>>()
+      .mockRejectedValueOnce(new Error('Initial read unavailable'))
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }))
+      .mockResolvedValue({ prefs });
+    const runPrefsSet = makeSetCaller();
+    const panel = mountTransparencyPanel({ host: host as unknown as HTMLElement, document: doc as unknown as Document, runPrefsGet, runPrefsSet });
+    expect(collectByAttr(host, retryAttr)).toHaveLength(0);
+    await panel.whenLoaded();
+    const button = retry(host); expect(button.getAttribute('aria-disabled')).toBe('false');
+    expect(collectByAttr(host, loadStatusAttr)[0]!.getAttribute('role')).toBe('alert');
+    click(button); click(button);
+    expect(runPrefsGet).toHaveBeenCalledTimes(2); expect(runPrefsSet).not.toHaveBeenCalled();
+    expect(panel.hasInFlightWork()).toBe(false);
+    expect(retry(host)).toBe(button); expect(button.getAttribute('aria-busy')).toBe('true');
+    expect(button.disabled).toBe(false);
+    let settled = false; const reading = panel.whenLoaded().then(() => { settled = true; });
+    await Promise.resolve(); expect(settled).toBe(false);
+    fail(new Error('Retry read unavailable')); await reading;
+    expect(retry(host)).toBe(button); expect(button.getAttribute('aria-disabled')).toBe('false');
+    expect(collectByAttr(host, loadStatusAttr)[0]!.getAttribute('role')).toBe('alert');
+    click(button); await panel.whenLoaded();
+    expect(panel.getState().phase).toBe('ready'); expect(panel.getState().prefs).toEqual(prefs);
+    expect(findByAttrValue(host, TRANSPARENCY_PANEL_TOGGLE_ATTR, 'ui.transparency.enabled').checked).toBe(false);
+    expect(findByAttrValue(host, TRANSPARENCY_PANEL_TOGGLE_ATTR, 'ui.transparency.class.orchestration').checked).toBe(true);
+    expect(collectByAttr(host, TRANSPARENCY_PANEL_TIER_ATTR)[0]!.value).toBe('none');
+    expect(collectByAttr(host, retryAttr)).toHaveLength(0);
+    click(button); expect(runPrefsGet).toHaveBeenCalledTimes(3); expect(runPrefsSet).not.toHaveBeenCalled();
+    panel.dispose();
+  });
+
+  it('keeps the recovered preferences and navigation guard through an uncertain write without repeating a read or write', async () => {
+    const doc = makeFakeDocument(), host = doc.createElement('div');
+    const prefs = mergePrefs({ 'ui.transparency.class.orchestration': true });
+    const runPrefsGet = vi.fn().mockRejectedValueOnce(new Error('Read unavailable')).mockResolvedValue({ prefs });
+    let failSave!: (error: Error) => void;
+    const runPrefsSet = vi.fn(() => new Promise<{ prefs: InstancePrefs }>((_resolve, reject) => { failSave = reject; }));
+    const panel = mountTransparencyPanel({ host: host as unknown as HTMLElement, document: doc as unknown as Document, runPrefsGet, runPrefsSet });
+    await panel.whenLoaded(); const button = retry(host); click(button); await panel.whenLoaded();
+    const master = findByAttrValue(host, TRANSPARENCY_PANEL_TOGGLE_ATTR, 'ui.transparency.enabled');
+    master.checked = false; master.dispatchChange(); expect(panel.hasInFlightWork()).toBe(true);
+    click(button); expect(runPrefsGet).toHaveBeenCalledTimes(2);
+    failSave(new Error('Write acknowledgement lost')); await panel.whenSaveSettled();
+    expect(panel.hasInFlightWork()).toBe(false); expect(panel.getState().prefs).toEqual(prefs);
+    expect(findByAttrValue(host, TRANSPARENCY_PANEL_TOGGLE_ATTR, 'ui.transparency.enabled').checked).toBe(true);
+    expect(findByAttrValue(host, TRANSPARENCY_PANEL_TOGGLE_ATTR, 'ui.transparency.class.orchestration').checked).toBe(true);
+    click(button); expect(runPrefsGet).toHaveBeenCalledTimes(2); expect(runPrefsSet).toHaveBeenCalledTimes(1);
+    expect(collectByAttr(host, retryAttr)).toHaveLength(0); panel.dispose();
+    master.dispatchChange(); expect(runPrefsSet).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['success', 'failure'] as const)('ignores a late %s retry reply and a detached Retry activation after disposal', async outcome => {
+    const doc = makeFakeDocument(), host = doc.createElement('div');
+    let resolve!: (value: { prefs: InstancePrefs }) => void, reject!: (error: Error) => void;
+    const runPrefsGet = vi.fn<() => Promise<{ prefs: InstancePrefs }>>()
+      .mockRejectedValueOnce(new Error('Read unavailable'))
+      .mockImplementationOnce(() => new Promise((done, fail) => { resolve = done; reject = fail; }));
+    const runPrefsSet = makeSetCaller();
+    const panel = mountTransparencyPanel({ host: host as unknown as HTMLElement, document: doc as unknown as Document, runPrefsGet, runPrefsSet });
+    await panel.whenLoaded(); const button = retry(host); click(button); const reading = panel.whenLoaded();
+    panel.dispose(); click(button);
+    if (outcome === 'success') resolve({ prefs: mergePrefs() }); else reject(new Error('Late read failure'));
+    await reading; expect(host.children).toHaveLength(0); expect(host.getAttribute(TRANSPARENCY_PANEL_HOST_ATTR)).toBeNull();
+    expect(runPrefsGet).toHaveBeenCalledTimes(2); expect(runPrefsSet).not.toHaveBeenCalled();
+  });
+
   it('gives every checkbox a full-size label target', () => {
     expect(TRANSPARENCY_PANEL_STYLES).toContain(
       '.transparency-row {\n  box-sizing: border-box;\n  min-height: 36px;',

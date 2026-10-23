@@ -1,4 +1,4 @@
-/** Settings → Learning (D-219 slice 9c).
+/** Settings → Privacy → Learning (D-219 slice 9c).
  *
  *  One control: whether Recued asks, after a turn where it worked through
  *  several steps, how the result turned out. That answer is the ONLY thing that
@@ -14,8 +14,10 @@
  *  `runPrefsSet`), mirroring `transparency-panel.ts` / `notifications-panel.ts`.
  *  The bootstrap wires the pair rpc conn through thunks; tests inject fakes.
  *
- *  DD#2 — Render-on-transition rebuild via `createElement`, same as the sibling
- *  panels. Every state change rebuilds the panel's inner DOM; no diffing.
+ *  DD#2 — Preference and action transitions rebuild controls via `createElement`.
+ *  Initial read feedback stays attached through retries to retain focus.
+ *  History reads refresh only the list, retaining the preference control and
+ *  preserving focus and prompt selection within the list.
  *
  *  DD#3 — Saves are authoritative: one change → one single-key `prefs.set`, the
  *  control is ARIA-locked while in flight, and the response's merged `prefs`
@@ -43,6 +45,8 @@ export const LEARNING_PANEL_HOST_ATTR = 'data-recued-learning-panel';
 /** The offer toggle; the attribute VALUE is the pref key. */
 export const LEARNING_PANEL_TOGGLE_ATTR = 'data-recued-learning-toggle';
 export const LEARNING_PANEL_ERROR_ATTR = 'data-recued-learning-error';
+export const LEARNING_PANEL_RETRY_ATTR = 'data-recued-learning-retry';
+export const LEARNING_PANEL_READ_STATUS_ATTR = 'data-recued-learning-read-status';
 /** Muted note shown while the ask is off. */
 export const LEARNING_PANEL_OFF_HINT_ATTR = 'data-recued-learning-off-hint';
 /** D-219 item 2 — the learned-case list container. */
@@ -60,6 +64,8 @@ export const LEARNING_PANEL_CASES_EMPTY_ATTR =
   'data-recued-learning-cases-empty';
 export const LEARNING_PANEL_CASES_ERROR_ATTR =
   'data-recued-learning-cases-error';
+export const LEARNING_PANEL_CASES_RETRY_ATTR = 'data-recued-learning-cases-retry';
+export const LEARNING_PANEL_CASES_READ_STATUS_ATTR = 'data-recued-learning-cases-read-status';
 /** D-219 item 2b — the per-case "make a recipe" control. */
 export const LEARNING_PANEL_DRAFT_ATTR = 'data-recued-learning-draft';
 /** D-219 — "you already made a recipe from this"; VALUE is the case id. */
@@ -173,12 +179,15 @@ export interface LearningPanelState {
 export interface LearningPanelMount {
   getState(): LearningPanelState;
   /** User-started preference, Forget, or recipe-draft work that has not
-   *  settled. The synchronous Kitchen handoff is deliberately excluded. */
+   *  settled. Excludes only the draft being handed to the Kitchen. */
   hasInFlightWork(): boolean;
   /** A finished, already-paid-for recipe draft whose local Kitchen handoff
    *  failed and would be lost if this panel were torn down. */
   hasUnsavedChanges(): boolean;
+  /** Latest initial or retry load, including history after settings succeed. */
   whenLoaded(): Promise<void>;
+  /** Latest learned-history read, including the read after Forget. */
+  whenCasesSettled(): Promise<void>;
   whenSaveSettled(): Promise<void>;
   whenForgetSettled(): Promise<void>;
   whenDraftSettled(): Promise<void>;
@@ -230,6 +239,13 @@ export const mountLearningPanel = (
     draftError: null,
   };
   let pendingLoad: Promise<void> = Promise.resolve();
+  let prefsReading = false;
+  let loadFailed = false;
+  let showingLoadFeedback = false;
+  let pendingCases: Promise<void> = Promise.resolve();
+  let casesReading = false;
+  let casesGeneration = 0;
+  let renderedCases: HTMLElement | undefined;
   let pendingSave: Promise<void> | null = null;
   let pendingForget: Promise<void> | null = null;
   let pendingDraft: Promise<void> | null = null;
@@ -241,12 +257,35 @@ export const mountLearningPanel = (
     case_id: string;
     recipe: unknown;
     request_aliased: boolean;
+    label: string;
   }>();
-  let draftHandoffInProgress = false;
+  let handoffCaseId: string | null = null;
   let pendingOfferValue: boolean | null = null;
   const promptFor = (case_id: string): string => drafts.get(case_id) ?? '';
 
   opts.host.setAttribute(LEARNING_PANEL_HOST_ATTR, '');
+
+  // Keep this control attached while retrying or failing again. Removing and
+  // re-adding it would drop native keyboard focus while its read is pending.
+  const loadFeedback = doc.createElement('div');
+  const loadStatus = doc.createElement('div');
+  loadStatus.setAttribute(LEARNING_PANEL_READ_STATUS_ATTR, '');
+  loadStatus.setAttribute('aria-atomic', 'true');
+  const prefsRetry = doc.createElement('button');
+  prefsRetry.type = 'button';
+  prefsRetry.className = 'rx-btn rx-btn-secondary';
+  prefsRetry.textContent = 'Retry Learning settings';
+  prefsRetry.setAttribute(LEARNING_PANEL_RETRY_ATTR, '');
+  loadFeedback.appendChild(loadStatus);
+
+  const casesReadStatus = doc.createElement('div');
+  casesReadStatus.setAttribute(LEARNING_PANEL_CASES_READ_STATUS_ATTR, '');
+  casesReadStatus.setAttribute('aria-atomic', 'true');
+  const casesRetry = doc.createElement('button');
+  casesRetry.type = 'button';
+  casesRetry.className = 'rx-btn rx-btn-secondary';
+  casesRetry.textContent = 'Retry learned history';
+  casesRetry.setAttribute(LEARNING_PANEL_CASES_RETRY_ATTR, '');
 
   const clearChildren = (node: HTMLElement): void => {
     while (node.firstChild) node.removeChild(node.firstChild);
@@ -304,41 +343,99 @@ export const mountLearningPanel = (
     render();
   };
 
-  const loadCases = async (
+  const caseFocusAttributes = [LEARNING_PANEL_CASES_RETRY_ATTR,
+    LEARNING_PANEL_DRAFT_PROMPT_ATTR, LEARNING_PANEL_DRAFT_ATTR,
+    LEARNING_PANEL_FORGET_ATTR, LEARNING_PANEL_CASES_ERROR_ATTR,
+    LEARNING_PANEL_CASES_EMPTY_ATTR, LEARNING_PANEL_CASES_ATTR];
+  const captureCaseFocus = () => {
+    const active = doc.activeElement as HTMLTextAreaElement | null;
+    if (!active) return undefined;
+    for (const attribute of caseFocusAttributes) {
+      if (!Array.from(opts.host.querySelectorAll<HTMLElement>(`[${attribute}]`)).includes(active)) continue;
+      return { attribute, value: active.getAttribute(attribute) ?? '',
+        ...(attribute === LEARNING_PANEL_DRAFT_PROMPT_ATTR
+          ? { start: active.selectionStart, end: active.selectionEnd, direction: active.selectionDirection } : {}),
+      };
+    }
+    return undefined;
+  };
+  const restoreCaseFocus = (previous: ReturnType<typeof captureCaseFocus>): void => {
+    if (!previous || disposed) return;
+    const target = Array.from(opts.host.querySelectorAll<HTMLElement>(`[${previous.attribute}]`))
+      .find(node => node.getAttribute(previous.attribute) === previous.value);
+    if (target) {
+      target.focus({ preventScroll: true });
+      if (typeof previous.start === 'number' && typeof previous.end === 'number') {
+        (target as HTMLTextAreaElement).setSelectionRange?.(previous.start, previous.end, previous.direction ?? undefined);
+      }
+      return;
+    }
+    if (focusByAttribute(LEARNING_PANEL_CASES_RETRY_ATTR)) return;
+    if (focusByAttribute(LEARNING_PANEL_CASES_EMPTY_ATTR)) return;
+    focusByAttribute(LEARNING_PANEL_CASES_ATTR);
+  };
+  const repaintCases = (): void => {
+    if (disposed || state.phase !== 'ready') return;
+    const previous = captureCaseFocus();
+    if (renderedCases) opts.host.removeChild(renderedCases);
+    renderCases();
+    restoreCaseFocus(previous);
+  };
+
+  const readCases = async (
     beforeRender?: () => void,
     settledPatch: Partial<LearningPanelState> = {},
   ): Promise<void> => {
-    if (!opts.runCasesList) return;
+    if (!opts.runCasesList || disposed) return;
+    const generation = ++casesGeneration;
+    casesReading = true;
+    repaintCases();
     try {
       const { cases } = await opts.runCasesList();
-      if (disposed) return;
+      if (disposed || generation !== casesGeneration) return;
       beforeRender?.();
-      setState({ ...settledPatch, cases, casesError: null });
+      casesReading = false;
+      state = { ...state, ...settledPatch, cases, casesError: null };
+      repaintCases();
     } catch (err) {
-      if (disposed) return;
+      if (disposed || generation !== casesGeneration) return;
       // ⚠ The LIST fails on its own. A corpus read that could not complete must
       // not blank the toggle above it — that control is the tap for everything
       // learned, and losing it because a list query failed would be the larger
       // loss. `cases: []` is NOT used here: an empty list is a claim that
       // nothing was learned, which is exactly what is unknown right now.
       beforeRender?.();
-      setState({
+      casesReading = false;
+      state = { ...state,
         ...settledPatch,
         casesError: humanizeRpcError(err),
-      });
+      };
+      repaintCases();
+    } finally {
+      if (generation === casesGeneration) casesReading = false;
     }
+  };
+  const loadCases = (beforeRender?: () => void, settledPatch: Partial<LearningPanelState> = {}): Promise<void> => {
+    pendingCases = readCases(beforeRender, settledPatch);
+    return pendingCases;
   };
 
   const doLoad = async (): Promise<void> => {
+    if (disposed || prefsReading) return;
+    prefsReading = true;
     setState({ phase: 'loading', error: null });
     try {
       const { prefs } = await opts.runPrefsGet();
       if (disposed) return;
+      const returnToToggle = doc.activeElement === prefsRetry;
       setState({ phase: 'ready', prefs, error: null });
+      if (returnToToggle) focusToggle();
     } catch (err) {
       if (disposed) return;
       setState({ phase: 'error', error: humanizeRpcError(err) });
       return;
+    } finally {
+      prefsReading = false;
     }
     await loadCases();
   };
@@ -504,17 +601,17 @@ export const mountLearningPanel = (
       // ⛔ Retain the already-paid-for result BEFORE the hand-off. If browser
       // storage is full, retrying must retry only this local transfer — never
       // ask the model to write the same recipe (and spend quota) again.
-      retainedDrafts.set(case_id, completed);
+      const source = state.cases?.find(entry => entry.case_id === case_id);
+      retainedDrafts.set(case_id, { ...completed, label: source ? caseRequestLabel(source) : 'the learned request' });
       // The host may synchronously route to the Kitchen. During that one
-      // callback the draft is neither an external in-flight change nor an
-      // abandoned local result, so the Settings leave guard must not
-      // self-confirm the handoff it was asked to perform.
-      draftHandoffInProgress = true;
+      // callback only this draft is excluded from the leave guard. Other
+      // finished drafts and pending preference writes still need protection.
+      handoffCaseId = case_id;
       let handed: boolean | void;
       try {
         handed = opts.onDraftReady?.(completed);
       } finally {
-        draftHandoffInProgress = false;
+        handoffCaseId = null;
       }
       if (handed !== false) retainedDrafts.delete(case_id);
       settleDraft({
@@ -543,12 +640,14 @@ export const mountLearningPanel = (
   };
 
   const retryDraftHandoff = (case_id: string): void => {
+    if (disposed) return;
     const retained = retainedDrafts.get(case_id);
     if (retained === undefined) return;
     const returnToDraft = elementHasFocus(LEARNING_PANEL_DRAFT_ATTR, case_id);
-    draftHandoffInProgress = true;
+    handoffCaseId = case_id;
     try {
-      const handed = opts.onDraftReady?.(retained);
+      const handed = opts.onDraftReady?.({ case_id: retained.case_id,
+        recipe: retained.recipe, request_aliased: retained.request_aliased });
       if (handed !== false) retainedDrafts.delete(case_id);
       setState({
         draftArmed: handed === false ? case_id : null,
@@ -562,32 +661,42 @@ export const mountLearningPanel = (
         draftError: { case_id, message: DRAFT_HANDOFF_ERROR },
       });
     } finally {
-      draftHandoffInProgress = false;
+      handoffCaseId = null;
     }
     if (returnToDraft) {
-      focusByAttribute(LEARNING_PANEL_DRAFT_ATTR, case_id);
+      if (!focusByAttribute(LEARNING_PANEL_DRAFT_ATTR, case_id)) {
+        if (!focusByAttribute(LEARNING_PANEL_CASES_RETRY_ATTR)) focusByAttribute(LEARNING_PANEL_CASES_ATTR);
+      }
     }
   };
 
   const render = (): void => {
     if (disposed) return;
+    if (state.phase !== 'ready') {
+      const failed = state.phase === 'error';
+      if (failed && !loadFailed) {
+        loadFailed = true;
+        loadFeedback.appendChild(prefsRetry);
+      }
+      loadStatus.className = failed ? '' : 'learning-muted';
+      loadStatus.setAttribute('role', failed ? 'alert' : 'status');
+      if (failed) loadStatus.setAttribute(LEARNING_PANEL_ERROR_ATTR, '');
+      else loadStatus.removeAttribute(LEARNING_PANEL_ERROR_ATTR);
+      loadStatus.textContent = failed
+        ? `Recued could not load these settings: ${state.error ?? 'unknown error'}`
+        : loadFailed ? 'Retrying Learning settings…' : 'Loading Learning settings…';
+      prefsRetry.setAttribute('aria-disabled', String(!failed));
+      prefsRetry.setAttribute('aria-busy', String(!failed));
+      if (!showingLoadFeedback) {
+        clearChildren(opts.host);
+        opts.host.appendChild(loadFeedback);
+        showingLoadFeedback = true;
+      }
+      return;
+    }
+    showingLoadFeedback = false;
+    const previous = captureCaseFocus();
     clearChildren(opts.host);
-
-    if (state.phase === 'loading') {
-      const loading = doc.createElement('div');
-      loading.className = 'learning-muted';
-      loading.textContent = 'Loading…';
-      opts.host.appendChild(loading);
-      return;
-    }
-    if (state.phase === 'error') {
-      const error = doc.createElement('div');
-      error.setAttribute(LEARNING_PANEL_ERROR_ATTR, '');
-      error.textContent =
-        `Recued could not load these settings: ${state.error ?? 'unknown error'}`;
-      opts.host.appendChild(error);
-      return;
-    }
 
     const authoritativeEnabled =
       getPref(state.prefs ?? undefined, OFFER_PREF) === true;
@@ -606,6 +715,7 @@ export const mountLearningPanel = (
       checkbox.setAttribute('aria-busy', 'true');
     }
     checkbox.addEventListener('change', () => {
+      if (disposed || state.phase !== 'ready') return;
       if (state.saving) {
         (checkbox as HTMLInputElement).checked = enabled;
         return;
@@ -650,6 +760,7 @@ export const mountLearningPanel = (
     }
 
     renderCases();
+    restoreCaseFocus(previous);
   };
 
   /** D-219 item 2 — WHAT RECUED HAS LEARNED.
@@ -671,28 +782,35 @@ export const mountLearningPanel = (
     if (!opts.runCasesList) return;
 
     const block = doc.createElement('div');
+    renderedCases = block;
     block.setAttribute(LEARNING_PANEL_CASES_ATTR, '');
     block.setAttribute('tabindex', '-1');
+    block.setAttribute('role', 'region');
+    block.setAttribute('aria-label', 'What Recued has learned');
     const heading = doc.createElement('h4');
     heading.className = 'learning-row-label';
     heading.textContent = 'What Recued has learned';
     block.appendChild(heading);
 
-    if (state.casesError !== null) {
-      const error = doc.createElement('div');
-      error.setAttribute(LEARNING_PANEL_CASES_ERROR_ATTR, '');
-      error.setAttribute('tabindex', '-1');
-      error.textContent =
-        `Recued could not load what it has learned: ${state.casesError}`;
-      block.appendChild(error);
-      opts.host.appendChild(block);
-      return;
+    if (casesReading || state.casesError !== null || state.cases === null) {
+      const failed = state.casesError !== null && !casesReading;
+      casesReadStatus.setAttribute('role', failed ? 'alert' : 'status');
+      casesReadStatus.setAttribute('tabindex', '-1');
+      if (state.casesError !== null) casesReadStatus.setAttribute(LEARNING_PANEL_CASES_ERROR_ATTR, '');
+      else casesReadStatus.removeAttribute(LEARNING_PANEL_CASES_ERROR_ATTR);
+      casesReadStatus.textContent = casesReading
+        ? state.casesError !== null ? 'Retrying learned history…' : 'Loading learned history…'
+        : state.casesError !== null ? `Recued could not load what it has learned: ${state.casesError}`
+        : 'Loading learned history…';
+      block.appendChild(casesReadStatus);
+      if (state.casesError !== null) {
+        casesRetry.setAttribute('aria-disabled', String(casesReading));
+        casesRetry.setAttribute('aria-busy', String(casesReading));
+        block.appendChild(casesRetry);
+      }
     }
-    if (state.cases === null) {
-      const loading = doc.createElement('div');
-      loading.className = 'learning-muted';
-      loading.textContent = 'Loading...';
-      block.appendChild(loading);
+    if (state.casesError !== null || state.cases === null) {
+      renderRetainedDrafts(block, new Set());
       opts.host.appendChild(block);
       return;
     }
@@ -707,6 +825,7 @@ export const mountLearningPanel = (
         'Nothing yet. Recued only learns from the ones you answer, so this fills '
         + 'up as you tell it how things went.';
       block.appendChild(empty);
+      renderRetainedDrafts(block, new Set());
       opts.host.appendChild(block);
       return;
     }
@@ -714,6 +833,7 @@ export const mountLearningPanel = (
     for (const entry of state.cases) {
       block.appendChild(renderCase(entry));
     }
+    renderRetainedDrafts(block, new Set(state.cases.map(entry => entry.case_id)));
     opts.host.appendChild(block);
   };
 
@@ -724,6 +844,30 @@ export const mountLearningPanel = (
 
   const caseAccessibleLabel = (entry: ExecutionCaseLearnedEntry): string =>
     `what it learned: ${caseRequestLabel(entry)} (${entry.case_id})`;
+
+  // A finished result belongs to this browser until its Kitchen handoff works,
+  // even if the next history read fails or no longer contains its source case.
+  const renderRetainedDrafts = (block: HTMLElement, listed: Set<string>): void => {
+    for (const [case_id, retained] of retainedDrafts) {
+      if (listed.has(case_id)) continue;
+      const card = doc.createElement('div'); card.className = 'learning-case';
+      const label = doc.createElement('div'); label.className = 'learning-row-label';
+      label.textContent = `Finished Recipe draft: ${retained.label}`;
+      card.appendChild(label);
+      const button = doc.createElement('button'); button.type = 'button';
+      button.className = 'rx-btn rx-btn-secondary'; button.textContent = 'Open finished draft';
+      button.setAttribute(LEARNING_PANEL_DRAFT_ATTR, case_id);
+      button.setAttribute('aria-label', `Open finished draft from what it learned: ${retained.label} (${case_id})`);
+      button.setAttribute('aria-disabled', String(state.drafting !== null || state.forgetting !== null));
+      button.addEventListener('click', () => {
+        if (!disposed && state.drafting === null && state.forgetting === null) retryDraftHandoff(case_id);
+      });
+      card.appendChild(button);
+      const error = doc.createElement('div'); error.className = 'learning-row-detail';
+      error.setAttribute(LEARNING_PANEL_DRAFT_ERROR_ATTR, case_id); error.textContent = DRAFT_HANDOFF_ERROR;
+      card.appendChild(error); block.appendChild(card);
+    }
+  };
 
   const renderCase = (entry: ExecutionCaseLearnedEntry): HTMLElement => {
     const item = doc.createElement('div');
@@ -842,7 +986,8 @@ export const mountLearningPanel = (
     const armed = state.draftArmed === entry.case_id;
     const busy = state.drafting === entry.case_id;
     const retained = retainedDrafts.has(entry.case_id);
-    const actionsLocked = state.drafting !== null || state.forgetting !== null;
+    const actionsLocked = state.drafting !== null || state.forgetting !== null
+      || (!retained && (casesReading || state.casesError !== null));
     const caseLabel = caseAccessibleLabel(entry);
 
     if (armed) {
@@ -903,11 +1048,12 @@ export const mountLearningPanel = (
       if (busy) button.setAttribute('aria-busy', 'true');
     }
     button.addEventListener('click', () => {
-      if (state.drafting !== null || state.forgetting !== null) return;
+      if (disposed || state.drafting !== null || state.forgetting !== null) return;
       if (retainedDrafts.has(entry.case_id)) {
         retryDraftHandoff(entry.case_id);
         return;
       }
+      if (casesReading || state.casesError !== null) return;
       if (state.draftArmed !== entry.case_id) {
         const returnToDraft = elementHasFocus(
           LEARNING_PANEL_DRAFT_ATTR,
@@ -939,7 +1085,7 @@ export const mountLearningPanel = (
   const renderForget = (entry: ExecutionCaseLearnedEntry): HTMLElement => {
     const armed = state.armed === entry.case_id;
     const busy = state.forgetting === entry.case_id;
-    const actionsLocked = state.forgetting !== null || state.drafting !== null;
+    const actionsLocked = state.forgetting !== null || state.drafting !== null || casesReading || state.casesError !== null;
     const caseLabel = caseAccessibleLabel(entry);
     const button = doc.createElement('button');
     button.setAttribute('type', 'button');
@@ -963,7 +1109,7 @@ export const mountLearningPanel = (
       if (busy) button.setAttribute('aria-busy', 'true');
     }
     button.addEventListener('click', () => {
-      if (state.forgetting !== null || state.drafting !== null) return;
+      if (disposed || state.forgetting !== null || state.drafting !== null || casesReading || state.casesError !== null) return;
       if (state.armed !== entry.case_id) {
         const returnToForget = elementHasFocus(
           LEARNING_PANEL_FORGET_ATTR,
@@ -980,27 +1126,36 @@ export const mountLearningPanel = (
     return button;
   };
 
+  prefsRetry.addEventListener('click', () => {
+    if (disposed || prefsReading || state.phase !== 'error') return;
+    pendingLoad = doLoad();
+  });
+  casesRetry.addEventListener('click', () => {
+    if (disposed || casesReading || state.phase !== 'ready' || state.casesError === null
+      || state.forgetting !== null || state.drafting !== null) return;
+    pendingLoad = loadCases();
+  });
   render();
   pendingLoad = doLoad();
 
   return {
     getState: () => state,
     hasInFlightWork: () => !disposed
-      && !draftHandoffInProgress
       && (
         state.saving
         || state.forgetting !== null
-        || state.drafting !== null
+        || (state.drafting !== null && state.drafting !== handoffCaseId)
       ),
     hasUnsavedChanges: () => !disposed
-      && !draftHandoffInProgress
-      && retainedDrafts.size > 0,
+      && Array.from(retainedDrafts.keys()).some(case_id => case_id !== handoffCaseId),
     whenLoaded: () => pendingLoad,
+    whenCasesSettled: () => pendingCases,
     whenSaveSettled: () => pendingSave ?? Promise.resolve(),
     whenForgetSettled: () => pendingForget ?? Promise.resolve(),
     whenDraftSettled: () => pendingDraft ?? Promise.resolve(),
     dispose: () => {
       disposed = true;
+      casesGeneration++;
       clearChildren(opts.host);
       opts.host.removeAttribute(LEARNING_PANEL_HOST_ATTR);
     },

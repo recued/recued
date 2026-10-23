@@ -36,7 +36,7 @@ import type { IntakeFormConfig } from '@recued/contracts';
 
 import { openFormSubmissionField } from './ports/reception/form-pii.js';
 import type { ReceptionOutputBlock } from './ports/reception/handlers/reception-page-render.js';
-import type { ReceptionRecipeRunner } from './reception-recipe-runner.js';
+import type { ReceptionRecipeRunner, ReceptionSaleRefusal } from './reception-recipe-runner.js';
 import type { FormSubmissionStore } from './storage/reception-form-store.js';
 
 export interface ReceptionRecipeRunnerAdapterDeps {
@@ -93,7 +93,9 @@ export type ReceptionRecipeRunnerAdapterOutcome =
    *  worse than none. */
   | { readonly kind: 'completed'; readonly render: ReadonlyArray<ReceptionOutputBlock> }
   | { readonly kind: 'held' }
-  | { readonly kind: 'refused' }
+  /** `refusal` rides along when a selling form could not open its order for a reason the
+   *  owner can fix — what the owner's notice names. */
+  | { readonly kind: 'refused'; readonly refusal?: ReceptionSaleRefusal }
   /** No pair, or a pair with no minted door. The CALLER must fall through — this is not a
    *  success and must never be rendered as one. */
   | { readonly kind: 'no_door' };
@@ -141,7 +143,9 @@ export const composeReceptionRecipeRunnerAdapter = (
       return { kind: 'held' };
     case 'failed':
       // The visitor was promised something and is not getting it. The handler tells them.
-      return { kind: 'refused' };
+      return outcome.refusal === undefined
+        ? { kind: 'refused' }
+        : { kind: 'refused', refusal: outcome.refusal };
     case 'no_door':
       return { kind: 'no_door' };
   }

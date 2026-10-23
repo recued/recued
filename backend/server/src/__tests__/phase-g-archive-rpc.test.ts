@@ -878,9 +878,15 @@ describe('archive rpc', () => {
       'server.archive.health.save',
       'server.archive.import',
       'server.archive.import_status',
+      'server.archive.integrity.get',
+      'server.archive.integrity.save',
       'server.archive.status',
       'server.archive.unattended.get',
       'server.archive.unattended.save',
+      'server.archive.watchdog.drill.start',
+      'server.archive.watchdog.drill.update',
+      'server.archive.watchdog.get',
+      'server.archive.watchdog.save',
     ]);
   });
 });

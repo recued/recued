@@ -247,6 +247,20 @@ const sourceRowIdentityIndexes = (kind: WorkEntityKind, table: string): string =
     WHERE deleted_at IS NOT NULL;
 `;
 
+interface AssetSummaryFieldEntry {
+  status: AssetRow['status']; sync_state: AssetRow['sync_state']; deleted_at: AssetRow['deleted_at']; fields: string;
+}
+interface AssetSummaryFieldScope {
+  entries: Map<string, AssetSummaryFieldEntry>; closed: boolean; owner?: object;
+}
+// Functions belong to a connection, including when two stores share it. Each
+// synchronous reader installs its own batch and restores the outer reader.
+const assetSummaryFieldScopes = new WeakMap<Database.Database, AssetSummaryFieldScope>();
+const closeAssetSummaryFieldScope = (db: Database.Database, scope: AssetSummaryFieldScope) => {
+  scope.closed = true; scope.entries.clear(); scope.owner = undefined;
+  if (assetSummaryFieldScopes.get(db) === scope) assetSummaryFieldScopes.delete(db);
+};
+
 /** Register `js_lower` on this CONNECTION.
  *
  *  ⛔ SQLite's built-in `LOWER()` folds ASCII ONLY (no ICU in better-sqlite3):
@@ -265,6 +279,16 @@ const sourceRowIdentityIndexes = (kind: WorkEntityKind, table: string): string =
 const registerWorkEntitySqlFunctions = (db: Database.Database): void => {
   db.function('js_lower', { deterministic: true }, (value: unknown) =>
     typeof value === 'string' ? value.toLowerCase() : '');
+  db.function('asset_summary_history_fields', { deterministic: true }, (blob: unknown, status: unknown, sync: unknown, deleted: unknown) => {
+    try {
+      const cached = typeof blob === 'string' ? assetSummaryFieldScopes.get(db)?.entries.get(blob) : undefined;
+      if (cached && cached.status === status && cached.sync_state === sync && cached.deleted_at === deleted) return cached.fields;
+      const data = JSON.parse(blob as string) as Asset & { _kind?: unknown };
+      if (Object.hasOwn(data, '_kind') && data._kind !== 'asset') return '[]';
+      return assetSummaryHistoryFieldsJson({ ...data, status, sync_state: sync,
+        ...(deleted !== null ? { deleted_at: deleted } : {}) } as Asset);
+    } catch { return 'null'; /* Unsupported legacy rows retain ordinary history reads. */ }
+  });
 };
 
 export const ensureWorkEntitySchema = (db: Database.Database): void => {
@@ -643,6 +667,7 @@ export const ensureWorkEntitySchema = (db: Database.Database): void => {
     ${sourceRowIdentityIndexes('asset', ASSET_TABLE)}
     CREATE INDEX IF NOT EXISTS idx_asset_parent ON ${ASSET_TABLE}(belongs_to);
     CREATE INDEX IF NOT EXISTS idx_asset_holder ON ${ASSET_TABLE}(holder_contact, status);
+    CREATE INDEX IF NOT EXISTS idx_asset_summary_history_order ON ${ASSET_TABLE}(updated_at DESC,id ASC);
     CREATE INDEX IF NOT EXISTS idx_asset_class_updates ON ${ASSET_TABLE}(id)
       WHERE ${CLASS_UPDATE_ASSET_WHERE};
     CREATE TABLE IF NOT EXISTS asset_observation_binding (
@@ -1519,15 +1544,41 @@ const projectSourceRowIdentity = (
   return out;
 };
 
+/** The asset list and sphere selection share visibility and literal search. */
+export const assetListWhere = (query?: WorkEntityListQuery) => {
+  const norm = normalizeListQuery(query); const where = buildListWhere({ ...norm, search: '' });
+  if (norm.search) { where.sql += ' AND (instr(js_lower(name),?)>0 OR instr(js_lower(COALESCE(class_id,\'\')),?)>0)'; where.params.push(norm.search.toLowerCase(), norm.search.toLowerCase()); }
+  return { norm, where };
+};
+
+/** The owner's raw summary and its history stream request the same fields. */
+export const assetSummaryHistoryFields = (asset: Pick<Asset, 'deleted_at' | 'sync_state' | 'status' | 'rules'>): string[] =>
+  asset.deleted_at == null && ['live', 'stale_unreachable'].includes(asset.sync_state) && ['active', 'lent'].includes(asset.status)
+    ? asset.rules.flatMap(rule => rule.enabled && rule.when.kind === 'objective' ? [rule.when.field] : []) : [];
+
+const assetSummaryHistoryFieldsJson = (asset: Asset & { _kind?: unknown }): string => {
+  try {
+    if (Object.hasOwn(asset, '_kind') && asset._kind !== 'asset') return '[]';
+    const fields = assetSummaryHistoryFields(asset);
+    return fields.every(field => typeof field === 'string') ? JSON.stringify([...new Set(fields)]) : 'null';
+  } catch { return 'null'; }
+};
+
+export interface AssetSummaryHistoryQuery extends Pick<WorkEntityListQuery, 'search'> {
+  /** Internal selector CTEs defining asset_summary_history_members(id).
+   * Membership is resolved before joining any reading histories. */
+  selection?: { ctes: string; params: readonly unknown[] };
+}
+
 type AssetData = Pick<Asset, 'dates' | 'readings' | 'observations' | 'values' | 'anchors' | 'attributes' | 'settings' | 'rules' | 'field_sources' | 'automatic_updates'>;
-interface AssetRow extends SourceRowIdentityRow {
+export interface AssetRow extends SourceRowIdentityRow {
   id: string; name: string; class_id: string | null; status: Asset['status']; holder_contact: string | null;
   belongs_to: string | null; audience: Asset['audience'] | null; sphere: Asset['sphere'] | null;
   sphere_override: Asset['sphere_override'] | null; retirement: Asset['retirement'];
   document_number: string | null; serial_number: string | null; exact_address: string | null;
   data_blob: string; created_at: number; updated_at: number;
 }
-const rowToAsset = (row: AssetRow): Asset => ({
+export const rowToAsset = (row: AssetRow): Asset => ({
   ...JSON.parse(row.data_blob) as AssetData,
   ...projectSourceRowIdentity(row), id: row.id, name: row.name, status: row.status,
   retirement: row.retirement, created_at: row.created_at, updated_at: row.updated_at,
@@ -1541,6 +1592,35 @@ const rowToAsset = (row: AssetRow): Asset => ({
   ...(row.serial_number !== null ? { serial_number: row.serial_number } : {}),
   ...(row.exact_address !== null ? { exact_address: row.exact_address } : {}),
 });
+
+/** Native decoders publish only their current batch's already parsed fields.
+ * Misses, including lookahead, retain the ordinary decoder. Identical blobs and
+ * columns can share fields. Each cursor captures the scope that created it. */
+export const createAssetSummaryHistoryBatch = (db: Database.Database) => {
+  const scope = assetSummaryFieldScopes.get(db); const owner = {};
+  let pending = new Map<string, AssetSummaryFieldEntry>();
+  const active = () => scope && !scope.closed && assetSummaryFieldScopes.get(db) === scope;
+  return {
+    add(row: AssetRow, asset: Asset) {
+      if (!active() || pending.size === 200 || typeof row.data_blob !== 'string' || !row.data_blob.trimStart().startsWith('{')) return;
+      const prior = pending.get(row.data_blob) ?? scope!.entries.get(row.data_blob);
+      pending.set(row.data_blob, prior && prior.status === row.status && prior.sync_state === row.sync_state && prior.deleted_at === row.deleted_at
+        ? prior : { status: row.status, sync_state: row.sync_state, deleted_at: row.deleted_at, fields: assetSummaryHistoryFieldsJson(asset) });
+    },
+    publish() {
+      if (active()) {
+        scope!.entries = pending; scope!.owner = owner;
+        pending = new Map();
+      } else {
+        pending.clear();
+      }
+    },
+    close() {
+      pending.clear();
+      if (scope?.owner === owner) { scope.entries.clear(); scope.owner = undefined; }
+    },
+  };
+};
 
 interface TaskRow extends SourceRowIdentityRow {
   id: string;
@@ -2248,11 +2328,22 @@ export interface WorkEntityStore {
   writeAsset(input: AssetWriteInput, now?: number): Asset;
   ensureAsset(input: AssetWriteInput & { id: string }, now?: number): { asset: Asset; created: boolean };
   readAsset(id: string): Asset | null;
+  /** Raw point-read equivalents, including deleted/unavailable rows and explicit
+   * null misses. SQL batches contain at most 200 IDs. Returns undefined for
+   * customized point readers so callers can retain their behavior and read order. */
+  readAssets(ids: readonly string[]): Map<string, Asset | null> | undefined;
   readAssetEffective(id: string, canReadParent?: (parent: Asset) => boolean): Asset | null;
   /** Bulk owner projection, equivalent to readAssetEffective with default parent
-   * access. Scoped readers must keep supplying their parent predicate above. */
-  readAssetsEffective(ids: readonly string[]): Map<string, Asset>;
+   * access. Scoped readers must keep supplying their parent predicate above.
+   * Raw scan rows may be reused within the same synchronous owner read only. */
+  readAssetsEffective(ids: readonly string[], scanned?: readonly Asset[]): Map<string, Asset>;
+  /** True only while both owner projection readers retain their native behavior. */
+  hasDefaultAssetProjection(): boolean;
   listAssets(query?: WorkEntityListQuery): Asset[];
+  /** Lazy raw attention candidates in ordinary list order, grouped by 200.
+   * Consume synchronously and close before awaiting; false requests scan fallback.
+   * Replacement listByKind implementations retain their existing scan. */
+  assetCandidates(query?: Pick<WorkEntityListQuery, 'search'>): Generator<{ assets: Asset[] }, boolean, void> | undefined;
   listAssetChildren(id: string): Asset[];
   countAssets(query?: WorkEntityListQuery): number;
   deleteAsset(id: string, opts?: { tombstone?: boolean; now?: number }): boolean;
@@ -2284,6 +2375,10 @@ export interface WorkEntityStore {
   /** Fresh histories for distinct asset/field pairs, including empty results.
    * Each pair keeps the individual read's newest-first order and limit. */
   assetReadingHistories(requests: readonly { asset_id: string; field: string }[], limit?: number): Map<string, Map<string, AssetReading[]>>;
+  /** Scope a synchronous, replayable native owner list read to one lazy history
+   * cursor. The callback must reset its selection state on entry: a cleanup
+   * failure replays it with ordinary history reads. Nothing crosses an await. */
+  withAssetReadingHistories<T>(query: AssetSummaryHistoryQuery, read: () => T): T;
   /** Latest actual sample known at an owner action, independent of retention
    * windows used by trend queries. Never substitutes a later reading. */
   assetReadingAt(asset_id: string, field: string, at: number): AssetReading | null;
@@ -2504,6 +2599,13 @@ export interface WorkEntityStore {
    *  not exist or carried no pending write. */
   clearPendingWrite(kind: WorkEntityKind, id: string): boolean;
 }
+
+const nativeAssetProjections = new WeakMap<object, Pick<WorkEntityStore, 'hasDefaultAssetProjection' | 'readAssetEffective' | 'readAssetsEffective'>>();
+/** Check native data properties without invoking custom guards or getters. */
+export const hasNativeAssetProjection = (store: WorkEntityStore): boolean => {
+  const native = nativeAssetProjections.get(store);
+  return !!native && Object.entries(native).every(([key, value]) => Object.getOwnPropertyDescriptor(store, key)?.value === value);
+};
 
 export interface CreateWorkEntityStoreOptions {
   newId?: () => string;
@@ -2769,6 +2871,17 @@ export const createWorkEntityStore = (
     const row = db.prepare(`SELECT * FROM ${ASSET_TABLE} WHERE id = ?`).get(id) as AssetRow | undefined;
     return row ? rowToAsset(row) : null;
   };
+  function readAssets(this: Pick<WorkEntityStore, 'readAsset'>, ids: readonly string[]): ReturnType<WorkEntityStore['readAssets']> {
+    if (this?.readAsset !== readAsset) return undefined;
+    const keys = [...new Set(ids)]; const result = new Map<string, Asset | null>();
+    for (const id of keys) result.set(id, null);
+    for (let offset = 0; offset < keys.length; offset += 200) {
+      const page = keys.slice(offset, offset + 200);
+      const rows = db.prepare(`SELECT * FROM ${ASSET_TABLE} WHERE id IN (${page.map(() => '?').join(',')})`).all(...page) as AssetRow[];
+      for (const row of rows) result.set(row.id, rowToAsset(row));
+    }
+    return result;
+  }
   const persistAsset = (asset: Asset, identity: WorkEntitySourceIdentityInput, now: number): Asset => {
     const sri = resolveSourceIdentity(identity, now, internal, 'asset');
     const data: AssetData = { dates: asset.dates, readings: asset.readings, observations: asset.observations,
@@ -2936,21 +3049,48 @@ export const createWorkEntityStore = (
     return resolve(id, new Set());
   };
   const readAssetEffective: WorkEntityStore['readAssetEffective'] = (id, canReadParent) => projectAssetEffective(id, readAsset, canReadParent);
-  const readAssetsEffective: WorkEntityStore['readAssetsEffective'] = ids => {
+  const readAssetsEffective: WorkEntityStore['readAssetsEffective'] = (ids, scanned) => {
     const result = new Map<string, Asset>(); const keys = [...new Set(ids)];
+    const known = new Map(scanned?.map(asset => [asset.id, asset]));
     for (let offset = 0; offset < keys.length; offset += 200) {
       const page = keys.slice(offset, offset + 200);
+      const raw = new Map<string, Asset>(); const unread = new Set<string>(); const expanded = new Set<string>();
+      let legacyParent = false;
+      const pending = page.map(id => ({ id, root: true }));
+      for (const { id, root } of pending) {
+        const asset = known.get(id);
+        if (!asset) { unread.add(id); continue; }
+        raw.set(id, asset);
+        if ((!root && asset.deleted_at != null) || expanded.has(id)) continue;
+        expanded.add(id);
+        if (asset.belongs_to) pending.push({ id: asset.belongs_to, root: false });
+      }
       // UNION bounds legacy cycles. Keep a deleted parent for the ordinary
       // projection's stop check, but do not follow its own parents unless it
       // was explicitly requested as a root.
-      const rows = db.prepare(`WITH RECURSIVE ancestry(id,expand) AS (
-        SELECT id,1 FROM ${ASSET_TABLE} WHERE id IN (${page.map(() => '?').join(',')})
-        UNION
-        SELECT parent.id,parent.deleted_at IS NULL FROM ancestry link
-          JOIN ${ASSET_TABLE} child ON child.id=link.id
-          JOIN ${ASSET_TABLE} parent ON parent.id=child.belongs_to WHERE link.expand=1
-      ) SELECT * FROM ${ASSET_TABLE} WHERE id IN (SELECT id FROM ancestry)`).all(...page) as AssetRow[];
-      const raw = new Map(rows.map(row => { const asset = rowToAsset(row); return [asset.id, asset]; }));
+      if (unread.size) {
+        const missing = [...unread]; const roots = page.filter(id => unread.has(id)); const allRoots = roots.length === missing.length;
+        const expand = allRoots ? '1' : `deleted_at IS NULL${roots.length ? ` OR id IN (${roots.map(() => '?').join(',')})` : ''}`;
+        const rows = db.prepare(`WITH RECURSIVE ancestry(id,expand) AS (
+          SELECT id,${expand} FROM ${ASSET_TABLE} WHERE id IN (${missing.map(() => '?').join(',')})
+          UNION
+          SELECT parent.id,parent.deleted_at IS NULL FROM ancestry link
+            JOIN ${ASSET_TABLE} child ON child.id=link.id
+            JOIN ${ASSET_TABLE} parent ON parent.id=child.belongs_to WHERE link.expand=1
+        ) SELECT * FROM ${ASSET_TABLE} WHERE id IN (SELECT id FROM ancestry)`)
+          .all(...(allRoots ? [] : roots), ...missing) as AssetRow[];
+        for (const row of rows) if (!raw.has(row.id)) {
+          const asset = known.get(row.id) ?? rowToAsset(row); raw.set(row.id, asset);
+          if (!known.has(row.id) && asset.belongs_to && asset.belongs_to !== row.belongs_to) legacyParent = true;
+        }
+      }
+      // Legacy blobs can supply a parent absent from the canonical column used
+      // by the ancestry CTE. Retain known scan rows and fetch missing links afresh.
+      if (legacyParent) {
+        const read = (id: string) => { const asset = known.get(id); return asset ? structuredClone(asset) : readAsset(id); };
+        for (const id of page) { const asset = projectAssetEffective(id, read); if (asset) result.set(id, asset); }
+        continue;
+      }
       const read = (id: string) => { const asset = raw.get(id); return asset ? structuredClone(asset) : null; };
       for (const id of page) { const asset = projectAssetEffective(id, read); if (asset) result.set(id, asset); }
     }
@@ -2960,18 +3100,42 @@ export const createWorkEntityStore = (
     const current = readAsset(input.id);
     return current ? { asset: current, created: false } : { asset: writeAsset(input, now), created: true };
   })();
-  const assetWhere = (query?: WorkEntityListQuery) => {
-    const norm = normalizeListQuery(query); const where = buildListWhere({ ...norm, search: '' });
-    if (norm.search) { where.sql += ' AND (instr(js_lower(name),?)>0 OR instr(js_lower(COALESCE(class_id,\'\')),?)>0)'; where.params.push(norm.search.toLowerCase(), norm.search.toLowerCase()); }
-    return { norm, where };
-  };
   const listAssets: WorkEntityStore['listAssets'] = query => {
-    const { norm, where } = assetWhere(query);
+    const { norm, where } = assetListWhere(query);
     return (db.prepare(`SELECT * FROM ${ASSET_TABLE} ${where.sql} ORDER BY updated_at DESC,id ASC LIMIT ? OFFSET ?`)
       .all(...where.params, norm.limit, norm.offset) as AssetRow[]).map(rowToAsset);
   };
+  function assetCandidates(this: Pick<WorkEntityStore, 'listByKind'>,
+    query?: Pick<WorkEntityListQuery, 'search'>): ReturnType<WorkEntityStore['assetCandidates']> {
+    if (this?.listByKind !== listByKind) return undefined;
+    const { where } = assetListWhere(query); const fields = createAssetSummaryHistoryBatch(db);
+    return (function* (): Generator<{ assets: Asset[] }, boolean, void> {
+      const cursor = db.prepare(`SELECT * FROM ${ASSET_TABLE} ${where.sql} ORDER BY updated_at DESC,id ASC`)
+        .iterate(...where.params) as IterableIterator<AssetRow>;
+      try {
+        let assets: Asset[] = []; let complete = false;
+        while (!complete) {
+          // Decode the original raw page before packing candidates, preserving
+          // decode/projection error order when legacy _kind values exclude rows.
+          const scanned: Array<{ asset: Asset; row: AssetRow }> = [];
+          for (let count = 0; count < 200; count++) {
+            const next = cursor.next(); if (next.done) { complete = true; break; }
+            scanned.push({ asset: rowToAsset(next.value), row: next.value });
+          }
+          for (const { asset: raw, row } of scanned) {
+            const { _kind, ...asset } = { _kind: 'asset', ...raw };
+            if (_kind !== 'asset') continue;
+            assets.push(asset); fields.add(row, asset);
+            if (assets.length === 200) { fields.publish(); yield { assets }; assets = []; }
+          }
+        }
+        if (assets.length) { fields.publish(); yield { assets }; }
+        return true;
+      } finally { fields.close(); cursor.return?.(); }
+    })();
+  }
   const countAssets: WorkEntityStore['countAssets'] = query => {
-    const { where } = assetWhere(query);
+    const { where } = assetListWhere(query);
     return (db.prepare(`SELECT COUNT(*) AS n FROM ${ASSET_TABLE} ${where.sql}`).get(...where.params) as { n: number }).n;
   };
   const deleteAsset: WorkEntityStore['deleteAsset'] = (id, options) => db.transaction(() => {
@@ -3146,7 +3310,91 @@ export const createWorkEntityStore = (
   const assetReadingHistory: WorkEntityStore['assetReadingHistory'] = (id, field, limit = 100) =>
     (db.prepare('SELECT value FROM asset_reading_history WHERE asset_id=? AND field=? ORDER BY as_of DESC LIMIT ?')
       .all(id, field, readingHistoryLimit(limit)) as Array<{ value: string }>).map(row => JSON.parse(row.value) as AssetReading);
+  type ReadingHistories = ReturnType<WorkEntityStore['assetReadingHistories']>;
+  interface SummaryHistoryReader { fields: AssetSummaryFieldScope; read(requests: readonly { asset_id: string; field: string }[]): ReadingHistories; close(): void }
+  let summaryHistoryReader: SummaryHistoryReader | undefined;
+  const createSummaryHistoryReader = (query: AssetSummaryHistoryQuery): SummaryHistoryReader => {
+    const { where } = assetListWhere(query);
+    const { selection } = query;
+    const fields: AssetSummaryFieldScope = { entries: new Map(), closed: false };
+    interface HistoryRow { asset_id: string; supported: number; field: string | null; history_rowid: number | null; value: string }
+    let cursor: IterableIterator<HistoryRow> | undefined; let next: IteratorResult<HistoryRow> | undefined;
+    const step = () => {
+      if (!cursor) cursor = db.prepare(`${selection ? `${selection.ctes},` : 'WITH'} reading_stream_candidates AS (
+        SELECT * FROM ${ASSET_TABLE} INDEXED BY idx_asset_summary_history_order ${where.sql}
+          ${selection ? 'AND id IN (SELECT id FROM asset_summary_history_members)' : ''}
+      ) SELECT candidate.id AS asset_id,wanted.type IS NOT 'null' AS supported,wanted.value AS field,
+          history.rowid AS history_rowid,history.value
+        FROM reading_stream_candidates candidate LEFT JOIN json_each(
+          asset_summary_history_fields(candidate.data_blob,candidate.status,candidate.sync_state,candidate.deleted_at)) wanted ON 1
+          LEFT JOIN asset_reading_history history ON history.rowid IN (
+            SELECT rowid FROM asset_reading_history WHERE asset_id=candidate.id AND field=wanted.value ORDER BY as_of DESC LIMIT 100)
+        ORDER BY candidate.updated_at DESC,candidate.id ASC,wanted.value ASC,history.as_of DESC`)
+        .iterate(...(selection?.params ?? []), ...where.params) as IterableIterator<HistoryRow>;
+      next = cursor.next();
+    };
+    return {
+      fields,
+      read(requests) {
+        const result: ReadingHistories = new Map();
+        for (const { asset_id, field } of requests) {
+          if (typeof asset_id !== 'string' || typeof field !== 'string') throw new Error('Unsupported summary history identity');
+          let fields = result.get(asset_id); if (!fields) { fields = new Map(); result.set(asset_id, fields); }
+          if (!fields.has(field)) fields.set(field, []);
+        }
+        if (!result.size) return result;
+        if (!next) step();
+        for (const [id, fields] of result) {
+          while (!next!.done && next!.value.asset_id !== id) step();
+          if (next!.done) throw new Error('Summary history cursor order changed');
+          const seen = new Set<string>();
+          while (!next!.done && next!.value.asset_id === id) {
+            const row = next!.value;
+            if (!row.supported) throw new Error('Unsupported summary history fields');
+            if (row.field !== null && fields.has(row.field)) {
+              seen.add(row.field);
+              if (row.history_rowid !== null) fields.get(row.field)!.push(JSON.parse(row.value) as AssetReading);
+            }
+            step();
+          }
+          if ([...fields.keys()].some(field => !seen.has(field))) throw new Error('Summary history request changed');
+        }
+        return result;
+      },
+      close() {
+        closeAssetSummaryFieldScope(db, fields);
+        const active = cursor; cursor = undefined; next = undefined; active?.return?.();
+      },
+    };
+  };
+  function withAssetReadingHistories<T>(this: Pick<WorkEntityStore, 'listByKind'>,
+    query: AssetSummaryHistoryQuery, read: () => T): T {
+    const previous = summaryHistoryReader; const previousFields = assetSummaryFieldScopes.get(db);
+    let reader: SummaryHistoryReader | undefined;
+    try { if (this?.listByKind === listByKind) reader = createSummaryHistoryReader(query); } catch { /* Retain ordinary normalization and error behavior. */ }
+    summaryHistoryReader = reader;
+    if (reader) assetSummaryFieldScopes.set(db, reader.fields); else assetSummaryFieldScopes.delete(db);
+    try {
+      let value: T;
+      try { value = read(); }
+      catch (error) { try { reader?.close(); } catch { /* Keep the original projection error. */ } throw error; }
+      try { reader?.close(); }
+      catch { summaryHistoryReader = undefined; return read(); }
+      return value;
+    } finally {
+      summaryHistoryReader = previous;
+      if (previousFields && !previousFields.closed) assetSummaryFieldScopes.set(db, previousFields);
+      else assetSummaryFieldScopes.delete(db);
+    }
+  }
   const assetReadingHistories: WorkEntityStore['assetReadingHistories'] = (requests, limit = 100) => {
+    if (summaryHistoryReader && limit === 100 && requests.length) {
+      try { return summaryHistoryReader.read(requests); }
+      catch {
+        const failed = summaryHistoryReader; summaryHistoryReader = undefined;
+        try { failed.close(); } catch { /* Preserve the ordinary batch and individual fallback. */ }
+      }
+    }
     const result = new Map<string, Map<string, AssetReading[]>>(); const keys: Array<{ asset_id: string; field: string }> = [];
     for (const { asset_id, field } of requests) {
       let fields = result.get(asset_id); if (!fields) { fields = new Map(); result.set(asset_id, fields); }
@@ -4454,7 +4702,7 @@ export const createWorkEntityStore = (
     });
     return apply.immediate();
   };
-  return {
+  const store: WorkEntityStore = {
     summarizeContactRelationships,
     writeTask,
     ensureTask,
@@ -4482,9 +4730,11 @@ export const createWorkEntityStore = (
     findCommitment,
     deleteCommitment,
     countCommitments,
-    writeAsset, ensureAsset, readAsset, readAssetEffective, readAssetsEffective, listAssets, countAssets, deleteAsset, walkByAssetId, walkAssetsForClassUpdates, walkAssetsForEvidenceRefresh,
+    writeAsset, ensureAsset, readAsset, readAssets, readAssetEffective, readAssetsEffective,
+    hasDefaultAssetProjection() { return this.readAssetEffective === readAssetEffective && this.readAssetsEffective === readAssetsEffective; },
+    listAssets, assetCandidates, countAssets, deleteAsset, walkByAssetId, walkAssetsForClassUpdates, walkAssetsForEvidenceRefresh,
     listAssetChildren: id => (db.prepare(`SELECT * FROM ${ASSET_TABLE} WHERE belongs_to=? AND deleted_at IS NULL ORDER BY id`).all(id) as AssetRow[]).map(rowToAsset),
-    bindAssetObservations, moveAssetObservations, listAssetObservationBindings, listAssetObservationBindingsForAssets, allowAssetAutomaticUpdates, assetObservationHandoffs, writeAssetObservations, assetReadingHistory, assetReadingHistories, assetReadingAt,
+    bindAssetObservations, moveAssetObservations, listAssetObservationBindings, listAssetObservationBindingsForAssets, allowAssetAutomaticUpdates, assetObservationHandoffs, writeAssetObservations, assetReadingHistory, assetReadingHistories, withAssetReadingHistories, assetReadingAt,
     pendingAssetRetirements, acknowledgeAssetRetirement,
     writeBooking,
     ensureBooking,
@@ -4518,6 +4768,8 @@ export const createWorkEntityStore = (
     stagePendingWrite,
     clearPendingWrite,
   };
+  nativeAssetProjections.set(store, { hasDefaultAssetProjection: store.hasDefaultAssetProjection, readAssetEffective, readAssetsEffective });
+  return store;
 };
 
 // ────────────────────────────────────────────────────────────────

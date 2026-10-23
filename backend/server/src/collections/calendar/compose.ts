@@ -116,7 +116,10 @@ export interface CalendarStackStorageDeps {
    *  materialize as calendar events arrive. Optional — production
    *  bin.ts wires this; test harnesses without contact storage can
    *  omit it and the collections run unchanged. */
-  onEventUpserted?: (payload: import('./provider.js').ProviderEventPayload) => void;
+  onEventUpserted?: (
+    payload: import('./provider.js').ProviderEventPayload,
+    prev?: import('@recued/contracts').CanonicalEvent | null,
+  ) => void;
 }
 
 export interface ComposeCalendarStackOptions {

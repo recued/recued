@@ -1,9 +1,10 @@
+import { HARNESS_ORIGIN } from './helpers/harness-origin.js';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect,test,type Page } from '@playwright/test';
 import { openJob } from './customer-work-driver.js';
 import type {} from './harness/quote-completion-reminders-harness.js';
-const BASE = `${process.env.E2E_COMPLETION_REMINDERS_HARNESS_URL ?? 'http://127.0.0.1:4319'}/quote-completion-reminders-harness.html`;
+const BASE = `${process.env.E2E_COMPLETION_REMINDERS_HARNESS_URL ?? HARNESS_ORIGIN}/quote-completion-reminders-harness.html`;
 const editor = (page: Page) => page.getByRole('form',{ name: 'Completion follow-up',exact: true });
 // Since c63d5b076 the follow-up editor opens from the job's Follow-ups tab, and the due queue
 // lives in Reception → Follow-ups, one group per kind.

@@ -1,6 +1,8 @@
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { AssetCreateInput, AssetRule } from '@recued/contracts';
+import type { AssetCreateInput, AssetRule, YoursReadRequest } from '@recued/contracts';
+import { createAskStore, createNotificationBlock, createNotificationSettingsStore, createUiChannel, type NotificationSettings, type PendingAsk } from '@recued/notification';
+import { createSQLiteCollection } from '../sqlite-collection.js';
 import { createWorkEntityStore, ensureWorkEntitySchema } from '../storage/work-entity-store.js';
 import { createAssetOccurrenceStore } from '../storage/asset-occurrence-store.js';
 import { createSphereStore } from '../storage/sphere-store.js';
@@ -18,6 +20,10 @@ const rule: AssetRule = { id: 'review', title: 'Review', enabled: true, muted: t
   when: { kind: 'expiry', field: 'review_on' }, reaction: { notify: false, occurrence: 'action', emit: false }, schedule: { before: [], on_day: true } };
 const disposals: Array<() => Promise<void>> = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const dispose of disposals.splice(0)) await dispose(); });
+const gate = () => {
+  let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; });
+  return { promise, resolve };
+};
 const fixture = () => {
   let measured: string[] | undefined;
   const db = new Database(':memory:', { verbose(sql) { if (measured) { if (typeof sql !== 'string') throw new Error('Missing SQL trace'); measured.push(sql); } } });
@@ -35,10 +41,24 @@ const fixture = () => {
     const sql: string[] = []; measured = sql;
     try { return { value: await read(), sql }; } finally { measured = undefined; }
   };
-  return { db, work, rows, spheres, dispatchers, occurrences, service, put, receipt, measure };
+  const pause = () => {
+    const entered = gate(); const release = gate();
+    const block = createNotificationBlock({ askStore: createAskStore(createSQLiteCollection<PendingAsk>(db, 'pending_asks')),
+      settingsStore: createNotificationSettingsStore(createSQLiteCollection<NotificationSettings>(db, 'notification_settings')),
+      channels: [createUiChannel({ busSink: () => {} })] });
+    service.bind({ ...block, async getReminderDestinations() { entered.resolve(); await release.promise; return { destinations: [], issues: [] }; } });
+    return { entered, release };
+  };
+  return { db, work, rows, spheres, dispatchers, occurrences, service, put, receipt, measure, pause };
 };
 const occurrenceReads = (sql: string[]) => sql.filter(statement => /FROM asset_occurrences WHERE subject_kind='asset' AND asset_id\s*(?:=|IN\s*\()/u.test(statement));
+const listSql = (sql: string) => sql === 'SELECT * FROM asset_occurrences ORDER BY created_at,id';
 const batchSql = (sql: string) => /FROM asset_occurrences WHERE subject_kind='asset' AND asset_id IN\s*\(/u.test(sql);
+const summaryModes: Array<{ name: string; request: YoursReadRequest }> = [
+  { name: 'attention', request: { asset_filter: 'missing_facts', include_asset_summaries: true } },
+  { name: 'ordinary', request: { include_asset_summaries: true } },
+  { name: 'sphere', request: { asset_sphere: 'personal', include_asset_summaries: true } },
+];
 
 describe('bounded asset occurrence reads', () => {
   it('matches individual DTOs and order across batches, aliases, query statistics, absent and quoted ids', async () => {
@@ -79,7 +99,7 @@ describe('bounded asset occurrence reads', () => {
     expect(next.get('absent')).toEqual([]); expect(first.get('a')?.[0]?.id).toBe('old-a');
   });
 
-  it('uses one occurrence read per scan page when filtering a large library with no occurrence rows', async () => {
+  it('reuses the required occurrence list for every summary candidate in a large library with no receipts', async () => {
     const f = fixture(); const ids: string[] = [];
     f.db.transaction(() => {
       for (let index = 0; index < 600; index++) ids.unshift(f.put(`asset-${String(index).padStart(4, '0')}`, { dates: { review_on: null }, rules: [rule] }, at + index).id);
@@ -89,10 +109,10 @@ describe('bounded asset occurrence reads', () => {
     expect(read.value.asset_summaries).toEqual(ids.slice(211, 216).map(asset_id => ({ asset_id, open_tasks: 0, active_rules: 1, next_due: null,
       missing: [{ path: 'dates.review_on', reason: 'unknown' }] })));
     expect(read.value.asset_filter).toEqual({ kind: 'missing_facts', unavailable: 0 });
-    expect(occurrenceReads(read.sql)).toHaveLength(3); expect(occurrenceReads(read.sql).every(batchSql)).toBe(true);
+    expect(occurrenceReads(read.sql)).toEqual([]); expect(read.sql.filter(listSql)).toHaveLength(3);
   });
 
-  it('batches only sphere-matching attention candidates and keeps sphere-only summaries on the returned page', async () => {
+  it('reuses receipts for attention candidates and keeps sphere-only summaries on the returned page', async () => {
     const f = fixture(); const personal: string[] = [];
     f.db.transaction(() => {
       for (let index = 0; index < 401; index++) {
@@ -102,13 +122,95 @@ describe('bounded asset occurrence reads', () => {
     })();
     const read = await f.measure(() => f.service.snapshot({ asset_sphere: 'personal', asset_filter: 'missing_facts', search: 'Fixture', offset: 2, limit: 5 }));
     expect(read.value.total_assets).toBe(personal.length); expect(read.value.assets.map(asset => asset.id)).toEqual(personal.slice(2, 7));
-    const sql = occurrenceReads(read.sql); expect(sql).toHaveLength(2); expect(sql.every(batchSql)).toBe(true);
-    expect(sql.flatMap(statement => [...statement.matchAll(/'asset-\d{4}'/gu)].map(match => match[0].slice(1, -1))).sort()).toEqual([...personal].sort());
+    expect(occurrenceReads(read.sql)).toEqual([]); expect(read.sql.filter(listSql)).toHaveLength(3);
     const page = await f.measure(() => f.service.snapshot({ asset_sphere: 'personal', include_asset_summaries: true, offset: 2, limit: 5 }));
     expect(page.value.assets.map(asset => asset.id)).toEqual(personal.slice(2, 7));
-    expect(occurrenceReads(page.sql)).toHaveLength(5); expect(occurrenceReads(page.sql).some(batchSql)).toBe(false);
+    expect(occurrenceReads(page.sql)).toEqual([]); expect(page.sql.filter(listSql)).toHaveLength(3);
     const empty = await f.measure(() => f.service.snapshot({ asset_filter: 'missing_facts', search: 'no-fixture-match' }));
     expect(empty.value.total_assets).toBe(0); expect(occurrenceReads(empty.sql)).toEqual([]);
+  });
+
+  it('reuses receipts for ordinary, sphere and detail summaries while preserving full page DTOs and empty results', async () => {
+    const f = fixture(); const ids: string[] = []; const personal: string[] = [];
+    f.db.transaction(() => {
+      for (let index = 0; index < 601; index++) {
+        const id = index === 120 ? "asset-'漢?" : `asset-${String(index).padStart(4, '0')}`;
+        const sphere = index % 3 === 0 ? 'personal' : 'professional';
+        f.put(id, { sphere, dates: { review_on: index % 5 === 0 ? null : '2026-10-16' }, rules: [rule],
+          status: index % 17 === 0 ? 'retired' : index % 7 === 0 ? 'lent' : 'active' }, at + index);
+        ids.unshift(id); if (sphere === 'personal') personal.unshift(id);
+        if (index % 41 !== 0) continue;
+        for (const suffix of ['a', 'z']) {
+          const commitment_id = `task:${id}:${suffix}`;
+          f.work.writeCommitment({ id: commitment_id, source_id: 'recued.commitment', direction: 'outbound', statement: 'Review',
+            derivation: 'user_declared', lifecycle_state: suffix === 'z' ? 'pending' : 'fulfilled', promised_for_at: at - 86400000 }, at);
+          f.receipt(id, `occ:${id}:${suffix}`, { commitment_id, created_at: at + index });
+        }
+        f.receipt(id, `occ:${id}:occasion`, { subject_kind: 'occasion' });
+      }
+    })();
+    const cases: Array<{ request: YoursReadRequest; page: string[]; total: number }> = [
+      { request: { include_asset_summaries: true, offset: 197, limit: 50 }, page: ids.slice(197, 247), total: ids.length },
+      { request: { asset_sphere: 'personal', include_asset_summaries: true, offset: 197, limit: 50 }, page: personal.slice(197), total: personal.length },
+      { request: { asset_id: ids[199]!, include_asset_summaries: true }, page: [ids[199]!], total: ids.length },
+      { request: { search: 'no-fixture-match', include_asset_summaries: true }, page: [], total: 0 },
+    ];
+    for (const analyzed of [false, true]) {
+      if (analyzed) f.db.exec('ANALYZE');
+      for (const { request, page, total } of cases) {
+        const expected = page.map(id => f.work.readAssetEffective(id)!);
+        const summaries = expected.map(asset => summarizeYoursAsset(asset, { work: f.work, occurrences: f.rows.byAsset(asset.id), now: at, timeZone: 'UTC' }));
+        const read = await f.measure(() => f.service.snapshot(request));
+        expect(read.value.assets).toEqual(expected); expect(read.value.total_assets).toBe(total); expect(read.value.asset_summaries).toEqual(summaries);
+        expect(occurrenceReads(read.sql)).toEqual([]); expect(read.sql.filter(listSql)).toHaveLength(3);
+      }
+    }
+  });
+
+  for (const sphere of [undefined, 'personal'] as const) for (const phase of ['prepare', 'execution'] as const) {
+    it(`retains guarded page summaries after a shared ${phase} failure with sphere ${sphere ?? 'all'}`, async () => {
+      const f = fixture(); f.put('good', { sphere: 'personal', dates: { review_on: null }, rules: [rule] });
+      f.put('bad', { sphere: 'personal', dates: { review_on: '9999-12-31' }, rules: [{ ...rule, when: { kind: 'interval', field: 'review_on', every: { amount: 1, unit: 'days' } } }] });
+      const prepare = f.db.prepare.bind(f.db); let lists = 0;
+      vi.spyOn(f.db, 'prepare').mockImplementation(sql => {
+        if (listSql(sql) && ++lists === 2) {
+          if (phase === 'prepare') throw new Error('Fixture page shared prepare failure');
+          const statement = prepare(sql); vi.spyOn(statement, 'all').mockImplementationOnce(() => { throw new Error('Fixture page shared execution failure'); }); return statement;
+        }
+        return prepare(sql);
+      });
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const read = await f.measure(() => f.service.snapshot({ include_asset_summaries: true, ...(sphere ? { asset_sphere: sphere } : {}) }));
+      expect(read.value.assets).toHaveLength(2); expect(read.value.total_assets).toBe(2);
+      expect(read.value.asset_summaries?.map(summary => summary.asset_id)).toEqual(['good']); expect(read.value.asset_filter).toBeUndefined();
+      expect(lists).toBe(4); expect(occurrenceReads(read.sql)).toHaveLength(2); expect(occurrenceReads(read.sql).some(batchSql)).toBe(false);
+      expect(warning).toHaveBeenCalledTimes(1);
+    });
+  }
+
+  for (const phase of ['prepare', 'execution'] as const) it(`isolates a selected receipt ${phase} failure after the shared page read fails`, async () => {
+    const f = fixture();
+    for (const id of ['bad', 'good']) f.put(id, { sphere: 'personal', dates: { review_on: null }, rules: [rule] });
+    const prepare = f.db.prepare.bind(f.db); let lists = 0; let points = 0;
+    vi.spyOn(f.db, 'prepare').mockImplementation(sql => {
+      if (listSql(sql) && ++lists === 2) throw new Error('Fixture shared page read failure');
+      if (/FROM asset_occurrences WHERE subject_kind='asset' AND asset_id=\?/u.test(sql) && ++points === 1) {
+        if (phase === 'prepare') throw new Error('Fixture selected receipt prepare failure');
+        const statement = prepare(sql); vi.spyOn(statement, 'all').mockImplementationOnce(() => { throw new Error('Fixture selected receipt execution failure'); }); return statement;
+      }
+      return prepare(sql);
+    });
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const requests: YoursReadRequest[] = [{ include_asset_summaries: true },
+      { asset_sphere: 'personal', include_asset_summaries: true }, { asset_id: 'bad', include_asset_summaries: true }];
+    for (const request of requests) {
+      lists = 0; points = 0; warning.mockClear();
+      const result = await f.service.snapshot(request);
+      expect(result.assets.map(asset => asset.id)).toEqual(request.asset_id ? ['bad'] : ['bad', 'good']);
+      expect(result.asset_summaries?.map(summary => summary.asset_id)).toEqual(request.asset_id ? [] : ['good']);
+      expect(result.total_assets).toBe(2); expect(result.asset_filter).toBeUndefined();
+      expect(lists).toBe(4); expect(points).toBe(request.asset_id ? 1 : 2); expect(warning).toHaveBeenCalledTimes(1);
+    }
   });
 
   it('preserves complete summaries and canonical task edits across successive filtered snapshots', async () => {
@@ -119,36 +221,149 @@ describe('bounded asset occurrence reads', () => {
       .filter(summary => summary.next_due?.state === 'overdue');
     const first = await f.measure(() => f.service.snapshot({ asset_filter: 'overdue', include_asset_summaries: true }));
     expect(first.value.asset_summaries).toEqual(expected()); expect(first.value.total_assets).toBe(3);
-    expect(occurrenceReads(first.sql)).toHaveLength(1);
+    expect(occurrenceReads(first.sql)).toEqual([]);
     await f.dispatchers.commitmentUpdate({ id: f.rows.byAsset('a')[0]!.commitment_id!, promised_for_at: Date.parse('2026-10-22') });
     await f.dispatchers.commitmentFulfill({ id: f.rows.byAsset('b')[0]!.commitment_id! });
     const second = await f.measure(() => f.service.snapshot({ asset_filter: 'overdue', include_asset_summaries: true }));
     expect(second.value.assets.map(asset => asset.id)).toEqual(['c']); expect(second.value.asset_summaries).toEqual(expected());
-    expect(occurrenceReads(second.sql)).toHaveLength(1); expect(first.value.asset_summaries).toHaveLength(3);
+    expect(occurrenceReads(second.sql)).toEqual([]); expect(first.value.asset_summaries).toHaveLength(3);
   });
 
-  it('reads receipt changes after the refresh await and keeps no receipt cache between snapshots', async () => {
-    const f = fixture(); f.put('a', { dates: { review_on: '2026-10-16' }, rules: [rule] });
+  for (const mode of summaryModes) it(`reads receipt changes after refresh and keeps no cache for ${mode.name} summaries`, async () => {
+    const f = fixture(); f.put('a', { sphere: 'personal', dates: { review_on: '2026-10-16' }, rules: [rule] });
+    const request = { ...mode.request, ...(mode.request.asset_filter ? { asset_filter: 'overdue' as const } : {}) };
     await f.occurrences.reconcileAsset('a');
     const original = f.rows.byAsset('a')[0]!;
     await f.dispatchers.commitmentUpdate({ id: original.commitment_id!, promised_for_at: Date.parse('2026-10-22') });
     f.rows.remove(original.id);
-    const first = f.service.snapshot({ asset_filter: 'overdue', include_asset_summaries: true });
+    const first = f.service.snapshot(request);
     // snapshot has yielded at refreshEvidence; summary selection follows it.
     f.receipt('a', original.id, { rule_id: original.rule_id, cycle: original.cycle, commitment_id: original.commitment_id });
-    expect((await first).assets).toEqual([]);
-    const second = f.service.snapshot({ asset_filter: 'overdue', include_asset_summaries: true });
+    const before = await first;
+    if (request.asset_filter) expect(before.assets).toEqual([]);
+    else expect(before.asset_summaries?.[0]).toMatchObject({ open_tasks: 1, next_due: { on: '2026-10-22', state: 'upcoming' } });
+    const second = f.service.snapshot(request);
     f.rows.remove(original.id);
     const changed = await second;
     expect(changed.assets.map(asset => asset.id)).toEqual(['a']);
     expect(changed.asset_summaries?.[0]).toMatchObject({ open_tasks: 0, next_due: { on: '2026-10-16', state: 'overdue' } });
   });
 
+  it('preserves SQL receipt tie ordering in summaries without reversing the displayed occurrence list', async () => {
+    const f = fixture(); const asset = f.put("asset-'漢?", { sphere: 'personal', dates: { review_on: null }, rules: [rule] });
+    for (const suffix of ['a', 'A', '漢', '😀', '\ue000']) {
+      const id = `occ:${suffix}`; const commitment_id = `task:${suffix}`;
+      f.work.writeCommitment({ id: commitment_id, source_id: 'recued.commitment', direction: 'outbound', statement: 'Review',
+        derivation: 'user_declared', lifecycle_state: 'pending', promised_for_at: at - 86400000 }, at);
+      f.receipt(asset.id, id, { commitment_id });
+    }
+    f.receipt(asset.id, 'occasion', { subject_kind: 'occasion' });
+    expect(f.rows.byAsset(asset.id).map(row => row.id)).toEqual(['occ:😀', 'occ:\ue000', 'occ:漢', 'occ:a', 'occ:A']);
+    const expected = summarizeYoursAsset(asset, { work: f.work, occurrences: f.rows.byAsset(asset.id), now: at, timeZone: 'UTC' });
+    expect(expected.next_due?.commitment_id).toBe('task:😀'); expect(expected.open_tasks).toBe(5);
+    for (const analyzed of [false, true]) {
+      if (analyzed) f.db.exec('ANALYZE');
+      for (const mode of summaryModes) {
+        const read = await f.measure(() => f.service.snapshot(mode.request));
+        expect(read.value.asset_summaries).toEqual([expected]); expect(occurrenceReads(read.sql)).toEqual([]);
+        expect(read.value.occurrences.map(row => row.id)).toEqual(['occ:A', 'occ:a', 'occ:漢', 'occ:\ue000', 'occ:😀']);
+        expect(read.sql.filter(listSql)).toHaveLength(3);
+      }
+    }
+  });
+
+  it('prioritizes receipt creation time over id and reads reordered receipts on the next snapshot', async () => {
+    const f = fixture(); f.put('a', { dates: { review_on: null }, rules: [rule] });
+    for (const id of ['a', 'z']) {
+      f.work.writeCommitment({ id: `task:${id}`, source_id: 'recued.commitment', direction: 'outbound', statement: 'Review',
+        derivation: 'user_declared', lifecycle_state: 'pending', promised_for_at: at - 86400000 }, at);
+      f.receipt('a', `occ:${id}`, { commitment_id: `task:${id}`, created_at: id === 'a' ? at + 1 : at });
+    }
+    const first = await f.service.snapshot({ asset_filter: 'missing_facts', include_asset_summaries: true });
+    expect(first.asset_summaries?.[0]?.next_due?.commitment_id).toBe('task:a');
+    expect(first.occurrences.map(row => row.id)).toEqual(['occ:z', 'occ:a']);
+    f.db.prepare('UPDATE asset_occurrences SET created_at=? WHERE id=?').run(at + 2, 'occ:z');
+    const second = await f.service.snapshot({ asset_filter: 'missing_facts', include_asset_summaries: true });
+    expect(second.asset_summaries?.[0]?.next_due?.commitment_id).toBe('task:z');
+    expect(second.occurrences.map(row => row.id)).toEqual(['occ:a', 'occ:z']);
+    expect(first.asset_summaries?.[0]?.next_due?.commitment_id).toBe('task:a');
+  });
+
+  for (const phase of ['prepare', 'execution'] as const) it(`propagates a persistent list ${phase} failure after the guarded summary fallback`, async () => {
+    const f = fixture(); f.put('a', { sphere: 'personal', dates: { review_on: null }, rules: [rule] });
+    const prepare = f.db.prepare.bind(f.db); const failure = new Error(`Fixture persistent list ${phase} failure`); let lists = 0; let batches = 0;
+    vi.spyOn(f.db, 'prepare').mockImplementation(sql => {
+      if (batchSql(sql)) batches++;
+      if (listSql(sql) && ++lists >= 2) {
+        if (phase === 'prepare') throw failure;
+        const statement = prepare(sql); vi.spyOn(statement, 'all').mockImplementation(() => { throw failure; }); return statement;
+      }
+      return prepare(sql);
+    });
+    for (const mode of summaryModes) {
+      lists = 0; batches = 0;
+      await expect(f.service.snapshot(mode.request)).rejects.toBe(failure);
+      expect(lists).toBe(3); expect(batches).toBe(mode.request.asset_filter ? 1 : 0);
+    }
+  });
+
+  for (const phase of ['prepare', 'execution'] as const) it(`uses bounded summaries and retries the list after a shared ${phase} failure`, async () => {
+    const f = fixture(); const asset = f.put('a', { dates: { review_on: null }, rules: [rule] });
+    const expected = summarizeYoursAsset(asset, { work: f.work, occurrences: [], now: at, timeZone: 'UTC' });
+    const prepare = f.db.prepare.bind(f.db); let lists = 0;
+    vi.spyOn(f.db, 'prepare').mockImplementation(sql => {
+      if (listSql(sql) && ++lists === 2) {
+        if (phase === 'prepare') throw new Error('Fixture shared prepare failure');
+        const statement = prepare(sql);
+        vi.spyOn(statement, 'all').mockImplementationOnce(() => { throw new Error('Fixture shared execution failure'); }); return statement;
+      }
+      return prepare(sql);
+    });
+    const read = await f.measure(() => f.service.snapshot({ asset_filter: 'missing_facts', include_asset_summaries: true }));
+    expect(read.value.asset_summaries).toEqual([expected]); expect(read.value.asset_filter?.unavailable).toBe(0);
+    expect(lists).toBe(4); expect(occurrenceReads(read.sql)).toHaveLength(1); expect(occurrenceReads(read.sql).every(batchSql)).toBe(true);
+  });
+
+  for (const mode of summaryModes) it(`keeps ${mode.name} summaries through delivery and reads changes next time`, async () => {
+    const f = fixture(); f.put('a', { sphere: 'personal', dates: { review_on: null }, rules: [rule] });
+    f.receipt('a', 'before'); const p = f.pause();
+    const reading = f.service.snapshot({ ...mode.request, include_closed: true });
+    try {
+      await p.entered.promise; f.rows.remove('before');
+      const commitment_id = 'new-task';
+      f.work.writeCommitment({ id: commitment_id, source_id: 'recued.commitment', direction: 'outbound', statement: 'New task',
+        derivation: 'user_declared', lifecycle_state: 'pending', promised_for_at: at - 86400000 }, at);
+      f.receipt('a', 'after', { commitment_id });
+      p.release.resolve(); const first = await reading;
+      expect(first.asset_summaries?.[0]?.open_tasks).toBe(0); expect(first.occurrences.map(row => row.id)).toEqual(['before']);
+      const next = await f.service.snapshot(mode.request);
+      expect(next.asset_summaries?.[0]?.open_tasks).toBe(1); expect(next.occurrences.map(row => row.id)).toEqual(['after']);
+      expect(first.asset_summaries?.[0]?.open_tasks).toBe(0);
+    } finally { p.release.resolve(); await reading; }
+  });
+
+  it('reads retirement receipts freshly after delivery on an asset detail read', async () => {
+    const f = fixture(); f.put('a', { dates: { review_on: null }, rules: [rule] }); const p = f.pause();
+    const reading = f.service.snapshot({ asset_id: 'a', include_asset_summaries: true });
+    try {
+      await p.entered.promise;
+      f.work.writeCommitment({ id: 'task', source_id: 'recued.commitment', direction: 'outbound', statement: 'New task',
+        derivation: 'user_declared', lifecycle_state: 'pending' }, at);
+      f.receipt('a', 'late', { commitment_id: 'task' });
+      p.release.resolve(); const first = await reading;
+      expect(first.retirement_impact?.open_occurrences).toBe(1); expect(first.occurrences).toEqual([]);
+      expect(first.asset_summaries?.[0]?.open_tasks).toBe(0);
+      const next = await f.service.snapshot({ asset_id: 'a', include_asset_summaries: true });
+      expect(next.asset_summaries?.[0]?.open_tasks).toBe(1);
+    } finally { p.release.resolve(); await reading; }
+  });
+
   for (const phase of ['prepare', 'execution'] as const) it(`falls back on a batch ${phase} failure and retains per-asset unavailable counts`, async () => {
     const f = fixture(); f.put('good', { dates: { review_on: null }, rules: [rule] });
     f.put('unreadable', { dates: { review_on: '9999-12-31' }, rules: [{ ...rule, when: { kind: 'interval', field: 'review_on', every: { amount: 1, unit: 'days' } } }] });
-    const prepare = f.db.prepare.bind(f.db); let failures = 0;
+    const prepare = f.db.prepare.bind(f.db); let failures = 0; let lists = 0;
     vi.spyOn(f.db, 'prepare').mockImplementation(sql => {
+      if (listSql(sql) && ++lists === 2) throw new Error('Fixture shared list failure');
       if (!batchSql(sql)) return prepare(sql);
       if (phase === 'prepare') { failures++; throw new Error('Fixture batch failure'); }
       const statement = prepare(sql);

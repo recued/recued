@@ -294,8 +294,8 @@ describe('a deadline stored at UTC midnight is a DAY — judged in the owner\'s 
       listTasks: () => [task({ due_at: MONDAY })],
     }));
     expect(early.sent.map((m) => m.title)).toEqual(['Task due soon']);
-    // The day is named — not its UTC-midnight instant read as a time.
-    expect(early.sent[0]!.text).toBe('File the return — 2026-09-28');
+    // The day is named, in words — not its UTC-midnight instant read as a time.
+    expect(early.sent[0]!.text).toBe('File the return — Monday 28 September');
 
     const late = sink();
     runReminderSweep(deps({
@@ -330,5 +330,35 @@ describe('a deadline stored at UTC midnight is a DAY — judged in the owner\'s 
     expect(status()).toBe('due_soon');
     sweepAt(TUESDAY_JUST_AFTER);
     expect(status()).toBe('overdue');
+  });
+});
+
+describe('⛔ a reminder says its time on the owner\'s clock, never in UTC (2026-10-22)', () => {
+  // The text was the anchor's UTC instant: "File the return — 2026-06-15T18:00:00.000Z"
+  // for a deadline at 2:00 PM in New York.
+  const ny = { timeZone: () => 'America/New_York' };
+
+  it('a timed deadline today says its time, and one tomorrow its day too', () => {
+    const s = sink();
+    runReminderSweep(deps({
+      ...ny, notify: s.notify,
+      listTasks: () => [task()], // 18:00 UTC: 2:00 PM in New York, today
+      listCommitments: () => [commitment({ promised_for_at: Date.parse('2026-06-16T11:00:00Z') })],
+    }));
+    expect(s.sent.map((m) => `${m.title}: ${m.text}`)).toEqual([
+      'Task due soon: File the return — 2:00 PM',
+      'Promise coming due: send the deck — Tuesday 16 June at 7:00 AM',
+    ]);
+  });
+
+  it('an overdue one names the day it was due', () => {
+    const s = sink();
+    runReminderSweep(deps({
+      ...ny, notify: s.notify,
+      listTasks: () => [task({ due_at: Date.parse('2026-06-14T20:00:00Z') })],
+    }));
+    expect(s.sent.map((m) => `${m.title}: ${m.text}`)).toEqual([
+      'Task overdue: File the return — Sunday 14 June at 4:00 PM',
+    ]);
   });
 });

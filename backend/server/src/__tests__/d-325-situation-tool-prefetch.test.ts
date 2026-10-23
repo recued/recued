@@ -45,8 +45,17 @@ const context = (text: string, source: ExecutionSource = owner) => {
   const ctx = { source, history: [{ role: 'user', text }], prompt: { contribute: (part: EntityPromptPart) => parts.push(part) } } as unknown as TurnContext;
   return { ctx, parts };
 };
+/** The lookup's budget is real time, which a loaded machine can spend before a
+ *  correct lookup finishes: six copies of this file run at once failed 5 times,
+ *  each with no block (2026-10-21). A test not about the budget holds the clock
+ *  still, so the budget's timer never fires and no time passes. The budget tests
+ *  run on the real clock. */
+const clockStill = async (run: () => Promise<void> | void): Promise<void> => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+  try { await run(); } finally { vi.useRealTimers(); }
+};
 const prefetch = async (access: SituationAccess, text: string) => {
-  const result = context(text); await createSituationPrefetch({ getAccess: () => access }).prompt!(result.ctx); return result.parts;
+  const result = context(text); await clockStill(() => createSituationPrefetch({ getAccess: () => access }).prompt!(result.ctx)); return result.parts;
 };
 
 describe('D-325 one situation tool and independent bounded prefetch', () => {
@@ -209,8 +218,8 @@ describe('D-325 one situation tool and independent bounded prefetch', () => {
   });
   it('measures the rows it showed apart from everything the message matched', async () => {
     const measured: Array<[string, number]> = []; const result = context('Passport');
-    await createSituationPrefetch({ getAccess: () => drive(Array.from({ length: 5 }, (_, i) => fact(`p${i}`, { title: `Passport ${i}` }))).access,
-      measure: (name, value) => { measured.push([name, value]); } }).prompt!(result.ctx);
+    await clockStill(() => createSituationPrefetch({ getAccess: () => drive(Array.from({ length: 5 }, (_, i) => fact(`p${i}`, { title: `Passport ${i}` }))).access,
+      measure: (name, value) => { measured.push([name, value]); } }).prompt!(result.ctx));
     const shown = result.parts[0]!.payload.length; expect(shown).toBeLessThan(5);
     expect(measured.filter(([name]) => name.endsWith('_items'))).toEqual([['prefetch.shown_items', shown], ['prefetch.matched_items', 5]]);
   });
@@ -280,9 +289,16 @@ describe('D-325 one situation tool and independent bounded prefetch', () => {
 describe('a place the owner typed stays as typed in their own messages', () => {
   /** One packet through the chat's egress wrapper; returns what the model was sent. */
   const sendThroughEgress = async (packet: Record<string, unknown>, options: { parts?: readonly EntityPromptPart[];
-    seed?: Record<string, string> } = {}) => {
+    seed?: Record<string, string>; recalled?: readonly piiEgress.CandidateValueSeed[] } = {}) => {
+    const { recalled } = options;
     const plan = createPiiEgressPlanForSession({ ledgerStore: piiEgress.createSessionLedgerStore(),
-      resolver: createMetaFieldPrivacyResolver({ getEntitySchemas: () => [], getEntityPrivacyTags: () => CANONICAL_PII_ENTITY_PRIVACY_TAGS }) }, 's', 'chat');
+      resolver: createMetaFieldPrivacyResolver({ getEntitySchemas: () => [], getEntityPrivacyTags: () => CANONICAL_PII_ENTITY_PRIVACY_TAGS }),
+      // The cross-session recall reharvest, wired as the chat orchestrator wires it: these are
+      // the values it read from the earlier sessions a recall returned.
+      ...(recalled ? { createCandidateContributor: () => ({ contribute: async () => ({ candidates: recalled, partial: false,
+        joined_source_session_ids: [], decrypted_rows: 0, decrypted_bytes: 0 }) }),
+      getRecallJoinedPieces: () => [], hasRegisteredRecall: () => true } : {}) },
+    's', 'chat', recalled ? new Map() as TurnContext['state'] : undefined);
     // Values a lookup or tool result put in the session ledger earlier: key = privacy kind.
     if (options.seed) piiEgress.aliasPacketForEgress({ ledger: plan.ledger, packet: options.seed, mode: 'alias',
       resolver: () => Object.keys(options.seed!).map(kind => ({ path: kind, kind: kind as 'address' })) });
@@ -291,8 +307,12 @@ describe('a place the owner typed stays as typed in their own messages', () => {
       plan, undefined, options.parts ?? [])({} as never, { 'llm.prompt': JSON.stringify(packet) });
     // No hold mark ever reaches the model.
     expect(sent).not.toMatch(/[\uE000-\uE003]/u);
-    return JSON.parse(sent) as { user_message: string; chat_tail: Array<{ role: string; content: string }>; prefetch_context?: string[] };
+    return JSON.parse(sent) as { user_message: string; chat_tail: Array<{ role: string; content: string }>; prefetch_context?: string[];
+      recall_context?: unknown };
   };
+  /** A recall of an earlier session, as `recall_context` carries it. */
+  const recalledSession = (text: string) => [{ tool_name: 'memory.search', tier: 1, args: {}, status: 'ok', started_at: at, completed_at: at,
+    result: { entries: [{ output_string: text, run_id: 'r1' }] } }];
 
   it('keeps the place in the question while the lookup block aliases the record\'s place', async () => {
     // Measured (D-325 bench, 2026-10-21): this went out as "Which country is pii.Address1 the capital of?".
@@ -333,5 +353,27 @@ describe('a place the owner typed stays as typed in their own messages', () => {
     const sent = await sendThroughEgress({ chat_tail: [], user_message: 'Write to lisbon@acme.com today' },
       { seed: { email: 'ana@acme.com', address: 'Lisbon' } });
     expect(sent.user_message).not.toMatch(/acme\.com|lisbon@/iu);
+  });
+
+  it('keeps it when a recall of an earlier session brought the place, which the ledger did not hold', async () => {
+    // Probe (2026-10-21): the recall reharvest ran before the hold, so this went
+    // out as "Which country is pii.Address1 the capital of?" after the fix above.
+    const question = 'Which country is Lisbon the capital of?';
+    const sent = await sendThroughEgress({ chat_tail: [{ role: 'user', content: 'I fly to Lisbon on Friday.' },
+      { role: 'assistant', content: 'Your travel insurance covers Lisbon.' }], user_message: question,
+    recall_context: recalledSession('Booked the Lisbon trip insurance.') }, { recalled: [{ kind: 'address', value: 'Lisbon' }] });
+    expect(sent.user_message).toBe(question);
+    expect(sent.chat_tail[0]!.content).toBe('I fly to Lisbon on Friday.');
+    expect(sent.chat_tail[1]!.content).not.toContain('Lisbon');
+    expect(JSON.stringify(sent.recall_context)).not.toContain('Lisbon');
+    expect(JSON.stringify(sent.recall_context)).toMatch(/pii\.Address\d/u);
+  });
+
+  it('still aliases a recalled name the owner types, and a recalled value that contains the place', async () => {
+    const sent = await sendThroughEgress({ chat_tail: [], user_message: 'Did Ana Silva at Lisbon Insurance Ltd answer about Lisbon?',
+      recall_context: recalledSession('Ana Silva wrote from Lisbon Insurance Ltd.') },
+    { recalled: [{ kind: 'name', value: 'Ana Silva' }, { kind: 'org', value: 'Lisbon Insurance Ltd' }, { kind: 'address', value: 'Lisbon' }] });
+    expect(sent.user_message).not.toMatch(/Ana Silva|Lisbon Insurance Ltd/u);
+    expect(sent.user_message).toMatch(/ about Lisbon\?$/u);
   });
 });

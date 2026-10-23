@@ -293,6 +293,17 @@ describe('D-169 P2 Slice 5 notify toasts', () => {
     ['#yours/episodes', true],
     ['#yours/occurrences', true],
     ['#yours/occasions/occasion/../../settings', false],
+    // D-207 — a selling form turned a buyer away: the offer, the recipe that names it, or
+    // the requests list. Each exact shape, never a prefix.
+    ['#settings/seller/offers/detail/client-kit', true],
+    ['#settings/seller/offers/detail/paid-document.outcome', true],
+    ['#settings/seller/offers/detail/a%20b%2Fc', true],
+    ['#settings/seller/offers/detail/../../connections', false],
+    ['#settings/seller/offers/detail/', false],
+    ['#recipes/show-order-checkout-link', true],
+    ['#recipes/x/../settings', false],
+    ['#reception/records', true],
+    ['#reception/records/../settings', false],
     // ⛔ Neither spelling may be loosened into a general hash allowance.
     ['#views/../settings', false],
     ['#views/not-a-view-id', false],
@@ -362,6 +373,19 @@ describe('D-169 P2 Slice 5 notify toasts', () => {
     }]);
     expect(textOf(findAllByAttr(host, NOTIFY_TOAST_ATTR)[0]!))
       .toContain('The export was handed off.');
+  });
+
+  it('carries a pushed card’s link through the same allowlist as a live notice’s', () => {
+    const { toasts } = mount();
+
+    toasts.push({ title: 'Missed', text: 'A buyer could not pay.', link_url: '#settings/seller/offers/detail/kit', sticky: true });
+    toasts.push({ title: 'Odd', text: 'A link it does not know.', link_url: 'javascript:alert(1)', sticky: true });
+
+    expect(toasts.getToasts().map((t) => [t.title, t.link_url])).toEqual([
+      ['Missed', '#settings/seller/offers/detail/kit'],
+      // Dropped, not rendered: the card still shows, without an Open link.
+      ['Odd', undefined],
+    ]);
   });
 
   it('keeps a sticky status until it is dismissed, beside one that still expires', () => {

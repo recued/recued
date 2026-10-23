@@ -158,12 +158,45 @@ describe('D-262 — the recorded file name', () => {
 // ── capability ────────────────────────────────────────────────────
 
 describe('D-262 — capability is decided before the control renders', () => {
+  it.each(['navigator', 'mediaDevices'] as const)(
+    'does not offer recording when optional browser access throws at %s', blocked => {
+      const original = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+      const denied = (): never => { throw new Error('private browser policy detail'); };
+      Object.defineProperty(globalThis, 'navigator', {
+        configurable: true,
+        ...(blocked === 'navigator' ? { get: denied }
+          : { value: Object.defineProperty({}, 'mediaDevices', { get: denied }) }),
+      });
+      try {
+        expect(browserVoiceCaptureFactory()).toBeNull();
+      } finally {
+        if (original) Object.defineProperty(globalThis, 'navigator', original);
+        else Reflect.deleteProperty(globalThis, 'navigator');
+      }
+    },
+  );
+
   it('is null without mediaDevices — the insecure-context case', () => {
     // `navigator.mediaDevices` is undefined over plain http, which is exactly
     // where a self-hosted server is first reached.
     expect(browserVoiceCaptureFactory(fakeGlobals({ omitMediaDevices: true }).globals))
       .toBeNull();
   });
+
+  it.each(['getUserMedia', 'codec getter', 'codec probe'] as const)(
+    'does not offer recording when optional capability discovery throws at %s', blocked => {
+      const { globals, streams } = fakeGlobals();
+      const denied = (): never => { throw new Error('private browser policy detail'); };
+      if (blocked === 'getUserMedia') {
+        Object.defineProperty(globals.mediaDevices!, 'getUserMedia', { get: denied });
+      } else {
+        Object.defineProperty(globals.MediaRecorder!, 'isTypeSupported',
+          blocked === 'codec getter' ? { get: denied } : { value: denied });
+      }
+      expect(browserVoiceCaptureFactory(globals)).toBeNull();
+      expect(streams).toHaveLength(0);
+    },
+  );
 
   it('is null without MediaRecorder', () => {
     expect(browserVoiceCaptureFactory(fakeGlobals({ omitRecorder: true }).globals))

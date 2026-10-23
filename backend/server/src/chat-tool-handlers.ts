@@ -2241,15 +2241,15 @@ const createFileSearchHandler =
               `No file matches ALL of ${JSON.stringify(query)}, but `
               + `${partialTermMatches} file(s) match some of those words. `
               + `Search a single distinctive word to see them — do not report `
-              + `that Mary has nothing on this.`,
+              + `that the owner has nothing on this.`,
           }
           : {}),
         // The scope is stated back on EVERY result, not just when widened. A
         // model that forgot which set it searched will otherwise report an
         // absence it never actually established.
         hint: scope === 'session'
-          ? 'These are the files of THIS conversation only. If Mary means a file from elsewhere, ask her before widening.'
-          : 'This searched EVERY file Mary holds, including uploads from strangers via her public form. Check `origin` and `scan_status` before putting any of these into something that leaves her machine.',
+          ? 'These are the files of THIS conversation only. If the user means a file from elsewhere, ask them before widening.'
+          : 'This searched EVERY file the owner holds, including uploads from strangers via the owner\'s public form. Check `origin` and `scan_status` before putting any of these into something that leaves the owner\'s machine.',
       },
     };
   };

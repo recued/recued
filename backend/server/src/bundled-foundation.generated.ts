@@ -58,7 +58,7 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
     "publisher": "recued-core",
     "name": "Personal Organizer Foundation",
     "description": "Use Personal Organizer Foundation in Recued for tasks, commitments, projects, notes, reminders, and saving files into folders. It includes 13 ready-to-run workflows.",
-    "version": 9,
+    "version": 10,
     "bundled": true,
     "recipes": [],
     "contents": [
@@ -107,7 +107,7 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
       {
         "type": "recipe",
         "slug": "remind-me-of",
-        "version": 2,
+        "version": 3,
         "visible": true
       },
       {
@@ -119,7 +119,7 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
       {
         "type": "recipe",
         "slug": "change-reminder",
-        "version": 1,
+        "version": 2,
         "visible": true
       },
       {
@@ -846,7 +846,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
   "change-reminder": {
     "recipe_id": "change-reminder",
     "chat_exposed": true,
-    "version": 1,
+    "version": 2,
     "ttl": 60,
     "metadata": {
       "name": "Change a reminder",
@@ -888,7 +888,8 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
         "input": "{{config.remind_at}}",
         "require_offset": true,
         "skip_when": "{{config.remind_at}} is_empty",
-        "fail_on": "{{step.due_at_ms}} is_null"
+        "fail_on": "{{step.due_at_ms}} is_null",
+        "fail_reason": "New time could not be read as a date and time with a time zone offset. Enter one with its offset, or leave it blank to keep the current time."
       },
       {
         "id": "change",
@@ -2564,7 +2565,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
   "remind-me-of": {
     "recipe_id": "remind-me-of",
     "chat_exposed": true,
-    "version": 2,
+    "version": 3,
     "ttl": 60,
     "metadata": {
       "name": "Remind me",
@@ -2600,7 +2601,8 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
         "transform": "date_parse",
         "input": "{{config.remind_at}}",
         "require_offset": true,
-        "fail_on": "{{step.due_at_ms}} is_null"
+        "fail_on": "{{step.due_at_ms}} is_null",
+        "fail_reason": "Remind at could not be read as a date and time with its offset from UTC. Enter one that includes the offset."
       },
       {
         "id": "set",

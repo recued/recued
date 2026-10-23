@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { composePassportFetchSubstrate } from '../composition/bin/wire-passport-fetch-substrate.js';
-import type { PathRole, PathResolution } from '@recued/contracts';
+import type { PathRole, PathResolution, ServerPassportRecoveryBlock } from '@recued/contracts';
 
 type SyntheticKeypair = {
   public_key_b64: string;
@@ -624,13 +624,24 @@ describe('composePassportFetchSubstrate static providers', () => {
     });
   });
 
-  it('loadRecovery returns unconfigured recovery defaults', () => {
+  it('loadRecovery reports unavailable when the archive observer is not wired', () => {
     const bundle = composeDefined();
 
     expect(bundle.passportFetchDeps.providers.loadRecovery()).toEqual({
-      backup_status: 'unconfigured',
+      backup_status: 'unavailable',
       filevault_recovery_key_status: 'absent',
     });
+  });
+
+  it('loadRecovery resolves current evidence per call and contains source failures', () => {
+    let current: ServerPassportRecoveryBlock = { backup_status: 'configured', last_backup_at: 1234, filevault_recovery_key_status: 'absent' };
+    const getBackupRecovery = vi.fn(() => current), bundle = composeDefined({ getBackupRecovery });
+    expect(getBackupRecovery).not.toHaveBeenCalled();
+    expect(bundle.passportFetchDeps.providers.loadRecovery()).toEqual(current);
+    current = { backup_status: 'overdue', last_backup_at: 1234, filevault_recovery_key_status: 'absent' };
+    expect(bundle.passportFetchDeps.providers.loadRecovery().backup_status).toBe('overdue');
+    getBackupRecovery.mockImplementationOnce(() => { throw new Error('private storage path'); });
+    expect(bundle.passportFetchDeps.providers.loadRecovery()).toEqual({ backup_status: 'unavailable', filevault_recovery_key_status: 'absent' });
   });
 
   it('loadKeyHealth marks every key surface healthy', () => {

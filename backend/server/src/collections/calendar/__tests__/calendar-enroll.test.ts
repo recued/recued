@@ -561,19 +561,33 @@ describe('collection.calendar.list / update / delete', () => {
 });
 
 describe('collection.calendar.resync', () => {
+  /** The calendar stack's stop and restart, recording their order and what the
+   *  row held when the restart read it. */
+  const withLifecycle = (h: Harness) => {
+    const calls: string[] = [];
+    const stop = vi.fn(async (slug: string) => { calls.push(`stop:${slug}`); });
+    const restart = vi.fn(async (slug: string) => {
+      calls.push(`restart:${slug}:${h.instances.get('calendar', slug)?.auth_state}`);
+    });
+    h.deps.authenticationChange = { stop, restart };
+    return { calls, stop, restart };
+  };
+  const enrolled = (h: Harness, auth_state: 'healthy' | 'expired' = 'healthy') => h.instances.upsert({
+    platform: 'calendar',
+    slug: 'work',
+    adapter_type: 'gcal',
+    config: {},
+    caps: { ...FULL_PROBED } as CalendarCollectionCaps,
+    auth_state,
+    last_synced_at: 1_234,
+  });
+
   it('flips auth_state to expired on auth-related probe failure', async () => {
     const h = setup([
       makeFactory('gcal', async () => { throw new Error('401 token expired'); }),
     ]);
-    h.instances.upsert({
-      platform: 'calendar',
-      slug: 'work',
-      adapter_type: 'gcal',
-      config: {},
-      caps: { ...FULL_PROBED } as CalendarCollectionCaps,
-      auth_state: 'healthy',
-      last_synced_at: null,
-    });
+    withLifecycle(h);
+    enrolled(h);
     const res = await handleCalendarResync(h.deps, { slug: 'work' });
     expect(res.auth_state).toBe('expired');
     h.db.close();
@@ -583,15 +597,8 @@ describe('collection.calendar.resync', () => {
     const h = setup([
       makeFactory('gcal', async () => { throw new Error('upstream timeout'); }),
     ]);
-    h.instances.upsert({
-      platform: 'calendar',
-      slug: 'work',
-      adapter_type: 'gcal',
-      config: {},
-      caps: { ...FULL_PROBED } as CalendarCollectionCaps,
-      auth_state: 'healthy',
-      last_synced_at: null,
-    });
+    withLifecycle(h);
+    enrolled(h);
     const res = await handleCalendarResync(h.deps, { slug: 'work' });
     expect(res.auth_state).toBe('degraded');
     h.db.close();
@@ -599,18 +606,60 @@ describe('collection.calendar.resync', () => {
 
   it('keeps cached caps + flips auth_state back to healthy on probe success', async () => {
     const h = setup([makeFactory('gcal', async () => FULL_PROBED)]);
-    h.instances.upsert({
-      platform: 'calendar',
-      slug: 'work',
-      adapter_type: 'gcal',
-      config: {},
-      caps: { ...FULL_PROBED } as CalendarCollectionCaps,
-      auth_state: 'expired',
-      last_synced_at: null,
-    });
+    withLifecycle(h);
+    enrolled(h, 'expired');
     const res = await handleCalendarResync(h.deps, { slug: 'work' });
     expect(res.auth_state).toBe('healthy');
     expect(res.caps).toEqual(FULL_PROBED);
+    h.db.close();
+  });
+
+  it('starts the calendar\'s sync again after the probe, and leaves its sync clock to the sync', async () => {
+    const h = setup([makeFactory('gcal', async () => FULL_PROBED)]);
+    const l = withLifecycle(h);
+    enrolled(h, 'expired');
+    await handleCalendarResync(h.deps, { slug: 'work' });
+    // The restart reads the probe's verdict.
+    expect(l.calls).toEqual(['stop:work', 'restart:work:healthy']);
+    // It used to read "just synced" here, though nothing had been read.
+    expect(h.instances.get('calendar', 'work')?.last_synced_at).toBe(1_234);
+    h.db.close();
+  });
+
+  it('starts it again even when the stop failed, and says so when the restart failed', async () => {
+    const h = setup([makeFactory('gcal', async () => FULL_PROBED)]);
+    const l = withLifecycle(h);
+    enrolled(h);
+    l.stop.mockRejectedValueOnce(new Error('close failed'));
+    await expect(handleCalendarResync(h.deps, { slug: 'work' })).resolves.toMatchObject({ ok: true });
+    expect(l.restart).toHaveBeenCalledWith('work');
+    l.restart.mockRejectedValueOnce(new Error('Calendar collection did not restart.'));
+    await expect(handleCalendarResync(h.deps, { slug: 'work' })).rejects.toMatchObject({ code: 'restart_failed' });
+    h.db.close();
+  });
+
+  it('changes nothing on a host with no live calendar to restart', async () => {
+    const probe = vi.fn(async () => FULL_PROBED);
+    const h = setup([makeFactory('gcal', probe)]);
+    enrolled(h, 'expired');
+    await expect(handleCalendarResync(h.deps, { slug: 'work' })).rejects.toMatchObject({ code: 'not_configured' });
+    expect(probe).not.toHaveBeenCalled();
+    expect(h.instances.get('calendar', 'work')?.auth_state).toBe('expired');
+    h.db.close();
+  });
+
+  it('holds the account\'s lock, so a removal cannot run meanwhile', async () => {
+    const h = setup([makeFactory('gcal', async () => FULL_PROBED)]);
+    const l = withLifecycle(h);
+    enrolled(h);
+    let release!: () => void;
+    l.stop.mockImplementationOnce(() => new Promise<void>((resolve) => { release = resolve; }));
+    const resyncing = handleCalendarResync(h.deps, { slug: 'work' });
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    await expect(handleCalendarDelete(h.deps, { slug: 'work' })).rejects.toMatchObject({ code: 'conflict' });
+    release();
+    await expect(resyncing).resolves.toMatchObject({ ok: true });
+    expect(h.instances.get('calendar', 'work')).not.toBeNull();
     h.db.close();
   });
 });

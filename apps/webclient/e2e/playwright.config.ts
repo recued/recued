@@ -1,11 +1,11 @@
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from '@playwright/test';
+import { configureWebclientArtifacts } from './harness/artifacts.mjs';
 
-// Absolute path to this config's dir, so the webServer's `--directory` is
-// cwd-independent (Playwright spawns webServer.command with cwd = config dir,
-// not the repo root).
+// Resolve the owned server's working directory independently of caller cwd.
 const CONFIG_DIR = dirname(fileURLToPath(import.meta.url));
+const OUTPUT_DIR = configureWebclientArtifacts(CONFIG_DIR);
 
 /**
  * Browser e2e for the webclient PWA.
@@ -31,9 +31,6 @@ const CONFIG_DIR = dirname(fileURLToPath(import.meta.url));
  * Prereq: `node e2e/harness/build-harness.mjs` (bundles the render harness).
  * The `npm run e2e:webclient` script does this for you.
  */
-/** The local harness the publicly-shipped specs drive. */
-const HARNESS_ORIGIN = 'http://127.0.0.1:4319';
-
 export default defineConfig({
   testDir: '.',
   // The real paired-workflow lane builds a binary and enrolls a throwaway
@@ -45,14 +42,19 @@ export default defineConfig({
   workers: 1,
   retries: 0,
   reporter: [['list']],
-  outputDir: './.playwright-artifacts',
+  outputDir: OUTPUT_DIR,
   // Serve the render harness over HTTP — Chromium blocks `<script type=module>`
   // loaded from a `file://` (opaque-origin) page under CORS, so the harness must
-  // come off a real origin. Zero-dep static server over the built harness dir.
+  // come off a real origin. Python binds port 0 once and keeps that listener;
+  // named captures reach workers through Playwright's server lifecycle.
   webServer: {
-    command: `python3 -m http.server 4319 --bind 127.0.0.1 --directory "${CONFIG_DIR}/harness"`,
-    url: 'http://127.0.0.1:4319/kitchen-harness.html',
-    reuseExistingServer: true,
+    command: 'python3 serve-harness.py',
+    cwd: `${CONFIG_DIR}/harness`,
+    wait: {
+      stdout: /RECUED_HARNESS_READY (?<WEBCLIENT_HARNESS_ORIGIN>(?<PLAYWRIGHT_TEST_BASE_URL>http:\/\/127\.0\.0\.1:\d+))\r?\n/,
+    },
+    reuseExistingServer: false,
+    gracefulShutdown: { signal: 'SIGTERM', timeout: 3_000 },
     timeout: 30_000,
   },
   use: {
@@ -60,7 +62,8 @@ export default defineConfig({
     // public checkout's `npx playwright test` defaulted at someone else's
     // deployment — and it put that hostname in public source for a spec that is
     // not even exported. Deployed runs pass E2E_BASE_URL.
-    baseURL: process.env.E2E_BASE_URL ?? HARNESS_ORIGIN,
+    // The default baseURL fixture reads the captured PLAYWRIGHT_TEST_BASE_URL.
+    ...(process.env.E2E_BASE_URL ? { baseURL: process.env.E2E_BASE_URL } : {}),
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
   },

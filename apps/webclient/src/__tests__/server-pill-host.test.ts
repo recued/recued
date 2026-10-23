@@ -7,10 +7,11 @@
  *  its cached snapshot on disconnect so a reconnect can't flash stale state. */
 
 import { describe, expect, it, vi } from 'vitest';
-import { RpcError, type ServerHeartbeatSnapshot } from '@recued/contracts';
+import { RpcError, type ServerHeartbeatSnapshot, type ServerBackupHealthSnapshot } from '@recued/contracts';
 
 import {
   SERVER_CONTROL_STORAGE_ATTR,
+  SERVER_CONTROL_BACKUP_ATTR,
   isServerHeartbeatSnapshot,
   mountWebclientServerPill,
 } from '../shell/server-pill-host.js';
@@ -1010,5 +1011,60 @@ describe('isServerHeartbeatSnapshot (wire-payload guard)', () => {
     expect(isServerHeartbeatSnapshot(undefined)).toBe(false);
     expect(isServerHeartbeatSnapshot('nope')).toBe(false);
     expect(isServerHeartbeatSnapshot(42)).toBe(false);
+  });
+});
+
+const backupSummary = (extra: Partial<ServerBackupHealthSnapshot> = {}): ServerBackupHealthSnapshot => ({ age_ms: 0, monitoring: 'active', backup_state: 'due', recovery_test_state: 'due', integrity: { monitoring: 'active', state: 'failed' }, ...extra });
+describe('backup warnings in server controls', () => {
+  it('renders fixed warning copy and opens Backup & Recovery without a server action', () => {
+    const status = buildFakeStatus('connected'), { host, parts } = makeControllableHost();
+    const onOpenBackupRecovery = vi.fn(() => true), runSetPaused = vi.fn();
+    const mount = mountWebclientServerPill({ host: host as unknown as HTMLElement, status: status.status, onStatus: status.onStatus, now: () => NOW, runSetPaused, onOpenBackupRecovery });
+    mount.noteSnapshot(runningSnapshot({ backup_health: backupSummary() }));
+    expect(parts().pillHost?.innerHTML).toContain('server-pill--amber'); expect(parts().pillHost?.innerHTML).toContain('Backup overdue');
+    parts().pillHost?.fire('click', pillClick); const html = parts().popoverHost?.innerHTML ?? '';
+    expect(html).toContain(SERVER_CONTROL_BACKUP_ATTR); expect(html).toContain('Backup overdue'); expect(html).toContain('Recovery test overdue'); expect(html).toContain('S3 scan needs attention');
+    expect(html).toContain('data-action="open-backup"'); parts().popoverHost?.fire('click', popoverClick('open-backup'));
+    expect(onOpenBackupRecovery).toHaveBeenCalledTimes(1); expect(runSetPaused).not.toHaveBeenCalled(); expect(parts().popoverHost?.innerHTML).toBe(''); mount.dispose();
+  });
+
+  it('honors Account navigation refusal and never retries navigation from a heartbeat', () => {
+    const status = buildFakeStatus('connected'), { host, parts } = makeControllableHost();
+    const onOpenBackupRecovery = vi.fn(() => false);
+    const mount = mountWebclientServerPill({ host: host as unknown as HTMLElement, status: status.status, onStatus: status.onStatus, now: () => NOW, runSetPaused: vi.fn(), onOpenBackupRecovery });
+    mount.noteSnapshot(runningSnapshot({ backup_health: backupSummary() })); parts().pillHost?.fire('click', pillClick);
+    parts().popoverHost?.fire('click', popoverClick('open-backup')); expect(parts().popoverHost?.innerHTML).toContain('Finish the current Account action');
+    mount.noteSnapshot(runningSnapshot({ backup_health: backupSummary() })); expect(onOpenBackupRecovery).toHaveBeenCalledTimes(1);
+    onOpenBackupRecovery.mockReturnValue(true); parts().popoverHost?.fire('click', popoverClick('open-backup')); expect(onOpenBackupRecovery).toHaveBeenCalledTimes(2); mount.dispose();
+  });
+
+  it('drops warnings on disconnect and does not flash them on reconnect', () => {
+    const status = buildFakeStatus('connected'), { host, parts } = makeControllableHost();
+    const mount = mountWebclientServerPill({ host: host as unknown as HTMLElement, status: status.status, onStatus: status.onStatus, now: () => NOW, runSetPaused: vi.fn() });
+    mount.noteSnapshot(runningSnapshot({ backup_health: backupSummary() })); parts().pillHost?.fire('click', pillClick);
+    status.set('reconnecting'); expect(parts().popoverHost?.innerHTML).toBe(''); status.set('connected'); expect(parts().pillHost?.innerHTML).toBe('');
+    mount.noteSnapshot(runningSnapshot({ backup_health: backupSummary({ backup_state: 'current', recovery_test_state: 'current', integrity: { monitoring: 'active', state: 'completed' } }) }));
+    expect(parts().pillHost?.innerHTML).toContain('server-pill--green'); mount.dispose();
+  });
+
+  it('uses local arrival time for skewed server clocks and treats expired or malformed backup metadata as unavailable', () => {
+    const status = buildFakeStatus('connected'), { host, parts } = makeControllableHost();
+    const mount = mountWebclientServerPill({ host: host as unknown as HTMLElement, status: status.status, onStatus: status.onStatus, now: () => NOW, runSetPaused: vi.fn() });
+    for (const last_seen_at of [1, NOW + 10_000_000]) {
+      mount.noteSnapshot(runningSnapshot({ last_seen_at, backup_health: backupSummary() })); expect(parts().pillHost?.innerHTML).toContain('server-pill--amber');
+    }
+    for (const backup_health of [backupSummary({ age_ms: 120_000 }), { recoveryKey: 'private secret body' } as never]) {
+      mount.noteSnapshot(runningSnapshot({ backup_health })); parts().pillHost?.fire('click', pillClick);
+      expect(parts().popoverHost?.innerHTML).toContain('Backup status unavailable'); expect(parts().popoverHost?.innerHTML).not.toContain('private secret'); mount.closeControls();
+    }
+    mount.noteSnapshot(runningSnapshot({ last_seen_at: -1 })); expect(parts().pillHost?.innerHTML).toContain('server-pill--gray'); mount.dispose();
+  });
+
+  it('rejects a stale backup navigation gesture and omits the section for old server snapshots', () => {
+    let now = NOW; const status = buildFakeStatus('connected'), { host, parts } = makeControllableHost(), onOpenBackupRecovery = vi.fn(() => true);
+    const mount = mountWebclientServerPill({ host: host as unknown as HTMLElement, status: status.status, onStatus: status.onStatus, now: () => now, runSetPaused: vi.fn(), onOpenBackupRecovery });
+    mount.noteSnapshot(runningSnapshot()); parts().pillHost?.fire('click', pillClick); expect(parts().popoverHost?.innerHTML).not.toContain(SERVER_CONTROL_BACKUP_ATTR); mount.closeControls();
+    mount.noteSnapshot(runningSnapshot({ backup_health: backupSummary() })); parts().pillHost?.fire('click', pillClick);
+    now += WEBCLIENT_HEARTBEAT_STALE_MS; parts().popoverHost?.fire('click', popoverClick('open-backup')); expect(onOpenBackupRecovery).not.toHaveBeenCalled(); mount.dispose();
   });
 });

@@ -1,7 +1,8 @@
+import { HARNESS_ORIGIN } from './helpers/harness-origin.js';
 import { expect, test, type Page } from '@playwright/test';
 import { openSavedViewList } from './helpers/saved-data-views.js';
 
-const URL_BASE = 'http://127.0.0.1:4319/full-app-harness.html';
+const URL_BASE = `${HARNESS_ORIGIN}/full-app-harness.html`;
 const tools = (page: Page) => page.locator('[data-saved-data-views]');
 const query = (page: Page) => page.locator('[data-recued-data-contact-search]');
 const ready = async (page: Page): Promise<void> => {
@@ -160,7 +161,7 @@ test('Saved views keep a save single-flight and remain usable on a phone', async
   await openSavedViewList(page);
   await expect(tools(page).locator('details a')).toHaveCount(1);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-  await page.screenshot({ path: '/tmp/recued-saved-data-views.png', fullPage: true });
+  await page.screenshot({ path: test.info().outputPath('recued-saved-data-views.png'), fullPage: true });
 });
 
 test('Saved views retain the exact Records publisher, pack, and kind', async ({ page }) => {

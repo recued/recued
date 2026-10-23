@@ -25,6 +25,7 @@ import {
   type ServerPassportProfile,
   type ServerPassportProjection,
   type ServerPassportRecoveryBlock,
+  type ServerPassportBackupEvidence,
 } from '@recued/contracts';
 import { generateEd25519Keypair, type Ed25519Keypair } from '../keys/index.js';
 import {
@@ -38,6 +39,62 @@ import {
   type PassportBlockProviders,
 } from '../passport/index.js';
 import type { ActivityEntry } from '@recued/storage';
+
+describe('Passport backup evidence signing and profile privacy', () => {
+  for (const profile of SERVER_PASSPORT_PROFILES) it(`signs ${profile} evidence and rejects altered backup claims`, async () => {
+    const identityKey = generateEd25519Keypair('server_identity_key'), publisherKey = generateEd25519Keypair('publisher_identity_key');
+    const providers = makeFixtureProviders(identityKey, publisherKey), { emitter } = makeAuditEmitter();
+    const evidence: ServerPassportBackupEvidence = { observed_at: 1_700_003_000_000, monitoring: 'active',
+      destination: { connection_name: 'private-backup-location', destination_id: 'a'.repeat(64) },
+      backup: { state: 'current', operation_id: 'private-copy-id', created_at: 1_700_000_000_000, verified_at: 1_700_003_000_000, due_at: 1_700_100_000_000 },
+      recovery_test: { state: 'due', operation_id: 'private-drill-id', backup_operation_id: 'private-copy-id', finished_at: 1_600_000_000_000, due_at: 1_650_000_000_000 },
+      watchdog: { configured: true, enabled: true, state: 'acknowledged', last_attempt_at: 1_700_002_900_000, last_acknowledged_at: 1_700_003_000_000,
+        drill: { operation_id: 'private-monitor-drill-id', phase: 'completed', current_configuration: false, pause_minutes: 10,
+          started_at: 1_700_000_000_000, pause_until: 1_700_000_600_000, resumed_at: 1_700_000_600_000,
+          alert_reported_at: 1_700_002_000_000, ping_acknowledged_at: 1_700_003_000_000, finished_at: 1_700_003_000_000 } },
+      integrity: { monitoring: 'active', state: 'partial', next_run_at: 1_700_010_000_000,
+        last_run: { operation_id: 'private-scan-id', started_at: 1_700_002_000_000, finished_at: 1_700_003_000_000, outcome: 'completed', total: 3, checked: 2, failed: 0, skipped: 1 } } };
+    providers.loadRecovery = () => ({ backup_status: 'configured', last_backup_at: evidence.backup!.created_at,
+      backup_location: 's3://private-location', filevault_recovery_key_status: 'absent', backup_evidence: evidence });
+    const passport = await exportServerPassport({ providers, serverIdentity: identityKey, audit: emitter, exported_by_client_id: 'fixture', options: { profile } });
+    expect(verifyServerPassport(passport)).toEqual({ ok: true });
+    if (passport.profile === 'support_redacted') {
+      expect(passport.recovery.backup_evidence).toEqual({ monitoring: 'active', backup_state: 'current', recovery_test_state: 'due', integrity: { monitoring: 'active', state: 'partial' },
+        watchdog: { configured: true, enabled: true, state: 'acknowledged', drill: { phase: 'completed', current_configuration: false, owner_reported_alert: true, resumption_ping_acknowledged: true } } });
+      for (const secret of ['private-', 'observed_at', 'created_at', 'verified_at', 'last_run', 'checked', 'skipped', 'destination_id', 'last_backup_at']) expect(JSON.stringify(passport.recovery)).not.toContain(secret);
+    } else expect(passport.recovery.backup_evidence).toEqual(evidence);
+    const tampered = structuredClone(passport); tampered.recovery.backup_evidence!.integrity.state = 'completed';
+    expect(verifyServerPassport(tampered)).toMatchObject({ ok: false });
+    const changedMonitor = structuredClone(passport); changedMonitor.recovery.backup_evidence!.watchdog!.state = 'failed';
+    expect(verifyServerPassport(changedMonitor)).toMatchObject({ ok: false });
+    if (passport.profile === 'support_redacted') {
+      const changedReport = structuredClone(passport); changedReport.recovery.backup_evidence!.watchdog!.drill!.owner_reported_alert = false;
+      expect(verifyServerPassport(changedReport)).toMatchObject({ ok: false });
+    } else {
+      const changedReport = structuredClone(passport); changedReport.recovery.backup_evidence!.watchdog!.drill!.alert_reported_at! += 1;
+      expect(verifyServerPassport(changedReport)).toMatchObject({ ok: false });
+    }
+  });
+
+  it('keeps existing version-1 receipt evidence without a monitor block verifiable and absent after redaction', async () => {
+    const identityKey = generateEd25519Keypair('server_identity_key'), providers = makeFixtureProviders(identityKey, generateEd25519Keypair('publisher_identity_key')), { emitter } = makeAuditEmitter();
+    providers.loadRecovery = () => ({ backup_status: 'configured', filevault_recovery_key_status: 'absent', backup_evidence: {
+      observed_at: 1_700_003_000_000, monitoring: 'paused', integrity: { monitoring: 'not_configured', state: 'not_checked' },
+    } });
+    for (const profile of SERVER_PASSPORT_PROFILES) {
+      const passport = await exportServerPassport({ providers, serverIdentity: identityKey, audit: emitter, exported_by_client_id: 'fixture', options: { profile } });
+      expect(passport.passport_version).toBe('1'); expect(verifyServerPassport(passport)).toEqual({ ok: true });
+      expect(passport.recovery.backup_evidence).not.toHaveProperty('watchdog');
+    }
+  });
+
+  it('signs unavailable evidence without presenting it as unconfigured', async () => {
+    const identityKey = generateEd25519Keypair('server_identity_key'), providers = makeFixtureProviders(identityKey, generateEd25519Keypair('publisher_identity_key')), { emitter } = makeAuditEmitter();
+    providers.loadRecovery = () => ({ backup_status: 'unavailable', filevault_recovery_key_status: 'absent' });
+    const passport = await exportServerPassport({ providers, serverIdentity: identityKey, audit: emitter, exported_by_client_id: 'fixture', options: { profile: 'support_redacted' } });
+    expect(passport.recovery).toEqual({ backup_status: 'unavailable', filevault_recovery_key_status: 'absent' }); expect(verifyServerPassport(passport)).toEqual({ ok: true });
+  });
+});
 
 // ────────────────────────────────────────────────────────────────
 // Fixtures

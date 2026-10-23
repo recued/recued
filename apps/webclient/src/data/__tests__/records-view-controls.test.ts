@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { RecordsEntitySnapshot, RecordsFieldSnapshot } from '@recued/contracts';
-import { parseRecordsViewDraft, recordsViewDraft, recordsFilterOperators, recordsSortFields } from '../records-view-controls.js';
+import { initialRecordsBrowseState, parseRecordsViewDraft, recordsViewDraft, recordsFilterOperators, recordsSortFields, renderRecordsViewControls } from '../records-view-controls.js';
 
 const entity: RecordsEntitySnapshot = { kind: 'job', fields: [
   { key: 'id', kind: 'id', slot: 'pk', required: true },
@@ -43,5 +43,39 @@ describe('Records schema-based controls', () => {
   it('rejects duplicate filters and missing or unsupported sort fields', () => {
     expect(() => parseRecordsViewDraft({ sort: 'id', filters: Array(2).fill({ field: 'count', op: 'eq', value: '0' }) }, entity)).toThrow(/one filter/);
     for (const sort of ['title', 'body', 'removed', '--count']) expect(() => parseRecordsViewDraft({ sort, filters: [] }, entity)).toThrow();
+  });
+
+  it('summarizes applied settings independently of drafts without losing typed values or escaping', () => {
+    const applied = initialRecordsBrowseState({ filters: {
+      amount: { op: 'gte', value: '900719925.1234' }, count: { op: 'eq', value: 0 },
+      paid: { op: 'eq', value: false }, title: { op: 'in', value: ['', '<Open>', null] },
+      body: { op: 'is_null', value: false }, due: { op: 'is_null', value: true },
+    }, sort: '-amount' });
+    const labelled = { ...entity, fields: entity.fields.map(field => field.key === 'amount'
+      ? { ...field, label: 'Quote <total>' } : field) };
+    const html = renderRecordsViewControls({ ...applied,
+      viewDraft: { filters: [{ field: 'title', op: 'eq', value: 'unfinished draft' }], sort: 'amount' },
+    }, labelled, false);
+    const summary = html.slice(html.indexOf('data-records-applied-view'));
+    expect(summary).toContain('<strong>Quote &lt;total&gt;</strong> at least &quot;900719925.1234&quot;');
+    expect(summary).toContain('<strong>Count</strong> equals 0');
+    expect(summary).toContain('<strong>Paid</strong> equals false');
+    expect(summary).toContain('[&quot;&quot;,&quot;&lt;Open&gt;&quot;,null]');
+    expect(summary).toContain('<strong>Body</strong> is set');
+    expect(summary).toContain('<strong>Due</strong> is not set');
+    expect(summary).toContain('Sort: Quote &lt;total&gt; — descending');
+    expect(summary).not.toContain('unfinished draft');
+    expect(summary).not.toContain('<Open>');
+  });
+
+  it('keeps unavailable applied fields explicit and describes the default unfiltered query', () => {
+    const html = renderRecordsViewControls(initialRecordsBrowseState({ filters: {
+      retired_field: { op: 'eq', value: 'keep' },
+    }, sort: '-retired_sort' }), entity, false);
+    expect(html).toContain('<strong>Retired field (unavailable)</strong> equals &quot;keep&quot;');
+    expect(html).toContain('Sort: Retired sort (unavailable) — descending');
+    const defaults = renderRecordsViewControls(initialRecordsBrowseState(), entity, false);
+    expect(defaults).toContain('<strong>Applied filters:</strong> none');
+    expect(defaults).toContain('Sort: Record ID — ascending');
   });
 });

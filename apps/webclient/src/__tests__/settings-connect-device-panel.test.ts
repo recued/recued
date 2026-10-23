@@ -13,6 +13,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   CHECK_CONNECTION_LABEL,
+  CHECK_CONNECTION_RUNNING_NOTE,
+  CHECK_CONNECTION_FINISHED_NOTE,
   CHECK_FROM_OUTSIDE_AGAIN_LABEL,
   CHECK_FROM_OUTSIDE_ERROR,
   CHECK_FROM_OUTSIDE_LABEL,
@@ -25,6 +27,7 @@ import {
   CONNECT_DEVICE_STEP_ACTION_ERROR_ATTR,
   CONNECT_DEVICE_NOTE_ATTR,
   CONNECT_DEVICE_CHECK_ERROR_ATTR,
+  CONNECT_DEVICE_CHECK_STATUS_ATTR,
   CONNECT_DEVICE_PLACE_ATTR,
   CONNECT_DEVICE_STATE_ATTR,
   CONNECT_DEVICE_STEP_DONE_ATTR,
@@ -684,6 +687,110 @@ describe('D-273 audit P2-12 — a failed outside check is SAID', () => {
     await flush();
     m.button()!.click();
     await flush();
+    expect(byAttr(m.host, CONNECT_DEVICE_CHECK_ERROR_ATTR)).toHaveLength(0);
+  });
+});
+
+describe('Connection check feedback and lifetime', () => {
+  it('exposes progress and completion without claiming that the address works', async () => {
+    let release: (() => void) | undefined;
+    const m = mount({
+      readPublicPortReachable: () => false,
+      runOutsideChecks: () => new Promise<void>(resolve => { release = resolve; }),
+    });
+    expect(byAttr(m.host, CONNECT_DEVICE_CHECK_STATUS_ATTR)).toHaveLength(0);
+    m.button()!.click();
+    const progress = byAttr(m.host, CONNECT_DEVICE_CHECK_STATUS_ATTR)[0]!;
+    expect(progress.textContent).toBe(CHECK_CONNECTION_RUNNING_NOTE);
+    expect(progress.getAttribute('role')).toBe('status');
+    expect(progress.getAttribute('aria-atomic')).toBe('true');
+    expect(progress.getAttribute('tabindex')).toBe('-1');
+    expect(m.button()!.getAttribute('aria-busy')).toBe('true');
+    release!();
+    await flush();
+    expect(byAttr(m.host, CONNECT_DEVICE_CHECK_STATUS_ATTR)[0]!.textContent)
+      .toBe(CHECK_CONNECTION_FINISHED_NOTE);
+    expect(m.button()!.getAttribute('aria-busy')).toBeNull();
+    expect(m.routerDone()).toBe('false');
+  });
+
+  it('announces a failure and replaces it with progress and then the retry result', async () => {
+    let reject: ((error: Error) => void) | undefined;
+    let calls = 0;
+    const m = mount({
+      runOutsideChecks: () => {
+        calls += 1;
+        return calls === 1
+          ? new Promise<void>((_resolve, fail) => { reject = fail; })
+          : Promise.resolve();
+      },
+    });
+    const staleButton = m.button()!;
+    staleButton.click();
+    staleButton.click();
+    expect(calls).toBe(1);
+    reject!(new Error('probe unavailable'));
+    await flush();
+    const error = byAttr(m.host, CONNECT_DEVICE_CHECK_ERROR_ATTR)[0]!;
+    expect(error.getAttribute('role')).toBe('alert');
+    expect(error.textContent).toBe(CHECK_FROM_OUTSIDE_ERROR);
+    expect(byAttr(m.host, CONNECT_DEVICE_CHECK_STATUS_ATTR)).toHaveLength(0);
+    m.button()!.click();
+    expect(byAttr(m.host, CONNECT_DEVICE_CHECK_ERROR_ATTR)).toHaveLength(0);
+    expect(byAttr(m.host, CONNECT_DEVICE_CHECK_STATUS_ATTR)[0]!.textContent)
+      .toBe(CHECK_CONNECTION_RUNNING_NOTE);
+    await flush();
+    expect(calls).toBe(2);
+    expect(byAttr(m.host, CONNECT_DEVICE_CHECK_STATUS_ATTR)[0]!.textContent)
+      .toBe(CHECK_CONNECTION_FINISHED_NOTE);
+  });
+
+  it('retains the feedback when a late port read removes the check capability', async () => {
+    let releasePorts: ((ports: { public_port: number }) => void) | undefined;
+    let releaseCheck: (() => void) | undefined;
+    const m = mount({
+      readPorts: () => new Promise(resolve => { releasePorts = resolve; }),
+      canCheckPort: (port: number) => port === 443,
+      runOutsideChecks: () => new Promise<void>(resolve => { releaseCheck = resolve; }),
+    });
+    m.button()!.click();
+    releasePorts!({ public_port: 8443 });
+    await flush();
+    expect(byAttr(m.host, CONNECT_DEVICE_CHECK_STATUS_ATTR)[0]!.textContent)
+      .toBe(CHECK_CONNECTION_RUNNING_NOTE);
+    releaseCheck!();
+    await flush();
+    expect(m.button()).toBeUndefined();
+    const feedback = byAttr(m.host, CONNECT_DEVICE_CHECK_STATUS_ATTR)[0]!;
+    expect(feedback.textContent).toBe(CHECK_CONNECTION_FINISHED_NOTE);
+    expect(feedback.getAttribute('tabindex')).toBe('-1');
+  });
+
+  it('does not start a check from a detached button after disposal', async () => {
+    const run = vi.fn(async () => {});
+    const m = mount({ runOutsideChecks: run });
+    const button = m.button()!;
+    m.panel.dispose();
+    button.click();
+    await flush();
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('does not refresh the router or repaint after a disposed check settles', async () => {
+    let release: (() => void) | undefined;
+    const readMapping = vi.fn(async () => ({ enabled: false }));
+    const m = mount({
+      readPortMapping: readMapping,
+      runOutsideChecks: () => new Promise<void>(resolve => { release = resolve; }),
+    });
+    await flush();
+    m.button()!.click();
+    const progress = byAttr(m.host, CONNECT_DEVICE_CHECK_STATUS_ATTR)[0];
+    m.panel.dispose();
+    release!();
+    await flush();
+    expect(readMapping).toHaveBeenCalledTimes(1);
+    expect(byAttr(m.host, CONNECT_DEVICE_CHECK_STATUS_ATTR)[0]).toBe(progress);
     expect(byAttr(m.host, CONNECT_DEVICE_CHECK_ERROR_ATTR)).toHaveLength(0);
   });
 });

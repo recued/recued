@@ -51,6 +51,19 @@ import { createInboundFileCollection } from '../collections/file/inbound-file-co
 import { handleFileRead } from '../collections/file/file-read-handler.js';
 
 export const resourceFixtureDisposers: (() => void | Promise<void>)[] = [];
+
+/** How long a crash test gives its child: a whole nested test run that builds this fixture and
+ *  kills itself at the commit boundary. The child's own test gets the same limit, since the
+ *  project's 30 s default would otherwise end it first.
+ *  ⚠ Was 60 s. A full sweep runs at the lowest CPU priority, and at load 15–18 with memory in
+ *  swap the child's start-up alone went past it: the parent killed it before it wrote its state,
+ *  and 13 cases across the four crash files failed with "expected false to be true"
+ *  (`d660df789`, 2026-10-22). They take about 12 s each alone, 14–27 s in a quiet sweep and
+ *  about 50 s in that one. */
+export const CRASH_WRITER_LIMIT_MS = 180_000;
+/** A crash case's own timeout: the child's limit, then reopening and checking what it left. */
+export const CRASH_CASE_TIMEOUT_MS = CRASH_WRITER_LIMIT_MS + 60_000;
+
 const owner = { publisher: 'core', pack_slug: 'reviewed-notes' };
 const binding = (action: RecordsAction): RecordsExecutionBinding => ({ kind: 'core.records', action,
   entity: 'note', owner, pack_version: 1, storage_schema_hash: 'a'.repeat(64), declaration_hash: 'b'.repeat(64), operation_digest: action });

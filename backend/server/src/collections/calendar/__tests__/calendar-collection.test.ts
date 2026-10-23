@@ -144,6 +144,7 @@ const newHarness = (
   options: {
     failBlobPut?: boolean;
     blobPutGate?: { started(): void; wait: Promise<void> };
+    onEventUpserted?: (payload: ProviderEventPayload, prev?: CanonicalEvent | null) => void;
   } = {},
 ): Harness => {
   const dir = mkdtempSync(join(tmpdir(), 'cal-collection-'));
@@ -189,6 +190,7 @@ const newHarness = (
     db, blobs, gate, bus, slug: 'work',
     provider,
     config: () => config,
+    ...(options.onEventUpserted ? { onEventUpserted: options.onEventUpserted } : {}),
   });
   return {
     dir, db, gate, blobs, bus, events, control, collection,
@@ -295,6 +297,19 @@ describe('CalendarCollection — initial scan', () => {
 });
 
 describe('CalendarCollection — only a change is an update (D-124)', () => {
+  // The contact hook observes only people an event did not involve before, so
+  // it must be told what the row held: a restart's scan lists every event again.
+  it('hands the upsert hook the event as its row held it, and null for a first sighting', async () => {
+    const seen: Array<[string, string | null]> = [];
+    h = newHarness({}, { onEventUpserted: (payload, prev) => { seen.push([payload.event.summary, prev?.summary ?? null]); } });
+    h.control.initialEvents = [{ event: baseEvent({ source_id: 'evt-1' }), description_bytes: 0 }];
+    await h.collection.sync.start();
+    await h.collection.sync.stop();
+    h.control.initialEvents = [{ event: baseEvent({ source_id: 'evt-1', summary: 'Standup, moved' }), description_bytes: 0 }];
+    await h.collection.sync.start();
+    expect(seen).toEqual([['Standup', null], ['Standup, moved', 'Standup']]);
+  });
+
   it('emits nothing for an event a restart’s scan lists again as it was', async () => {
     h = newHarness();
     h.control.initialEvents = [

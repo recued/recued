@@ -233,6 +233,20 @@ describe('D-250 — the surface carries its own stylesheet', () => {
     expect(sheet).toContain(STATS_ROUTE_HOST_ATTR);
   });
 
+  /** ⛔ The shell's content root sets `overflow-wrap: anywhere`, inherited, and in a
+   *  table that makes every letter a break point when the columns are sized. With the
+   *  meaning column at `width: 100%`, the name column fell to its 55px header and 6 of
+   *  20 names split mid-word ("Autopilo / t"), measured in Chrome at 1440px and 390px;
+   *  0 with this rule. jsdom does no layout, so this pins the mechanism, not the width. */
+  it('⛔ A MEASURE NAME BREAKS BETWEEN WORDS, NOT INSIDE ONE', async () => {
+    const { container } = mount(async () => data());
+    await Promise.resolve();
+    const sheet = headOf(container).map((n) => n.textContent).join('');
+    const rule = (selector: string) => new RegExp(`\\[${STATS_ROUTE_HOST_ATTR}\\] ${selector} \\{[^}]*`);
+    expect(sheet.match(rule('\\.stats-table__meaning'))?.[0]).toContain('width: 100%');
+    expect(sheet.match(rule('\\.stats-table__name'))?.[0]).toContain('overflow-wrap: break-word');
+  });
+
   it('⛔ A SECOND MOUNT DOES NOT STACK A SECOND COPY OF THE SHEET', async () => {
     const { container } = mount(async () => data());
     await Promise.resolve();

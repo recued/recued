@@ -242,3 +242,15 @@ describe('D-269 — the sweep is wired to a NOTIFY, not an event', () => {
     expect(top).toContain('notifyReminder');
   });
 });
+
+describe('⛔ a booking or a meeting says its time on the owner\'s clock, never in UTC (2026-10-22)', () => {
+  it('a 13:00 UTC slot reads "9:00 AM" in New York, not "…T13:00:00.000Z"', () => {
+    const sent: string[] = [];
+    runReminderSweep(deps({
+      timeZone: () => 'America/New_York',
+      listCalendar: () => [{ record_id: 'call', summary: 'Call with Ana', start_at: NOW + 90 * 60_000, is_all_day: false }],
+      notify: (m) => { sent.push(`${m.title}: ${m.text}`); },
+    }));
+    expect(sent).toEqual(['Booking coming up: Dentist — 9:00 AM', 'Starting soon: Call with Ana — 9:30 AM']);
+  });
+});

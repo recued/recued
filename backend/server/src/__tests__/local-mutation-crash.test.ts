@@ -5,7 +5,9 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { resourceFixture, resourceFixtureDisposers, recordStep, calendarStep, recordsManifest } from './preapproval-resources-fixture.js';
+import {
+  CRASH_CASE_TIMEOUT_MS, CRASH_WRITER_LIMIT_MS, resourceFixture, resourceFixtureDisposers, recordStep, calendarStep, recordsManifest,
+} from './preapproval-resources-fixture.js';
 
 const inputFile = process.env.RECUED_LOCAL_MUTATION_CRASH_INPUT;
 const root = resolve(import.meta.dirname, '../../../..');
@@ -73,14 +75,17 @@ it.skipIf(Boolean(inputFile)).each(cases)('recovers $kind after process death $p
   // A nested runner supplies Vitest's spies to the shared host fixture. Its
   // worker really dies; the controller's expected failure is kept in a log.
   const child = spawn(process.execPath, [join(root, 'node_modules/vitest/vitest.mjs'), 'run',
-    resolve(import.meta.filename), '--pool=forks', '--maxWorkers=1', '--project=backend-shared', '--teardownTimeout=1000', '-t', 'local mutation crash writer'],
+    resolve(import.meta.filename), '--pool=forks', '--maxWorkers=1', '--project=backend-shared', '--teardownTimeout=1000',
+    `--testTimeout=${CRASH_WRITER_LIMIT_MS}`, '-t', 'local mutation crash writer'],
   { cwd: root, env: { ...process.env, RECUED_LOCAL_MUTATION_CRASH_INPUT: input }, stdio: ['ignore', 'pipe', 'pipe'] });
   let trace = '';
   child.stdout.on('data', bytes => { trace += String(bytes); });
   child.stderr.on('data', bytes => { trace += String(bytes); });
-  const timer = setTimeout(() => child.kill('SIGKILL'), 60_000);
+  let stopped = false;
+  const timer = setTimeout(() => { stopped = true; child.kill('SIGKILL'); }, CRASH_WRITER_LIMIT_MS);
   const code = await new Promise<number | null>((done, reject) => { child.once('error', reject); child.once('exit', done); });
   clearTimeout(timer); writeFileSync(join(dir, 'expected-crash.log'), trace);
+  expect(stopped, `the crash writer was still running after ${CRASH_WRITER_LIMIT_MS / 1000} s and was stopped: a hang, or a machine too loaded to start it`).toBe(false);
   expect(code, trace.slice(-3000)).not.toBe(0);
   expect(existsSync(output), trace.slice(-3000)).toBe(true);
   const state = JSON.parse(readFileSync(output, 'utf8')) as CrashState;
@@ -106,4 +111,4 @@ it.skipIf(Boolean(inputFile)).each(cases)('recovers $kind after process death $p
   await expect(f.run(state.future_ref)).rejects.toBeDefined();
   const reopened = await f.reopen();
   expect((await reopened.storage.repository.inspect(state.proposal_id)).members).toEqual(inspection.members);
-}, 90_000);
+}, CRASH_CASE_TIMEOUT_MS);

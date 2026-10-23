@@ -129,6 +129,16 @@ describe('classifyRpcError', () => {
     expect(c.copy).not.toMatch(/server_unresponsive/);
   });
 
+  it('maps rpc_overloaded to calm "busy" copy instead of the server\'s raw text', () => {
+    // The server's own message, which a Seller page showed the owner verbatim.
+    const c = classifyRpcError(
+      rpc('rpc_overloaded', 'Too many RPC calls are already running; retry shortly.'),
+    );
+    expect(c.kind).toBe('unresponsive');
+    expect(c.connectionCaused).toBe(true);
+    expect(c.copy).toBe('Your server is busy right now. Try again in a moment.');
+  });
+
   it('maps connection_lost to an in-doubt copy', () => {
     const c = classifyRpcError(rpc('connection_lost', 'webclient rpc: connection lost — …'));
     expect(c.kind).toBe('in_doubt');

@@ -19,6 +19,7 @@
  */
 
 import type {
+  LifecycleStatus,
   ReleaseCheckResponse,
   ReleaseCheckStatus,
   UpdateApplyResponse,
@@ -28,6 +29,7 @@ import type {
   UpdateRollbackArgs,
   UpdateApplyArgs,
 } from '@recued/contracts';
+import { supervisorWillRespawn } from '@recued/contracts';
 import type {
   ServerUpdateReceiptVerificationState,
 } from '@recued/ui-shared';
@@ -73,6 +75,10 @@ export const UPDATES_MODE_SELECT_ATTR = 'data-recued-updates-mode';
 export const UPDATES_MODE_NOTE_ATTR = 'data-recued-updates-mode-note';
 export const UPDATES_ROLLBACK_BTN_ATTR = 'data-recued-updates-rollback';
 export const UPDATES_ROLLBACK_RESULT_ATTR = 'data-recued-updates-rollback-result';
+/** The terminal steps shown instead of the update / rollback button when nothing
+ *  restarts the server. */
+export const UPDATES_TERMINAL_NOTE_ATTR = 'data-recued-updates-terminal-note';
+export const UPDATES_ROLLBACK_TERMINAL_NOTE_ATTR = 'data-recued-updates-rollback-terminal-note';
 export const UPDATES_CREDENTIAL_RETRY_ATTR =
   'data-recued-updates-credential-retry';
 export const UPDATES_CREDENTIAL_RETRY_IDENTITY_ATTR =
@@ -305,6 +311,13 @@ export interface MountUpdatesPageOptions {
   runSetMode?: UpdateModeSetCaller;
   runApply?: UpdateApplyCaller;
   runRollback?: UpdateRollbackCaller;
+  /** `server.getLifecycleState`, read for `supervisor_mode` with every check. A
+   *  server nothing restarts refuses `update.apply` and `update.rollback`, since
+   *  each ends in a restart (`apply-orchestrator.ts` asks the same contracts check
+   *  of the same mode), so the page gives the terminal steps before the owner
+   *  presses either. Absent, or a failed read, keeps both buttons and leaves the
+   *  refusal to the server. */
+  runGetLifecycle?: () => Promise<Pick<LifecycleStatus, 'supervisor_mode'>>;
   /** Fires whenever the check outcome's availability changes — the route wires
    *  this to the "Updates" rail badge. Best-effort (a throw is swallowed). */
   onAvailabilityChanged?: (available: boolean) => void;
@@ -405,6 +418,9 @@ export interface UpdatesPageState {
   rollbackBusy: boolean;
   rollbackResult: UpdateRollbackResponse | null;
   rollbackError: string | null;
+  /** `supervisor_mode` from the last lifecycle read; `null` when unknown (no
+   *  caller, a failed read, or a server that does not report one). */
+  supervisorMode: string | null;
 }
 
 export interface UpdatesPageMount {
@@ -441,6 +457,17 @@ const BASELINE_POSTURE_COPY: Readonly<Record<ReleaseCheckStatus, string>> = {
   'fetch-failed': 'The running version is confirmed, but Recued cannot reach the update service.',
   'bad-signature': 'Recued is sure which version is running, but it would not take the update list.',
 };
+
+/** In place of the update and rollback buttons when nothing restarts the server:
+ *  both end in a restart, and the server refuses them. The steps are the Updates
+ *  guide's. */
+const TERMINAL_UPDATE_COPY =
+  'Nothing restarts this server when it stops, so it cannot install updates from here. '
+  + 'Install this one from a terminal: run recued stop, then recued update apply, '
+  + 'then start the server again.';
+const TERMINAL_ROLLBACK_COPY =
+  'Nothing restarts this server when it stops, so roll back from a terminal: '
+  + 'run recued stop, then recued update rollback, then start the server again.';
 
 const APPLY_STATUS_COPY: Readonly<Record<UpdateApplyResponse['status'], string>> = {
   applying: 'Downloading and verifying the update — this takes a few minutes. You can leave this page.',
@@ -515,7 +542,12 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     rollbackBusy: false,
     rollbackResult: null,
     rollbackError: null,
+    supervisorMode: null,
   };
+  /** False only when the server named its supervisor and that one would not
+   *  bring it back. An unknown mode keeps the buttons. */
+  const restartsItself = (): boolean =>
+    state.supervisorMode === null || supervisorWillRespawn(state.supervisorMode);
   let pendingMode: UpdateMode | null = null;
   let queuedPostRestartCheck = false;
 
@@ -936,6 +968,12 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
   });
   rollbackBtn.addEventListener('click', () => void doRollback());
   rollbackBlock.appendChild(rollbackBtn);
+  const rollbackTerminalNoteEl = make('p', {
+    text: TERMINAL_ROLLBACK_COPY,
+    attrs: { [UPDATES_ROLLBACK_TERMINAL_NOTE_ATTR]: '' },
+  });
+  setHidden(rollbackTerminalNoteEl, true);
+  rollbackBlock.appendChild(rollbackTerminalNoteEl);
   const rollbackResultEl = make('p', { attrs: { [UPDATES_ROLLBACK_RESULT_ATTR]: '' } });
   setHidden(rollbackResultEl, true);
   rollbackBlock.appendChild(rollbackResultEl);
@@ -1247,6 +1285,17 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     // digest above is the action; rendering a disabled "Update now" control
     // makes that delegated path look broken rather than intentionally external.
     if (docker?.artifact === 'docker-baked') {
+      if (restoreApplyFocus || restoreForceApplyFocus) focusElement(versionEl);
+      return;
+    }
+    // A server nothing restarts refuses this apply before it downloads anything.
+    // A button whose only answer is "did not start" reads as a broken update, so
+    // say what works instead, as the baked container above does.
+    if (!restartsItself()) {
+      availableEl.appendChild(make('p', {
+        text: TERMINAL_UPDATE_COPY,
+        attrs: { [UPDATES_TERMINAL_NOTE_ATTR]: '' },
+      }));
       if (restoreApplyFocus || restoreForceApplyFocus) focusElement(versionEl);
       return;
     }
@@ -2090,6 +2139,11 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     rollbackBtn.textContent = state.rollbackBusy
       ? 'Rolling back…'
       : 'Roll back to previous version';
+    // The server refuses a rollback it would not come back from, as it does an
+    // apply; a busy one is already past that gate.
+    const rollbackFromTerminal = !restartsItself() && !state.rollbackBusy;
+    setHidden(rollbackBtn, rollbackFromTerminal);
+    setHidden(rollbackTerminalNoteEl, !rollbackFromTerminal);
     if (state.rollbackError !== null) {
       setHidden(rollbackResultEl, false);
       rollbackResultEl.textContent = state.rollbackError;
@@ -2119,6 +2173,23 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     }
   };
 
+  /** Re-read `supervisor_mode` with each check: a restart can bring the server
+   *  back under another launcher. A failed read makes it unknown again, which
+   *  keeps the buttons. */
+  async function refreshSupervisorMode(): Promise<void> {
+    if (opts.runGetLifecycle === undefined) return;
+    let mode: string | null = null;
+    try {
+      const res = await opts.runGetLifecycle();
+      mode = typeof res?.supervisor_mode === 'string' ? res.supervisor_mode : null;
+    } catch {
+      mode = null;
+    }
+    if (disposed || mode === state.supervisorMode) return;
+    state.supervisorMode = mode;
+    render();
+  }
+
   async function doCheck(queueIfBusy = false): Promise<void> {
     if (disposed || readServerUpdateProgress() !== null) return;
     if (state.phase === 'checking') {
@@ -2126,6 +2197,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
       return;
     }
     if (queueIfBusy) queuedPostRestartCheck = false;
+    void refreshSupervisorMode();
     if (opts.runCheck === undefined) {
       state.phase = 'checked';
       render();

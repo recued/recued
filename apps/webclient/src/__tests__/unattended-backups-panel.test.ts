@@ -18,6 +18,44 @@ const setup = async (initial: ArchiveUnattendedStatus = { configured: false }) =
   return { root, node, mounted, save, get, current: (value: ArchiveUnattendedStatus) => { current = value; } };
 };
 describe('unattended backup setup', () => {
+  it('marks all setup errors in field order, preserves drafts, and never echoes recovery words', async () => {
+    const h = await setup(); h.node('time').value = ''; h.node('time').fire('input');
+    h.node('keep').value = '31'; h.node('keep').fire('input');
+    const focus = vi.spyOn(h.node('destination'), 'focus'); h.node('save').click();
+    expect(focus).toHaveBeenCalledTimes(1); expect(h.save).not.toHaveBeenCalled();
+    for (const name of ['destination', 'time', 'keep', 'words']) {
+      expect(h.node(name).getAttribute('aria-invalid')).toBe('true');
+      expect(h.node(name).getAttribute('aria-describedby')).toBe(h.node(`${name}-error`).id);
+    }
+    h.node('words').value = 'synthetic private draft'; h.node('words').fire('input');
+    expect(h.node('words').getAttribute('aria-invalid')).toBeNull();
+    await h.mounted.refresh(); expect(h.node('time').value).toBe(''); expect(h.node('keep').value).toBe('31');
+    expect(h.node('words').value).toBe('synthetic private draft'); expect(focus).toHaveBeenCalledTimes(1);
+    h.node('destination').value = 'safe'; h.node('destination').fire('change');
+    expect(h.node('destination').getAttribute('aria-invalid')).toBeNull();
+    h.node('time').value = '06:45'; h.node('time').fire('input'); h.node('keep').value = '5'; h.node('keep').fire('change');
+    h.node('save').click(); expect(h.node('words').value).toBe('');
+    expect(h.save).toHaveBeenCalledExactlyOnceWith({ settings: { ...settings, schedule: { ...settings.schedule, hour_utc: 6, minute_utc: 45 } }, recoveryKey: 'synthetic private draft' });
+    h.node('keep').fire('input'); expect(h.node('words').getAttribute('aria-invalid')).toBeNull();
+    expect(h.root.textContent).not.toContain('synthetic private draft');
+  });
+
+  it.each([['cadence', 'monthly'], ['time', '24:00'], ['time', '12:60'], ['day', ''], ['day', '7'], ['keep', '1.5']] as const)(
+    'blocks malformed %s %j before dispatch', async (name, value) => {
+      const h = await setup({ configured: true, settings }), input = h.node(name), focus = vi.spyOn(input, 'focus');
+      input.value = value; input.fire('change'); h.node('save').click();
+      expect(h.save).not.toHaveBeenCalled(); expect(focus).toHaveBeenCalledTimes(1);
+      expect(input.getAttribute('aria-invalid')).toBe('true');
+    });
+
+  it('clears a stale destination error when pausing an existing schedule', async () => {
+    const h = await setup({ configured: true, settings }); h.mounted.destinations([]); h.node('save').click();
+    expect(h.node('destination').getAttribute('aria-invalid')).toBe('true');
+    h.node('enabled').checked = false; h.node('enabled').fire('change');
+    expect(h.node('destination').getAttribute('aria-invalid')).toBeNull();
+    h.node('save').click(); expect(h.save).toHaveBeenCalledExactlyOnceWith({ settings: { ...settings, enabled: false } });
+  });
+
   it('requires an explicit new selection after a saved destination changes, while still allowing pause', async () => {
     const h = await setup({ configured: true, settings });
     h.mounted.destinations([{ ...destination, bucket: 'changed-bucket', destination_id: 'b'.repeat(64) }]);

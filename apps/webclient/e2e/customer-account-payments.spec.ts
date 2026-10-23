@@ -1,9 +1,10 @@
+import { HARNESS_ORIGIN } from './helpers/harness-origin.js';
 import {openAccountActions} from './customer-work-driver.js';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect,test,type Page } from '@playwright/test';
 import type {} from './harness/customer-account-payments-harness.js';
-const BASE = `${process.env.E2E_CUSTOMER_ACCOUNT_PAYMENTS_HARNESS_URL ?? 'http://127.0.0.1:4319'}/customer-account-payments-harness.html`;
+const BASE = `${process.env.E2E_CUSTOMER_ACCOUNT_PAYMENTS_HARNESS_URL ?? HARNESS_ORIGIN}/customer-account-payments-harness.html`;
 const root = (page: Page) => page.locator('[data-customer-account-payments]');
 const form = (page: Page) => root(page).getByRole('form',{ name: 'Record customer account payment',exact: true });
 const receipt = (page: Page) => root(page).locator('[data-customer-account-payment-statement]');

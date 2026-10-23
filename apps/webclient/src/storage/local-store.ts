@@ -20,6 +20,7 @@ import {
   type WebclientLocalStorage,
   type WebclientServerProfile,
 } from '@recued/contracts';
+import { readWebLockProvider } from '../runtime/web-locks.js';
 
 import {
   EMPTY_ROSTER,
@@ -174,12 +175,10 @@ export interface WebclientProfileStoreOptions {
   lockProvider?: WebclientProfileStoreLockProvider | null;
 }
 
-const resolveProfileStoreLockProvider = (): WebclientProfileStoreLockProvider | null => {
-  const nav = (
+const resolveProfileStoreLockProvider = (): WebclientProfileStoreLockProvider | null =>
+  readWebLockProvider(() => (
     globalThis as { navigator?: { locks?: WebclientProfileStoreLockProvider } }
-  ).navigator;
-  return typeof nav?.locks?.request === 'function' ? nav.locks : null;
-};
+  ).navigator?.locks);
 
 let idCounter = 0;
 /** Profile ids never leave the browser, so uniqueness within this origin is

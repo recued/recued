@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "source": {
-    "commit": "569092b552293eea41020c855dd0a84a80169b9f",
-    "tree": "ef048c0f23b5d8be19974ce2ac75644babc8009c",
-    "committed_at": "2026-10-21T02:12:50-07:00"
+    "commit": "04c3f207a96bc6a895dd10c20d04014eba6d31bb",
+    "tree": "7a3b79fe20fb4fabea597dd677820efb46d379c4",
+    "committed_at": "2026-10-22T23:30:19-07:00"
   },
-  "export_manifest_sha256": "c453e5ebc08f455baa497c04f4e1c4812aafabc59cc604d3a6c6e6f8fd10d934",
-  "version": "26.10.21",
+  "export_manifest_sha256": "1b8b2bc6d5e9e97c2dca1d74df5613d47d746037afa87a9e7387085c8217e1d9",
+  "version": "26.10.22",
   "license": "AGPL-3.0-only",
   "entrypoints": [
     "backend/server",
@@ -283,8 +283,10 @@
       "backend/server/src/__tests__/d-324-reminders-live.test.ts",
       "backend/server/src/__tests__/d-325-device-observations.test.ts",
       "backend/server/src/__tests__/d-325-evidence-refresh-batch.test.ts",
+      "backend/server/src/__tests__/d-325-final-observation-bindings.test.ts",
       "backend/server/src/__tests__/d-325-paperless-evidence.test.ts",
       "backend/server/src/__tests__/d-325-read-scope-sources.test.ts",
+      "backend/server/src/__tests__/d-325-summary-history-projection.test.ts",
       "backend/server/src/__tests__/d-325-travel-documents.test.ts",
       "backend/server/src/__tests__/d-325-yours.test.ts",
       "backend/server/src/__tests__/dependency-manifest.test.ts",
@@ -378,6 +380,7 @@
       "backend/server/src/__tests__/provider-mock-pack-semi-live.test.ts",
       "backend/server/src/__tests__/provider-mock-paddle-lane-semi-live.test.ts",
       "backend/server/src/__tests__/provider-mock-semi-live.test.ts",
+      "backend/server/src/__tests__/provider-mock-stripe-form-checkout-semi-live.test.ts",
       "backend/server/src/__tests__/provider-mock-stripe-pass-lane-semi-live.test.ts",
       "backend/server/src/__tests__/provider-mock-stripe-quote-lane-semi-live.test.ts",
       "backend/server/src/__tests__/provider-mock-stripe.test.ts",
@@ -437,6 +440,8 @@
       "backend/server/src/__tests__/wire-observability-rpc-deps.test.ts",
       "backend/server/src/__tests__/zoho-desk-tickets-pack.test.ts",
       "backend/server/src/collections/__tests__/password-repair.test.ts",
+      "backend/server/src/collections/mail/__tests__/imap-restart-catch-up.test.ts",
+      "backend/server/src/collections/mail/__tests__/mail-resync.test.ts",
       "backend/server/src/collections/service/__tests__/starter-pack.test.ts",
       "backend/server/src/ingredient-authoring/__tests__/install-composition-accounting-op-steps.test.ts",
       "backend/server/src/ingredient-authoring/__tests__/install-composition-first-party.test.ts",
@@ -741,6 +746,7 @@
       "packages/recipes/src/__tests__/emsc-seismic-pack-audit.test.ts",
       "packages/recipes/src/__tests__/enveloped-result-corpus.test.ts",
       "packages/recipes/src/__tests__/europe-pmc-pack-audit.test.ts",
+      "packages/recipes/src/__tests__/every-stop-says-why.test.ts",
       "packages/recipes/src/__tests__/expected-quotation-email-loop.test.ts",
       "packages/recipes/src/__tests__/field-service-day-plan-audit.test.ts",
       "packages/recipes/src/__tests__/figma-comment-reply-closure-loop.test.ts",
@@ -857,7 +863,7 @@
       "packages/ui-shared/src/__tests__/d-129-phase-1-vendor-schemas-corpus.test.ts",
       "packages/ui-shared/src/__tests__/timer-events.test.ts"
     ],
-    "sha256": "19be262337b745518e248ab820bf0414de465e4e17625e749dab3b404984949e",
+    "sha256": "9e24b7e8819a2d4a6bc8d064dcc8ca607b9cb8edac376a92e191c6830dacbf0d",
     "roots": [
       "apps/auth-worker",
       "apps/bridge",
@@ -874,15 +880,15 @@
     ]
   },
   "internal_reference_scrub": {
-    "files_changed": 1122,
+    "files_changed": 1127,
     "rules": [
       {
         "id": "internal-spec-reference",
-        "comments_rewritten": 1053
+        "comments_rewritten": 1056
       },
       {
         "id": "internal-design-document",
-        "comments_rewritten": 130
+        "comments_rewritten": 132
       },
       {
         "id": "internal-handover-note",
@@ -985,7 +991,7 @@
     "packages/warehouse-events"
   ],
   "payload": {
-    "file_count": 7466,
-    "sha256": "b5fe030a255769cf2c69e0e9ea2b0326a71bcf57ee612df91a4a6ee7e6df68a3"
+    "file_count": 7593,
+    "sha256": "690a8ca850e7e06bfa738530ae3711864d2dd8a2b35e04a70c7d313181cbc152"
   }
 }

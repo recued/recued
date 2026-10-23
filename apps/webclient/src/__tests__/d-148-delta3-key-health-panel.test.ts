@@ -31,6 +31,7 @@ import {
   KEY_HEALTH_CLOSE_BTN_ATTR,
   KEY_HEALTH_COMPROMISE_BANNER_ATTR,
   KEY_HEALTH_COMPROMISE_BTN_ATTR,
+  KEY_HEALTH_CONFIRM_BTN_ATTR,
   KEY_HEALTH_ERROR_CODE_ATTR,
   KEY_HEALTH_PANEL_ATTR,
   KEY_HEALTH_PANEL_STATE_ATTR,
@@ -461,5 +462,94 @@ describe('R26.4 Delta 3 — load error + navigation', () => {
     expect(host.children.length).toBe(1);
     mount.dispose();
     expect(host.children.length).toBe(0);
+  });
+});
+
+const deferredRead = <T,>() => {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+};
+
+describe('Key Health read recovery and retired controls', () => {
+  it('announces a failed read and ignores repeated activations of the removed Retry', async () => {
+    const retry = deferredRead<KeyHealthView>();
+    let calls = 0;
+    const { host, mount, rotateLog } = setup({ loadHealth: async () => {
+      calls += 1;
+      if (calls === 1) throw new Error('Inventory unavailable.');
+      return retry.promise;
+    } });
+    await mount.whenReady();
+    expect(findAllByAttr(host, 'role').filter(node => node.getAttribute('role') === 'alert')).toHaveLength(1);
+    const oldRetry = findByAttr(host, KEY_HEALTH_RETRY_BTN_ATTR)!;
+    oldRetry.click(); oldRetry.click();
+    expect(mount.getState()).toBe('loading');
+    expect(calls).toBe(2);
+    retry.resolve(selfHostView());
+    await mount.whenReady();
+    oldRetry.click();
+    expect(calls).toBe(2);
+    expect(mount.getState()).toBe('idle');
+    expect(rotateLog).toEqual([]);
+    mount.dispose();
+  });
+
+  it('only the current Retry can start a third read after a second failure', async () => {
+    let calls = 0;
+    const { host, mount } = setup({ loadHealth: async () => {
+      calls += 1;
+      if (calls < 3) throw new Error('Inventory unavailable.');
+      return selfHostView();
+    } });
+    await mount.whenReady();
+    const firstRetry = findByAttr(host, KEY_HEALTH_RETRY_BTN_ATTR)!;
+    firstRetry.click();
+    await mount.whenReady();
+    const secondRetry = findByAttr(host, KEY_HEALTH_RETRY_BTN_ATTR)!;
+    expect(secondRetry).not.toBe(firstRetry);
+    firstRetry.click();
+    expect(calls).toBe(2);
+    secondRetry.click();
+    await mount.whenReady();
+    expect(calls).toBe(3);
+    expect(mount.getState()).toBe('idle');
+    mount.dispose();
+    secondRetry.click();
+    expect(calls).toBe(3);
+  });
+
+  it('a retired confirmation cannot repeat a pending rotation', async () => {
+    const rotation = deferredRead<RotationResult>();
+    let calls = 0;
+    const { host, mount } = setup({
+      loadHealth: async () => selfHostView({ master_dek: 'available' }),
+      runRotate: async () => { calls += 1; return rotation.promise; },
+    });
+    await mount.whenReady();
+    mount.clickRotate('master_dek');
+    const confirm = findByAttr(host, KEY_HEALTH_CONFIRM_BTN_ATTR)!;
+    confirm.click(); confirm.click();
+    expect(calls).toBe(1);
+    expect(mount.getState()).toBe('busy');
+    const pending = mount.clickConfirm();
+    rotation.resolve(okResult('master_dek_rotate'));
+    await pending;
+    confirm.click();
+    expect(calls).toBe(1);
+    expect(mount.getState()).toBe('done');
+    mount.dispose();
+  });
+
+  it.each(['success', 'error'] as const)('ignores a pending inventory %s after disposal', async (outcome) => {
+    const read = deferredRead<KeyHealthView>();
+    const { host, mount } = setup({ loadHealth: () => read.promise });
+    mount.dispose();
+    if (outcome === 'success') read.resolve(selfHostView());
+    else read.reject(new Error('Late failure.'));
+    await mount.whenReady();
+    expect(host.children).toHaveLength(0);
+    expect(mount.getState()).toBe('loading');
   });
 });

@@ -205,6 +205,8 @@ export type ReceptionRouteConn = Conn<
     // Received surface, moved here on the owner's IMMUTABLE/MUTABLE rule);
     // `recipe.list` above is reused by its manual-run automation picker.
     | 'reception.record.list'
+    // D-149 § N.6 — "Show details" on a record: one record, opened by the server.
+    | 'reception.record.open'
     | 'reception.signoff.quotes'
     | 'reception.signoff.prepare'
     | 'reception.signoff.prepare_addition'

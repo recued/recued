@@ -18,6 +18,7 @@ import {
   RECORDS_DEFAULT_OUTBOX_QUOTA,
   RECORDS_DEFAULT_PAGE_SIZE,
   RECORDS_DEFAULT_ROW_QUOTA,
+  RECORDS_QUOTA_NO_LIMIT,
   RECORDS_DECIMAL_SCALE,
   RECORDS_MAX_CAUSAL_DEPTH,
   RECORDS_MAX_CAUSAL_FANOUT,
@@ -1534,7 +1535,7 @@ export const assertRecordsRestoreCoherence = (db: Database.Database): void => {
   }
   const limitFromMeta = (key: string): number => {
     const row = db.prepare(`SELECT value FROM ${META_TABLE} WHERE key=?`).get(key) as { value: string } | undefined;
-    if (row === undefined) return Number.MAX_SAFE_INTEGER;
+    if (row === undefined) return RECORDS_QUOTA_NO_LIMIT;
     const value = Number(row.value);
     if (!Number.isSafeInteger(value) || value < 0) {
       throw new Error(`records_restore_incoherent: invalid global Records quota '${key}'`);
@@ -1628,7 +1629,7 @@ export const createRecordsStore = (
   const globalLimit = (key: 'row_limit' | 'byte_limit' | 'outbox_limit'): number => {
     const row = db.prepare(`SELECT value FROM ${META_TABLE} WHERE key=?`)
       .get(`records.global.${key}`) as { value: string } | undefined;
-    if (row === undefined) return Number.MAX_SAFE_INTEGER;
+    if (row === undefined) return RECORDS_QUOTA_NO_LIMIT;
     const parsed = Number(row.value);
     if (!Number.isSafeInteger(parsed) || parsed < 0) {
       fail('records_incoherent', `global Records ${key} policy is invalid`);

@@ -6,7 +6,7 @@ import { ASSET_DOCUMENT_DETAILS_ATTRIBUTE, normalizeAssetDocumentDetails, isAsse
   type ProactiveProposal, type SituationRef, type YoursAssetSummary, type YoursCommand, type YoursCommandResult, type YoursReadRequest, type YoursSnapshot } from '@recued/contracts';
 import type { ConnectionRow } from '@recued/contracts';
 import type { NotificationBlock } from '@recued/notification';
-import type { WorkEntityStore } from '../storage/work-entity-store.js';
+import { assetSummaryHistoryFields, type WorkEntityStore } from '../storage/work-entity-store.js';
 import { createAssetOccurrenceStore, type AssetOccurrence } from '../storage/asset-occurrence-store.js';
 import { createSituationDismissalStore, situationItemKey, situationKindKey } from '../storage/situation-dismissal-store.js';
 import { createOccurrenceReminderStore } from '../storage/occurrence-reminder-store.js';
@@ -270,26 +270,62 @@ export const createYoursService = (deps: YoursServiceDeps) => {
     && current.deleted_at == null && current.class_id === class_id && ['active', 'lent'].includes(current.status)
     && ['live', 'stale_unreachable'].includes(current.sync_state) && !(Number(current.settings.class_version ?? 0) >= version);
   const refreshClassUpdates = () => {
+    // Share hits and misses across this synchronous scan and offer cleanup.
+    // Later refreshes and direct acceptance must read the presets afresh.
+    const presets = new Map<string, ReturnType<typeof classes.get>>();
+    const presetFor = (id: string) => {
+      const cached = presets.get(id); if (cached !== undefined) return cached;
+      const preset = classes.get(id); presets.set(id, preset); return preset;
+    };
+    // Load once, only when this refresh finds a preset update to offer.
+    let suppressions: ReturnType<typeof proposals.suppressions> | undefined;
     for (let cursor = ''; ;) {
       const page = deps.work.walkAssetsForClassUpdates(cursor, 100); if (!page.length) break;
+      let prefetched: ReturnType<typeof proposals.prefetchKeys>; let loaded = false;
       for (const current of page) {
         if (!current.class_id || !['active', 'lent'].includes(current.status)) continue;
-        const preset = classes.get(current.class_id); if (!preset || !classUpdateApplies(current, preset.id, preset.version)) continue;
+        const preset = presetFor(current.class_id); if (!preset || !classUpdateApplies(current, preset.id, preset.version)) continue;
         const payload = { asset_id: current.id, class_id: preset.id, preset_version: preset.version, apply_class: true, proposal_class: `class-update:${preset.id}` };
-        if (!proposals.allows({ kind: 'rule', payload })) continue;
+        if (!proposals.allows({ kind: 'rule', payload }, suppressions ??= proposals.suppressions())) continue;
         const pinned = current.rules.filter(rule => rule.pinned).length;
         const changes = preset.rules.slice(0, 12).map(rule => `${rule.title}: ${rule.when.field}; remind ${rule.schedule.before.map(point => `${point.amount} ${point.unit}`).join(', ')}${rule.schedule.on_day ? ', on the day' : ''}`).join('\n');
+        if (!loaded) {
+          loaded = true;
+          try {
+            const keys = page.flatMap(candidate => {
+              if (!candidate.class_id || !['active', 'lent'].includes(candidate.status)) return [];
+              const nextPreset = presetFor(candidate.class_id);
+              if (!nextPreset || !classUpdateApplies(candidate, nextPreset.id, nextPreset.version)) return [];
+              const nextPayload = { asset_id: candidate.id, class_id: nextPreset.id, preset_version: nextPreset.version,
+                apply_class: true, proposal_class: `class-update:${nextPreset.id}` };
+              return proposals.allows({ kind: 'rule', payload: nextPayload }, suppressions)
+                ? [`class-update:${candidate.id}:${nextPreset.id}:${nextPreset.version}`] : [];
+            });
+            prefetched = proposals.prefetchKeys(keys);
+          } catch { /* Keep earlier saves before a later legacy eligibility error, or fall back if prefetch is unavailable. */ }
+        }
         proposals.ensure({ key: `class-update:${current.id}:${preset.id}:${preset.version}`, kind: 'rule', title: `${preset.name} preset update · ${current.name}`,
           explanation: `Version ${preset.version} is available. ${pinned} edited rows stay pinned.\n${changes}${preset.rules.length > 12 ? '\nSee Classes for the remaining rows.' : ''}`.slice(0, 4000),
           payload,
-          subject: { collection: 'asset', id: current.id }, sources: [{ collection: 'asset', id: current.id }], confidence: 'high', origin: preset.origin === 'owner' ? 'owner' : 'pack' }, now());
+          subject: { collection: 'asset', id: current.id }, sources: [{ collection: 'asset', id: current.id }], confidence: 'high', origin: preset.origin === 'owner' ? 'owner' : 'pack' }, now(), prefetched);
       }
       cursor = page.at(-1)!.id;
     }
-    for (const proposal of proposals.list({ state: 'proposed', kind: 'rule', limit: 10000 })) {
-      if (proposal.payload.apply_class !== true) continue;
-      const current = deps.work.readAsset(String(proposal.payload.asset_id)); const preset = classes.get(String(proposal.payload.class_id));
-      if (!preset || preset.version !== proposal.payload.preset_version || !classUpdateApplies(current, preset.id, preset.version)) proposals.outcome(proposal.id, 'retracted', now());
+    const pending = proposals.list({ state: 'proposed', kind: 'rule', limit: 10000 });
+    for (let offset = 0; offset < pending.length; offset += 200) {
+      const page = pending.slice(offset, offset + 200);
+      let assets: ReturnType<WorkEntityStore['readAssets']>;
+      try {
+        const ids = page.filter(proposal => proposal.payload.apply_class === true).map(proposal => String(proposal.payload.asset_id));
+        if (ids.length) assets = deps.work.readAssets(ids);
+      } catch { /* Point reads retain payload/hydration errors and earlier retractions in proposal order. */ }
+      for (const proposal of page) {
+        if (proposal.payload.apply_class !== true) continue;
+        const id = String(proposal.payload.asset_id);
+        const cached = assets?.get(id); const current = cached === undefined ? deps.work.readAsset(id) : cached;
+        const preset = presetFor(String(proposal.payload.class_id));
+        if (!preset || preset.version !== proposal.payload.preset_version || !classUpdateApplies(current, preset.id, preset.version)) proposals.outcome(proposal.id, 'retracted', now());
+      }
     }
   };
   const lastDone = async (id: string, on: string | null): Promise<void> => {
@@ -816,38 +852,93 @@ export const createYoursService = (deps: YoursServiceDeps) => {
     if (input.asset_id && (input.asset_filter || input.asset_sphere)) throw new Error('Asset filters apply to the asset list');
     const searchQuery = input.search ? { search: input.search } : {};
     const summaryAt = now(); const summaryZone = deps.timeZone?.() ?? 'UTC';
-    const summarize = (asset: Asset, occurrences?: readonly AssetOccurrence[], summaryWork?: Pick<WorkEntityStore, 'readCommitment' | 'assetReadingHistory'>): YoursAssetSummary | undefined => {
-      try { return summarizeYoursAsset(asset, { work: summaryWork ?? deps.work, occurrences: occurrences ?? rows.byAsset(asset.id), now: summaryAt, timeZone: summaryZone }); }
-      catch (error) { console.warn('[yours] Asset summary unavailable', asset.id, error); return undefined; }
-    };
     let assets: Asset[]; let total_assets: number; let unavailable = 0;
     const asset_summaries: YoursAssetSummary[] | undefined = input.include_asset_summaries === true ? [] : undefined;
     const assetPlacements = new Map<string, ReturnType<typeof spheres.resolve>>();
-    if (input.asset_filter || input.asset_sphere) {
+    let occurrenceRows: AssetOccurrence[] | undefined;
+    let occurrencesByAsset: Map<string, AssetOccurrence[]> | undefined;
+    if (input.asset_filter || asset_summaries) {
+      try {
+        const all = rows.all(); const grouped = new Map<string, AssetOccurrence[]>();
+        // Reuse the list needed below in this synchronous phase. Reversing its
+        // SQL order preserves byAsset's created_at DESC,id DESC tie break.
+        for (let index = all.length - 1; index >= 0; index--) {
+          const row = all[index]!; if (row.subject_kind === 'occasion') continue;
+          const group = grouped.get(row.asset_id);
+          if (group) group.push(row); else grouped.set(row.asset_id, [row]);
+        }
+        occurrenceRows = all; occurrencesByAsset = grouped;
+      } catch { /* Retain bounded summary reads and the later list read if prefetch fails. */ }
+    }
+    const summarize = (asset: Asset, occurrences?: readonly AssetOccurrence[], summaryWork?: Pick<WorkEntityStore, 'readCommitment' | 'assetReadingHistory'>): YoursAssetSummary | undefined => {
+      try {
+        const receipts = occurrences ?? (occurrencesByAsset ? occurrencesByAsset.get(asset.id) ?? [] : rows.byAsset(asset.id));
+        return summarizeYoursAsset(asset, { work: summaryWork ?? deps.work, occurrences: receipts, now: summaryAt, timeZone: summaryZone });
+      }
+      catch (error) { console.warn('[yours] Asset summary unavailable', asset.id, error); return undefined; }
+    };
+    const summaryWorkFor = (summaryAssets: readonly Asset[]): Pick<WorkEntityStore, 'readCommitment' | 'assetReadingHistory'> | undefined => {
+      if (!summaryAssets.length) return undefined;
+      try {
+        const histories = deps.work.assetReadingHistories(summaryAssets.flatMap(asset =>
+          assetSummaryHistoryFields(asset).map(field => ({ asset_id: asset.id, field }))));
+        return { readCommitment: deps.work.readCommitment, assetReadingHistory: (id, field, limit) =>
+          (limit === undefined || limit === 100 ? histories.get(id)?.get(field) : undefined) ?? deps.work.assetReadingHistory(id, field, limit) };
+      } catch { return undefined; /* Preserve individual history errors within the guarded summary. */ }
+    };
+    const projectAssets = (ids: readonly string[]) => {
+      if (!ids.length) return undefined;
+      try { return deps.work.readAssetsEffective(ids); }
+      catch { return undefined; /* Preserve individual projection and its error behavior if the batch fails. */ }
+    };
+    const spherePage = input.asset_sphere && !input.asset_filter ? (() => {
+      let page: ReturnType<typeof spheres.assetPage>;
+      try { page = spheres.assetPage(input.asset_sphere!, { ...searchQuery, limit, offset }); }
+      catch { return undefined; /* Keep the original scan and its error behavior if selection fails. */ }
+      if (!page) return undefined;
+      const projected = projectAssets(page.ids);
+      const assets = page.ids.map(id => projected?.get(id) ?? deps.work.readAssetEffective(id));
+      // A missing projection must still let the scan backfill the selected page.
+      if (assets.some(asset => !asset)) return undefined;
+      return { ...page, assets: assets as Asset[] };
+    })() : undefined;
+    if (spherePage) {
+      assets = spherePage.assets; total_assets = spherePage.total;
+      for (const [id, placement] of spherePage.placements) assetPlacements.set(id, placement);
+    } else if (input.asset_filter || input.asset_sphere) {
       assets = []; total_assets = 0;
       // Only a filtered read scans beyond the requested page. Keep the ordinary
       // list's ordering and search, and retain at most one page of projections.
-      for (let scanOffset = 0; ; scanOffset += 200) {
-        const batch = deps.work.listByKind('asset', { ...searchQuery, limit: 200, offset: scanOffset });
-        const placements = input.asset_sphere ? spheres.resolveAssets(batch.filter(asset => asset._kind === 'asset').map(asset => asset.id)) : undefined;
-        const candidates = batch.filter((asset): asset is Asset & { _kind: 'asset' } => asset._kind === 'asset'
-          && (!input.asset_sphere || (placements?.get(asset.id)?.sphere ?? 'unsorted') === input.asset_sphere));
+      type Candidate = { asset: Asset; placement?: ReturnType<typeof spheres.resolve> };
+      const pending: Candidate[] = [];
+      const consumeCandidates = (candidates: readonly Candidate[]) => {
+        if (!candidates.length) return;
         let occurrenceBatch: ReturnType<typeof rows.byAssets> | undefined;
         let summaryWork: Pick<WorkEntityStore, 'readCommitment' | 'assetReadingHistory'> | undefined;
         if (input.asset_filter) {
-          try { occurrenceBatch = rows.byAssets(candidates.map(asset => asset.id)); }
+          const indexed = occurrencesByAsset;
+          try { occurrenceBatch = indexed
+            ? new Map(candidates.map(({ asset }) => [asset.id, indexed.get(asset.id) ?? []]))
+            : rows.byAssets(candidates.map(({ asset }) => asset.id)); }
           catch { /* Keep the guarded individual reads and per-asset unavailable counts. */ }
-          try {
-            const histories = deps.work.assetReadingHistories(candidates.flatMap(asset => asset.deleted_at == null
-              && ['live', 'stale_unreachable'].includes(asset.sync_state) && ['active', 'lent'].includes(asset.status)
-              ? asset.rules.flatMap(rule => rule.enabled && rule.when.kind === 'objective' ? [{ asset_id: asset.id, field: rule.when.field }] : []) : []));
-            summaryWork = { readCommitment: deps.work.readCommitment, assetReadingHistory: (id, field, limit) =>
-              (limit === undefined || limit === 100 ? histories.get(id)?.get(field) : undefined) ?? deps.work.assetReadingHistory(id, field, limit) };
-          } catch { /* Preserve individual history errors within the guarded summary. */ }
+          summaryWork = summaryWorkFor(candidates.map(({ asset }) => asset));
         }
-        // No await between this page's receipt/history reads and its summaries.
-        for (const asset of candidates) {
-          const placement = placements?.get(asset.id);
+        const selected: Array<{ asset: Asset; placement?: ReturnType<typeof spheres.resolve>; summary?: YoursAssetSummary }> = [];
+        const appendSelected = () => {
+          if (!selected.length) return;
+          const projected = projectAssets(selected.map(row => row.asset.id));
+          for (const { asset, placement, summary } of selected) {
+            const effective = projected?.get(asset.id) ?? deps.work.readAssetEffective(asset.id);
+            if (effective) {
+              assets.push(effective);
+              if (placement) assetPlacements.set(asset.id, placement);
+              if (asset_summaries && summary) asset_summaries.push(summary);
+            }
+          }
+          selected.length = 0;
+        };
+        // No await between candidate selection, receipt/history reads and projections.
+        for (const { asset, placement } of candidates) {
           let summary: YoursAssetSummary | undefined;
           if (input.asset_filter) {
             summary = summarize(asset, occurrenceBatch?.get(asset.id), summaryWork);
@@ -856,21 +947,80 @@ export const createYoursService = (deps: YoursServiceDeps) => {
           }
           const index = total_assets++;
           if (index >= offset && assets.length < limit) {
-            const effective = deps.work.readAssetEffective(asset.id);
-            if (effective) {
-              assets.push(effective);
-              if (placement) assetPlacements.set(asset.id, placement);
-              if (asset_summaries) { const pageSummary = summary ?? summarize(effective); if (pageSummary) asset_summaries.push(pageSummary); }
-            }
+            selected.push({ asset, placement, summary });
+            // Flush when full so a missing projection can be backfilled by the next match.
+            if (assets.length + selected.length === limit) appendSelected();
           }
         }
-        if (batch.length < 200) break;
+        appendSelected();
+      };
+      let nativeComplete = false;
+      const readNativeCandidates = () => {
+        assets = []; total_assets = 0; unavailable = 0; assetPlacements.clear();
+        if (asset_summaries) asset_summaries.length = 0;
+        nativeComplete = false;
+        let candidateBatches: Generator<{ assets: readonly Asset[];
+          placements?: ReadonlyMap<string, ReturnType<typeof spheres.resolve>> }, boolean, void> | undefined;
+        try {
+          if (input.asset_filter) candidateBatches = input.asset_sphere
+            ? spheres.assetCandidates(input.asset_sphere, searchQuery) : deps.work.assetCandidates(searchQuery);
+        } catch { /* Selection failure retains the original scan. */ }
+        if (!candidateBatches) return;
+        const cursor = candidateBatches;
+        try {
+          for (;;) {
+            let next: ReturnType<typeof cursor.next>;
+            try { next = cursor.next(); } catch { break; /* Only selector errors fall back; projection errors still propagate. */ }
+            if (next.done) { nativeComplete = next.value; break; }
+            const batch = next.value;
+            consumeCandidates(batch.assets.map(asset => ({ asset, placement: batch.placements?.get(asset.id) })));
+          }
+        } finally {
+          try { cursor.return(false); }
+          catch { nativeComplete = false; /* Closing also falls back, without masking a pending projection error. */ }
+        }
+      };
+      if (input.asset_filter && input.asset_sphere && typeof spheres.withAssetReadingHistories === 'function')
+        spheres.withAssetReadingHistories(input.asset_sphere, searchQuery, readNativeCandidates);
+      else if (input.asset_filter && !input.asset_sphere && typeof deps.work.withAssetReadingHistories === 'function')
+        deps.work.withAssetReadingHistories(searchQuery, readNativeCandidates);
+      else readNativeCandidates();
+      if (!nativeComplete) {
+        // A later cursor failure must not retain counts or page rows from its prefix.
+        assets = []; total_assets = 0; unavailable = 0; assetPlacements.clear();
+        if (asset_summaries) asset_summaries.length = 0;
+        for (let scanOffset = 0; ; scanOffset += 200) {
+          const batch = deps.work.listByKind('asset', { ...searchQuery, limit: 200, offset: scanOffset });
+          const scanned = batch.flatMap(asset => {
+            if (asset._kind !== 'asset') return [];
+            const { _kind, ...raw } = asset;
+            return [raw];
+          });
+          const placements = input.asset_sphere ? spheres.resolveAssets(scanned.map(asset => asset.id), scanned) : undefined;
+          for (const asset of scanned) {
+            if (input.asset_sphere && (placements?.get(asset.id)?.sphere ?? 'unsorted') !== input.asset_sphere) continue;
+            pending.push({ asset, placement: placements?.get(asset.id) });
+            if (pending.length === 200) { consumeCandidates(pending); pending.length = 0; }
+          }
+          // Attention lookups fill from sphere-selected candidates across scan pages.
+          // Optional page summaries run on the returned projections after the scan.
+          if (!input.asset_filter) { consumeCandidates(pending); pending.length = 0; }
+          if (batch.length < 200) break;
+        }
+        consumeCandidates(pending);
       }
     } else {
-      assets = input.asset_id ? [deps.work.readAssetEffective(input.asset_id)].filter((row): row is Asset => !!row && row.deleted_at == null)
-        : deps.work.listByKind('asset', { limit, offset, ...searchQuery }).flatMap(row => row._kind === 'asset' ? [deps.work.readAssetEffective(row.id)!] : []);
+      if (input.asset_id) assets = [deps.work.readAssetEffective(input.asset_id)].filter((row): row is Asset => !!row && row.deleted_at == null);
+      else {
+        const page = deps.work.listByKind('asset', { limit, offset, ...searchQuery }).filter((row): row is Asset & { _kind: 'asset' } => row._kind === 'asset');
+        const projected = projectAssets(page.map(row => row.id));
+        assets = page.map(row => projected?.get(row.id) ?? deps.work.readAssetEffective(row.id)!);
+      }
       total_assets = deps.work.countByKind('asset', searchQuery);
-      if (asset_summaries) for (const asset of assets) { const summary = summarize(asset); if (summary) asset_summaries.push(summary); }
+    }
+    if (asset_summaries && !input.asset_filter) {
+      const summaryWork = summaryWorkFor(assets);
+      for (const asset of assets) { const summary = summarize(asset, undefined, summaryWork); if (summary) asset_summaries.push(summary); }
     }
     if (input.proposal_offset !== undefined && (!Number.isSafeInteger(input.proposal_offset) || input.proposal_offset < 0)) throw new Error('Invalid proposal page');
     // §15.2 — a suggestion also shows on the asset or occasion it would change (P42).
@@ -897,7 +1047,7 @@ export const createYoursService = (deps: YoursServiceDeps) => {
         return input.include_closed ? { title, due_on: null } : null;
       }
     };
-    const occurrences = rows.all().filter(row => (!input.asset_id || row.subject_kind !== 'occasion' && row.asset_id === input.asset_id)
+    const occurrences = (occurrenceRows ?? rows.all()).filter(row => (!input.asset_id || row.subject_kind !== 'occasion' && row.asset_id === input.asset_id)
       && (!input.occasion_id || row.subject_kind === 'occasion' && row.asset_id === input.occasion_id)).flatMap(row => {
       const commitment = row.commitment_id ? deps.work.readCommitment(row.commitment_id) : null;
       if (!input.include_closed && commitment && commitment.lifecycle_state !== 'pending') return [];
@@ -956,6 +1106,17 @@ export const createYoursService = (deps: YoursServiceDeps) => {
     const placements = uniquePlacementRefs.map(ref => ({ ref,
       ...((ref.collection === 'asset' ? assetPlacements.get(ref.id) : undefined) ?? spheres.resolve(ref, undefined,
         ref.collection === 'episode' ? derived?.find(row => row.id === ref.id)?.sphere : undefined)) }));
+    // Called below after reply delivery can yield to binding or recipe changes.
+    const observationBindings = () => {
+      if (!assets.length) return [];
+      let bindings: ReturnType<WorkEntityStore['listAssetObservationBindingsForAssets']> | undefined;
+      try { bindings = deps.work.listAssetObservationBindingsForAssets(assets.map(current => current.id)); }
+      catch { /* Preserve individual reads and their error behavior if the batch fails. */ }
+      return assets.flatMap(current => (bindings?.get(current.id) ?? deps.work.listAssetObservationBindings(current.id)).map(binding => {
+        const row = recipes?.getStored(binding.actor_ref.slice('recipe:'.length));
+        return { ...binding, available: ['active', 'lent'].includes(current.status) && (!binding.recipe_hash || !!row && definitionDigest(JSON.parse(row.recipe_json)) === binding.recipe_hash) };
+      }));
+    };
     return { assets, ...(input.asset_id && assets[0]?.holder_contact ? { holder: holderOf(assets[0].holder_contact) } : {}),
       related_assets: [...new Map([...(parent ? [parent] : []), ...descendants, ...linked].map(asset => [asset.id, asset])).values()], total_assets,
       ...(input.asset_filter ? { asset_filter: { kind: input.asset_filter, unavailable } } : {}), classes: classes.list(), proposals: shown,
@@ -981,10 +1142,7 @@ export const createYoursService = (deps: YoursServiceDeps) => {
       observation_recipes: recipes?.listStored().flatMap(row => { const recipe = recipes!.get(row.recipe_id);
         return recipe && definitionDigest(recipe) === definitionDigest(JSON.parse(row.recipe_json)) && observationRecipe(recipe)
           ? [{ id: row.recipe_id, name: recipe.metadata.name, publisher: row.publisher_id, hash: definitionDigest(recipe) }] : []; }) ?? [],
-      observation_bindings: assets.flatMap(current => deps.work.listAssetObservationBindings(current.id).map(binding => {
-        const row = recipes?.getStored(binding.actor_ref.slice('recipe:'.length));
-        return { ...binding, available: ['active', 'lent'].includes(current.status) && (!binding.recipe_hash || !!row && definitionDigest(JSON.parse(row.recipe_json)) === binding.recipe_hash) };
-      })),
+      observation_bindings: observationBindings(),
       observation_handoffs: input.asset_id && assets.length ? deps.work.assetObservationHandoffs(input.asset_id) : [],
       phone_ready: destinations?.destinations.some(destination => destination.channel !== 'ui' && destination.channel !== 'bridge') ?? false,
       ...(scheduled ? { delivery: scheduled.status() } : {}),

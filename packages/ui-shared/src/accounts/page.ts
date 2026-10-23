@@ -1614,8 +1614,9 @@ const renderDetail = (lane: AccountLane, state: AccountsPanelState): string => {
     !hasSynced
       ? row.authState === 'healthy' ? 'Waiting for first sync' : 'No successful sync yet'
       : new Date(lastSyncedAt).toLocaleString();
-  // Re-sync is independent of authorization and exists on Calendar and Files.
-  const lifecycle = lane.id !== 'mail';
+  // Re-sync is independent of authorization. A mailbox offers it once its first
+  // import is done: before that, a restart would only start the import over.
+  const lifecycle = lane.id !== 'mail' || row.mailSync?.initial_sync_complete === true;
   return `
     <div class="accounts-detail">
       <h2 class="accounts-detail-title" data-accounts-detail-heading tabindex="-1">${e(row.slug)}</h2>

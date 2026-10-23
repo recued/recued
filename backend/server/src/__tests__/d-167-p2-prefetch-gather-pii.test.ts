@@ -819,11 +819,16 @@ describe('D-224 — the model is told what an alias IS', () => {
     expect(PII_ALIAS_NOTICE).toContain('Never rebuild');
     expect(PII_ALIAS_NOTICE).toContain('label, not the value');
     // 2026-10-21: a place the owner types reaches the model as typed while the
-    // record's place stays aliased, so the model cannot link them. Without this
+    // record's place stays aliased, so the model cannot link them. Without a
     // clause it once said a Lisbon record "does not list specific destinations
-    // like Lisbon".
+    // like Lisbon". Told to say it could not see the place, it also wrote the
+    // alias, and the owner read "Linked place: Lisbon. I cannot see which place
+    // the record names". It claims neither way and writes the alias, which the
+    // owner reads as the place (prompt-tuning log 2026-10-21d).
     expect(PII_ALIAS_NOTICE).toContain('orgs and places');
-    expect(PII_ALIAS_NOTICE).toContain('Never say it is a different place');
+    expect(PII_ALIAS_NOTICE).toContain('never say whether it is that place');
+    expect(PII_ALIAS_NOTICE).toMatch(/write its alias: they read the real place name/u);
+    expect(PII_ALIAS_NOTICE).not.toMatch(/cannot see/u);
     // ⛔⛔ AND IT MUST CONTAIN NO CONCRETE ALIAS. A literal `m1@d1.invalid` here
     // grants restore authority over that slot — a model that merely GUESSED it
     // would get a real address restored into owner-visible output.

@@ -19,7 +19,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
-import { RECUED_BUILTIN_SOURCE_ID } from '@recued/contracts';
+import { RECUED_BUILTIN_SOURCE_ID, renderQuietHoursDigest, type QuietHoursDigest } from '@recued/contracts';
 import {
   composeHousekeepingScheduler,
   composeHousekeepingStores,
@@ -163,6 +163,16 @@ describe('D-269 — the composition root wires the reminder sweep to REAL rows',
     expect(calendar.map((m) => m.text.split(' — ')[0])).toEqual(['Call with Ana']);
   });
 
+  it('⛔ the text says the time on the server\'s clock — its zone reaches the wording (2026-10-22)', async () => {
+    // It read the UTC instant ("renew the domain — 2026-06-15T18:00:00.000Z").
+    const { sent, task } = await compose({
+      zone: 'America/New_York',
+      calendar: [{ source_id: 'call', summary: 'Call with Ana', is_all_day: false, start_at: NOW + HOUR, end_at: NOW + 2 * HOUR }],
+    });
+    await runTask(task);
+    expect(sent.map((m) => m.text)).toEqual(['Call with Ana — 9:00 AM', 'renew the domain — 2:00 PM']);
+  });
+
   it('⛔⛔ and an armed window HOLDS it — quiet hours is wired, not merely present', async () => {
     // The second mutation that passed: making `isQuiet` never suppress. Quiet
     // hours would have been inert at the only place it runs.
@@ -204,5 +214,17 @@ describe('D-269 — the release card and the per-item reminder share ONE ledger'
 
     // ⚠ Exactly one telling between the two surfaces, whichever spoke.
     expect(ctx.cards.length + ctx.sent.length).toBe(1);
+  });
+
+  it('⛔ the card carries the server\'s zone, so it reads the owner\'s clock (2026-10-22)', async () => {
+    // A 07:00–09:00 window in New York holds NOW (08:00 there); 14:00 is after it.
+    // The card was rendered with no zone, on the server process's clock.
+    const ctx = await compose({ zone: 'America/New_York', quiet: { from: 7 * 60, to: 9 * 60 } });
+    await runTask(ctx.dueTask, NOW);
+    await runTask(ctx.dueTask, NOW + 6 * HOUR);
+    expect(ctx.cards).toHaveLength(1);
+    const card = ctx.cards[0] as QuietHoursDigest;
+    expect(card.time_zone).toBe('America/New_York');
+    expect(renderQuietHoursDigest(card)).toMatch(/^Quiet hours ran 08:00 → 14:00\./);
   });
 });

@@ -139,11 +139,19 @@ export const composeCalendarBoot = (
       ...(auditLog ? { auditLog } : {}),
       ...(contactStore
         ? {
-            onEventUpserted: (payload) => {
+            onEventUpserted: (payload, prev) => {
               // D-121 Phase 1 — derive contacts from organizer +
               // attendees. Errors swallowed inside the collection's
               // try/catch so a bad row never rolls back ingest.
-              const obs = deriveContactsFromCalendar(payload.event);
+              // A contact counts once per event that involves it (the
+              // store's `interaction_count` rule), so only people the event
+              // did not involve before are observed. Every start's scan
+              // lists each stored event again, and observing them all
+              // again bumped every attendee's count each boot, which moves
+              // its record hash and derives its enrichments again
+              // (`contact-backfill.ts` once did the same).
+              const known = prev ? new Set(deriveContactsFromCalendar(prev).map((o) => o.email)) : null;
+              const obs = deriveContactsFromCalendar(payload.event).filter((o) => !known?.has(o.email));
               if (obs.length > 0) contactStore.observeBatch(obs);
             },
           }

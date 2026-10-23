@@ -155,6 +155,13 @@ export const WEBHOOK_GLOBAL_RATE_LIMIT_RPS = 1000;
  *  rpcs are capped at this rate. */
 export const WS_PER_TOKEN_RATE_LIMIT_RPS = 100;
 
+/** How many rpc calls one client socket may have running on the server at
+ *  once. The server refuses the next one with `rpc_overloaded` before it
+ *  runs (`ws-server.ts`), and the webclient holds calls past this number
+ *  until one finishes (`rpc-conn.ts`). A Settings page load alone sent 88
+ *  against a live server, so a client that sent them all at once was refused. */
+export const RPC_WS_MAX_IN_FLIGHT_PER_CLIENT = 64;
+
 /** D-148 § A.6.3 — MCP rate limit per token. AI-agent clients are
  *  rate-limited per the per-pair MCP visibility token. */
 export const MCP_PER_TOKEN_RATE_LIMIT_RPM = 60;

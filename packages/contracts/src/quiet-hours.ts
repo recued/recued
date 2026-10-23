@@ -32,7 +32,8 @@
  *
  *  Spec: internal design notes D-269 REV 2 Q1/Q2 + REV 5. */
 
-import { isDuePast } from './due-day.js';
+import { isDateOnlyDue, isDuePast, localDayAsDateOnly } from './due-day.js';
+import { formatReminderDay } from './reminder.js';
 import { zonedWallClockToEpochMs } from './zoned-wall-clock.js';
 import type { ServerTimeZoneSetting } from './server-timezone.js';
 import { isServerTimeZoneConfigured } from './server-timezone.js';
@@ -397,6 +398,10 @@ export interface QuietHoursDigest {
    *  record of what the window cost — the same role the miss count plays in
    *  D-266, and the only way an owner learns the window took something. */
   already_passed: number;
+  /** The zone the digest was judged in (`buildQuietHoursDigest`), so its card
+   *  words every time on that clock: the owner's. Absent ⇒ the server
+   *  process's zone. */
+  time_zone?: string;
 }
 
 /** Split anchored rows into the digest's two halves.
@@ -420,7 +425,10 @@ export const buildQuietHoursDigest = (
   // Soonest first — the owner reads the top of a card, and the thing happening
   // next is the thing they can still act on.
   still_ahead.sort((a, b) => a.anchor_at - b.anchor_at);
-  return { from: window.from, to: window.to, still_ahead, already_passed };
+  return {
+    from: window.from, to: window.to, still_ahead, already_passed,
+    ...(timeZone === undefined ? {} : { time_zone: timeZone }),
+  };
 };
 
 /** True when the digest has nothing to say. ⛔ An EMPTY digest must not be sent:
@@ -443,17 +451,29 @@ export const isQuietHoursDigestEmpty = (d: QuietHoursDigest): boolean =>
  *  would drift from this one on its first edit. */
 export const renderQuietHoursDigest = (
   digest: QuietHoursDigest,
-  timeZone?: string,
+  // ⛔ The digest's own zone unless one is given (2026-10-22). The server passed
+  // none, so the card read the server process's clock: UTC on a VPS.
+  timeZone: string | undefined = digest.time_zone,
 ): string => {
+  const zone = timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
   const clock = (at: number): string => {
     try {
       return new Intl.DateTimeFormat('en-GB', {
-        hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
-        ...(timeZone === undefined ? {} : { timeZone }),
+        hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: zone,
       }).format(new Date(at));
     } catch {
       return '';
     }
+  };
+  /** A due on a DAY (`due-day.ts`) names that day: its UTC midnight read as a time
+   *  was the evening before for anyone west of UTC. A time on another day than
+   *  the card's names that day too, so "07:00" tomorrow does not read as gone. */
+  const when = (at: number): string => {
+    if (isDateOnlyDue(at)) return formatReminderDay(at, zone, digest.to);
+    const day = localDayAsDateOnly(at, zone);
+    return day === localDayAsDateOnly(digest.to, zone)
+      ? clock(at)
+      : `${formatReminderDay(day, zone, digest.to)} at ${clock(at)}`;
   };
 
   const lines: string[] = [`Quiet hours ran ${clock(digest.from)} → ${clock(digest.to)}.`];
@@ -462,7 +482,7 @@ export const renderQuietHoursDigest = (
     lines.push('');
     lines.push('Still ahead:');
     for (const item of digest.still_ahead) {
-      lines.push(`· ${item.title} — ${clock(item.anchor_at)}`);
+      lines.push(`· ${item.title} — ${when(item.anchor_at)}`);
     }
   }
   if (digest.already_passed > 0) {

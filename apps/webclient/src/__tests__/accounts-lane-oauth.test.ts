@@ -2314,3 +2314,55 @@ it('opens current-app reauthorization from a healthy connected mailbox and route
   managed = true; await mount.refresh(); h.clickAction({ action: 'accounts-open-managed-connection' });
   expect(open).toHaveBeenCalledWith('exact-work-account'); mount.dispose();
 });
+
+describe('Mail Re-sync (mountAccountsLanePanel)', () => {
+  const mountMail = (resync: NonNullable<MailLaneCallers['resync']>) => {
+    const { host, clickAction } = makeHost();
+    const list = vi.fn(async () => ({ instances: [{
+      slug: 'work',
+      adapter_type: 'imap',
+      auth_state: 'healthy' as const,
+      last_synced_at: 1_700_000_000_000,
+      send_capable: false,
+      account_email: 'owner@example.com',
+      sync_status: { access_verified: true, initial_sync_complete: true },
+    }] }));
+    const mount = mountAccountsLanePanel({
+      host: host as unknown as HTMLElement,
+      document: {} as Document,
+      initialLane: 'mail',
+      mail: {
+        list: list as unknown as MailLaneCallers['list'],
+        enrollImap: vi.fn(async () => ({ slug: 'unused', send_capable: false })),
+        delete: vi.fn(async () => ({ ok: true as const })),
+        resync,
+      },
+    });
+    return { host, clickAction, list, mount };
+  };
+
+  it('re-syncs the mailbox and reloads its row', async () => {
+    const resync = vi.fn(async () => ({ ok: true }));
+    const h = mountMail(resync);
+    await h.mount.whenLoaded();
+    h.clickAction({ action: 'accounts-open-detail', slug: 'work' });
+    expect(h.host.innerHTML).toContain('data-action="accounts-resync"');
+    const loads = h.list.mock.calls.length;
+    h.clickAction({ action: 'accounts-resync', slug: 'work' });
+    await vi.waitFor(() => expect(h.list.mock.calls.length).toBeGreaterThan(loads));
+    expect(resync).toHaveBeenCalledWith({ slug: 'work' });
+    expect(h.host.innerHTML).not.toContain('Re-sync is not available');
+    h.mount.dispose();
+  });
+
+  it('tells the owner to update a server from before mail Re-sync', async () => {
+    const resync = vi.fn(async () => { throw Object.assign(new Error('unknown method collection.mail.resync'), { code: 'unknown_method' }); });
+    const h = mountMail(resync);
+    await h.mount.whenLoaded();
+    h.clickAction({ action: 'accounts-open-detail', slug: 'work' });
+    h.clickAction({ action: 'accounts-resync', slug: 'work' });
+    await vi.waitFor(() => expect(h.host.innerHTML).toContain('Update this server to re-sync mail.'));
+    expect(h.host.innerHTML).not.toContain('collection.mail.resync');
+    h.mount.dispose();
+  });
+});

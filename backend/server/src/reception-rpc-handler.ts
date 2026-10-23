@@ -263,6 +263,7 @@ import { deriveReceptionIntakeRecipePairBinding } from './reception-intake-recip
 import { deriveEndpointPairBinding, intakePairConfigFor } from './reception-endpoint-pair.js';
 import {
   makeReceptionRecordHandlers,
+  makeReceptionRecordOpenHandlers,
   type ReceptionRecordDeps,
 } from './reception-record-handler.js';
 import {
@@ -4880,6 +4881,18 @@ export const makeReceptionRecordRpcHandlers = (
   deps: ReceptionRecordDeps | undefined,
 ): HandlerSlice<ServerRpcRegistry, 'reception.record.list', WsClient> | undefined => {
   const slice = makeReceptionRecordHandlers<WsClient>(deps);
+  return slice === undefined
+    ? undefined
+    : { methods: slice.methods, handlers: slice.handlers };
+};
+
+/** D-149 § N.6 — the per-record reveal's slice. Separate from the list's because its deps
+ *  are: `undefined` unless `openRecord` is wired, so a boot without the reception key leaves
+ *  the method answering `not_configured` instead of answering every record as unreadable. */
+export const makeReceptionRecordOpenRpcHandlers = (
+  deps: ReceptionRecordDeps | undefined,
+): HandlerSlice<ServerRpcRegistry, 'reception.record.open', WsClient> | undefined => {
+  const slice = makeReceptionRecordOpenHandlers<WsClient>(deps);
   return slice === undefined
     ? undefined
     : { methods: slice.methods, handlers: slice.handlers };

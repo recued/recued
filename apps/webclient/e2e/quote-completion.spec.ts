@@ -1,10 +1,11 @@
+import { HARNESS_ORIGIN } from './helpers/harness-origin.js';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { expect,test,type Page } from '@playwright/test';
 import type {} from './harness/quote-signoff-harness.js';
 import { renderApprovalLinkHtml } from '../../../backend/server/src/ports/reception/handlers/approval-link-render.js';
 import { lookupReceptionStaticAsset } from '../../../backend/server/src/ports/reception/static-assets.js';
-const BASE = `${process.env.E2E_SIGNOFF_HARNESS_URL ?? 'http://127.0.0.1:4319'}/quote-signoff-harness.html?completion`;
+const BASE = `${process.env.E2E_SIGNOFF_HARNESS_URL ?? HARNESS_ORIGIN}/quote-signoff-harness.html?completion`;
 test.beforeEach(async ({ page }) => {
   const headers = await readFile(resolve(import.meta.dirname,'../public/_headers'),'utf8');
   const policy = headers.match(/^\s*Content-Security-Policy:\s*(.+)$/m)?.[1];if (!policy) throw new Error('Missing shipped CSP');

@@ -422,6 +422,70 @@ describe('GcalProvider — initialScan', () => {
     expect(tokens[0][1]).toBe('tok-1');
   });
 
+  // A restart's scan replaced the token the last poll left, and that token is
+  // the one that reports what was deleted while the server was down: the scan
+  // lists no deleted event, so those rows stayed for good.
+  it('keeps the token the last poll left, so the first poll reports what was deleted while down', async () => {
+    const store = seedStore();
+    const tokenKey = `gcal.work.sync_token.${hashId('primary')}`;
+    store.data.set(tokenKey, 'tok-before-shutdown');
+    const { fetcher, calls } = makeRouter([
+      calendarListRoute([{ id: 'primary' }]),
+      {
+        match: (u) => u.includes('/calendars/primary/events') && u.includes('syncToken=tok-before-shutdown'),
+        response: {
+          status: 200,
+          body: {
+            items: [{ id: 'deleted-while-down', iCalUID: 'gone', status: 'cancelled', start: {}, end: {} }],
+            nextSyncToken: 'tok-after-catch-up',
+          },
+        },
+      },
+      {
+        match: (u) => u.includes('/calendars/primary/events') && !u.includes('syncToken='),
+        response: {
+          status: 200,
+          body: {
+            items: [{
+              id: 'still-there',
+              iCalUID: 'kept',
+              status: 'confirmed',
+              summary: 'Still there',
+              start: { dateTime: '2026-04-23T10:00:00Z' },
+              end: { dateTime: '2026-04-23T11:00:00Z' },
+            }],
+            nextSyncToken: 'tok-from-the-scan',
+          },
+        },
+      },
+    ]);
+    const provider = createGcalProvider({
+      slug: 'work',
+      config: mkConfig(),
+      accountStore: store,
+      providerConfig,
+      fetcher,
+      scheduler: () => () => undefined,
+    });
+    cleanup.push(() => provider.close());
+    const scanned: string[] = [];
+    await provider.initialScan({
+      backfill_days: 7,
+      expansion_future_days: 30,
+      expansion_past_days: 7,
+      onEvent: async (p) => { scanned.push(p.event.source_id); return true; },
+    });
+    expect(scanned).toEqual(['still-there']);
+    expect(store.data.get(tokenKey)).toBe('tok-before-shutdown');
+
+    const emitted: CalendarSyncEvent[] = [];
+    const stop = await provider.startSync(async (e) => { emitted.push(e); });
+    expect(emitted).toEqual([{ kind: 'deleted', source_id: 'deleted-while-down' }]);
+    expect(store.data.get(tokenKey)).toBe('tok-after-catch-up');
+    expect(calls.filter((c) => c.url.includes('syncToken=tok-from-the-scan'))).toHaveLength(0);
+    await stop();
+  });
+
   it('puts the series master’s RRULE on its listed instances, one read per series per pass', async () => {
     const instance = (id: string, day: string, recurringEventId?: string): GcalEvent => ({
       id, iCalUID: `${recurringEventId ?? id}@google.com`, status: 'confirmed', summary: id,
@@ -985,11 +1049,61 @@ describe('GcalProvider — startSync', () => {
     const stop = await provider.startSync(async (e) => {
       emitted.push(e);
     });
-    expect(emitted).toHaveLength(1);
+    // The listing that replaced the token reports no deletion, so the
+    // calendar's rows in its window are checked against what it listed: the
+    // window less a day at each end (7 days back, 30 ahead).
+    expect(emitted.map((e) => e.kind)).toEqual(['updated', 'calendar']);
     expect(emitted[0].source_id).toBe('post-reset');
+    expect(emitted[1].calendar).toMatchObject({ calendar_id: 'primary', keep: ['post-reset'] });
+    const window = emitted[1].calendar!.window;
+    expect(window.end - window.start).toBe((7 + 30 - 2) * 86_400_000);
     expect(store.data.get(`gcal.work.sync_token.${hashId('primary')}`)).toBe(
       'tok-fresh',
     );
+    await stop();
+  });
+
+  it('stores no token when the collection rejects the check, so the next tick lists the window again', async () => {
+    const store = seedStore();
+    const tokenKey = `gcal.work.sync_token.${hashId('primary')}`;
+    store.data.set(tokenKey, 'tok-old');
+    const listings: string[] = [];
+    const fetcher: HttpFetcher = async (url) => {
+      const reply = (status: number, body: unknown) => ({
+        status, ok: status < 300, async json() { return body; }, async text() { return JSON.stringify(body); },
+      });
+      if (url.includes('/users/me/calendarList')) return reply(200, { items: [{ id: 'primary' }] });
+      const token = new URL(url).searchParams.get('syncToken');
+      if (token === 'tok-old') return reply(410, { error: { code: 410, message: 'Sync token is no longer valid' } });
+      listings.push(token ?? 'window');
+      return reply(200, {
+        items: [{
+          id: 'kept', iCalUID: 'k', status: 'confirmed', summary: 'Kept',
+          start: { dateTime: '2026-04-23T10:00:00Z' }, end: { dateTime: '2026-04-23T11:00:00Z' },
+        }],
+        nextSyncToken: 'tok-fresh',
+      });
+    };
+    let tick: (() => unknown) | undefined;
+    const provider = createGcalProvider({
+      slug: 'work', config: mkConfig(), accountStore: store, providerConfig, fetcher,
+      scheduler: (fn) => { tick = fn; return () => undefined; },
+    });
+    cleanup.push(() => provider.close());
+    let refuse = true;
+    const checks: CalendarSyncEvent[] = [];
+    const stop = await provider.startSync(async (e) => {
+      if (e.kind !== 'calendar') return;
+      checks.push(e);
+      if (refuse) throw new Error('collection is closing');
+    });
+    expect(checks).toHaveLength(1);
+    expect(store.data.has(tokenKey)).toBe(false);
+    refuse = false;
+    await tick?.();
+    expect(listings).toEqual(['window', 'window']);
+    expect(checks).toHaveLength(2);
+    expect(store.data.get(tokenKey)).toBe('tok-fresh');
     await stop();
   });
 

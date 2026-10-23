@@ -156,12 +156,20 @@ export const mountServerAddressPanel = (
 
   let rows: RowModel[] = [];
   let disposed = false;
+  type FocusKind = 'edit' | 'input' | 'check' | 'save' | 'cancel' | 'status';
+  let controls: Array<{ id: string; kind: FocusKind; node: HTMLElement }> = [];
 
   const rowFor = (id: string): RowModel | undefined => rows.find((r) => r.profile.id === id);
 
   const render = (): void => {
+    if (disposed) return;
+    const owner = controls.find(control => control.node === doc.activeElement);
+    const input = owner?.kind === 'input' ? owner.node as HTMLInputElement : null;
+    const selection = input ? { start: input.selectionStart, end: input.selectionEnd, direction: input.selectionDirection } : null;
+    controls = [];
     while (wrapper.firstChild) wrapper.removeChild(wrapper.firstChild);
     for (const row of rows) {
+      const remember = (kind: FocusKind, node: HTMLElement): void => { controls.push({ id: row.profile.id, kind, node }); };
       const el = doc.createElement('div');
       el.setAttribute(SERVER_ADDRESS_ROW_ATTR, row.profile.id);
       el.setAttribute(SERVER_ADDRESS_ROW_STATE_ATTR, row.state);
@@ -175,6 +183,7 @@ export const mountServerAddressPanel = (
         edit.setAttribute(SERVER_ADDRESS_EDIT_BTN_ATTR, '');
         edit.textContent = 'Change address';
         edit.addEventListener('click', () => beginEdit(row.profile.id));
+        remember('edit', edit);
         el.appendChild(edit);
       } else {
         const input = doc.createElement('input') as HTMLInputElement;
@@ -193,6 +202,7 @@ export const mountServerAddressPanel = (
           }
         });
         input.disabled = row.state === 'checking' || row.state === 'saving';
+        remember('input', input);
         el.appendChild(input);
 
         if (row.state === 'verified') {
@@ -200,6 +210,7 @@ export const mountServerAddressPanel = (
           save.setAttribute(SERVER_ADDRESS_SAVE_BTN_ATTR, '');
           save.textContent = 'Save';
           save.addEventListener('click', () => { void save_(row.profile.id); });
+          remember('save', save);
           el.appendChild(save);
         } else {
           const check = doc.createElement('button');
@@ -207,6 +218,7 @@ export const mountServerAddressPanel = (
           check.textContent = 'Check address';
           check.disabled = row.state === 'checking' || row.state === 'saving';
           check.addEventListener('click', () => { void check_(row.profile.id); });
+          remember('check', check);
           el.appendChild(check);
         }
 
@@ -215,15 +227,34 @@ export const mountServerAddressPanel = (
         cancel.textContent = 'Cancel';
         cancel.disabled = row.state === 'saving';
         cancel.addEventListener('click', () => cancel_(row.profile.id));
+        remember('cancel', cancel);
         el.appendChild(cancel);
       }
 
       const status = doc.createElement('p');
       status.setAttribute(SERVER_ADDRESS_STATUS_ATTR, '');
+      status.setAttribute('role', 'status');
+      status.setAttribute('tabindex', '-1');
       status.textContent = row.status;
+      remember('status', status);
       el.appendChild(status);
 
       wrapper.appendChild(el);
+    }
+    if (!owner) return;
+    const row = rowFor(owner.id);
+    const fallback: FocusKind = row?.state === 'checking' || row?.state === 'saving' ? 'status'
+      : row?.state === 'verified' ? 'save'
+        : row?.state === 'editing' || row?.state === 'refused' ? 'input' : 'edit';
+    const available = (control: typeof controls[number]): boolean =>
+      control.id === owner.id && (control.node as HTMLButtonElement | HTMLInputElement).disabled !== true;
+    // The live owner is captured on every repaint. Moving elsewhere while a
+    // check waits retires its focus; disabled controls use the pending status.
+    const target = controls.find(control => available(control) && owner.kind !== 'status' && control.kind === owner.kind)
+      ?? controls.find(control => available(control) && control.kind === fallback);
+    target?.node.focus?.({ preventScroll: true });
+    if (target?.kind === 'input' && selection?.start != null && selection.end != null) {
+      (target.node as HTMLInputElement).setSelectionRange?.(selection.start, selection.end, selection.direction ?? undefined);
     }
   };
 
@@ -380,6 +411,7 @@ export const mountServerAddressPanel = (
   return {
     dispose() {
       disposed = true;
+      controls = [];
       wrapper.remove();
     },
     refresh,

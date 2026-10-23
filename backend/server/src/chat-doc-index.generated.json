@@ -4048,6 +4048,22 @@
     "body": "Open **Settings → Backup & Recovery**. Add an S3 storage connection first.\nThen open **Unattended encrypted backups**. Choose each day or each week.\nSet a time in UTC. Choose 1 to 30 copies to keep.\nType this server's 24 secret words once. Save the schedule.\nThe form clears the words when it sends them.\nThe server keeps a locked backup key. This key works only for these backups.\nIt keeps none of your secret words. It keeps none of the raw bytes made from them.\n\nThe server must be on. Its vault must be unlocked. You can close your browser.\nIf it misses a time, it runs once when it can.\nIf a run stops midway, its copy is not marked as confirmed. It is not resent.\nYou need no words to change or pause the schedule.\nIf the server vault changes, set it up again.\n\nThe S3 checks stay the same. Recued reads back each new copy.\nIt checks the size and SHA-256 hash.\nOnly a good check lets it remove old copies from its own folder.\nA failed check leaves the old copies in place.\nThis proves that the copy reached S3. Test a restore too.\n\nIf a backup fails, you get an alert. So do you if old copies cannot be cleared.\nIt uses your alert settings. If no route accepts it, it tries each hour.\nAn offline server must start first to send an alert.\nThe panel shows the next run and last result. It also shows alerts still waiting to be sent.\n\nUse your 24 secret words to restore. Open the usual restore preview.\nThese backups need archive format 4. An old server will refuse them.\nUpgrade it first. Manual backups keep their old format."
   },
   {
+    "id": "setup/backup-and-restore#scheduled-s3-checks",
+    "doc": "Backup and restore",
+    "section": "Scheduled S3 checks",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/backup-and-restore#scheduled-s3-checks",
+    "body": "Open **Scheduled S3 checks** in **Settings → Backup & Recovery**.\nTurn on **Enable scheduled S3 checks**. Choose each day or each week.\nSet a time in UTC, then choose **Save S3 check schedule**.\nChecks start off. They need none of your secret words.\nThey follow the storage used by your enabled backup schedule.\n\nEach scan reads the full bytes of each kept copy that was verified before.\nIt checks the size and hash again. It runs one copy at a time.\nThis downloads each full copy. Your storage provider may charge for those reads.\nIt uses the saved version when the storage has one.\nIt does not make a new backup or replace a bad copy.\nYour old rules still govern which copies can be removed.\n\nThe panel shows the next scan and last result.\nIt shows how many copies were checked, failed, or skipped.\nA copy in use, or one since removed, may be skipped.\nNew copies wait for the next scan.\nA good read does not make old data fresh. It does not prove recovery works."
+  },
+  {
+    "id": "setup/backup-and-restore#s3-check-alerts-and-stops",
+    "doc": "Backup and restore",
+    "section": "S3 check alerts and stops",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/backup-and-restore#s3-check-alerts-and-stops",
+    "body": "If a scan fails, you get an alert through your alert settings.\nA copy may be missing or changed. Access to storage may have failed.\nOpen the saved backup receipts to check the cause.\nIf no route accepts the alert, Recued tries each hour.\nSeveral failures in one scan share one alert.\nA sent alert does not mean a person saw it.\n\nThe server must be on. Missed times become one scan when it can run.\nPause the backup schedule to pause new scans and their alerts.\nTurn off S3 checks and save to stop an active read too.\nIf a scan is cut off, it shows as incomplete.\nOn restart, it waits for the next scan time. It does not resume that scan.\nYou can still check a copy by hand."
+  },
+  {
     "id": "setup/backup-and-restore#backup-health",
     "doc": "Backup and restore",
     "section": "Backup health",
@@ -4062,6 +4078,46 @@
     "eyebrow": "Setup",
     "url": "https://recued.com/docs/setup/backup-and-restore#backup-health-alerts",
     "body": "Health checks run once each minute while your server is on.\nYou can close the browser. They use your alert settings.\nPause the backup schedule to pause health alerts too.\nOr turn off **Send health alerts** and save the health limits.\nYou can still check the receipts when alerts are off.\n\nAn alert marks an overdue backup, an old test, or unreadable proof.\nRecued records which alert a route has accepted.\nIt keeps that note through a restart.\nIf no route accepts an alert, it tries each hour.\nAn accepted alert may repeat after a crash before its result is saved.\nA sent alert does not mean a person saw it.\nWhen the cause clears, a later breach can send a new alert.\nAn offline server must start first to check or send alerts."
+  },
+  {
+    "id": "setup/backup-and-restore#alerts-when-this-server-is-off",
+    "doc": "Backup and restore",
+    "section": "Alerts when this server is off",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/backup-and-restore#alerts-when-this-server-is-off",
+    "body": "Open **Offline backup alerts** in **Settings → Backup & Recovery**.\nUse a heartbeat monitor on another host, such as Healthchecks.\nIt sends alerts when it stops hearing from Recued.\nSet its period to one minute and its grace to at least five minutes.\nSet up and test its alert route on that host too.\n\nPaste its HTTPS success-ping URL, turn on pings, and choose **Save monitor**.\nUse a URL with no query, fragment, or login, on port 443.\nRecued saves the URL encrypted and does not show it again.\nLeave the field blank to keep that saved URL.\nIt needs none of your secret recovery words.\n\nPings need a verified backup within its age limit and no backup warnings.\nIf S3 checks are on, they need a full passing scan first.\nA first recovery test can still be in its grace period.\nA ping does not mean that test passed.\nCheck that the monitor has seen its first ping before relying on it.\nAn acknowledgment does not prove that its alerts reach you.\n\nStopping the server or pausing backups stops pings too.\nPause the external check for planned downtime.\n**Remove monitor** forgets its URL here. Remove or pause its external check too."
+  },
+  {
+    "id": "setup/backup-and-restore#test-the-external-alert-route",
+    "doc": "Backup and restore",
+    "section": "Test the external alert route",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/backup-and-restore#test-the-external-alert-route",
+    "body": "After a healthy ping is acknowledged, choose **Test monitor alerts**.\nPick 10, 15, 30, or 60 minutes, longer than the monitor's period plus grace.\nReview the pause and confirm it. This may send real alerts to your saved routes.\nLeave the external monitor on during the test.\n\nRecued pauses pings until the shown server time, even if you close this page.\nThe pause also survives a server restart and is never extended by a retry.\nWhen it ends, pings can resume while the server is running.\nThey still need healthy backup proof and an open vault.\nA changed server clock can delay them.\n\nIf the alert reaches you, choose **I received the alert** to end the pause early.\nRecued records your report and waits for a fresh ping acknowledgment.\nBoth are needed for a completed drill. Your report is not an independent check\nthat the alert provider delivered a message.\nIf no alert arrives, end the drill and check the route on the monitor host.\nYou can also report an alert after the pause has ended.\n\nChanging monitor setup ends an open drill for that setup.\nAfter a lost link, refresh the drill status before taking another action.\nNo recovery words are needed. The drill does not start backups or S3 checks."
+  },
+  {
+    "id": "setup/backup-and-restore#backup-warnings-in-account",
+    "doc": "Backup and restore",
+    "section": "Backup warnings in Account",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/backup-and-restore#backup-warnings-in-account",
+    "body": "Open **Account** and choose the server status to see backup details.\nAn amber status can mean a backup or recovery test is overdue.\nIt can also mean an S3 scan failed, skipped copies, or could not be read.\nChoose **Open Backup & Recovery** to review the saved proof and settings.\n\nThe backup, test, and S3 scan each have their own row.\nA paused or unset backup schedule does not raise a backup warning.\nA scan that found no copies does not mean all copies passed.\nTurning off S3 checks does not erase a failed or partial last scan.\n\nThese rows use saved receipts, with a fresh view at most once a minute.\nThey do not start a backup or a new S3 check. They need no secret words.\nIf the proof is too old or cannot be read, the status says so.\nAfter a lost link, the rows wait for a fresh message from the server.\nOlder servers may not send these rows."
+  },
+  {
+    "id": "setup/backup-and-restore#share-backup-status-in-a-passport",
+    "doc": "Backup and restore",
+    "section": "Share backup status in a Passport",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/backup-and-restore#share-backup-status-in-a-passport",
+    "body": "A Server Passport now includes backup and recovery status from saved receipts.\nIt does not run a new check. It needs none of your secret words.\nBackup age, recovery test age, and S3 scan results stay separate.\nIt also shows monitor setup and the latest alert drill.\nYour report of an alert and a fresh ping acknowledgment stay separate.\nA result for an old monitor setup is marked as old.\nThis is saved proof. It does not prove an alert reached you.\nAn old copy that was checked again still has old data.\nA scan with skipped copies is shown as partial. An empty scan is shown as empty.\n\nA support export shows just the states.\nIt hides storage names, receipt IDs, times, and scan counts.\nFor the monitor drill, it shares the states and whether you reported an alert.\nIt also says whether a fresh ping was acknowledged after the pause.\nAudit and migration exports include those details.\nIf the server cannot read the proof, it shows that it is unavailable.\nA paused schedule stays paused. It is not called unconfigured.\nThe signature covers these claims, as it does the rest of the Passport.\nNo export includes the monitor URL or its saved secret.\nLoading a Passport does not set up backups or a monitor on the new server.\n\nChoose **Save just this server’s identity** to make a support export.\nIt shows a recovery summary next to the JSON file.\nThe rows describe saved states at export, so they can grow old.\nThey do not run new checks or prove that an alert reached you.\nA drill for an old monitor setup is marked as old.\nMissing or unreadable proof is shown as such. It is not called a pass."
+  },
+  {
+    "id": "setup/backup-and-restore#check-backups-after-a-restore",
+    "doc": "Backup and restore",
+    "section": "Check backups after a restore",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/backup-and-restore#check-backups-after-a-restore",
+    "body": "Once the server confirms the restore, **Backup & Recovery** shows a checklist.\nIt reads this server's current backup and alert setup.\nIt shows the schedule, backup age, recovery tests, S3 checks, and health alerts.\nIt also shows the offline monitor and its latest alert drill.\nAn accepted restore still waiting for restart does not show this checklist.\n\nReview each item that needs care. Each **Review** button opens its settings.\nThe backup key and monitor setup live outside the restored database.\nThey may still be set up on the same host. A move may need fresh setup.\nThe checklist checks this server. It does not use claims from an old Passport.\nIf backup setup is missing, enter your recovery words once to set it up.\nThe words are not saved. Keep them apart from your archives.\n\nChoose **Refresh readiness** after changing setup.\nThe checklist reads saved status. It starts no backups, S3 scans, or alert drills.\nA passing test may cover an earlier copy. Test the copy you plan to use too.\nA ping does not prove an alert reached you. Check the route on the monitor host.\nA drill shows your report and the ping after the pause as separate facts.\nIf the link is lost, passing claims clear until you can check again.\nClearing the saved restore check also hides its checklist.\nYou can still view and download the JSON file."
   },
   {
     "id": "setup/backup-and-restore#test-recovery",
@@ -4461,7 +4517,7 @@
     "section": "Pair the Browser Bridge",
     "eyebrow": "Setup",
     "url": "https://recued.com/docs/setup/pairing-and-devices#pair-the-browser-bridge",
-    "body": "The Browser Bridge is a browser extension. Its job is small on purpose. It\nwatches for page triggers a recipe declared. It reads pages and does\nactions on live websites. And it shows operating-system notifications. It\ndoes all of this for your server. It runs only signed commands from your\nserver. It holds no engine state.\n\nInstall the extension. Pair it the same way as the webclient. You only need\na Bridge for two kinds of recipe. One kind watches or acts on a live web\npage. The other sends an operating-system notification through the Bridge.\nEverything else runs without one. A recipe that needs a Bridge says so before it runs. It does\nnot fail halfway."
+    "body": "The Browser Bridge is a browser extension. Its job is small on purpose. It\nwatches for page triggers a recipe declared. It reads pages and does\nactions on live websites. And it shows operating-system notifications. It\ndoes all of this for your server. It runs only signed commands from your\nserver. It holds no engine state.\n\nInstall the extension from the\n[Chrome Web Store](https://chromewebstore.google.com/detail/recued-bridge/djcmgogfnidomcclggkikpkflgeapbac).\nPair it the same way as the webclient. You only need\na Bridge for two kinds of recipe. One kind watches or acts on a live web\npage. The other sends an operating-system notification through the Bridge.\nEverything else runs without one. A recipe that needs a Bridge says so before it runs. It does\nnot fail halfway."
   },
   {
     "id": "setup/pairing-and-devices#what-paired-clients-receive",

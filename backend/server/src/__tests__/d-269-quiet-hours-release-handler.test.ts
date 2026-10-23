@@ -104,4 +104,15 @@ describe('D-269 — the release edge re-delivers held asks AND sends the card', 
     await Promise.resolve(); await Promise.resolve();
     expect(bodies[0]).toContain('file the return');
   });
+
+  it('⛔ given no zone, as the server builds it, the card reads the digest\'s own (2026-10-22)', async () => {
+    // It read the server process's clock: UTC on a VPS.
+    const bodies: string[] = [];
+    buildQuietHoursReleaseHandler({
+      recoverPendingAsks: async () => {},
+      notify: async (m) => { bodies.push(m.text); },
+    })({ ...digest(), time_zone: 'Asia/Tokyo' });
+    await Promise.resolve(); await Promise.resolve();
+    expect(bodies[0]).toMatch(/^Quiet hours ran 07:00 → 17:00\./);
+  });
 });

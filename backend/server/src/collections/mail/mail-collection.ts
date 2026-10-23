@@ -95,6 +95,7 @@ import { OAuthError } from './oauth.js';
 import {
   createCollectionTable,
   INLINE_CUTOFF_BYTES,
+  MAX_LIST_LIMIT,
   type CollectionTable,
 } from '../table.js';
 import { createCollectionEmitter } from '../events.js';
@@ -111,6 +112,7 @@ import type {
   CanonicalMessage,
   MailMessageDirection,
   MailProviderKind,
+  MailFolderSnapshot,
   MailSentReconciliationQuery,
   MailSentReconciliationResult,
   MailSyncFailureKind,
@@ -327,6 +329,12 @@ export { MAIL_SEND_ATTACHMENT_MAX_BYTES, MAIL_SEND_ATTACHMENT_OVERSIZE_WARNING }
  *  each time, up to an hour. */
 export const MAIL_FIRST_SCAN_RETRY_MS = 60_000;
 export const MAIL_FIRST_SCAN_RETRY_MAX_MS = 3_600_000;
+
+/** Days a restart re-lists beyond those since the mailbox last synced, for a
+ *  provider that resumes from its cursor: clock skew, and a sync clock written
+ *  at most once a minute. */
+export const MAIL_RESTART_SCAN_SLACK_DAYS = 1;
+const DAY_MS = 86_400_000;
 
 export const pickPrimaryFolder = (folderOrLabel: string, labels: string[] = []): string => {
   // Gmail: the first label in a deterministic priority order so
@@ -1116,6 +1124,32 @@ export const createMailCollection = (
     }
   };
 
+  /** The days a start lists. The first scan covers the whole window. After it,
+   *  a provider that resumes from its cursor (`resumesFromCursor`) is caught up
+   *  by its first poll, so a restart lists only the days since this mailbox last
+   *  synced, plus slack. Every restart used to list all of them, 400 by
+   *  default, fetching each message and attachment again however short the
+   *  downtime. A window cannot grow after its scan: enrolment refuses a mailbox
+   *  that already exists.
+   *  ⚠ The full listing was also the only retry for an attachment whose fetch
+   *  failed. A restart now fetches such an attachment again only when its email
+   *  falls inside the days it lists. */
+  const scanDays = (): number => {
+    const window = opts.config().backfill_days;
+    if (provider.resumesFromCursor !== true || !backfillComplete()) return window;
+    let lastSyncedAt: number | null | undefined;
+    try { lastSyncedAt = opts.instances?.get('mail', slug)?.last_synced_at; }
+    catch (err) {
+      bumpError('mail last sync read failed', err);
+      return window;
+    }
+    if (typeof lastSyncedAt !== 'number' || !Number.isFinite(lastSyncedAt) || lastSyncedAt <= 0) {
+      return window;
+    }
+    const missedDays = Math.ceil(Math.max(0, nowOf() - lastSyncedAt) / DAY_MS);
+    return Math.min(window, missedDays + MAIL_RESTART_SCAN_SLACK_DAYS);
+  };
+
   const upsertMessage = async (
     msg: CanonicalMessage,
     shouldContinue: () => boolean,
@@ -1227,6 +1261,59 @@ export const createMailCollection = (
     }
   };
 
+  /** IMAP, when sync starts after a restart (`MailFolderSnapshot`): a stored
+   *  message of the folder the server no longer holds was deleted while the
+   *  server was down, and is removed; one whose flags differ takes the server's,
+   *  folded into its row as a verified mutation is. A row written since the
+   *  folder was read is newer than the read, and stays. Read in full before
+   *  anything changes, so a page boundary cannot skip a row. */
+  const reconcileFolder = (snapshot: MailFolderSnapshot): void => {
+    const gone: string[] = [];
+    const reflagged: Array<{ record_id: string; is_read: boolean; is_flagged: boolean }> = [];
+    let before: { received_at: number; record_id: string } | undefined;
+    for (;;) {
+      const rows = table.list({
+        platform: 'mail',
+        slug,
+        filters: { folder: snapshot.folder },
+        limit: MAX_LIST_LIMIT,
+        ...(before ? { before } : {}),
+      });
+      for (const row of rows) {
+        if (row.modified_at >= snapshot.read_at) continue;
+        const flags = snapshot.messages.get(row.source_id);
+        if (!flags) gone.push(row.record_id);
+        else if (row.hot_fields.is_read !== flags.is_read || row.hot_fields.is_flagged !== flags.is_flagged) {
+          reflagged.push({ record_id: row.record_id, is_read: flags.is_read, is_flagged: flags.is_flagged });
+        }
+      }
+      const last = rows.at(-1);
+      if (rows.length < MAX_LIST_LIMIT || !last) break;
+      before = { received_at: last.received_at, record_id: last.record_id };
+    }
+    const removed: string[] = [];
+    for (const recordId of gone) {
+      const prev = table.delete(recordId);
+      if (!prev) continue;
+      emitter.deleted(recordId, prev.hot_fields);
+      removed.push(recordId);
+    }
+    notifyRemoved(removed);
+    for (const change of reflagged) {
+      const prev = table.get(change.record_id);
+      if (!prev) continue;
+      const next: CollectionRecord = {
+        ...prev,
+        hot_fields: { ...prev.hot_fields, is_read: change.is_read, is_flagged: change.is_flagged },
+        modified_at: nowOf(),
+      };
+      table.upsert(next);
+      const changed = mailChangedFields(prev, next);
+      if (changed.length > 0) emitter.updated(next.record_id, prev.hot_fields, changed);
+      lastIndexedAt = next.modified_at;
+    }
+  };
+
   const onSyncEvent = async (
     event: ProviderSyncEvent,
     shouldContinue: () => boolean,
@@ -1241,6 +1328,11 @@ export const createMailCollection = (
         emitter.deleted(recordId, prev.hot_fields);
         notifyRemoved([recordId]);
       }
+      return;
+    }
+    if (event.kind === 'folder') {
+      if (!event.folder) throw new Error(`mail sync snapshot '${event.source_id}' is missing its messages`);
+      reconcileFolder(event.folder);
       return;
     }
     if (!event.message) {
@@ -1411,7 +1503,7 @@ export const createMailCollection = (
     });
     try {
       await provider.initialScan({
-        backfill_days: opts.config().backfill_days,
+        backfill_days: scanDays(),
         onAccessVerified: () => {
           if (!shouldContinue()) return;
           mailboxAccessVerified = true;

@@ -1,4 +1,5 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Locator, type Page, type Route } from '@playwright/test';
+import { applyPreset, type QuietHoursGetResponse, type QuietHoursSetRequest, type ServerTimeZoneGetResponse, type ServerTimeZoneSetRequest } from '@recued/contracts';
 import {
   HARNESS_URL, LIST_PREVIEW, SETTINGS_NAV_ITEM, SHARED_REFERENCE, SHARED_REFERENCE_ID,
   installFullAppHooks,
@@ -50,7 +51,574 @@ const UPDATES_APPLY = 'data-recued-updates-apply';
 const UPDATES_ROLLBACK = 'data-recued-updates-rollback';
 const UPDATES_MODE = 'data-recued-updates-mode';
 
+const openServerAddressEditor = async (page: Page, activation: 'keyboard' | 'pointer' = 'keyboard') => {
+  await page.evaluate(() => window.__app.setHash('#settings/servers'));
+  const row = page.locator('[data-server-address-row]').first();
+  const edit = row.locator('[data-server-address-edit]');
+  await expect(edit).toBeVisible();
+  if (activation === 'keyboard') { await edit.focus(); await page.keyboard.press('Enter'); }
+  else await edit.click();
+  const input = row.locator('[data-server-address-input]');
+  await expect(input).toBeVisible();
+  if (activation === 'keyboard') await expect(input).toBeFocused();
+  return { row, input, edit, original: await input.inputValue() };
+};
+
+/** A held, local HTTP refusal exercises the production anonymous probe. */
+const holdServerAddressProbe = async (page: Page) => {
+  const url = new URL('/address-fixture/auth/identity-probe', HARNESS_URL);
+  const state: { route: Route | null; requests: number } = { route: null, requests: 0 };
+  await page.route(url.href, route => { state.route = route; state.requests += 1; });
+  return {
+    candidate: `${url.origin.replace(/^http/, 'ws')}/address-fixture/ws`,
+    state,
+    release: async (outcome: 'mismatch' | 'unreachable') => {
+      await expect.poll(() => state.route !== null).toBe(true);
+      const route = state.route;
+      if (!route) throw new Error('No identity probe is waiting.');
+      if (outcome === 'unreachable') await route.abort('failed');
+      else await route.fulfill({ status: 404, contentType: 'application/json', body: '{}' });
+    },
+  };
+};
+
 installFullAppHooks();
+
+declare global { interface Window {
+  __quietHoursNavigation: { reads: number; writes: QuietHoursSetRequest[]; failNextSave: boolean; failNextRead: boolean };
+} }
+const quietNavPanel = (page: Page) => page.locator('[data-recued-quiet-hours-panel]');
+const quietNavFrom = (page: Page) => quietNavPanel(page).getByLabel('Quiet hours start', { exact: true });
+const quietNavTo = (page: Page) => quietNavPanel(page).getByLabel('Quiet hours end', { exact: true });
+const quietNavSave = (page: Page) => quietNavPanel(page).getByRole('button', { name: 'Save', exact: true });
+const quietNavCheckbox = (page: Page, kind: 'reminders' | 'approvals') => quietNavPanel(page)
+  .locator(`[data-recued-quiet-hours-${kind === 'reminders' ? 'toggle' : 'approval'}]`);
+const quietNavDraftPrompt = 'Discard the unsaved quiet hours window?';
+const quietNavWorkPrompt = 'A quiet hours setting is still updating. Leave Settings anyway?';
+const quietNavWindow = { from_minute: 1410, to_minute: 375 };
+const quietNavWrites = (page: Page) => page.evaluate(() => window.__quietHoursNavigation.writes);
+const quietNavLeave = (page: Page) => page.evaluate(() => window.__app.setHash('#yours/assets'));
+const quietNavUnloadBlocked = (page: Page) => page.evaluate(() => {
+  const event = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(event); return event.defaultPrevented;
+});
+const openQuietNav = async (page: Page, width: number, holdRead = false, failRead = false) => {
+  await page.setViewportSize({ width, height: 900 });
+  await page.addInitScript(failRead => {
+    type Reply = { result?: unknown; error?: { code: string; message: string } };
+    let current: QuietHoursGetResponse = { policy: { enabled: true, from_minute: 1320, to_minute: 480,
+      applies_to: ['notification'], updated_at: 1 }, can_arm: true, resolved_zone: 'Asia/Hong_Kong' };
+    const timezone: ServerTimeZoneGetResponse = { setting: { mode: 'fixed', zone: 'Europe/London', updated_at: 1 },
+      resolved_zone: 'Europe/London', host_zone: 'Europe/London' };
+    const controls = { reads: 0, writes: [] as QuietHoursSetRequest[], failNextSave: false, failNextRead: failRead };
+    window.__quietHoursNavigation = controls;
+    Object.assign(window, { __connectionsFixture: async (method: string, args: unknown): Promise<Reply | undefined> => {
+      if (method === 'notification.quiet_hours.get') {
+        controls.reads++;
+        if (controls.failNextRead) { controls.failNextRead = false; return { error: { code: 'unavailable', message: 'Could not read quiet hours.' } }; }
+        return { result: structuredClone(current) };
+      }
+      if (method === 'notification.quiet_hours.set') {
+        const patch = args as QuietHoursSetRequest; controls.writes.push(structuredClone(patch));
+        if (controls.failNextSave) { controls.failNextSave = false; return { error: { code: 'unavailable', message: 'Quiet hours save failed. Try again.' } }; }
+        current = { ...current, policy: { ...current.policy, ...patch, updated_at: current.policy.updated_at + 1 } };
+        return { result: structuredClone(current) };
+      }
+      if (method === 'server.timezone.get') return { result: timezone };
+      return undefined;
+    } });
+  }, failRead);
+  await page.goto(`${HARNESS_URL}?yours=demo&notifications=ready${holdRead ? '&hold_rpc=notification.quiet_hours.get' : ''}#settings/notifications`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  if (failRead) await expect(quietNavPanel(page).getByRole('alert')).toHaveText('Could not read quiet hours.');
+  else if (!holdRead) { await expect(quietNavFrom(page)).toHaveValue('22:00'); await expect(quietNavTo(page)).toHaveValue('08:00'); }
+};
+const editQuietNav = async (page: Page) => { await quietNavFrom(page).fill('23:30'); await quietNavTo(page).fill('06:15'); };
+const activateQuietNav = async (page: Page, kind: 'window' | 'reminders' | 'approvals') => {
+  if (kind === 'window') await quietNavSave(page).press('Enter');
+  else { const checkbox = quietNavCheckbox(page, kind); await checkbox.focus(); await checkbox.press('Space'); }
+};
+
+for (const width of [390, 1280]) {
+  for (const which of ['from', 'to'] as const) {
+    test(`Quiet hours navigation allows fully restored ${which} times through reload and departure at ${width}px`, async ({ page }) => {
+      await openQuietNav(page, width);
+      const field = which === 'from' ? quietNavFrom(page) : quietNavTo(page), original = await field.elementHandle();
+      const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.type()); void dialog.dismiss(); });
+      await field.fill(which === 'from' ? '21:30' : '09:15'); expect(await quietNavUnloadBlocked(page)).toBe(true);
+      await field.fill(which === 'from' ? '22:00' : '08:00'); expect(await quietNavUnloadBlocked(page)).toBe(false);
+      expect(await original!.evaluate(input => input.isConnected && input === document.activeElement)).toBe(true);
+      expect(await quietNavWrites(page)).toEqual([]);
+      await page.reload(); await page.waitForFunction(() => window.__app?.ready === true);
+      await expect(quietNavFrom(page)).toHaveValue('22:00'); await expect(quietNavTo(page)).toHaveValue('08:00');
+      expect(await quietNavUnloadBlocked(page)).toBe(false); await quietNavLeave(page); await expect(page.locator('[data-recued-yours]')).toBeVisible();
+      expect(dialogs).toEqual([]); expect(await quietNavWrites(page)).toEqual([]);
+    });
+  }
+
+  test(`Quiet hours navigation keeps partial reverts guarded until both saved times are restored at ${width}px`, async ({ page }) => {
+    await openQuietNav(page, width); await editQuietNav(page); await quietNavFrom(page).fill('22:00'); await quietNavTo(page).focus();
+    const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
+    expect(await quietNavUnloadBlocked(page)).toBe(true); await quietNavLeave(page); await expect.poll(() => dialogs).toEqual([quietNavDraftPrompt]);
+    await expect(quietNavTo(page)).toBeFocused(); await expect(quietNavTo(page)).toHaveValue('06:15');
+    await quietNavTo(page).fill('08:00'); expect(await quietNavUnloadBlocked(page)).toBe(false);
+    await quietNavLeave(page); await expect(page.locator('[data-recued-yours]')).toBeVisible();
+    expect(dialogs).toEqual([quietNavDraftPrompt]); expect(await quietNavWrites(page)).toEqual([]);
+  });
+
+  test(`Quiet hours navigation keeps restored times guarded after a failed save until a retry is acknowledged at ${width}px`, async ({ page }) => {
+    await openQuietNav(page, width); await editQuietNav(page); await page.evaluate(() => { window.__quietHoursNavigation.failNextSave = true; });
+    await activateQuietNav(page, 'window'); await expect(quietNavPanel(page).getByRole('alert')).toHaveText('Quiet hours save failed. Try again.');
+    await quietNavFrom(page).fill('22:00'); await quietNavTo(page).fill('08:00');
+    const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.type() === 'beforeunload' ? dialog.type() : dialog.message()); void dialog.dismiss(); });
+    expect(await quietNavUnloadBlocked(page)).toBe(true); await page.evaluate(() => { location.reload(); });
+    await expect.poll(() => dialogs).toEqual(['beforeunload']); await expect(quietNavTo(page)).toHaveValue('08:00');
+    await quietNavLeave(page); await expect.poll(() => dialogs).toEqual(['beforeunload', quietNavDraftPrompt]);
+    await activateQuietNav(page, 'window'); await expect(quietNavSave(page)).toBeEnabled(); expect(await quietNavUnloadBlocked(page)).toBe(false);
+    await quietNavLeave(page); await expect(page.locator('[data-recued-yours]')).toBeVisible();
+    expect(dialogs).toEqual(['beforeunload', quietNavDraftPrompt]); expect(await quietNavWrites(page)).toEqual([quietNavWindow, { from_minute: 1320, to_minute: 480 }]);
+  });
+
+  for (const outcome of ['success', 'error'] as const) {
+    test(`Quiet hours navigation keeps another Settings section focused when a read retry returns ${outcome} at ${width}px`, async ({ page }) => {
+      await openQuietNav(page, width, false, true);
+      await page.evaluate(outcome => { window.__quietHoursNavigation.failNextRead = outcome === 'error';
+        window.__app.holdRpcResponses?.('notification.quiet_hours.get'); }, outcome);
+      await quietNavPanel(page).getByRole('button', { name: 'Retry loading quiet hours', exact: true }).press('Enter');
+      await expect(quietNavPanel(page).getByRole('status')).toHaveText('Retrying quiet hours…');
+      const serverNav = page.locator('[data-recued-settings-nav-item="server"]');
+      await serverNav.press('Enter'); await expect(page).toHaveURL(/#settings\/server$/u); await expect(serverNav).toBeFocused();
+      expect(await quietNavUnloadBlocked(page)).toBe(false);
+      expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('notification.quiet_hours.get'))).toBe(1);
+      await expect(quietNavPanel(page)).toHaveAttribute('data-recued-quiet-hours-state', outcome === 'success' ? 'ready' : 'error');
+      await expect(page).toHaveURL(/#settings\/server$/u); await expect(serverNav).toBeFocused();
+      await expect(quietNavPanel(page)).not.toBeVisible();
+      await page.locator('[data-recued-settings-nav-item="notifications"]').click();
+      if (outcome === 'success') {
+        await expect(quietNavFrom(page)).toHaveValue('22:00'); await expect(quietNavTo(page)).toHaveValue('08:00');
+      } else {
+        await expect(quietNavPanel(page).getByRole('alert')).toHaveText('Could not read quiet hours.');
+        await expect(quietNavPanel(page).getByRole('button', { name: 'Retry loading quiet hours', exact: true })).toBeEnabled();
+      }
+      expect(await page.evaluate(() => window.__quietHoursNavigation.reads)).toBe(2);
+      expect(await quietNavWrites(page)).toEqual([]); expect(await quietNavUnloadBlocked(page)).toBe(false);
+    });
+  }
+
+  test(`Quiet hours navigation recovers an initial read in place and guards subsequent edits at ${width}px`, async ({ page }) => {
+    await openQuietNav(page, width, false, true);
+    const retry = quietNavPanel(page).getByRole('button', { name: 'Retry loading quiet hours', exact: true });
+    const original = await retry.elementHandle();
+    await page.evaluate(() => window.__app.setHash('#settings/server')); await expect(page).toHaveURL(/#settings\/server$/u);
+    await page.evaluate(() => window.__app.setHash('#settings/notifications')); await expect(retry).toBeVisible();
+    expect(await page.evaluate(() => window.__quietHoursNavigation.reads)).toBe(1);
+    await page.evaluate(() => window.__app.holdRpcResponses?.('notification.quiet_hours.get'));
+    await retry.focus(); await retry.press('Enter'); await expect(retry).toBeFocused();
+    await expect(quietNavPanel(page).getByRole('status')).toHaveText('Retrying quiet hours…');
+    await page.keyboard.press('Space'); expect(await page.evaluate(() => window.__quietHoursNavigation.reads)).toBe(2);
+    expect(await original!.evaluate(button => button.isConnected && document.activeElement === button)).toBe(true);
+    expect(await quietNavUnloadBlocked(page)).toBe(false); expect(await quietNavWrites(page)).toEqual([]);
+    expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('notification.quiet_hours.get'))).toBe(1);
+    await expect(quietNavFrom(page)).toHaveValue('22:00'); await expect(quietNavTo(page)).toHaveValue('08:00');
+    await expect(quietNavFrom(page)).toBeFocused(); await expect(retry).toHaveCount(0);
+    await editQuietNav(page);
+    const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
+    await quietNavLeave(page); await expect.poll(() => dialogs).toEqual([quietNavDraftPrompt]);
+    await expect(quietNavFrom(page)).toHaveValue('23:30'); await expect(quietNavTo(page)).toHaveValue('06:15');
+    await activateQuietNav(page, 'window'); await expect(quietNavSave(page)).toBeEnabled();
+    expect(await quietNavWrites(page)).toEqual([quietNavWindow]); expect(await quietNavUnloadBlocked(page)).toBe(false);
+    await quietNavLeave(page); await expect(page.locator('[data-recued-yours]')).toBeVisible(); expect(dialogs).toEqual([quietNavDraftPrompt]);
+  });
+
+  for (const outcome of ['success', 'error'] as const) {
+    test(`Quiet hours navigation leaves a pending read retry and ignores its late ${outcome} at ${width}px`, async ({ page }) => {
+      await openQuietNav(page, width, false, true);
+      await page.evaluate(outcome => { window.__quietHoursNavigation.failNextRead = outcome === 'error';
+        window.__app.holdRpcResponses?.('notification.quiet_hours.get'); }, outcome);
+      await quietNavPanel(page).getByRole('button', { name: 'Retry loading quiet hours', exact: true }).press('Enter');
+      await expect(quietNavPanel(page).getByRole('status')).toHaveText('Retrying quiet hours…');
+      expect(await quietNavUnloadBlocked(page)).toBe(false);
+      const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
+      await quietNavLeave(page); await expect(page.locator('[data-recued-yours]')).toBeVisible(); expect(dialogs).toEqual([]);
+      await page.evaluate(() => window.__app.setHash('#settings/notifications'));
+      await expect.poll(() => page.evaluate(() => window.__quietHoursNavigation.reads)).toBe(3);
+      expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('notification.quiet_hours.get', 1))).toBe(1);
+      await expect(quietNavFrom(page)).toHaveValue('22:00'); await quietNavFrom(page).fill('21:45'); await quietNavFrom(page).focus();
+      const fresh = await quietNavFrom(page).elementHandle();
+      expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('notification.quiet_hours.get', 0))).toBe(1);
+      await expect(quietNavFrom(page)).toHaveValue('21:45'); await expect(quietNavFrom(page)).toBeFocused();
+      expect(await fresh!.evaluate(input => input.isConnected && input === document.activeElement)).toBe(true);
+      await expect(quietNavPanel(page).getByRole('alert')).toHaveCount(0);
+      expect(await quietNavWrites(page)).toEqual([]); expect(await quietNavUnloadBlocked(page)).toBe(true);
+    });
+  }
+
+  for (const state of ['draft', 'pending save'] as const) {
+    test(`Quiet hours navigation preserves Back history through repeated ${state} cancellation at ${width}px`, async ({ page }) => {
+      await openQuietNav(page, width);
+      await quietNavLeave(page); await expect(page.locator('[data-recued-yours]')).toBeVisible();
+      await page.evaluate(() => window.__app.setHash('#settings/notifications'));
+      await expect(quietNavFrom(page)).toHaveValue('22:00'); await editQuietNav(page);
+      const original = await quietNavFrom(page).elementHandle();
+      if (state === 'pending save') {
+        await page.evaluate(() => window.__app.holdRpcResponses?.('notification.quiet_hours.set'));
+        await activateQuietNav(page, 'window'); await expect(quietNavFrom(page)).toBeDisabled();
+      } else await quietNavTo(page).focus();
+      const prompt = state === 'draft' ? quietNavDraftPrompt : quietNavWorkPrompt;
+      const dialogs: string[] = []; let accept = false;
+      page.on('dialog', dialog => { dialogs.push(dialog.message()); void (accept ? dialog.accept() : dialog.dismiss()); });
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        await page.goBack(); await expect.poll(() => dialogs).toHaveLength(attempt);
+        await expect(page).toHaveURL(/#settings\/notifications$/u);
+        await expect(quietNavFrom(page)).toHaveValue('23:30'); await expect(quietNavTo(page)).toHaveValue('06:15');
+        expect(await original!.evaluate(node => node.isConnected)).toBe(true);
+        if (state === 'draft') await expect(quietNavTo(page)).toBeFocused();
+        else await expect(quietNavPanel(page).getByRole('button', { name: 'Saving…', exact: true })).toBeDisabled();
+      }
+      accept = true; await page.goBack(); await expect(page.locator('[data-recued-yours]')).toBeVisible();
+      expect(dialogs).toEqual([prompt, prompt, prompt]);
+      await page.goForward(); await expect(page).toHaveURL(/#settings\/notifications$/u);
+      await expect(quietNavFrom(page)).toHaveValue(state === 'draft' ? '22:00' : '23:30');
+      await expect(quietNavTo(page)).toHaveValue(state === 'draft' ? '08:00' : '06:15');
+      await expect(quietNavSave(page)).toBeEnabled();
+      if (state === 'pending save') {
+        expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('notification.quiet_hours.set'))).toBe(1);
+        await expect(quietNavFrom(page)).toHaveValue('23:30'); await expect(quietNavSave(page)).toBeEnabled();
+      }
+      expect(await quietNavWrites(page)).toEqual(state === 'draft' ? [] : [quietNavWindow]);
+      expect(await quietNavUnloadBlocked(page)).toBe(false);
+    });
+  }
+
+  test(`Quiet hours navigation keeps a pending checkbox save through native reload cancellation at ${width}px`, async ({ page }) => {
+    await openQuietNav(page, width); const original = await quietNavFrom(page).elementHandle();
+    await page.evaluate(() => window.__app.holdRpcResponses?.('notification.quiet_hours.set'));
+    await activateQuietNav(page, 'reminders'); await expect(quietNavFrom(page)).toBeDisabled();
+    const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.type()); void dialog.dismiss(); });
+    await page.evaluate(() => { location.reload(); }); await expect.poll(() => dialogs).toEqual(['beforeunload']);
+    await expect(quietNavFrom(page)).toBeDisabled();
+    expect(await original!.evaluate(node => node.isConnected)).toBe(true);
+    expect(await quietNavWrites(page)).toEqual([{ enabled: false }]);
+    expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('notification.quiet_hours.set'))).toBe(1);
+    await expect(quietNavSave(page)).toBeEnabled(); await expect(quietNavCheckbox(page, 'reminders')).not.toBeChecked();
+    expect(await quietNavUnloadBlocked(page)).toBe(false);
+    await page.reload(); await page.waitForFunction(() => window.__app?.ready === true);
+    await expect(quietNavFrom(page)).toHaveValue('22:00'); await expect(quietNavTo(page)).toHaveValue('08:00');
+    expect(dialogs).toEqual(['beforeunload']);
+  });
+
+  test(`Quiet hours navigation leaves an untouched pending read without a prompt at ${width}px`, async ({ page }) => {
+    await openQuietNav(page, width, true); await expect(quietNavPanel(page)).toHaveAttribute('data-recued-quiet-hours-state', 'loading');
+    const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
+    expect(await quietNavUnloadBlocked(page)).toBe(false);
+    await quietNavLeave(page); await expect(page.locator('[data-recued-yours]')).toBeVisible();
+    expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('notification.quiet_hours.get'))).toBe(1);
+    await expect(quietNavPanel(page)).toHaveCount(0); expect(dialogs).toEqual([]); expect(await quietNavWrites(page)).toEqual([]);
+  });
+
+  test(`Quiet hours navigation retains both time drafts when leaving is declined at ${width}px`, async ({ page }) => {
+    await openQuietNav(page, width); await editQuietNav(page); await quietNavTo(page).focus();
+    const originalFrom = await quietNavFrom(page).elementHandle(), originalTo = await quietNavTo(page).elementHandle();
+    const dialogs: string[] = []; let accept = false;
+    page.on('dialog', dialog => { dialogs.push(dialog.message()); void (accept ? dialog.accept() : dialog.dismiss()); });
+    expect(await quietNavUnloadBlocked(page)).toBe(true);
+    await quietNavLeave(page); await expect.poll(() => dialogs).toEqual([quietNavDraftPrompt]);
+    await expect(page).toHaveURL(/#settings\/notifications$/u); await expect(quietNavTo(page)).toBeFocused();
+    await expect(quietNavFrom(page)).toHaveValue('23:30'); await expect(quietNavTo(page)).toHaveValue('06:15');
+    expect(await originalFrom!.evaluate(node => node.isConnected)).toBe(true);
+    expect(await originalTo!.evaluate(node => node.isConnected && node === document.activeElement)).toBe(true);
+    accept = true; await quietNavLeave(page); await expect(page.locator('[data-recued-yours]')).toBeVisible();
+    expect(dialogs).toEqual([quietNavDraftPrompt, quietNavDraftPrompt]);
+    await page.evaluate(() => window.__app.setHash('#settings/notifications'));
+    await expect(quietNavFrom(page)).toHaveValue('22:00'); await expect(quietNavTo(page)).toHaveValue('08:00');
+    expect(await quietNavWrites(page)).toEqual([]);
+  });
+
+  test(`Quiet hours navigation allows untouched and saved windows without a prompt at ${width}px`, async ({ page }) => {
+    await openQuietNav(page, width);
+    const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
+    expect(await quietNavUnloadBlocked(page)).toBe(false);
+    await quietNavLeave(page); await expect(page.locator('[data-recued-yours]')).toBeVisible();
+    await page.evaluate(() => window.__app.setHash('#settings/notifications')); await expect(quietNavFrom(page)).toHaveValue('22:00');
+    await editQuietNav(page); await activateQuietNav(page, 'window'); await expect(quietNavSave(page)).toBeEnabled();
+    expect(await quietNavWrites(page)).toEqual([quietNavWindow]); expect(await quietNavUnloadBlocked(page)).toBe(false);
+    await quietNavLeave(page); await expect(page.locator('[data-recued-yours]')).toBeVisible(); expect(dialogs).toEqual([]);
+  });
+
+  for (const kind of ['window', 'reminders', 'approvals'] as const) {
+    test(`Quiet hours navigation guards a pending ${kind} save at ${width}px`, async ({ page }) => {
+      await openQuietNav(page, width); if (kind === 'window') await editQuietNav(page);
+      const original = await quietNavFrom(page).elementHandle();
+      await page.evaluate(() => window.__app.holdRpcResponses?.('notification.quiet_hours.set'));
+      await activateQuietNav(page, kind); await expect(quietNavFrom(page)).toBeDisabled();
+      const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
+      expect(await quietNavUnloadBlocked(page)).toBe(true);
+      await quietNavLeave(page); await expect.poll(() => dialogs).toEqual([quietNavWorkPrompt]);
+      await expect(page).toHaveURL(/#settings\/notifications$/u); await expect(quietNavFrom(page)).toBeDisabled();
+      expect(await original!.evaluate(node => node.isConnected)).toBe(true);
+      expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('notification.quiet_hours.set'))).toBe(1);
+      await expect(quietNavSave(page)).toBeEnabled();
+      expect(await quietNavWrites(page)).toEqual([kind === 'window' ? quietNavWindow
+        : kind === 'reminders' ? { enabled: false } : { applies_to: ['notification', 'approval'] }]);
+      expect(await quietNavUnloadBlocked(page)).toBe(false);
+      await quietNavLeave(page); await expect(page.locator('[data-recued-yours]')).toBeVisible(); expect(dialogs).toEqual([quietNavWorkPrompt]);
+    });
+  }
+
+  for (const kind of ['reminders', 'approvals'] as const) {
+    test(`Quiet hours navigation retains the time draft after a ${kind} acknowledgement at ${width}px`, async ({ page }) => {
+      await openQuietNav(page, width); await editQuietNav(page); await activateQuietNav(page, kind);
+      await expect(quietNavSave(page)).toBeEnabled();
+      await expect(quietNavCheckbox(page, kind)).toBeChecked({ checked: kind === 'approvals' });
+      const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
+      await quietNavLeave(page); await expect.poll(() => dialogs).toEqual([quietNavDraftPrompt]);
+      await expect(quietNavFrom(page)).toHaveValue('23:30'); await expect(quietNavTo(page)).toHaveValue('06:15');
+      await activateQuietNav(page, 'window'); await expect(quietNavSave(page)).toBeEnabled();
+      expect(await quietNavWrites(page)).toEqual([kind === 'reminders' ? { enabled: false } : { applies_to: ['notification', 'approval'] }, quietNavWindow]);
+      await quietNavLeave(page); await expect(page.locator('[data-recued-yours]')).toBeVisible(); expect(dialogs).toEqual([quietNavDraftPrompt]);
+    });
+  }
+
+  test(`Quiet hours navigation retains a refused window until its retry succeeds at ${width}px`, async ({ page }) => {
+    await openQuietNav(page, width); await editQuietNav(page);
+    await page.evaluate(() => { window.__quietHoursNavigation.failNextSave = true; });
+    await activateQuietNav(page, 'window'); await expect(quietNavPanel(page).getByRole('alert')).toHaveText('Quiet hours save failed. Try again.');
+    const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
+    await quietNavLeave(page); await expect.poll(() => dialogs).toEqual([quietNavDraftPrompt]);
+    await expect(quietNavFrom(page)).toHaveValue('23:30'); await expect(quietNavTo(page)).toHaveValue('06:15');
+    await activateQuietNav(page, 'window'); await expect(quietNavSave(page)).toBeEnabled();
+    await expect(quietNavPanel(page).getByRole('alert')).toHaveCount(0); expect(await quietNavWrites(page)).toEqual([quietNavWindow, quietNavWindow]);
+    await quietNavLeave(page); await expect(page.locator('[data-recued-yours]')).toBeVisible(); expect(dialogs).toEqual([quietNavDraftPrompt]);
+  });
+
+  for (const outcome of ['success', 'error'] as const) {
+    test(`Quiet hours navigation ignores a late ${outcome} save reply after an accepted leave at ${width}px`, async ({ page }) => {
+      await openQuietNav(page, width); await editQuietNav(page); const original = await quietNavFrom(page).elementHandle();
+      await page.evaluate(outcome => { window.__quietHoursNavigation.failNextSave = outcome === 'error';
+        window.__app.holdRpcResponses?.('notification.quiet_hours.set'); }, outcome);
+      await activateQuietNav(page, 'window'); await expect(quietNavFrom(page)).toBeDisabled();
+      const dialogs: string[] = []; let accept = true;
+      page.on('dialog', dialog => { dialogs.push(dialog.message()); void (accept ? dialog.accept() : dialog.dismiss()); });
+      await quietNavLeave(page); await expect(page.locator('[data-recued-yours]')).toBeVisible(); expect(dialogs).toEqual([quietNavWorkPrompt]);
+      expect(await original!.evaluate(node => node.isConnected)).toBe(false);
+      await page.evaluate(() => window.__app.setHash('#settings/notifications'));
+      await expect(quietNavPanel(page)).toHaveAttribute('data-recued-quiet-hours-state', 'ready');
+      await quietNavFrom(page).fill('21:45'); await quietNavFrom(page).focus(); const fresh = await quietNavFrom(page).elementHandle();
+      expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('notification.quiet_hours.set'))).toBe(1);
+      await expect(quietNavFrom(page)).toHaveValue('21:45'); await expect(quietNavFrom(page)).toBeFocused();
+      expect(await fresh!.evaluate(node => node.isConnected && node === document.activeElement)).toBe(true);
+      await expect(quietNavPanel(page).getByRole('alert')).toHaveCount(0);
+      accept = false; await quietNavLeave(page); await expect.poll(() => dialogs).toEqual([quietNavWorkPrompt, quietNavDraftPrompt]);
+      await expect(quietNavFrom(page)).toHaveValue('21:45');
+    });
+  }
+
+  for (const [which, segment, index, typed, expected] of [
+    ['from', 'hour', 0, '10', '10:30'], ['to', 'minute', 1, '45', '09:45'],
+  ] as const) {
+    test(`Quiet hours navigation preserves the incomplete ${which} ${segment} after cancellation at ${width}px`, async ({ page }) => {
+      await openQuietNav(page, width); const field = which === 'from' ? quietNavFrom(page) : quietNavTo(page);
+      const selectSegment = async () => { await field.focus(); for (let step = 0; step < 4; step++) await page.keyboard.press('ArrowLeft');
+        for (let step = 0; step < index; step++) await page.keyboard.press('ArrowRight'); };
+      await field.fill('09:30'); await selectSegment(); await page.keyboard.press('Backspace');
+      expect(await field.evaluate((input: HTMLInputElement) => input.validity.badInput && input.value === '')).toBe(true);
+      const original = await field.elementHandle();
+      const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
+      await quietNavLeave(page); await expect.poll(() => dialogs).toEqual([quietNavDraftPrompt]); await expect(field).toBeFocused();
+      expect(await original!.evaluate(node => node.isConnected && node === document.activeElement)).toBe(true);
+      expect(await field.evaluate((input: HTMLInputElement) => input.validity.badInput && input.value === '')).toBe(true);
+      await selectSegment(); await page.keyboard.type(typed); await expect(field).toHaveValue(expected);
+      await expect(which === 'from' ? quietNavTo(page) : quietNavFrom(page)).toHaveValue(which === 'from' ? '08:00' : '22:00');
+      expect(await quietNavWrites(page)).toEqual([]);
+    });
+  }
+
+  test(`Quiet hours navigation guards the timezone link when the window has edits at ${width}px`, async ({ page }) => {
+    await openQuietNav(page, width); await editQuietNav(page);
+    const link = quietNavPanel(page).locator('[data-recued-quiet-hours-timezone-link]');
+    await expect(link).toHaveAttribute('href', '#settings/server/timezone');
+    const dialogs: string[] = []; let accept = false;
+    page.on('dialog', dialog => { dialogs.push(dialog.message()); void (accept ? dialog.accept() : dialog.dismiss()); });
+    await link.press('Enter'); await expect.poll(() => dialogs).toEqual([quietNavDraftPrompt]);
+    await expect(page).toHaveURL(/#settings\/notifications$/u); await expect(link).toBeFocused();
+    await expect(quietNavFrom(page)).toHaveValue('23:30'); await expect(quietNavTo(page)).toHaveValue('06:15');
+    accept = true; await link.press('Enter'); await expect(page.getByRole('tab', { name: 'Timezone', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.locator('[data-recued-server-timezone-panel]')).toBeVisible();
+    expect(dialogs).toEqual([quietNavDraftPrompt, quietNavDraftPrompt]); expect(await quietNavWrites(page)).toEqual([]);
+  });
+
+  test(`Quiet hours navigation protects time edits through native reload cancellation at ${width}px`, async ({ page }) => {
+    await openQuietNav(page, width); await editQuietNav(page); const original = await quietNavFrom(page).elementHandle();
+    const dialogs: string[] = []; let accept = false;
+    page.on('dialog', dialog => { dialogs.push(dialog.type()); void (accept ? dialog.accept() : dialog.dismiss()); });
+    await page.evaluate(() => { location.reload(); }); await expect.poll(() => dialogs).toEqual(['beforeunload']);
+    await expect(quietNavFrom(page)).toHaveValue('23:30'); await expect(quietNavTo(page)).toHaveValue('06:15');
+    expect(await original!.evaluate(node => node.isConnected)).toBe(true);
+    accept = true; await page.reload(); await page.waitForFunction(() => window.__app?.ready === true);
+    await expect(quietNavFrom(page)).toHaveValue('22:00'); await expect(quietNavTo(page)).toHaveValue('08:00');
+    expect(dialogs).toEqual(['beforeunload', 'beforeunload']);
+  });
+}
+
+declare global { interface Window {
+  __timezoneNavigation: { reads: number; writes: ServerTimeZoneSetRequest[]; failNextSave: boolean; loseNextSaveReply: boolean; failNextRead: boolean };
+} }
+const tzNavPanel = (page: Page) => page.locator('[data-recued-server-timezone-panel]');
+const tzNavZone = (page: Page) => tzNavPanel(page).getByRole('textbox', { name: 'Server timezone', exact: true });
+const tzNavSave = (page: Page) => tzNavPanel(page).getByRole('button', { name: 'Save', exact: true });
+const tzNavMode = (page: Page, mode: 'fixed' | 'follows_host') => tzNavPanel(page).locator(`[data-recued-server-timezone-mode="${mode}"]`);
+const tzNavDraftPrompt = 'Discard the unsaved server timezone?';
+const tzNavWorkPrompt = 'The server timezone is still updating. Leave Settings anyway?';
+const tzNavWrites = (page: Page) => page.evaluate(() => window.__timezoneNavigation.writes);
+const tzNavLeave = (page: Page) => page.evaluate(() => window.__app.setHash('#yours/assets'));
+const tzNavUnloadBlocked = (page: Page) => page.evaluate(() => {
+  const event = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(event); return event.defaultPrevented;
+});
+const openTimezoneNav = async (page: Page, width: number, mode: 'fixed' | 'follows_host' = 'fixed', holdRead = false) => {
+  await page.setViewportSize({ width, height: 900 });
+  await page.addInitScript(mode => {
+    let current: ServerTimeZoneGetResponse = { setting: { mode, zone: mode === 'fixed' ? 'Europe/London' : null, updated_at: 1 },
+      resolved_zone: 'Europe/London', host_zone: 'Europe/London' };
+    const controls = { reads: 0, writes: [] as ServerTimeZoneSetRequest[], failNextSave: false, loseNextSaveReply: false, failNextRead: false }; window.__timezoneNavigation = controls;
+    Object.assign(window, { __connectionsFixture: async (method: string, args: unknown) => {
+      if (method === 'server.timezone.get') {
+        controls.reads++;
+        if (controls.failNextRead) { controls.failNextRead = false; return { error: { code: 'unavailable', message: 'Timezone check failed. Try again.' } }; }
+        return { result: structuredClone(current) };
+      }
+      if (method === 'server.timezone.set') {
+        const patch = args as ServerTimeZoneSetRequest; controls.writes.push(structuredClone(patch));
+        if (controls.failNextSave) { controls.failNextSave = false; return { error: { code: 'unavailable', message: 'Timezone save failed. Try again.' } }; }
+        const zone = patch.zone === undefined ? current.setting.zone : patch.zone;
+        current = { ...current, setting: { mode: patch.mode, zone, updated_at: current.setting.updated_at + 1 },
+          resolved_zone: patch.mode === 'fixed' ? zone! : current.host_zone };
+        if (controls.loseNextSaveReply) { controls.loseNextSaveReply = false; return { error: { code: 'unavailable', message: 'Timezone save failed. Try again.' } }; }
+        return { result: structuredClone(current) };
+      }
+      return undefined;
+    } });
+  }, mode);
+  await page.goto(`${HARNESS_URL}?yours=demo&notifications=ready${holdRead ? '&hold_rpc=server.timezone.get' : ''}#settings/server/timezone`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  if (!holdRead) { await expect(tzNavPanel(page)).toHaveAttribute('data-recued-server-timezone-state', 'ready'); await expect(tzNavMode(page, mode)).toBeChecked(); }
+};
+
+for (const width of [390, 1280]) {
+  test(`Server timezone navigation keeps a zone draft and selection when departure is declined at ${width}px`, async ({ page }) => {
+    await openTimezoneNav(page, width); await tzNavZone(page).fill('  Asia/Tokyo  ');
+    await tzNavZone(page).evaluate((input: HTMLInputElement) => input.setSelectionRange(3, 8, 'backward'));
+    const original = await tzNavZone(page).elementHandle(), dialogs: string[] = []; let accept = false;
+    page.on('dialog', dialog => { dialogs.push(dialog.message()); void (accept ? dialog.accept() : dialog.dismiss()); });
+    expect(await tzNavUnloadBlocked(page)).toBe(true); await tzNavLeave(page); await expect.poll(() => dialogs).toEqual([tzNavDraftPrompt]);
+    await expect(page).toHaveURL(/#settings\/server\/timezone$/u); await expect(tzNavZone(page)).toHaveValue('  Asia/Tokyo  '); await expect(tzNavZone(page)).toBeFocused();
+    expect(await tzNavZone(page).evaluate((input: HTMLInputElement) => [input.selectionStart, input.selectionEnd, input.selectionDirection])).toEqual([3, 8, 'backward']);
+    expect(await original!.evaluate(input => input.isConnected && input === document.activeElement)).toBe(true);
+    accept = true; await tzNavLeave(page); await expect(page.locator('[data-recued-yours]')).toBeVisible();
+    await page.evaluate(() => window.__app.setHash('#settings/server/timezone')); await expect(tzNavZone(page)).toHaveValue('Europe/London');
+    expect(dialogs).toEqual([tzNavDraftPrompt, tzNavDraftPrompt]); expect(await tzNavWrites(page)).toEqual([]);
+  });
+
+  test(`Server timezone navigation protects raw text through canceled and accepted native reloads at ${width}px`, async ({ page }) => {
+    await openTimezoneNav(page, width); await tzNavZone(page).fill('Asia/Tokyo'); const original = await tzNavZone(page).elementHandle();
+    const dialogs: string[] = []; let accept = false;
+    page.on('dialog', dialog => { dialogs.push(dialog.type()); void (accept ? dialog.accept() : dialog.dismiss()); });
+    await page.evaluate(() => { location.reload(); }); await expect.poll(() => dialogs).toEqual(['beforeunload']);
+    await expect(tzNavZone(page)).toHaveValue('Asia/Tokyo'); expect(await original!.evaluate(input => input.isConnected)).toBe(true);
+    accept = true; await page.reload(); await page.waitForFunction(() => window.__app?.ready === true); await expect(tzNavZone(page)).toHaveValue('Europe/London');
+    expect(dialogs).toEqual(['beforeunload', 'beforeunload']); expect(await tzNavWrites(page)).toEqual([]);
+  });
+
+  test(`Server timezone navigation protects an unsaved fixed-mode choice and clears it only after Save at ${width}px`, async ({ page }) => {
+    await openTimezoneNav(page, width, 'follows_host'); await tzNavMode(page, 'fixed').press('Space');
+    await expect(tzNavZone(page)).toHaveValue(''); await expect(tzNavZone(page)).toBeFocused(); expect(await tzNavUnloadBlocked(page)).toBe(true);
+    const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
+    await tzNavLeave(page); await expect.poll(() => dialogs).toEqual([tzNavDraftPrompt]); await expect(tzNavMode(page, 'fixed')).toBeChecked();
+    await tzNavZone(page).fill('Asia/Tokyo'); expect(await tzNavWrites(page)).toEqual([]); await tzNavZone(page).press('Enter');
+    await expect(tzNavPanel(page).getByText('Saved as Asia/Tokyo.', { exact: true })).toBeVisible(); expect(await tzNavUnloadBlocked(page)).toBe(false);
+    await tzNavLeave(page); await expect(page.locator('[data-recued-yours]')).toBeVisible();
+    expect(dialogs).toEqual([tzNavDraftPrompt]); expect(await tzNavWrites(page)).toEqual([{ mode: 'fixed', zone: 'Asia/Tokyo' }]);
+  });
+
+  test(`Server timezone navigation allows untouched and fully restored values without a warning at ${width}px`, async ({ page }) => {
+    await openTimezoneNav(page, width); expect(await tzNavUnloadBlocked(page)).toBe(false);
+    await tzNavZone(page).fill('Asia/Tokyo'); expect(await tzNavUnloadBlocked(page)).toBe(true);
+    await tzNavZone(page).fill('Europe/London'); expect(await tzNavUnloadBlocked(page)).toBe(false);
+    const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
+    await tzNavLeave(page); await expect(page.locator('[data-recued-yours]')).toBeVisible(); expect(dialogs).toEqual([]); expect(await tzNavWrites(page)).toEqual([]);
+  });
+}
+
+for (const width of [390, 1280]) {
+  for (const kind of ['fixed', 'follows_host'] as const) {
+    test(`Server timezone navigation guards a pending ${kind} save until its reply at ${width}px`, async ({ page }) => {
+      await openTimezoneNav(page, width); await page.evaluate(() => window.__app.holdRpcResponses?.('server.timezone.set'));
+      if (kind === 'fixed') { await tzNavZone(page).fill('Asia/Tokyo'); await tzNavSave(page).press('Enter'); }
+      else await tzNavMode(page, 'follows_host').press('Space');
+      const original = await tzNavZone(page).elementHandle(); await expect(tzNavZone(page)).toBeDisabled();
+      const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
+      expect(await tzNavUnloadBlocked(page)).toBe(true); await tzNavLeave(page); await expect.poll(() => dialogs).toEqual([tzNavWorkPrompt]);
+      await expect(page).toHaveURL(/#settings\/server\/timezone$/u); await expect(tzNavPanel(page).getByRole('status').filter({ hasText: 'Saving timezone…' })).toBeFocused();
+      expect(await original!.evaluate(input => input.isConnected)).toBe(true);
+      expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('server.timezone.set'))).toBe(1);
+      await expect(tzNavMode(page, kind)).toBeEnabled(); await expect(tzNavMode(page, kind)).toBeChecked(); expect(await tzNavUnloadBlocked(page)).toBe(false);
+      await tzNavLeave(page); await expect(page.locator('[data-recued-yours]')).toBeVisible();
+      expect(dialogs).toEqual([tzNavWorkPrompt]); expect(await tzNavWrites(page)).toEqual([kind === 'fixed' ? { mode: 'fixed', zone: 'Asia/Tokyo' } : { mode: 'follows_host' }]);
+    });
+
+    test(`Server timezone navigation ignores a late ${kind} acknowledgement after accepted departure at ${width}px`, async ({ page }) => {
+      await openTimezoneNav(page, width); await page.evaluate(() => window.__app.holdRpcResponses?.('server.timezone.set'));
+      if (kind === 'fixed') { await tzNavZone(page).fill('Asia/Tokyo'); await tzNavSave(page).press('Enter'); }
+      else await tzNavMode(page, 'follows_host').press('Space');
+      const original = await tzNavPanel(page).elementHandle(), dialogs: string[] = []; let accept = true;
+      page.on('dialog', dialog => { dialogs.push(dialog.message()); void (accept ? dialog.accept() : dialog.dismiss()); });
+      await tzNavLeave(page); await expect(page.locator('[data-recued-yours]')).toBeVisible(); expect(dialogs).toEqual([tzNavWorkPrompt]);
+      expect(await original!.evaluate(panel => panel.isConnected)).toBe(false);
+      await page.evaluate(() => window.__app.setHash('#settings/server/timezone')); await expect(tzNavMode(page, kind)).toBeChecked();
+      if (kind === 'follows_host') await tzNavMode(page, 'fixed').press('Space');
+      await tzNavZone(page).fill('Pacific/Auckland'); await tzNavZone(page).focus(); const fresh = await tzNavZone(page).elementHandle();
+      expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('server.timezone.set'))).toBe(1);
+      await expect(tzNavZone(page)).toHaveValue('Pacific/Auckland'); await expect(tzNavZone(page)).toBeFocused();
+      expect(await fresh!.evaluate(input => input.isConnected && input === document.activeElement)).toBe(true);
+      accept = false; await tzNavLeave(page); await expect.poll(() => dialogs).toEqual([tzNavWorkPrompt, tzNavDraftPrompt]);
+      expect(await tzNavWrites(page)).toHaveLength(1);
+    });
+  }
+
+  test(`Server timezone navigation retains uncertainty after restoring a failed save until retry succeeds at ${width}px`, async ({ page }) => {
+    await openTimezoneNav(page, width); await tzNavZone(page).fill('Asia/Tokyo'); await page.evaluate(() => { window.__timezoneNavigation.failNextSave = true; });
+    await tzNavSave(page).press('Enter'); await expect(tzNavPanel(page).getByRole('alert')).toHaveText('Timezone save failed. Try again.');
+    await tzNavZone(page).fill('Europe/London'); expect(await tzNavUnloadBlocked(page)).toBe(true);
+    const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
+    await tzNavLeave(page); await expect.poll(() => dialogs).toEqual([tzNavDraftPrompt]); await tzNavSave(page).press('Enter');
+    await expect(tzNavSave(page)).toBeEnabled(); expect(await tzNavUnloadBlocked(page)).toBe(false);
+    await tzNavLeave(page); await expect(page.locator('[data-recued-yours]')).toBeVisible();
+    expect(dialogs).toEqual([tzNavDraftPrompt]); expect(await tzNavWrites(page)).toEqual([{ mode: 'fixed', zone: 'Asia/Tokyo' }, { mode: 'fixed', zone: 'Europe/London' }]);
+  });
+
+  test(`Server timezone navigation preserves Back and Forward through repeated draft cancellation at ${width}px`, async ({ page }) => {
+    await openTimezoneNav(page, width); await tzNavLeave(page); await expect(page.locator('[data-recued-yours]')).toBeVisible();
+    await page.evaluate(() => window.__app.setHash('#settings/server/timezone')); await expect(tzNavZone(page)).toHaveValue('Europe/London');
+    await tzNavZone(page).fill('Asia/Tokyo'); const original = await tzNavZone(page).elementHandle();
+    const dialogs: string[] = []; let accept = false;
+    page.on('dialog', dialog => { dialogs.push(dialog.message()); void (accept ? dialog.accept() : dialog.dismiss()); });
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      await page.goBack(); await expect.poll(() => dialogs).toHaveLength(attempt); await expect(page).toHaveURL(/#settings\/server\/timezone$/u);
+      await expect(tzNavZone(page)).toHaveValue('Asia/Tokyo'); expect(await original!.evaluate(input => input.isConnected)).toBe(true);
+    }
+    accept = true; await page.goBack(); await expect(page.locator('[data-recued-yours]')).toBeVisible();
+    await page.goForward(); await expect(tzNavZone(page)).toHaveValue('Europe/London');
+    expect(dialogs).toEqual([tzNavDraftPrompt, tzNavDraftPrompt, tzNavDraftPrompt]); expect(await tzNavWrites(page)).toEqual([]);
+  });
+
+  test(`Server timezone navigation leaves untouched initial reads and ignores their late replies at ${width}px`, async ({ page }) => {
+    await openTimezoneNav(page, width, 'fixed', true); await expect(tzNavPanel(page)).toHaveAttribute('data-recued-server-timezone-state', 'loading');
+    const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
+    expect(await tzNavUnloadBlocked(page)).toBe(false); await tzNavLeave(page); await expect(page.locator('[data-recued-yours]')).toBeVisible();
+    const readCount = await page.evaluate(() => window.__timezoneNavigation.reads);
+    expect(readCount).toBeGreaterThan(0);
+    expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('server.timezone.get'))).toBe(readCount);
+    await expect(tzNavPanel(page)).toHaveCount(0); expect(dialogs).toEqual([]); expect(await tzNavWrites(page)).toEqual([]);
+  });
+}
 
 test('Settings Backup & Recovery hands focus into and back from each entry flow', async ({ page }) => {
   await page.evaluate(() => window.__app.setHash('#settings/backup'));
@@ -976,7 +1544,7 @@ test('Settings Seller customer lifecycle distinguishes repeated fields', async (
   }
 });
 
-test('Settings Seller confirmation dialog owns keyboard focus', async ({ page }) => {
+test('Settings Seller confirmation dialog owns keyboard focus', async ({ page, browserName }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?settle_reads=1`);
   await page.waitForFunction(() => window.__app?.ready === true);
@@ -989,15 +1557,16 @@ test('Settings Seller confirmation dialog owns keyboard focus', async ({ page })
   const trigger = page.locator(
     '[data-recued-seller-order-close="ord:access:claim-mail-1"]',
   );
-  await trigger.click();
+  await trigger.press('Enter');
   const dialog = page.getByRole('dialog', { name: 'Close this order?' });
   const cancel = dialog.getByRole('button', { name: 'Cancel' });
   const confirm = dialog.getByRole('button', { name: 'Confirm & close' });
   await expect(dialog).toBeVisible();
   await expect(cancel).toBeFocused();
-  await page.keyboard.press('Tab');
+  const next = browserName === 'webkit' ? 'Alt+Tab' : 'Tab';
+  await page.keyboard.press(next);
   await expect(confirm).toBeFocused();
-  await page.keyboard.press('Tab');
+  await page.keyboard.press(next);
   await expect(cancel).toBeFocused();
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0);
@@ -1842,6 +2411,259 @@ test('Settings failed device revokes return to the exact retry action', async ({
   await expect(confirm).toBeFocused();
 });
 
+for (const width of [390, 1280]) {
+  for (const newerFirst of [true, false]) {
+    test(`Settings Devices completes a revoke from the latest broadcast (newer first: ${newerFirst}) at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto(`${HARNESS_URL}?devices=ready`);
+      await page.waitForFunction(() => window.__app?.ready === true);
+      await page.evaluate(() => window.__app.setHash('#settings/devices'));
+      const laptop = page.locator('.account-devices-row[data-instance-id="device-laptop"]');
+      await expect(laptop).toBeVisible();
+      await page.evaluate(() => window.__app.holdRpcResponses?.('pair.list'));
+      await laptop.locator('[data-action="revoke-device"]').click();
+      await page.locator('[data-action="confirm-revoke"][data-instance-id="device-laptop"]').focus();
+      await page.keyboard.press('Enter');
+      await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('pair.list'))).toBe(2);
+      await page.evaluate(() => window.__app.fireMessage({ type: 'server_event', event: {
+        kind: 'pair.list_changed', op: 'revoked', cursor: 2,
+      } }));
+      await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('pair.list'))).toBe(3);
+      if (!newerFirst) {
+        expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('pair.list', 0))).toBe(1);
+        await page.evaluate(() => {
+          window.confirm = (message?: string): boolean => {
+            document.documentElement.setAttribute('data-device-leave-prompt', message ?? '');
+            return false;
+          };
+          window.__app.setHash('#chat');
+        });
+        await expect(page.locator('html')).toHaveAttribute('data-device-leave-prompt',
+          'Recued is still shutting a device out. Leave Settings anyway?');
+        await expect(page).toHaveURL(/#settings\/devices$/);
+      }
+      expect(await page.evaluate(index => window.__app.releaseRpcResponses?.('pair.list', index), newerFirst ? 1 : 0)).toBe(1);
+      await expect(laptop).toHaveCount(0);
+      await expect(page.locator('[data-device-revoke-success]')).toBeFocused();
+      await page.locator('[data-action="revoke-device"][data-instance-id="device-desktop"]').click();
+      const cancel = page.locator('[data-action="cancel-revoke"][data-instance-id="device-desktop"]');
+      await expect(cancel).toBeFocused();
+      if (newerFirst) expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('pair.list', 0))).toBe(1);
+      await expect(cancel).toBeFocused();
+      await expect(laptop).toHaveCount(0);
+      expect(await page.evaluate(() => window.__app.rpcCallCount('pair.revoke'))).toBe(1);
+      expect(await page.evaluate(() => window.__app.rpcCallCount('pair.list'))).toBe(3);
+      expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('pair.list'))).toBe(0);
+    });
+  }
+
+  test(`Settings Devices keeps a reconciled revoke after an older roster arrives at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`${HARNESS_URL}?devices=ready`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await page.evaluate(() => window.__app.setHash('#settings/devices'));
+    const laptop = page.locator('.account-devices-row[data-instance-id="device-laptop"]');
+    await expect(laptop).toBeVisible();
+    await page.evaluate(() => {
+      window.__app.holdRpcResponses?.('pair.list');
+      window.__app.fireMessage({ type: 'server_event', event: {
+        kind: 'pair.list_changed', op: 'added', cursor: 1,
+      } });
+    });
+    await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('pair.list'))).toBe(2);
+
+    await laptop.locator('[data-action="revoke-device"]').click();
+    await page.locator('[data-action="confirm-revoke"][data-instance-id="device-laptop"]').focus();
+    await page.keyboard.press('Enter');
+    await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('pair.list'))).toBe(3);
+    expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('pair.list', 1))).toBe(1);
+    await expect(laptop).toHaveCount(0);
+    const receipt = page.locator('[data-device-revoke-success]');
+    await expect(receipt).toBeFocused();
+    const desktop = page.locator('[data-action="revoke-device"][data-instance-id="device-desktop"]');
+    await desktop.focus();
+    expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('pair.list', 0))).toBe(1);
+    await expect(desktop).toBeFocused();
+    await expect(laptop).toHaveCount(0);
+    await expect(receipt).toContainText('Done. That device can no longer reach this server.');
+    await expect(page.locator('[data-error="list"]')).toHaveCount(0);
+    await expect(page.locator('.account-devices-loading')).toHaveCount(0);
+    expect(await page.evaluate(() => window.__app.rpcCallCount('pair.revoke'))).toBe(1);
+    expect(await page.evaluate(() => window.__app.rpcCallCount('pair.list'))).toBe(3);
+    expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('pair.list'))).toBe(0);
+  });
+
+  test(`Settings Devices ignores an older list error after a successful broadcast refresh at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`${HARNESS_URL}?devices=fail-once-slow-retry&hold_rpc=pair.list`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await page.evaluate(() => window.__app.setHash('#settings/devices'));
+    await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('pair.list'))).toBe(1);
+    await page.evaluate(() => window.__app.fireMessage({ type: 'server_event', event: {
+      kind: 'pair.list_changed', op: 'added', cursor: 1,
+    } }));
+    await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('pair.list'))).toBe(2);
+    expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('pair.list', 1))).toBe(1);
+    const desktop = page.locator('[data-action="revoke-device"][data-instance-id="device-desktop"]');
+    await desktop.focus();
+    expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('pair.list', 0))).toBe(1);
+    await expect(desktop).toBeFocused();
+    await expect(page.locator('[data-error="list"]')).toHaveCount(0);
+    await expect(page.locator('.account-devices-loading')).toHaveCount(0);
+    await expect(page.locator('.account-devices-row')).toHaveCount(3);
+    expect(await page.evaluate(() => window.__app.rpcCallCount('pair.list'))).toBe(2);
+    expect(await page.evaluate(() => window.__app.rpcCallCount('pair.revoke'))).toBe(0);
+    expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('pair.list'))).toBe(0);
+  });
+}
+
+for (const width of [390, 1280]) {
+  test(`Settings Devices Refresh keeps its busy owner and later confirmation focus at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`${HARNESS_URL}?devices=ready`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await page.evaluate(() => window.__app.setHash('#settings/devices'));
+    const checked = page.locator('[data-devices-last-checked] time');
+    await expect(checked).toBeVisible();
+    const lastSuccessfulAt = await checked.getAttribute('datetime');
+    await page.locator('[data-action="revoke-device"][data-instance-id="device-laptop"]').click();
+    const cancel = page.locator('[data-action="cancel-revoke"][data-instance-id="device-laptop"]');
+    await expect(cancel).toBeFocused();
+    await page.evaluate(() => window.__app.holdRpcResponses?.('pair.list'));
+
+    const refresh = page.getByRole('button', { name: 'Refresh devices', exact: true });
+    await refresh.focus();
+    await page.keyboard.press('Enter');
+    await expect(refresh).toHaveText('Refreshing…');
+    await expect(refresh).toHaveAttribute('aria-disabled', 'true');
+    await expect(refresh).toHaveAttribute('aria-busy', 'true');
+    await expect(refresh).not.toHaveAttribute('disabled');
+    await expect(refresh).toBeFocused();
+    await expect(checked).toHaveAttribute('datetime', lastSuccessfulAt!);
+    await expect(cancel).toBeVisible();
+    await refresh.evaluate((button: HTMLElement) => { button.click(); button.click(); });
+    expect(await page.evaluate(() => window.__app.rpcCallCount('pair.list'))).toBe(2);
+
+    await cancel.focus();
+    expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('pair.list'))).toBe(1);
+    await expect(refresh).toHaveText('Refresh');
+    await expect(refresh).not.toHaveAttribute('aria-disabled');
+    await expect(refresh).not.toHaveAttribute('aria-busy');
+    await expect(cancel).toBeFocused();
+    await expect(page.locator('[data-devices-last-checked]')).toContainText('Last successful check:');
+    expect(await page.evaluate(() => window.__app.rpcCallCount('pair.revoke'))).toBe(0);
+    const toolbar = await page.locator('.account-devices-refresh').boundingBox();
+    expect(toolbar).not.toBeNull();
+    expect(toolbar!.x).toBeGreaterThanOrEqual(0);
+    expect(toolbar!.x + toolbar!.width).toBeLessThanOrEqual(width);
+  });
+
+  test(`Settings Devices preserves the exact confirmation control through background checks at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`${HARNESS_URL}?devices=ready`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await page.evaluate(() => window.__app.setHash('#settings/devices'));
+    await page.locator('[data-action="revoke-device"][data-instance-id="device-laptop"]').click();
+    const confirm = page.locator('[data-action="confirm-revoke"][data-instance-id="device-laptop"]');
+    await confirm.focus();
+    await page.evaluate(() => {
+      window.__app.holdRpcResponses?.('pair.list');
+      window.__app.fireMessage({ type: 'server_event', event: {
+        kind: 'pair.list_changed', op: 'added', cursor: 1,
+      } });
+    });
+    const refresh = page.getByRole('button', { name: 'Refresh devices', exact: true });
+    await expect(refresh).toHaveText('Refreshing…');
+    await expect(confirm).toBeFocused();
+    expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('pair.list'))).toBe(1);
+    await expect(refresh).toHaveText('Refresh');
+    await expect(confirm).toBeFocused();
+    expect(await page.evaluate(() => window.__app.rpcCallCount('pair.revoke'))).toBe(0);
+  });
+}
+
+test('Settings Devices refresh survives unavailable locale APIs', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?devices=ready`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/devices'));
+  const checked = page.locator('[data-devices-last-checked]');
+  await expect(checked.locator('time')).toBeVisible();
+  await page.evaluate(() => {
+    Object.defineProperty(Intl, 'DateTimeFormat', { configurable: true, value: function () { throw new RangeError('Locale unavailable'); } });
+    Object.defineProperty(Date.prototype, 'toLocaleString', { configurable: true, value: function () { throw new Error('Locale blocked'); } });
+  });
+  const refresh = page.getByRole('button', { name: 'Refresh devices', exact: true });
+  await refresh.focus();
+  await page.keyboard.press('Enter');
+  await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('pair.list'))).toBe(2);
+  await expect(refresh).toHaveText('Refresh');
+  await expect(refresh).toBeFocused();
+  await expect(checked).toHaveText('Last successful check: Unknown time');
+  await expect(checked.locator('time')).toHaveAttribute('datetime', /^\d{4}-\d{2}-\d{2}T/);
+  await expect(page.locator('.account-devices-row')).toHaveCount(3);
+});
+
+test('Settings Devices Refresh recovers an initial failed check without a fabricated time', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?devices=fail-once-slow-retry`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/devices'));
+  await expect(page.locator('[data-error="list"]')).toBeVisible();
+  const checked = page.locator('[data-devices-last-checked]');
+  await expect(checked).toHaveText('Not checked yet');
+  await expect(checked.locator('time')).toHaveCount(0);
+  await page.evaluate(() => window.__app.holdRpcResponses?.('pair.list'));
+  const refresh = page.getByRole('button', { name: 'Refresh devices', exact: true });
+  await refresh.focus();
+  await page.keyboard.press('Enter');
+  await expect(refresh).toHaveText('Refreshing…');
+  await expect(refresh).toBeFocused();
+  await expect(checked).toHaveText('Not checked yet');
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('pair.list'))).toBe(1);
+  await expect(refresh).toHaveText('Refresh');
+  await expect(refresh).toBeFocused();
+  await expect(checked.locator('time')).toHaveAttribute('datetime', /^\d{4}-\d{2}-\d{2}T/);
+  await expect(page.locator('.account-devices-row')).toHaveCount(3);
+  await expect(page.locator('[data-error="list"]')).toHaveCount(0);
+});
+
+test('Settings Devices manual checks preserve a pending revoke through its latest roster', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?devices=ready&device_revoke_response=slow`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/devices'));
+  const laptop = page.locator('.account-devices-row[data-instance-id="device-laptop"]');
+  await laptop.locator('[data-action="revoke-device"]').click();
+  await page.evaluate(() => window.__app.holdRpcResponses?.('pair.list'));
+  await page.locator('[data-action="confirm-revoke"][data-instance-id="device-laptop"]').focus();
+  await page.keyboard.press('Enter');
+  const refresh = page.getByRole('button', { name: 'Refresh devices', exact: true });
+  await refresh.focus();
+  await page.keyboard.press('Enter');
+  await expect(refresh).toHaveText('Refreshing…');
+  await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('pair.list'))).toBe(3);
+  await page.evaluate(() => {
+    window.confirm = (message?: string): boolean => {
+      document.documentElement.setAttribute('data-device-leave-prompt', message ?? '');
+      return false;
+    };
+    window.__app.setHash('#chat');
+  });
+  await expect(page.locator('html')).toHaveAttribute('data-device-leave-prompt',
+    'Recued is still shutting a device out. Leave Settings anyway?');
+  await expect(page).toHaveURL(/#settings\/devices$/);
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('pair.list', 1))).toBe(1);
+  await expect(laptop).toHaveCount(0);
+  await expect(refresh).toHaveText('Refresh');
+  await expect(refresh).toBeFocused();
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('pair.list', 0))).toBe(1);
+  await expect(laptop).toHaveCount(0);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('pair.revoke'))).toBe(1);
+  await page.evaluate(() => window.__app.setHash('#chat'));
+  await expect(page).toHaveURL(/#chat$/);
+});
+
 test('Settings Devices Retry owns recovery and advances into the roster', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?devices=fail-once-slow-retry`);
@@ -2259,3 +3081,492 @@ test('Settings Exposure confirmations own keyboard focus', async ({ page }) => {
   await expect(wsDialog).toHaveCount(0);
   await expect(wsTrigger).toBeFocused();
 });
+
+for (const width of [390, 1280]) {
+  for (const activation of ['keyboard', 'pointer'] as const) {
+    for (const correction of ['append', 'replace', 'backspace'] as const) {
+      test(`Settings Server address keeps ${correction} typing after refusal via ${activation} at ${width}px`, async ({ page }) => {
+        await page.setViewportSize({ width, height: 900 });
+        const { row, input, edit, original } = await openServerAddressEditor(page, activation);
+        const value = 'not-a-server.old';
+        await input.fill('not-a-server');
+        await input.press('End'); await page.keyboard.type('.old', { delay: 30 });
+        await expect(input).toHaveValue(value);
+        const check = row.locator('[data-server-address-check]');
+        await check.focus(); await page.keyboard.press('Enter');
+        await expect(row).toHaveAttribute('data-server-address-row-state', 'refused');
+        await expect(input).toBeFocused();
+        await expect(row.locator('[data-server-address-save]')).toHaveCount(0);
+        let wanted: string;
+        let caret: number;
+        if (correction === 'replace') {
+          await input.evaluate(node => (node as HTMLInputElement).setSelectionRange(4, 5, 'backward'));
+          await page.keyboard.type('fixed', { delay: 30 });
+          wanted = `${value.slice(0, 4)}fixed${value.slice(5)}`; caret = 9;
+        } else if (correction === 'backspace') {
+          await input.press('End');
+          for (let index = 0; index < 3; index++) await page.keyboard.press('Backspace');
+          wanted = value.slice(0, -3); caret = wanted.length;
+        } else {
+          await input.press('End'); await page.keyboard.type('.new', { delay: 30 });
+          wanted = `${value}.new`; caret = wanted.length;
+        }
+        await expect(input).toHaveValue(wanted);
+        await expect(input).toBeFocused();
+        expect(await input.evaluate(node => [(node as HTMLInputElement).selectionStart, (node as HTMLInputElement).selectionEnd])).toEqual([caret, caret]);
+        await expect(row).toHaveAttribute('data-server-address-row-state', 'editing');
+        await expect(row.locator('[data-server-address-status]')).toBeEmpty();
+        const cancel = row.locator('[data-server-address-cancel]');
+        await cancel.focus(); await page.keyboard.press('Enter');
+        await expect(edit).toBeFocused();
+        await page.keyboard.press('Enter');
+        await expect(input).toBeFocused();
+        await expect(input).toHaveValue(original);
+      });
+    }
+  }
+
+  for (const outcome of ['mismatch', 'unreachable'] as const) {
+    for (const moveAway of [false, true]) {
+      test(`Settings Server address ${outcome} check respects ${moveAway ? 'moved' : 'owned'} focus at ${width}px`, async ({ page }) => {
+        await page.setViewportSize({ width, height: 900 });
+        const { row, input } = await openServerAddressEditor(page);
+        const probe = await holdServerAddressProbe(page);
+        await input.fill(probe.candidate);
+        const check = row.locator('[data-server-address-check]');
+        await check.focus(); await page.keyboard.press('Enter');
+        const status = row.locator('[data-server-address-status]');
+        await expect(status).toHaveText('Checking…');
+        await expect(status).toBeFocused();
+        await expect(input).toBeDisabled();
+        const outside = page.locator('[data-recued-account-menu-trigger]');
+        if (moveAway) await outside.focus();
+        await probe.release(outcome);
+        await expect(row).toHaveAttribute('data-server-address-row-state', 'refused');
+        await expect(status).toContainText(outcome === 'unreachable' ? 'Nothing answered' : 'could not prove');
+        await expect(row.locator('[data-server-address-save]')).toHaveCount(0);
+        if (moveAway) await expect(outside).toBeFocused();
+        else await expect(input).toBeFocused();
+        expect(probe.state.requests).toBe(1);
+      });
+    }
+  }
+
+  test(`Settings Server address Cancel returns keyboard focus before checking at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const { row, input, edit } = await openServerAddressEditor(page);
+    await input.fill('a draft address');
+    await row.locator('[data-server-address-cancel]').focus(); await page.keyboard.press('Enter');
+    await expect(row).toHaveAttribute('data-server-address-row-state', 'idle');
+    await expect(edit).toBeFocused();
+  });
+}
+
+for (const direction of ['forward', 'backward'] as const) {
+  test(`Settings Server address preserves a ${direction} selection across invalidation`, async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const { row, input } = await openServerAddressEditor(page);
+    await input.fill('not-a-server.old');
+    await row.locator('[data-server-address-check]').focus(); await page.keyboard.press('Enter');
+    await expect(row).toHaveAttribute('data-server-address-row-state', 'refused');
+    await input.evaluate((node, direction) => {
+      const input = node as HTMLInputElement;
+      input.setSelectionRange(2, 8, direction);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }, direction);
+    await expect(row).toHaveAttribute('data-server-address-row-state', 'editing');
+    await expect(input).toBeFocused();
+    expect(await input.evaluate(node => {
+      const input = node as HTMLInputElement;
+      return [input.selectionStart, input.selectionEnd, input.selectionDirection];
+    })).toEqual([2, 8, direction]);
+  });
+}
+
+test('Settings Server address scripted actions respect outside focus', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.evaluate(() => window.__app.setHash('#settings/servers'));
+  const row = page.locator('[data-server-address-row]').first();
+  const outside = page.locator('[data-recued-account-menu-trigger]');
+  await outside.focus();
+  await row.locator('[data-server-address-edit]').evaluate(node => (node as HTMLButtonElement).click());
+  await expect(outside).toBeFocused();
+  await row.locator('[data-server-address-input]').fill('not-a-server');
+  await outside.focus();
+  await row.locator('[data-server-address-check]').evaluate(node => (node as HTMLButtonElement).click());
+  await expect(row).toHaveAttribute('data-server-address-row-state', 'refused');
+  await expect(outside).toBeFocused();
+});
+
+test('Settings Server address focus follows the selected profile', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?server_profiles=multiple#settings/servers`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const rows = page.locator('[data-server-address-row]');
+  await expect(rows).toHaveCount(2);
+  for (const index of [0, 1]) {
+    await rows.nth(index).locator('[data-server-address-edit]').focus(); await page.keyboard.press('Enter');
+    await expect(rows.nth(index).locator('[data-server-address-input]')).toBeFocused();
+  }
+  await expect(rows.nth(0)).toHaveAttribute('data-server-address-row-state', 'idle');
+  await rows.nth(1).locator('[data-server-address-input]').fill('not-a-server');
+  await rows.nth(1).locator('[data-server-address-cancel]').focus(); await page.keyboard.press('Enter');
+  await expect(rows.nth(1).locator('[data-server-address-edit]')).toBeFocused();
+});
+
+test('Settings Server address Cancel retires a pending check’s focus', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const { row, input, edit } = await openServerAddressEditor(page);
+  const probe = await holdServerAddressProbe(page);
+  await input.fill(probe.candidate);
+  await row.locator('[data-server-address-check]').focus(); await page.keyboard.press('Enter');
+  await expect(row.locator('[data-server-address-status]')).toBeFocused();
+  await row.locator('[data-server-address-cancel]').focus(); await page.keyboard.press('Enter');
+  await expect(edit).toBeFocused();
+  await probe.release('mismatch');
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await expect(row).toHaveAttribute('data-server-address-row-state', 'idle');
+  await expect(edit).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(input).toBeFocused();
+});
+
+test.describe('Settings Exposure keyboard navigation', () => {
+  const flows = [
+    {
+      name: 'MCP consent', trigger: `[${EXPOSURE_PUBLIC_MCP}]`, key: 'Enter',
+      title: 'Let AI apps in from outside?', phrase: 'enable public MCP',
+      method: 'exposure.set_public_mcp_acknowledgement',
+    },
+    {
+      name: 'MCP revocation', trigger: `[${EXPOSURE_PUBLIC_MCP}]`, key: 'Enter',
+      title: 'Shut AI apps out again?', phrase: '',
+      method: 'exposure.set_public_mcp_acknowledgement',
+    },
+    {
+      name: 'WebSocket path lockout', trigger: `[${EXPOSURE_CELL}="ws.lan"]`, key: 'Space',
+      title: 'Cut this browser off?', phrase: 'disconnect webclients',
+      method: 'exposure.set_path_resolution',
+    },
+    {
+      name: 'maintenance lockout', trigger: '[data-recued-exposure-preset="maintenance"] input', key: 'Space',
+      title: 'Cut this browser off?', phrase: 'disconnect webclients',
+      method: 'exposure.apply_preset',
+    },
+  ] as const;
+
+  const openConfirmation = async (page: Page, flow: typeof flows[number], width: number) => {
+    await page.setViewportSize({ width, height: 900 });
+    const acknowledged = flow.name === 'MCP revocation' ? '&exposure=acknowledged' : '';
+    await page.goto(`${HARNESS_URL}?settle_reads=1&exposure_write=refuse${acknowledged}#settings/server/exposure`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    const trigger = page.locator(flow.trigger);
+    await trigger.focus();
+    await page.keyboard.press(flow.key);
+    const dialog = page.getByRole('dialog', { name: flow.title, exact: true });
+    await expect(dialog).toBeVisible();
+    return {
+      dialog, trigger,
+      phrase: dialog.getByRole('textbox'),
+      cancel: dialog.locator(`[${EXPOSURE_MODAL_CANCEL}]`),
+      submit: dialog.locator(`[${EXPOSURE_MODAL_SUBMIT}]`),
+    };
+  };
+
+  const followTabs = async (page: Page, key: 'Tab' | 'Shift+Tab', stops: Locator[]) => {
+    for (const stop of stops) {
+      await page.keyboard.press(key);
+      await expect(stop).toBeFocused();
+    }
+  };
+
+  for (const width of [390, 1280]) {
+    for (const flow of flows) {
+      test(`${flow.name} visits every enabled control in both directions at ${width}px`, async ({ page }) => {
+        const { dialog, trigger, phrase, cancel, submit } = await openConfirmation(page, flow, width);
+        if (flow.phrase) {
+          await expect(phrase).toBeFocused();
+          for (const value of ['', 'wrong phrase']) {
+            if (value) await page.keyboard.type(value);
+            await expect(phrase).toHaveValue(value);
+            await expect(submit).toBeDisabled();
+            await followTabs(page, 'Tab', [cancel, phrase, cancel, phrase]);
+            await followTabs(page, 'Shift+Tab', [cancel, phrase]);
+          }
+          await page.keyboard.press('ControlOrMeta+A');
+          await page.keyboard.type(flow.phrase);
+          await expect(phrase).toHaveValue(flow.phrase);
+          await expect(submit).toBeEnabled();
+          await followTabs(page, 'Tab', [cancel, submit, phrase]);
+          await followTabs(page, 'Shift+Tab', [submit, cancel, phrase]);
+        } else {
+          await expect(phrase).toHaveCount(0);
+          await expect(cancel).toBeFocused();
+          await followTabs(page, 'Tab', [submit, cancel, submit, cancel]);
+          await followTabs(page, 'Shift+Tab', [submit, cancel]);
+        }
+        // Re-enter the cycle when the dialog container itself owns focus.
+        await dialog.focus();
+        await followTabs(page, 'Tab', [flow.phrase ? phrase : cancel]);
+        await dialog.focus();
+        await followTabs(page, 'Shift+Tab', [submit]);
+        await cancel.focus();
+        await page.keyboard.press('Enter');
+        await expect(dialog).toHaveCount(0);
+        await expect(trigger).toBeFocused();
+        expect(await page.evaluate(method => window.__app.rpcCallCount(method), flow.method)).toBe(0);
+      });
+
+      test(`${flow.name} contains focus while submitting and after refusal at ${width}px`, async ({ page }) => {
+        const { dialog, trigger, phrase, cancel, submit } = await openConfirmation(page, flow, width);
+        await page.evaluate(method => window.__app.holdRpcResponses?.(method), flow.method);
+        if (flow.phrase) await phrase.fill(flow.phrase);
+        await submit.focus();
+        await page.keyboard.press('Enter');
+        await expect.poll(() => page.evaluate(method => window.__app.rpcCallCount(method), flow.method)).toBe(1);
+        await expect(dialog).toHaveAttribute('aria-busy', 'true');
+        await expect(dialog).toBeFocused();
+        await expect(cancel).toBeDisabled();
+        await expect(submit).toBeDisabled();
+        if (flow.phrase) await expect(phrase).toBeDisabled();
+        await followTabs(page, 'Tab', [dialog, dialog]);
+        await followTabs(page, 'Shift+Tab', [dialog, dialog]);
+        await page.keyboard.press('Escape');
+        await page.keyboard.press('Enter');
+        await expect(dialog).toHaveAttribute('aria-busy', 'true');
+        await expect(dialog).toBeFocused();
+        expect(await page.evaluate(method => window.__app.rpcCallCount(method), flow.method)).toBe(1);
+        expect(await page.evaluate(method => window.__app.releaseRpcResponses?.(method), flow.method)).toBe(1);
+        await expect(dialog.getByRole('alert')).toBeVisible();
+        await expect(dialog).not.toHaveAttribute('aria-busy');
+        if (flow.phrase) {
+          await expect(phrase).toBeFocused();
+          await expect(submit).toBeDisabled();
+          await followTabs(page, 'Tab', [cancel, phrase]);
+          await followTabs(page, 'Shift+Tab', [cancel, phrase]);
+          await phrase.fill(flow.phrase);
+          await expect(submit).toBeEnabled();
+          await followTabs(page, 'Tab', [cancel, submit, phrase]);
+          await followTabs(page, 'Shift+Tab', [submit, cancel, phrase]);
+        } else {
+          await expect(cancel).toBeFocused();
+          await followTabs(page, 'Tab', [submit, cancel]);
+          await followTabs(page, 'Shift+Tab', [submit, cancel]);
+        }
+        await page.keyboard.press('Escape');
+        await expect(dialog).toHaveCount(0);
+        await expect(trigger).toBeFocused();
+        expect(await page.evaluate(method => window.__app.rpcCallCount(method), flow.method)).toBe(1);
+      });
+    }
+  }
+});
+
+test.describe('Settings Exposure connection example', () => {
+  const examples = [
+    ['claude', 'Claude Desktop'], ['cursor', 'Cursor'],
+    ['codex', 'Codex'], ['custom', 'Another AI app'],
+  ] as const;
+
+  const openExample = async (page: Page, width: number, activation: 'keyboard' | 'pointer' = 'keyboard') => {
+    await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
+    await page.goto(`${HARNESS_URL}?settle_reads=1#settings/server/exposure`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    const trigger = page.locator('[data-recued-exposure-connect-example]');
+    if (activation === 'keyboard') {
+      await trigger.focus();
+      await page.keyboard.press('Enter');
+    } else await trigger.click();
+    const dialog = page.getByRole('dialog', { name: 'Connect an AI app to this server', exact: true });
+    await expect(dialog).toBeFocused();
+    return {
+      trigger, dialog,
+      card: dialog.locator('.exposure-modal-card'),
+      snippets: examples.map(([, label]) => dialog.getByRole('region', { name: label, exact: true })),
+      close: dialog.getByRole('button', { name: 'Close', exact: true }),
+    };
+  };
+
+  const expectNoExposureWrites = async (page: Page) => {
+    expect(await page.evaluate(() => [
+      'exposure.set_public_mcp_acknowledgement', 'exposure.set_path_resolution',
+      'exposure.apply_preset', 'exposure.set_apex',
+    ].map(method => window.__app.rpcCallCount(method)))).toEqual([0, 0, 0, 0]);
+  };
+
+  for (const width of [390, 1280]) {
+    for (const activation of ['keyboard', 'pointer'] as const) {
+      for (const dismissal of ['Escape', 'Enter', 'pointer'] as const) {
+        test(`keeps examples reachable and returns focus via ${dismissal} after ${activation} entry at ${width}px`, async ({ page }) => {
+          const { trigger, dialog, card, snippets, close } = await openExample(page, width, activation);
+          await expect(dialog.getByRole('heading', { name: 'Connect an AI app to this server' })).toBeInViewport({ ratio: 1 });
+          const box = await card.boundingBox();
+          expect(box?.y).toBeGreaterThanOrEqual(0);
+          expect((box?.y ?? 0) + (box?.height ?? 0)).toBeLessThanOrEqual(page.viewportSize()!.height);
+          for (const [index, snippet] of snippets.entries()) {
+            await expect(snippet).toHaveAttribute('data-recued-exposure-connect-snippet', examples[index]![0]);
+            await expect(snippet).toHaveAttribute('tabindex', '0');
+            await expect(snippet).toContainText('/mcp');
+            await page.keyboard.press('Tab');
+            await expect(snippet).toBeFocused();
+            await expect(snippet).toBeInViewport({ ratio: 1 });
+          }
+          await page.keyboard.press('Tab');
+          await expect(close).toBeFocused();
+          await expect(close).toBeInViewport({ ratio: 1 });
+          await page.keyboard.press('Tab');
+          await expect(snippets[0]).toBeFocused();
+          for (const stop of [close, ...[...snippets].reverse()]) {
+            await page.keyboard.press('Shift+Tab');
+            await expect(stop).toBeFocused();
+            await expect(stop).toBeInViewport({ ratio: 1 });
+          }
+          // Plain arrows scroll the focused code example on both engines.
+          if (await snippets[0].evaluate(node => node.scrollWidth > node.clientWidth)) {
+            await snippets[0].evaluate(node => { node.scrollLeft = 0; });
+            await page.keyboard.press('ArrowRight');
+            await expect.poll(() => snippets[0].evaluate(node => node.scrollLeft)).toBeGreaterThan(0);
+            const right = await snippets[0].evaluate(node => node.scrollLeft);
+            await page.keyboard.press('ArrowLeft');
+            await expect.poll(() => snippets[0].evaluate(node => node.scrollLeft)).toBeLessThan(right);
+            await expect(snippets[0]).toBeFocused();
+          }
+          expect(await snippets[0].evaluate(node => ['altKey', 'ctrlKey', 'metaKey', 'shiftKey'].map(modifier => {
+            const event = new KeyboardEvent('keydown', { key: 'ArrowRight', [modifier]: true, bubbles: true, cancelable: true });
+            node.dispatchEvent(event);
+            return event.defaultPrevented;
+          }))).toEqual([false, false, false, false]);
+          if (dismissal === 'Escape') await page.keyboard.press('Escape');
+          else if (dismissal === 'pointer') await close.click();
+          else {
+            await page.keyboard.press('Shift+Tab');
+            await expect(close).toBeFocused();
+            await page.keyboard.press('Enter');
+          }
+          await expect(dialog).toHaveCount(0);
+          await expect(trigger).toBeFocused();
+          await page.keyboard.press('Enter');
+          await expect(dialog).toBeFocused();
+          await page.keyboard.press('Escape');
+          await expect(dialog).toHaveCount(0);
+          await expect(trigger).toBeFocused();
+          await expectNoExposureWrites(page);
+        });
+      }
+    }
+
+    for (const owner of ['dialog', 'snippet', 'close', 'outside'] as const) {
+      test(`preserves ${owner} focus across a background redraw at ${width}px`, async ({ page }) => {
+        const { trigger, dialog, card, snippets, close } = await openExample(page, width);
+        const target = owner === 'dialog' ? dialog : owner === 'snippet' ? snippets[3]
+          : owner === 'close' ? close : page.locator('[data-recued-account-menu-trigger]');
+        await target.focus();
+        if (owner === 'snippet') await target.evaluate(node => { node.scrollLeft = 40; });
+        const top = await card.evaluate(node => node.scrollTop);
+        const left = await target.evaluate(node => node.scrollLeft);
+        const prior = await dialog.elementHandle();
+        if (!prior) throw new Error('The example dialog did not mount.');
+        await page.evaluate(event => window.__app.fireMessage({ type: 'server_event', event }), {
+          kind: 'exposure_changed', resolution: applyPreset('lan_only', { acknowledged: false }),
+          derived_preset_label: 'lan_only', public_mcp_acknowledgement: { acknowledged: false },
+          changed_at: 1_700_000_000_001, changed_by_client_id: 'device-other',
+        });
+        await expect.poll(() => prior.evaluate(node => !node.isConnected)).toBe(true);
+        await expect(target).toBeFocused();
+        expect(await card.evaluate(node => node.scrollTop)).toBeCloseTo(top, 0);
+        expect(await target.evaluate(node => node.scrollLeft)).toBeCloseTo(left, 0);
+        await close.click();
+        await expect(dialog).toHaveCount(0);
+        await expect(trigger).toBeFocused();
+        await expectNoExposureWrites(page);
+      });
+    }
+
+    test(`keeps the next confirmation's own return target at ${width}px`, async ({ page }) => {
+      const { dialog, trigger } = await openExample(page, width);
+      await page.keyboard.press('Escape');
+      await expect(dialog).toHaveCount(0);
+      await expect(trigger).toBeFocused();
+      const consentTrigger = page.locator(`[${EXPOSURE_PUBLIC_MCP}]`);
+      await consentTrigger.focus();
+      await page.keyboard.press('Enter');
+      const consent = page.getByRole('dialog', { name: 'Let AI apps in from outside?', exact: true });
+      await expect(consent.getByRole('textbox')).toBeFocused();
+      await page.keyboard.press('Escape');
+      await expect(consent).toHaveCount(0);
+      await expect(consentTrigger).toBeFocused();
+      await expectNoExposureWrites(page);
+    });
+  }
+});
+
+const tzRecoveryCheck = (page: Page) => tzNavPanel(page).getByRole('button', { name: 'Check saved timezone', exact: true });
+const tzRecoveryPending = (page: Page) => tzNavPanel(page).getByRole('status').filter({ hasText: 'Checking saved timezone…' });
+const openTimezoneRecovery = async (page: Page, width: number, applied = true) => {
+  await openTimezoneNav(page, width);
+  await page.evaluate(applied => {
+    window.__timezoneNavigation.failNextSave = !applied; window.__timezoneNavigation.loseNextSaveReply = applied;
+  }, applied);
+  await tzNavZone(page).fill('Asia/Tokyo'); await tzNavZone(page).press('Enter');
+  await expect(tzNavPanel(page).getByRole('alert')).toHaveText('Timezone save failed. Try again.');
+  await expect(tzRecoveryCheck(page)).toBeVisible();
+};
+
+for (const width of [390, 1280]) {
+  test(`Server timezone recovery protects a pending check through canceled navigation and reload at ${width}px`, async ({ page }) => {
+    await openTimezoneRecovery(page, width, false); await tzNavZone(page).fill('Europe/London');
+    const before = await page.evaluate(() => window.__timezoneNavigation.reads);
+    await page.evaluate(() => window.__app.holdRpcResponses?.('server.timezone.get')); await tzRecoveryCheck(page).press('Enter');
+    await expect(tzRecoveryPending(page)).toBeFocused(); expect(await tzNavUnloadBlocked(page)).toBe(true);
+    const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.type() === 'beforeunload' ? 'beforeunload' : dialog.message()); void dialog.dismiss(); });
+    await page.evaluate(() => { location.reload(); }); await expect.poll(() => dialogs).toEqual(['beforeunload']);
+    await tzNavLeave(page); await expect.poll(() => dialogs).toEqual(['beforeunload', tzNavDraftPrompt]);
+    await expect(page).toHaveURL(/#settings\/server\/timezone$/u); await expect(tzRecoveryPending(page)).toBeFocused();
+    expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('server.timezone.get'))).toBe(1);
+    await expect(tzRecoveryCheck(page)).toHaveCount(0); await expect(tzNavZone(page)).toHaveValue('Europe/London'); await expect(tzNavZone(page)).toBeFocused();
+    expect(await tzNavUnloadBlocked(page)).toBe(false); await tzNavLeave(page); await expect(page.locator('[data-recued-yours]')).toBeVisible();
+    expect(dialogs).toEqual(['beforeunload', tzNavDraftPrompt]); expect(await tzNavWrites(page)).toEqual([{ mode: 'fixed', zone: 'Asia/Tokyo' }]);
+    expect(await page.evaluate(() => window.__timezoneNavigation.reads)).toBe(before + 1);
+  });
+
+  test(`Server timezone recovery confirms an applied save and clears its departure warning at ${width}px`, async ({ page }) => {
+    await openTimezoneRecovery(page, width); const before = await page.evaluate(() => window.__timezoneNavigation.reads);
+    await page.evaluate(() => window.__app.holdRpcResponses?.('server.timezone.get')); await tzRecoveryCheck(page).press('Enter');
+    await expect(tzRecoveryPending(page)).toBeFocused(); expect(await tzNavUnloadBlocked(page)).toBe(true);
+    expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('server.timezone.get'))).toBe(1);
+    await expect(tzNavPanel(page).getByText('Saved as Asia/Tokyo.', { exact: true })).toBeVisible(); await expect(tzNavZone(page)).toBeFocused();
+    expect(await tzNavUnloadBlocked(page)).toBe(false); await expect(tzRecoveryCheck(page)).toHaveCount(0);
+    const dialogs: string[] = []; page.on('dialog', dialog => { dialogs.push(dialog.message()); void dialog.dismiss(); });
+    await tzNavLeave(page); await expect(page.locator('[data-recued-yours]')).toBeVisible(); expect(dialogs).toEqual([]);
+    expect(await tzNavWrites(page)).toEqual([{ mode: 'fixed', zone: 'Asia/Tokyo' }]);
+    expect(await page.evaluate(() => window.__timezoneNavigation.reads)).toBe(before + 1);
+  });
+
+  for (const outcome of ['success', 'error'] as const) {
+    test(`Server timezone recovery ignores a late check ${outcome} after accepted departure at ${width}px`, async ({ page }) => {
+      await openTimezoneRecovery(page, width);
+      await page.evaluate(fail => {
+        window.__timezoneNavigation.failNextRead = fail; window.__app.holdRpcResponses?.('server.timezone.get');
+      }, outcome === 'error');
+      await tzRecoveryCheck(page).press('Enter'); await expect(tzRecoveryPending(page)).toBeFocused();
+      const old = await tzNavPanel(page).elementHandle(), dialogs: string[] = []; let accept = true;
+      page.on('dialog', dialog => { dialogs.push(dialog.message()); void (accept ? dialog.accept() : dialog.dismiss()); });
+      await tzNavLeave(page); await expect(page.locator('[data-recued-yours]')).toBeVisible(); expect(dialogs).toEqual([tzNavDraftPrompt]);
+      expect(await old!.evaluate(panel => panel.isConnected)).toBe(false);
+      const before = await page.evaluate(() => window.__timezoneNavigation.reads);
+      await page.evaluate(() => window.__app.setHash('#settings/server/timezone'));
+      await expect.poll(() => page.evaluate(() => window.__timezoneNavigation.reads)).toBe(before + 1);
+      expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('server.timezone.get', 1))).toBe(1);
+      await expect(tzNavZone(page)).toHaveValue('Asia/Tokyo'); await tzNavZone(page).fill('  Pacific/Auckland  ');
+      await tzNavZone(page).evaluate((input: HTMLInputElement) => input.setSelectionRange(3, 9, 'backward'));
+      const fresh = await tzNavZone(page).elementHandle();
+      expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('server.timezone.get', 0))).toBe(1);
+      await expect(tzNavZone(page)).toHaveValue('  Pacific/Auckland  '); await expect(tzNavZone(page)).toBeFocused();
+      expect(await fresh!.evaluate(input => input.isConnected && input === document.activeElement)).toBe(true);
+      expect(await tzNavZone(page).evaluate((input: HTMLInputElement) => [input.selectionStart, input.selectionEnd, input.selectionDirection])).toEqual([3, 9, 'backward']);
+      await expect(tzNavPanel(page).getByRole('alert')).toHaveCount(0); await expect(tzRecoveryCheck(page)).toHaveCount(0);
+      accept = false; await tzNavLeave(page); await expect.poll(() => dialogs).toEqual([tzNavDraftPrompt, tzNavDraftPrompt]);
+      expect(await tzNavWrites(page)).toEqual([{ mode: 'fixed', zone: 'Asia/Tokyo' }]);
+    });
+  }
+}

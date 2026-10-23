@@ -1286,6 +1286,9 @@ export type {
   SellerOfferStateTransitionRequest,
   SellerOfferStateTransitionResult,
   SellerOfferStateTransitionResponse,
+  SellerOfferCheckoutUrlUpdateRequest,
+  SellerOfferCheckoutUrlUpdateResult,
+  SellerOfferCheckoutUrlUpdateResponse,
   SellerUsageKind,
   SellerUsagePeriodGranularity,
   SellerSettings,
@@ -3277,6 +3280,8 @@ export {
   isReminderState,
   formatReminderTime,
   formatReminderWhen,
+  formatReminderAt,
+  formatReminderDay,
   reminderDeliveryText,
 } from './reminder.js';
 export type {
@@ -3630,6 +3635,8 @@ export type {
 } from './mail.js';
 
 // Phase G — server status pill (D-109).
+export { SERVER_BACKUP_HEALTH_STALE_MS, serverBackupHealthView } from './server-backup-health.js';
+export type { ServerBackupHealthSnapshot, ServerBackupHealthView, ServerBackupWarning } from './server-backup-health.js';
 export {
   HEARTBEAT_STALE_MS,
   SERVER_HEARTBEAT_INTERVAL_MS,
@@ -3954,6 +3961,10 @@ export type {
   ServerPassportClientEntry,
   ServerCapabilityProfile,
   ServerPassportRecoveryBlock,
+  ServerPassportBackupEvidence,
+  ServerPassportBackupEvidenceRedacted,
+  ServerPassportWatchdogEvidence,
+  ServerPassportWatchdogEvidenceRedacted,
   ServerPassportExportOptions,
   ServerPassportClientSummary,
   ServerCapabilityProfileRedacted,
@@ -3978,15 +3989,19 @@ export {
 export {
   RECEPTION_RECORD_KINDS,
   RECEPTION_RECORD_KIND_SET,
+  RECEPTION_RECORD_ID_MAX,
   RECEPTION_RECORD_LIST_LIMIT_DEFAULT,
   RECEPTION_RECORD_LIST_LIMIT_MAX,
   isReceptionRecordKind,
 } from './reception-record.js';
 export type {
   ReceptionBookingRecordSummary,
+  ReceptionRecordAnswer,
   ReceptionRecordKind,
   ReceptionRecordListInput,
   ReceptionRecordListResult,
+  ReceptionRecordOpenInput,
+  ReceptionRecordOpenResult,
   ReceptionRecordResolution,
   ReceptionRecordSummary,
   ReceptionSubmissionRecordSummary,
@@ -4205,6 +4220,7 @@ export {
   INTAKE_FORM_DEFAULT_SUCCESS_MESSAGE,
   validateIntakeFormConfig,
   validateIntakeFormSubmission,
+  intakeFormChoiceText,
 } from './intake-form-config.js';
 export type {
   IntakeFormConfig,
@@ -5190,6 +5206,7 @@ export {
   WEBHOOK_BODY_MAX_BYTES,
   WEBHOOK_GLOBAL_RATE_LIMIT_RPS,
   WS_PER_TOKEN_RATE_LIMIT_RPS,
+  RPC_WS_MAX_IN_FLIGHT_PER_CLIENT,
   MCP_PER_TOKEN_RATE_LIMIT_RPM,
 } from './d148-constants.js';
 
@@ -6766,6 +6783,7 @@ export * from './download-frame.js';
 // the assembled archive under `exports/` for `server.archive.import`).
 export * from './archive-upload.js';
 export * from './archive-remote.js';
+export * from './backup-watchdog.js';
 
 // D-148 § A.2.1 follow-on — the WS bearer's `Sec-WebSocket-Protocol` carrier.
 // Three surfaces must agree byte for byte (webclient + Bridge encode, server

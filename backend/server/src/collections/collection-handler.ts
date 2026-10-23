@@ -75,6 +75,7 @@ import {
   handleMailEnrollManagedOAuth,
   handleMailList,
   handleMailDelete,
+  handleMailResync,
   type MailEnrollDeps,
 } from './mail/enroll.js';
 import {
@@ -990,6 +991,7 @@ export type CollectionMethods =
   | 'collection.mail.updateCredentials'
   | 'collection.mail.list'
   | 'collection.mail.delete'
+  | 'collection.mail.resync'
   // D-318 step 1 — the email chat door's chat mailbox.
   | 'collection.mail.chat_door.get'
   | 'collection.mail.chat_door.set'
@@ -1093,6 +1095,7 @@ export const makeCollectionHandlers = (
       'collection.mail.updateCredentials',
       'collection.mail.list',
       'collection.mail.delete',
+      'collection.mail.resync',
       'collection.mail.chat_door.get',
       'collection.mail.chat_door.set',
       'collection.mail.chat_door.check',
@@ -1157,6 +1160,8 @@ export const makeCollectionHandlers = (
       'collection.mail.chat_door.recent': async () => handleMailChatDoorRecent(requireMailChatDoor(deps)),
       'collection.mail.delete': async (args) =>
         handleMailDelete(requireMailEnroll(deps), args as Parameters<typeof handleMailDelete>[1]),
+      'collection.mail.resync': async (args) =>
+        handleMailResync(requireMailEnroll(deps), args as Parameters<typeof handleMailResync>[1]),
       'collection.resync': async (args) =>
         handleCollectionResync(deps, args as Parameters<typeof handleCollectionResync>[1]),
       'collection.deleteRecord': async (args) =>

@@ -89,32 +89,44 @@ export interface VoiceCaptureGlobals {
   now?: () => Date;
 }
 
+const readVoiceCaptureCapabilities = (globals?: VoiceCaptureGlobals) => {
+  try {
+    const g: VoiceCaptureGlobals = globals ?? {
+      ...(typeof navigator !== 'undefined' && navigator.mediaDevices
+        ? { mediaDevices: navigator.mediaDevices }
+        : {}),
+      ...(typeof MediaRecorder !== 'undefined' ? { MediaRecorder } : {}),
+    };
+    const devices = g.mediaDevices;
+    const Recorder = g.MediaRecorder;
+    if (!devices || typeof devices.getUserMedia !== 'function' || !Recorder) return null;
+
+    const supported = typeof Recorder.isTypeSupported === 'function'
+      ? CANDIDATE_MIMES.find((m) => Recorder.isTypeSupported?.(m) === true)
+      // No `isTypeSupported` at all (older Safari) — WebM is the wrong guess
+      // there, so take the container that platform actually records.
+      : 'audio/mp4';
+    if (!supported) return null;
+    return { devices, Recorder, supported, now: g.now ?? (() => new Date()) };
+  } catch {
+    // Recording is optional when browser policy blocks capability discovery.
+    return null;
+  }
+};
+
 /** Build the production factory, or `null` when this browser cannot record.
  *
  *  ⚠ Returns null for THREE distinct absences — no `mediaDevices` (an insecure
  *  context is the common one: `getUserMedia` is undefined over plain http), no
  *  `MediaRecorder`, and no supported container. The caller does not need to
- *  tell them apart: all three mean "do not offer this control here". */
+ *  tell them apart: all three mean "do not offer this control here". Restricted
+ *  capability reads also leave the control absent. */
 export const browserVoiceCaptureFactory = (
   globals?: VoiceCaptureGlobals,
 ): VoiceCaptureFactory => {
-  const g: VoiceCaptureGlobals = globals ?? {
-    ...(typeof navigator !== 'undefined' && navigator.mediaDevices
-      ? { mediaDevices: navigator.mediaDevices }
-      : {}),
-    ...(typeof MediaRecorder !== 'undefined' ? { MediaRecorder } : {}),
-  };
-  const devices = g.mediaDevices;
-  const Recorder = g.MediaRecorder;
-  if (!devices || typeof devices.getUserMedia !== 'function' || !Recorder) return null;
-
-  const supported = typeof Recorder.isTypeSupported === 'function'
-    ? CANDIDATE_MIMES.find((m) => Recorder.isTypeSupported?.(m) === true)
-    // No `isTypeSupported` at all (older Safari) — WebM is the wrong guess
-    // there, so take the container that platform actually records.
-    : 'audio/mp4';
-  if (!supported) return null;
-  const now = g.now ?? (() => new Date());
+  const capabilities = readVoiceCaptureCapabilities(globals);
+  if (capabilities === null) return null;
+  const { devices, Recorder, supported, now } = capabilities;
 
   return async (onError): Promise<VoiceCaptureSession> => {
     const stream = await devices.getUserMedia({ audio: true });

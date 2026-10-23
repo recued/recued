@@ -21,15 +21,21 @@
  *  tab would have been the first non-collection tab there, widening what `#data` means, to show
  *  rows whose destination `#data` already shows better.
  *
- *  ## Redaction
+ *  ## Redaction, and opening one record
  *
- *  ⛔ The projection carries neither the visitor's values NOR the ciphertext to recover them
- *  (D-149 § N.6 / D-173 I-3), so there is nothing here to reveal and no reveal control to build.
- *  A booking's SLOT is not PII — it is the booking's substance, and the inbox card already shows
- *  a held booking's slot. */
+ *  ⛔ The LIST carries neither the visitor's values NOR the ciphertext to recover them
+ *  (D-149 § N.6 / D-173 I-3). A booking's SLOT is not PII — it is the booking's substance, and
+ *  the inbox card already shows a held booking's slot.
+ *
+ *  🔑 Who the visitor was is one click further: "Show details" asks `reception.record.open` for
+ *  THAT record, and the server opens it (D-149 § N.6 "Open submission detail"). Nothing is
+ *  opened until the owner asks, one record at a time, and an opened record is held only in this
+ *  panel's memory. It is how the owner picks up a request no recipe answered — a buyer a selling
+ *  form turned away, a booking left waiting. */
 
 import type {
   ReceptionRecordListResult,
+  ReceptionRecordOpenResult,
   ReceptionRecordSummary,
 } from '@recued/contracts';
 // ⛔⛔ THE LOCAL COPY ESCAPED FOUR CHARACTERS, NOT FIVE. It was missing
@@ -57,10 +63,10 @@ import {
   type ReceptionRecordsOutcomeFilter,
 } from './records-model.js';
 
-/** Narrowed to the one read this panel owns. The wider route conn satisfies it by
+/** Narrowed to the two reads this panel owns. The wider route conn satisfies it by
  *  contravariance — no shim, and no bootstrap edit to pass a caller through. */
 export type ReceptionRecordsConn = Conn<
-  Pick<ServerRpcRegistry, 'reception.record.list'>
+  Pick<ServerRpcRegistry, 'reception.record.list' | 'reception.record.open'>
 >;
 
 export const RECEPTION_RECORDS_ROOT_ATTR = 'data-recued-reception-records';
@@ -72,6 +78,12 @@ export const RECEPTION_RECORDS_TRUNCATED_ATTR = 'data-recued-reception-records-t
 export const RECEPTION_RECORDS_EMPTY_ATTR = 'data-recued-reception-records-empty';
 export const RECEPTION_RECORDS_ERROR_ATTR = 'data-recued-reception-records-error';
 export const RECEPTION_RECORDS_RETRY_ATTR = 'data-recued-reception-records-retry';
+/** The "Show details" / "Hide details" button on a row; its value is the record id. */
+export const RECEPTION_RECORDS_DETAILS_TOGGLE_ATTR = 'data-recued-reception-records-details-toggle';
+/** "Try again" inside a record that could not be opened; its value is the record id. */
+export const RECEPTION_RECORDS_DETAILS_RETRY_ATTR = 'data-recued-reception-records-details-retry';
+/** The opened record's block under its row; its value is the record id. */
+export const RECEPTION_RECORDS_DETAILS_ATTR = 'data-recued-reception-records-details';
 
 /** ⛔ The copy for a row that resolved to nothing. Exported because it is the ONE sentence this
  *  whole surface exists to be able to say, and a test should pin it rather than a class name.
@@ -88,6 +100,25 @@ export const RECEPTION_RECORDS_UNRESOLVED_TERMINAL_COPY = 'Nothing materialized'
  *  those and alarming about none. */
 export const RECEPTION_RECORDS_WAITING_HINT =
   'Waiting records have not been handed off yet. They carry no approval in the Inbox and no destination in Data, so this is the only place they appear.';
+
+/** What the owner reads when a record will not open, by the server's refusal code. Owner
+ *  words only: the server's message names the rpc and is for a developer. */
+const OPEN_FAILURE_COPY: Readonly<Record<string, string>> = {
+  reception_record_not_found: 'This record is no longer here.',
+  reception_record_unreadable: 'This record could not be opened. Its contents cannot be read.',
+};
+const OPEN_FAILURE_DEFAULT = 'Could not open this record. Try again.';
+
+const openFailureCopy = (err: unknown): string => {
+  const code = err !== null && typeof err === 'object' ? (err as { code?: unknown }).code : undefined;
+  return typeof code === 'string' ? (OPEN_FAILURE_COPY[code] ?? OPEN_FAILURE_DEFAULT) : OPEN_FAILURE_DEFAULT;
+};
+
+/** One row's opened record, held only while this panel lives. */
+type RecordDetails =
+  | { readonly state: 'loading' }
+  | { readonly state: 'open'; readonly result: ReceptionRecordOpenResult }
+  | { readonly state: 'error'; readonly message: string };
 
 export interface ReceptionRecordsPanelOptions {
   host: HTMLElement;
@@ -107,6 +138,10 @@ export interface ReceptionRecordsPanelMount {
   refresh(): Promise<void>;
   setKind(kind: ReceptionRecordsKindFilter): Promise<void>;
   setOutcome(outcome: ReceptionRecordsOutcomeFilter): Promise<void>;
+  /** Show one record's details, opening it on the server the first time. */
+  openDetails(record_id: string): Promise<void>;
+  /** Hide one record's details. */
+  closeDetails(record_id: string): void;
   dispose(): void;
 }
 
@@ -165,7 +200,37 @@ const renderResolved = (row: ReceptionRecordRowModel): string => {
   return parts.join('');
 };
 
-const renderRow = (row: ReceptionRecordRowModel): string => {
+/** A DOM id for a row's details block, for `aria-controls`. Record ids are UUIDs; anything
+ *  else is reduced to safe characters rather than trusted into an id. */
+const detailsDomId = (record_id: string): string =>
+  `reception-records-details-${record_id.replace(/[^A-Za-z0-9_-]/g, '_')}`;
+
+/** ⛔ Every value escaped: these are what an ANONYMOUS VISITOR typed. */
+const renderDetails = (record_id: string, details: RecordDetails): string => {
+  const id = escapeHtml(record_id);
+  const domId = escapeHtml(detailsDomId(record_id));
+  if (details.state === 'loading') {
+    return `<div class="reception-records-details" id="${domId}" ${RECEPTION_RECORDS_DETAILS_ATTR}="${id}" role="status">Opening…</div>`;
+  }
+  if (details.state === 'error') {
+    return `<div class="reception-records-details" id="${domId}" ${RECEPTION_RECORDS_DETAILS_ATTR}="${id}">`
+      + `<p class="reception-records-details-error" role="alert">${escapeHtml(details.message)} `
+      + `<button type="button" class="reception-records-details-button" ${RECEPTION_RECORDS_DETAILS_RETRY_ATTR}="${id}">Try again</button></p>`
+      + '</div>';
+  }
+  const { result } = details;
+  const answers = result.answers.length === 0
+    ? '<p class="reception-records-note">They sent the form without answering any question.</p>'
+    : `<dl class="reception-records-answers">${result.answers.map((answer) =>
+      `<div class="reception-records-answer"><dt>${escapeHtml(answer.label)}</dt><dd>${escapeHtml(answer.value)}</dd></div>`,
+    ).join('')}</dl>`;
+  const reply = result.visitor_email === null
+    ? '<p class="reception-records-note">They left no email address.</p>'
+    : `<p class="reception-records-reply"><a href="mailto:${escapeHtml(encodeURIComponent(result.visitor_email))}">Write to ${escapeHtml(result.visitor_email)}</a></p>`;
+  return `<div class="reception-records-details" id="${domId}" ${RECEPTION_RECORDS_DETAILS_ATTR}="${id}">${answers}${reply}</div>`;
+};
+
+const renderRow = (row: ReceptionRecordRowModel, details: RecordDetails | undefined): string => {
   const slotLine =
     row.slot !== null
       ? `<div class="reception-records-slot">${escapeHtml(formatSlot(row.slot))}</div>`
@@ -176,6 +241,13 @@ const renderRow = (row: ReceptionRecordRowModel): string => {
   const kindLabel = escapeHtml(row.kind_label);
   const outcomeLabel = escapeHtml(row.outcome_label);
   const receivedLabel = escapeHtml(row.received_label);
+  // The form by the owner's name for it ("Buy the kit"), which is what a notice about this
+  // record calls it; its endpoint id only when the server could not name it.
+  const source = row.form_name !== null
+    ? `<span class="reception-records-endpoint">${escapeHtml(row.form_name)}</span>`
+    : `<span class="reception-records-endpoint">Endpoint <code>${endpointId}</code></span>`;
+  const expanded = details !== undefined;
+  const toggle = `<button type="button" class="reception-records-details-button" aria-expanded="${expanded ? 'true' : 'false'}" aria-controls="${escapeHtml(detailsDomId(row.record_id))}" ${RECEPTION_RECORDS_DETAILS_TOGGLE_ATTR}="${recordId}">${expanded ? 'Hide details' : 'Show details'}</button>`;
   return `
     <li class="reception-records-row${waitingClass}" ${RECEPTION_RECORDS_ROW_ATTR}="${recordId}">
       <div class="reception-records-row-head">
@@ -185,9 +257,11 @@ const renderRow = (row: ReceptionRecordRowModel): string => {
       </div>
       ${slotLine}
       <div class="reception-records-row-foot">
-        <span class="reception-records-endpoint">Endpoint <code>${endpointId}</code></span>
+        ${source}
         ${renderResolved(row)}
+        ${toggle}
       </div>
+      ${expanded ? renderDetails(row.record_id, details) : ''}
     </li>
   `;
 };
@@ -235,6 +309,18 @@ export const RECEPTION_RECORDS_STYLES = `
 .reception-records-unresolved { font-style: italic; }
 .reception-records-note { margin: 0; font-size: 12px; color: var(--fg-muted); }
 .reception-records-error { padding: 10px 12px; border: 1px solid var(--danger); border-radius: 9px; font-size: 13px; }
+.reception-records-details-button { box-sizing: border-box; min-height: 36px; margin-left: auto; padding: 5px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--fg); font-size: 12px; font-weight: 640; cursor: pointer; }
+.reception-records-details-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.reception-records-details { display: grid; gap: 8px; padding-top: 8px; border-top: 1px solid var(--border); font-size: 13px; }
+.reception-records-answers { display: grid; gap: 6px; margin: 0; }
+.reception-records-answer { display: grid; grid-template-columns: minmax(0, 160px) minmax(0, 1fr); gap: 10px; }
+.reception-records-answer dt { color: var(--fg-muted); overflow-wrap: anywhere; }
+.reception-records-answer dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.reception-records-reply { margin: 0; }
+.reception-records-reply a { display: inline-flex; align-items: center; min-height: 36px; color: var(--accent); font-weight: 600; }
+.reception-records-reply a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.reception-records-details-error { margin: 0; }
+@media (max-width: 520px) { .reception-records-answer { grid-template-columns: minmax(0, 1fr); gap: 2px; } }
 `;
 
 export const mountReceptionRecordsPanel = (
@@ -261,6 +347,9 @@ export const mountReceptionRecordsPanel = (
 
   let kind: ReceptionRecordsKindFilter = 'all';
   let outcome: ReceptionRecordsOutcomeFilter = 'all';
+  // The records the owner opened, by id. Kept across a filter change, so a record still listed
+  // stays open; never written anywhere else.
+  const details = new Map<string, RecordDetails>();
   let model: ReceptionRecordsModel = emptyModel;
   let loading = true;
   let error: string | null = null;
@@ -320,6 +409,28 @@ export const mountReceptionRecordsPanel = (
     return activeElement != null && activeElement === retryButton();
   };
 
+  /** A row's details button, so a re-render that replaced it can hand focus back. */
+  const detailsButton = (record_id: string): HTMLButtonElement | null => {
+    const querySelector = (
+      root as HTMLElement & {
+        querySelector?: <T extends Element>(selectors: string) => T | null;
+      }
+    ).querySelector;
+    if (typeof querySelector !== 'function') return null;
+    const escaped = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+      ? CSS.escape(record_id)
+      : record_id.replace(/["\\]/g, '\\$&');
+    return querySelector.call(
+      root,
+      `[${RECEPTION_RECORDS_DETAILS_TOGGLE_ATTR}="${escaped}"]`,
+    ) as HTMLButtonElement | null;
+  };
+
+  const ownsDetailsFocus = (record_id: string): boolean => {
+    const activeElement = (doc as Document & { activeElement?: Element | null }).activeElement;
+    return activeElement != null && activeElement === detailsButton(record_id);
+  };
+
   const render = (
     focus: FilterFocus | null = null,
     focusRetry = false,
@@ -360,7 +471,7 @@ export const mountReceptionRecordsPanel = (
           : 'No reception records yet. Bookings and intake submissions appear here as they arrive.';
       body = `<p class="reception-records-note" ${RECEPTION_RECORDS_EMPTY_ATTR}>${escapeHtml(copy)}</p>`;
     } else {
-      body = `<ul class="reception-records-list">${model.rows.map(renderRow).join('')}</ul>`;
+      body = `<ul class="reception-records-list">${model.rows.map((row) => renderRow(row, details.get(row.record_id))).join('')}</ul>`;
     }
     // Injected per render like the inbox panel does — `innerHTML` replaces the whole subtree,
     // so the style element has to be part of it.
@@ -433,9 +544,52 @@ export const mountReceptionRecordsPanel = (
     }
   };
 
+  /** Open one record. Asked once; a second click while it is opening does nothing. */
+  const openDetails = async (record_id: string): Promise<void> => {
+    const current = details.get(record_id);
+    if (current?.state === 'loading' || current?.state === 'open') return;
+    const hadFocus = ownsDetailsFocus(record_id);
+    details.set(record_id, { state: 'loading' });
+    render();
+    if (hadFocus) detailsButton(record_id)?.focus?.({ preventScroll: true });
+    let next: RecordDetails;
+    try {
+      const result = await opts.conn('reception.record.open', { record_id });
+      next = { state: 'open', result };
+    } catch (err) {
+      next = { state: 'error', message: openFailureCopy(err) };
+    }
+    // Hidden or disposed while it was opening: drop the answer, never paint it.
+    if (disposed || details.get(record_id)?.state !== 'loading') return;
+    const stillFocused = ownsDetailsFocus(record_id);
+    details.set(record_id, next);
+    render();
+    if (stillFocused) detailsButton(record_id)?.focus?.({ preventScroll: true });
+  };
+
+  const closeDetails = (record_id: string): void => {
+    if (!details.has(record_id)) return;
+    const hadFocus = ownsDetailsFocus(record_id);
+    details.delete(record_id);
+    render();
+    if (hadFocus) detailsButton(record_id)?.focus?.({ preventScroll: true });
+  };
+
   const onClick = (ev: Event): void => {
     const target = ev.target as HTMLElement | null;
     if (target === null || typeof target.getAttribute !== 'function') return;
+    const toggleId = target.getAttribute(RECEPTION_RECORDS_DETAILS_TOGGLE_ATTR);
+    if (toggleId !== null) {
+      if (details.has(toggleId)) closeDetails(toggleId);
+      else void openDetails(toggleId);
+      return;
+    }
+    const retryId = target.getAttribute(RECEPTION_RECORDS_DETAILS_RETRY_ATTR);
+    if (retryId !== null) {
+      details.delete(retryId);
+      void openDetails(retryId);
+      return;
+    }
     const nextKind = target.getAttribute(RECEPTION_RECORDS_KIND_ATTR);
     if (nextKind !== null) {
       kind = nextKind as ReceptionRecordsKindFilter;
@@ -468,6 +622,8 @@ export const mountReceptionRecordsPanel = (
       outcome = next;
       return load();
     },
+    openDetails,
+    closeDetails,
     dispose: () => {
       if (disposed) return;
       disposed = true;

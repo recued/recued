@@ -7,6 +7,114 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.10.22 — 2026-10-22
+
+The Browser Bridge from the Chrome Web Store works with your server again. On
+26.10.20 and 26.10.21 it could not switch notifications on, and Settings showed
+every Bridge as offline. Reminders now give their time on your clock, a meeting
+that moves gets its reminder at the new time, and a workflow that stops says
+why. Mailboxes and calendars catch up properly after a restart, and a public
+form can sell one of your offers.
+
+### Before you update
+
+- **Update Recued before Quote Pipeline.** Its next version needs this
+  release: on an older Recued, customer sign-off refuses it and cannot
+  release a signed quote.
+
+### Added
+
+- **A workflow that stops says why.** Every workflow Recued ships now gives a
+  reason when one of its checks stops a run, such as "Choose up to eight
+  projects in Projects to examine.", where it used to say "Guard triggered".
+  A workflow you write can give its own with `fail_reason`.
+- **A program a pack needs says how to install it.** 123 of the 126 packs
+  that run a program on your server now list the commands that install it and
+  a link to its documentation, in the pack's Programs section. Recued still
+  never runs them for you.
+- **Sell from a public form.** With the Public Form Checkout pack, a form can
+  sell one of your offers: the buyer gets a Pay button that opens your payment
+  link (a Stripe payment link, for example), and the payment is matched to the
+  order when Stripe reports it. Set an offer's link in Settings → Seller →
+  Offers. When a form cannot start a payment, you get a notice that names the
+  offer and the reason.
+- **See who sent a request.** Reception → Records names each request's form,
+  and Show details shows the sender's answers and email, one request at a
+  time. Your AI cannot read them this way.
+- **Notices you missed.** A notice that came while the app was closed, offline
+  or in a background tab is shown once when you are back, and stays until you
+  close it.
+- **Form choices in words.** A choice on a form can show its own text, such as
+  "Under 10k", and still store its code. The visitor, the Inbox and Reception
+  → Records see the text. The Foundation templates label every choice; a form
+  made before this keeps its codes until you make it again from the template.
+- **Re-sync a mailbox**, as you can a calendar or a file account.
+- **Backup checks.** Scheduled checks that download each kept S3 backup again
+  and verify it, backup health in the server status, pings to a monitor you
+  host elsewhere so you hear when the server goes quiet, a guided drill that
+  checks the monitor alerts you, and a check after a restore that backups and
+  alerts are ready again. The support Passport includes this evidence.
+
+### Changed
+
+- **Updates say up front when a server cannot update itself.** A server you
+  started by hand cannot restart into a new version, so the Updates page now
+  gives the terminal steps instead of buttons that could only be refused.
+- **A restart catches mail up without starting over.** A mailbox lists only
+  the days it may have missed, instead of its whole window (400 days unless you
+  changed it).
+- **Data → Records** shows packs and record kinds by their names, and a limit
+  nobody set reads "no limit".
+- **A busy page waits its turn.** The app holds calls the server cannot take
+  yet instead of showing "Too many RPC calls", and says when the server stays
+  busy.
+- **Tool descriptions an AI reads** say "the owner" instead of a sample
+  person's name.
+- **`recued --mcp`** writes only JSON-RPC to standard output and reports the
+  release's version.
+- **Smaller downloads.** The web app in a release no longer carries its
+  source map, so an install or update downloads about 18 MB of it instead of
+  55 MB.
+- **Settings keeps what you type.** Hostnames, certificates, time zone, quiet
+  hours, notification timing and the other Settings forms keep your edits
+  when a save fails and warn before you leave, a section that fails to load
+  offers Retry, and keyboard focus stays where you were.
+- **Logs** can copy a past run's summary, without its outputs, and clear all
+  filters at once; a recipe's result links to its run in Logs.
+- **Yours** reads far less from the database on large collections, with the
+  same results.
+
+### Fixed
+
+- **The Chrome Web Store Bridge can switch notifications on again.** Settings
+  → Approval & notifications read "Not set up" for a Bridge that was
+  installed, paired and connected, and turning Bridge notifications on was
+  refused, so a new store user could never turn them on. Reminders on the
+  Bridge still need a newer Bridge, one that confirms it showed them.
+- **A connected Bridge reads Online** in Settings → Approval & notifications.
+- **The web app pairs in a browser that blocks device hints**, and Settings →
+  Devices stays current while you revoke a device.
+- **Reminders give their time on your clock.** "Starting soon", "Task due
+  soon", "Promise overdue" and the rest ended in a UTC timestamp; they now say
+  "3:00 PM" or "Friday 23 October at 9:00 AM". The "While you were away" card
+  after quiet hours reads your clock too.
+- **A meeting that moves gets its reminder again** at its new time, when the
+  first one had already gone out.
+- **Reception → Records and a booking's reschedule link work again.** Both
+  answered that the server did not support them.
+- **Calendars.** An event deleted while the server was down, or while its sync
+  had expired, is now removed. Re-sync reads the calendar again, and an Outlook
+  calendar no longer stops seeing new events 90 days after you added it.
+- **Mail.** When an IMAP mailbox reconnects, it brings in the mail that arrived
+  and drops the mail deleted while it was away. After a restart it also picks
+  up flags changed on another device, such as read or starred.
+- **Contacts.** A restart no longer adds to every contact's interaction count.
+- **Meeting packs.** A Cal.com meeting nobody tagged with a project uses its
+  attendees' projects.
+- **Chat.** A record tied to a place names the place, and a place you type
+  stays as typed when the chat recalls an earlier conversation.
+- **Stats** breaks a measure's name between words, not inside one.
+
 ## 26.10.21 — 2026-10-21
 
 Settings → Updates can now update a server on macOS and on Windows, and on

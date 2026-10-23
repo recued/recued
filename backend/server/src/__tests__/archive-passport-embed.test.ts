@@ -25,6 +25,7 @@ import { importArchive } from '../archive/archive-import.js';
 import { verifyServerPassport, type PassportBlockProviders } from '../passport/index.js';
 import { createInMemoryPassportHistoryStore } from '../passport/index.js';
 import type { PassportExportRpcDeps } from '../passport/export-handler.js';
+import { backupRecoveryForPassport } from '../archive/passport-backup-evidence.js';
 import { generateEd25519Keypair, type Ed25519Keypair } from '../keys/index.js';
 
 const FIXED_NOW = 1_700_000_000_000;
@@ -73,10 +74,9 @@ const makeProviders = (
     installed_packs: [],
     connections: [],
   };
-  const recovery: ServerPassportRecoveryBlock = {
-    backup_status: 'unconfigured',
-    filevault_recovery_key_status: 'absent',
-  };
+  const recovery: ServerPassportRecoveryBlock = backupRecoveryForPassport({ backupWatchdog: { status: () => ({
+    configured: true, enabled: false, state: 'paused', ping_url: 'https://private-monitor.example/capability', configuration_revision: 'private-revision',
+  }) } }, () => FIXED_NOW);
   const key_health: KeyHealthBundle = {
     master_dek: { status: 'healthy' },
     sub_dek: { status: 'healthy' },
@@ -165,6 +165,8 @@ describe('archive passport embed', () => {
     const passport = JSON.parse(imported.passport!.toString('utf8'));
     expect(passport.profile).toBe('migration_full');
     expect(verifyServerPassport(passport)).toEqual({ ok: true });
+    expect(passport.recovery.backup_evidence.watchdog).toEqual({ configured: true, enabled: false, state: 'paused' });
+    expect(JSON.stringify(passport)).not.toContain('private-monitor'); expect(JSON.stringify(passport)).not.toContain('private-revision');
   });
 
   it('omits the passport when the toggle is off', async () => {

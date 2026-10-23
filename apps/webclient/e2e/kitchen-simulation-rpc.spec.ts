@@ -1,6 +1,7 @@
+import { HARNESS_ORIGIN } from './helpers/harness-origin.js';
 import { expect, test } from '@playwright/test';
 
-const base = 'http://127.0.0.1:4319/full-app-harness.html?recipe_simulation=1';
+const base = `${HARNESS_ORIGIN}/full-app-harness.html?recipe_simulation=1`;
 const status = '[data-recued-recipe-test-status]';
 test('the paired Kitchen route sends the authored sample to the server and renders its result', async ({ page }) => {
   await page.goto(`${base}#kitchen/recipe/sample-test`);

@@ -6,7 +6,9 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { ordinaryLocalFixture } from './ordinary-local-mutations-fixture.js';
-import { resourceFixtureDisposers, recordStep, calendarStep, recordsManifest } from './preapproval-resources-fixture.js';
+import {
+  CRASH_CASE_TIMEOUT_MS, CRASH_WRITER_LIMIT_MS, resourceFixtureDisposers, recordStep, calendarStep, recordsManifest,
+} from './preapproval-resources-fixture.js';
 import { createSqliteChatPlanStore } from '../storage/chat-plan-store.js';
 import { createPreflightResumer } from '../preflight-resumer.js';
 
@@ -76,12 +78,15 @@ it.skipIf(Boolean(inputFile)).each(cases)('recovers ordinary $kind $phase withou
   const input = join(dir, 'input.json'), output = join(dir, 'state.json');
   writeFileSync(input, JSON.stringify({ kind, phase, output }));
   const child = spawn(process.execPath, [join(root, 'node_modules/vitest/vitest.mjs'), 'run', resolve(import.meta.filename),
-    '--pool=forks', '--maxWorkers=1', '--project=backend-shared', '--teardownTimeout=1000', '-t', 'ordinary local mutation crash writer'],
+    '--pool=forks', '--maxWorkers=1', '--project=backend-shared', '--teardownTimeout=1000',
+    `--testTimeout=${CRASH_WRITER_LIMIT_MS}`, '-t', 'ordinary local mutation crash writer'],
   { cwd: root, env: { ...process.env, RECUED_ORDINARY_LOCAL_CRASH_INPUT: input }, stdio: ['ignore', 'pipe', 'pipe'] });
   let trace = ''; child.stdout.on('data', bytes => { trace += String(bytes); }); child.stderr.on('data', bytes => { trace += String(bytes); });
-  const timer = setTimeout(() => child.kill('SIGKILL'), 60_000);
+  let stopped = false;
+  const timer = setTimeout(() => { stopped = true; child.kill('SIGKILL'); }, CRASH_WRITER_LIMIT_MS);
   const code = await new Promise<number | null>((done, reject) => { child.once('error', reject); child.once('exit', done); });
   clearTimeout(timer); writeFileSync(join(dir, 'expected-crash.log'), trace);
+  expect(stopped, `the crash writer was still running after ${CRASH_WRITER_LIMIT_MS / 1000} s and was stopped: a hang, or a machine too loaded to start it`).toBe(false);
   expect(code, trace.slice(-3000)).not.toBe(0); expect(existsSync(output), trace.slice(-3000)).toBe(true);
   const state = JSON.parse(readFileSync(output, 'utf8')) as CrashState;
   dirs.push(state.previous.dir); expect(state.stage).toBe('killed'); expect(() => process.kill(state.pid, 0)).toThrow();
@@ -114,4 +119,4 @@ it.skipIf(Boolean(inputFile)).each(cases)('recovers ordinary $kind $phase withou
   expect(f.row('b')!.title).toBe('b'); expect(f.calendarUpdates).not.toHaveBeenCalled(); expect(f.calendarDeletes).not.toHaveBeenCalled();
   const before = f.db.prepare('SELECT data FROM local_mutation_receipts').pluck().all();
   await f.recover(); expect(f.db.prepare('SELECT data FROM local_mutation_receipts').pluck().all()).toEqual(before);
-}, 90_000);
+}, CRASH_CASE_TIMEOUT_MS);

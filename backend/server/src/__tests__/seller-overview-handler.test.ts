@@ -23,6 +23,7 @@ import {
   issueSellerManualCustomer,
   makeSellerOverviewHandlers,
   reissueSellerManualCustomerToken,
+  setSellerOfferCheckoutUrl,
   swapSellerManualCustomerTier,
   transitionSellerOfferState,
   updateSellerSettings,
@@ -310,6 +311,128 @@ describe('buildSellerOverview', () => {
     )).toThrow(/unknown field 'state'/);
   });
 
+  it('sets, replays and removes an offer\u2019s checkout link on the owner\u2019s own surface', () => {
+    const LINK = 'https://buy.stripe.com/test_kit2900';
+    sellerStore.ensureOffer({
+      offer_id: 'client-kit',
+      kind: 'document',
+      display_name: 'Client kit',
+      pricing_kind: 'fixed',
+      amount_minor: 2_900,
+      currency: 'USD',
+      now: NOW,
+    });
+
+    const set = setSellerOfferCheckoutUrl(
+      { sellerStore, now: () => NOW + 1 },
+      { offer_id: 'client-kit', expected_updated_at: NOW, checkout_url: LINK },
+    );
+    expect(set).toMatchObject({
+      result: 'updated',
+      offer: { checkout_url: LINK, updated_at: NOW + 1 },
+      overview: { offers: [expect.objectContaining({ offer_id: 'client-kit', checkout_url: LINK })] },
+    });
+    expect(setSellerOfferCheckoutUrl(
+      { sellerStore, now: () => NOW + 2 },
+      { offer_id: 'client-kit', expected_updated_at: NOW, checkout_url: LINK },
+    ).result).toBe('unchanged');
+
+    const conflict = (() => {
+      try {
+        setSellerOfferCheckoutUrl(
+          { sellerStore, now: () => NOW + 3 },
+          { offer_id: 'client-kit', expected_updated_at: NOW, checkout_url: 'https://buy.stripe.com/test_other' },
+        );
+      } catch (err) {
+        return err as { code?: string; message?: string };
+      }
+      return null;
+    })();
+    expect(conflict?.code).toBe('conflict');
+    expect(conflict?.message).toBe('This offer changed after this page loaded. Reload the page and try again.');
+
+    expect(setSellerOfferCheckoutUrl(
+      { sellerStore, now: () => NOW + 4 },
+      { offer_id: 'client-kit', expected_updated_at: NOW + 1, checkout_url: null },
+    )).toMatchObject({ result: 'updated', offer: { checkout_url: null } });
+
+    expect(() => setSellerOfferCheckoutUrl(
+      { sellerStore },
+      { offer_id: 'client-kit', expected_updated_at: NOW + 4, checkout_url: 'http://buy.stripe.com/x' },
+    )).toThrow('That is not a full payment link. Paste the whole link, starting with https://.');
+    expect(() => setSellerOfferCheckoutUrl(
+      { sellerStore },
+      { offer_id: 'client-kit', expected_updated_at: NOW + 4 } as never,
+    )).toThrow(/checkout_url must be a link, or null to remove it/);
+    expect(() => setSellerOfferCheckoutUrl(
+      { sellerStore },
+      { offer_id: 'client-kit', expected_updated_at: NOW + 4, checkout_url: LINK, url: LINK } as never,
+    )).toThrow(/unknown field 'url'/);
+    expect(() => setSellerOfferCheckoutUrl(
+      { sellerStore },
+      { offer_id: 'missing', expected_updated_at: NOW, checkout_url: LINK },
+    )).toThrow('This offer no longer exists.');
+  });
+
+  it('answers every refusal an owner can reach in the owner\u2019s words', () => {
+    // The page shows a server refusal word for word. A live drive showed the
+    // store's text there: `server.seller.setOfferCheckoutUrl: seller_store_invalid:
+    // checkout_url is too long once Recued adds the order reference to it`.
+    const LINK = 'https://buy.stripe.com/test_kit2900';
+    const ensured = sellerStore.ensureOffer({
+      offer_id: 'client-kit',
+      kind: 'document',
+      display_name: 'Client kit',
+      pricing_kind: 'fixed',
+      amount_minor: 2_900,
+      currency: 'USD',
+      now: NOW,
+    });
+    const refusal = (request: Parameters<typeof setSellerOfferCheckoutUrl>[1]) => {
+      try {
+        setSellerOfferCheckoutUrl({ sellerStore, now: () => NOW + 10 }, request);
+      } catch (err) {
+        return err as { code?: string; message: string };
+      }
+      throw new Error('expected a refusal');
+    };
+    const at = { offer_id: 'client-kit', expected_updated_at: ensured.offer.updated_at };
+    const tooLong = 'That link is too long. Recued adds each order\u2019s reference to it, and the '
+      + 'result would be too long to use. Use the short link your payment company gives you.';
+    const refusals = [
+      // Too long only once the order reference is added, and too long before it.
+      [refusal({ ...at, checkout_url: `https://buy.stripe.com/${'a'.repeat(480)}` }), 'bad_request', tooLong],
+      [refusal({ ...at, checkout_url: `https://buy.stripe.com/${'a'.repeat(600)}` }), 'bad_request', tooLong],
+      // Passes the page's own https check, and is still no link.
+      [refusal({ ...at, checkout_url: 'https://[buy.stripe.com/x' }), 'bad_request',
+        'That is not a full payment link. Paste the whole link, starting with https://.'],
+      [refusal({ ...at, expected_updated_at: ensured.offer.updated_at - 1, checkout_url: LINK }), 'conflict',
+        'This offer changed after this page loaded. Reload the page and try again.'],
+    ] as const;
+    sellerStore.transitionOfferState({
+      offer_id: 'client-kit',
+      expected_state: 'draft',
+      expected_updated_at: ensured.offer.updated_at,
+      next_state: 'archived',
+      now: NOW + 5,
+    });
+    const archived = refusal({
+      offer_id: 'client-kit',
+      expected_updated_at: sellerStore.getOffer('client-kit')!.updated_at,
+      checkout_url: LINK,
+    });
+    expect(archived).toMatchObject({
+      code: 'bad_request',
+      message: 'This offer is put away, so its checkout link cannot change.',
+    });
+    for (const [err, code, message] of refusals) {
+      expect(err).toMatchObject({ code, message });
+    }
+    for (const err of [...refusals.map(([err]) => err), archived]) {
+      expect(err.message).not.toMatch(/server\.seller|seller_store|checkout_url|offer_id/);
+    }
+  });
+
   it('projects settings, tiers, customers, rollups, and llm_gateway readiness', () => {
     sellerStore.upsertSettings({
       default_grace_hours: 48,
@@ -476,6 +599,7 @@ describe('makeSellerOverviewHandlers', () => {
       'server.seller.getOverview',
       'server.seller.listOrders',
       'server.seller.transitionOfferState',
+      'server.seller.setOfferCheckoutUrl',
       'server.seller.updateSettings',
       'server.seller.acknowledgeLlmGatewayPaid',
       'server.seller.upsertManualTier',
@@ -522,6 +646,21 @@ describe('makeSellerOverviewHandlers', () => {
     expect(transitioned).toMatchObject({
       result: 'updated',
       offer: { state: 'active' },
+    });
+
+    // The checkout link is reachable through the registered slice, not just the
+    // exported function.
+    const linked = await slice!.handlers['server.seller.setOfferCheckoutUrl'](
+      {
+        offer_id: 'paid-document.outcome',
+        expected_updated_at: transitioned.offer.updated_at,
+        checkout_url: 'https://buy.stripe.com/test_brief',
+      },
+      undefined as never,
+    );
+    expect(linked).toMatchObject({
+      result: 'updated',
+      offer: { checkout_url: 'https://buy.stripe.com/test_brief' },
     });
 
     const upserted = await slice!.handlers['server.seller.upsertManualTier'](

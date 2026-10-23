@@ -83,6 +83,7 @@ import type {
 } from '@recued/contracts';
 
 import type { PairPassportInvoker } from './pair-passport-invoker.js';
+import { readWebLockProvider } from '../runtime/web-locks.js';
 import type {
   WebclientLocalStore,
   WebclientProfileStore,
@@ -153,15 +154,10 @@ export interface PairFinalizeLockProvider {
  *  expose `navigator.locks`; older browsers degrade to the entrance-
  *  guard-only behavior (the cross-tab same-server race is still
  *  closed; the rarer cross-tab different-server race remains). */
-const resolveDefaultLockProvider = (): PairFinalizeLockProvider | null => {
-  const navLike = (
+const resolveDefaultLockProvider = (): PairFinalizeLockProvider | null =>
+  readWebLockProvider(() => (
     globalThis as { navigator?: { locks?: PairFinalizeLockProvider } }
-  ).navigator;
-  if (!navLike?.locks || typeof navLike.locks.request !== 'function') {
-    return null;
-  }
-  return navLike.locks;
-};
+  ).navigator?.locks);
 
 /** Serialise `fn` under the cross-tab pair-finalize lock when a
  *  provider is available; no-op fall-through when not. The provider's

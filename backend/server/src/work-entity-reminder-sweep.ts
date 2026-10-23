@@ -53,7 +53,7 @@
  *  Spec: internal design notes D-269 REV 2 Q2/Q4 + step 4's recorded tension. */
 
 import type { Booking, Commitment, Task } from '@recued/contracts';
-import { DAY_MS, dueDayIso, dueSpan } from '@recued/contracts';
+import { DAY_MS, dueSpan, formatReminderAt, formatReminderDay, isDateOnlyDue } from '@recued/contracts';
 import {
   classifyCommitmentDueStatus,
   classifyTaskDueWindow,
@@ -133,7 +133,8 @@ export interface ReminderSweepDeps {
    *  policy; WHEN you may be disturbed lives here, once, for everything. */
   isQuiet?: (at: number) => boolean;
   /** The zone a DATE-ONLY due is judged in (`due-day.ts`): owed for the whole
-   *  of its day there, overdue once that day ends. Absent ⇒ UTC. */
+   *  of its day there, overdue once that day ends. Every reminder's time is
+   *  worded on its clock too. Absent ⇒ UTC. */
   timeZone?: () => string | undefined;
   ledger: ReminderLedger;
   /** The delivery. ⛔ A NOTIFICATION, not an event — see the header. */
@@ -315,10 +316,13 @@ export const runReminderSweep = (deps: ReminderSweepDeps): ReminderSweepResult =
       continue;
     }
 
-    // A date-only due names its DAY; its UTC-midnight instant read as a time
-    // ("…T00:00:00.000Z") was the previous evening for anyone west of UTC.
-    const when = (c.kind === 'task' || c.kind === 'commitment' ? dueDayIso(c.anchor_at) : null)
-      ?? new Date(c.anchor_at).toISOString();
+    // ⛔ On the owner's clock, worded as a D-324 reminder words it (2026-10-22).
+    // The text was the anchor's UTC instant, so a meeting at 3:00 PM in New York
+    // read "…T19:00:00.000Z". A date-only due names its DAY; its UTC-midnight
+    // instant read as a time was the previous evening for anyone west of UTC.
+    const when = (c.kind === 'task' || c.kind === 'commitment') && isDateOnlyDue(c.anchor_at)
+      ? formatReminderDay(c.anchor_at, timeZone, now)
+      : formatReminderAt(c.anchor_at, timeZone, now);
     deps.notify({ title: reminderTitle(c), text: `${c.title} — ${when}` });
     deps.ledger.set(key, c.anchor_at);
     result.reminded += 1;

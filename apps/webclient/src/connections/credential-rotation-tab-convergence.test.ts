@@ -131,6 +131,52 @@ describe('credential rotation tab convergence', () => {
     FakeBroadcastChannel.posted = [];
   });
 
+  it.each(['navigator', 'locks', 'request'] as const)(
+    'keeps reconciliation but declines ownership when Web Locks access throws at %s', async blocked => {
+      const { storage } = memoryStorage();
+      const browser = fakeDocument(storage);
+      const denied = (): never => { throw new Error('private browser policy detail'); };
+      const locks = Object.defineProperty({}, 'request', { get: denied });
+      const navigator = blocked === 'locks'
+        ? Object.defineProperty({}, 'locks', { get: denied }) : { locks };
+      Object.defineProperty(browser.document.defaultView!, 'navigator',
+        blocked === 'navigator' ? { get: denied } : { value: navigator });
+      const convergence = createBrowserCredentialRotationTabConvergence({
+        document: browser.document, scopeId: 'profile-a', storage,
+      })!;
+      try {
+        expect(convergence.supportsOwnershipLeases).toBe(false);
+        expect(convergence.supportsServerUpdateOwnership).toBe(false);
+        await expect(convergence.claimCredentialRotationOwnership({ kind: 'api', name: 'crm' }))
+          .resolves.toBeNull();
+        await expect(convergence.claimServerUpdateOwnership()).resolves.toBeNull();
+        const listener = vi.fn();
+        convergence.subscribe(listener);
+        browser.focus();
+        expect(listener).toHaveBeenCalledWith({ type: 'reconcile' });
+      } finally { convergence.close(); }
+    },
+  );
+
+  it('does not claim ownership when an available lock refuses acquisition', async () => {
+    const { storage } = memoryStorage();
+    const request = vi.fn<CredentialRotationOwnershipLockProvider['request']>(
+      () => Promise.reject(new Error('lock request denied')),
+    );
+    const convergence = createBrowserCredentialRotationTabConvergence({
+      document: fakeDocument(storage).document, scopeId: 'profile-a', storage,
+      ownershipLockProvider: { request },
+    })!;
+    try {
+      expect(convergence.supportsOwnershipLeases).toBe(true);
+      expect(convergence.supportsServerUpdateOwnership).toBe(true);
+      await expect(convergence.claimCredentialRotationOwnership({ kind: 'api', name: 'crm' }))
+        .resolves.toBeNull();
+      await expect(convergence.claimServerUpdateOwnership()).resolves.toBeNull();
+      expect(request).toHaveBeenCalledTimes(2);
+    } finally { convergence.close(); }
+  });
+
   it('sends exact identity ephemerally, scopes it to one profile, and persists only an opaque pulse', () => {
     const { storage, values } = memoryStorage();
     const sourceDoc = fakeDocument(storage);

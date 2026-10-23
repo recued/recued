@@ -330,6 +330,27 @@ describe('Boot does not wait for the first scan either', () => {
     expect(next.instances.get('mail', 'work')?.backfill_complete).toBe(true);
   });
 
+  // Every boot listed the whole window again, 400 days by default, fetching
+  // each message and attachment however short the downtime. The history cursor
+  // is what catches the mailbox up, so a restart lists only what it may have
+  // missed.
+  it('a restart lists the days since the mailbox last synced, not the whole window', async () => {
+    const h = setup();
+    await h.enroll();
+    h.releaseScan(200);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.stack.instances.get('mail', 'work')?.backfill_complete).toBe(true);
+    h.stack.instances.updateAuthState('mail', 'work', {
+      auth_state: 'healthy',
+      last_synced_at: Date.now() - 3 * 3_600_000,
+    });
+
+    const next = await h.restart();
+    await next.startAll('background');
+    await next.firstScans();
+    expect(h.scanQueries).toEqual(['newer_than:400d', 'newer_than:2d']);
+  });
+
   it('with no argument waits for the first scan, as before', async () => {
     const h = setup({ vaultLocked: true });
     await h.enroll();

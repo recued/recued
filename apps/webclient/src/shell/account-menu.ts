@@ -2952,6 +2952,13 @@ export const mountAccountMenu = (
     // The heartbeat-backed server controls are a nested, explicitly opened
     // surface. Let their Escape handler close back to the diagnosis outcome;
     // closing Account here in capture phase would skip that round-trip.
+    // WebKit pointer activation may leave focus on the page when a child
+    // button is replaced. The active handoff still owns that first Escape.
+    if (
+      activeConnectionDiagnosis !== null
+      && connectionDiagnosisControlReview?.diagnosisId === activeConnectionDiagnosis.id
+      && connectionDiagnosisControlReview.phase === 'active'
+    ) return;
     const closest = (event.target as {
       closest?: (selector: string) => Element | null;
     } | null)?.closest;

@@ -1120,7 +1120,14 @@ describe('MCP per-ingredient tool catalog', () => {
 // Extension-first tool-list merge
 // ────────────────────────────────────────────────────────────────
 
+import { readFileSync } from 'node:fs';
 import { _testing } from '../mcp-server.js';
+
+/** The release's version, from the file the build stamps it from. The server
+ *  reported a hard-coded '0.1.0' as its MCP identity until this was read here. */
+const RELEASE_VERSION = (JSON.parse(
+  readFileSync(new URL('../../package.json', import.meta.url), 'utf8'),
+) as { version: string }).version;
 
 describe('MCP protocol version negotiation', () => {
   const modernMeta = {
@@ -1154,7 +1161,7 @@ describe('MCP protocol version negotiation', () => {
       cacheScope: 'private',
     });
     expect(response.result._meta).toMatchObject({
-      'io.modelcontextprotocol/serverInfo': { name: 'recued', version: '0.1.0' },
+      'io.modelcontextprotocol/serverInfo': { name: 'recued', version: RELEASE_VERSION },
     });
   });
 
@@ -1171,7 +1178,7 @@ describe('MCP protocol version negotiation', () => {
     expect(response.result.tools.length).toBeGreaterThan(0);
     expect(response.result).toMatchObject({ resultType: 'complete' });
     expect(response.result._meta).toMatchObject({
-      'io.modelcontextprotocol/serverInfo': { name: 'recued', version: '0.1.0' },
+      'io.modelcontextprotocol/serverInfo': { name: 'recued', version: RELEASE_VERSION },
     });
   });
 

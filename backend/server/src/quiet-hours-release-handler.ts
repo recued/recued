@@ -24,7 +24,8 @@ export interface QuietHoursReleaseDeps {
   /** ⚠ `notify`, not `ask`: the digest was recomputed from anchor rows a moment
    *  ago, so there is nothing to make durable. */
   notify: (message: { title: string; text: string }) => Promise<unknown>;
-  /** The zone the card's times are rendered in. */
+  /** The zone the card's times are rendered in. Absent ⇒ the zone the digest
+   *  was judged in (`QuietHoursDigest.time_zone`), the owner's. */
   timeZone?: string;
 }
 

@@ -14,6 +14,7 @@ import {
   SellerStoreValidationError,
   createSellerStore,
   ensureSellerSchema,
+  sellerOfferCheckoutUrlProblem,
   type SellerStore,
 } from '../seller-store.js';
 
@@ -640,6 +641,121 @@ describe('seller offers', () => {
       expected_updated_at: NOW,
       next_state: 'active',
       now: NOW + 9,
+    })).toThrow(SellerStoreValidationError);
+  });
+});
+
+describe('seller offer checkout link (D-207 ruling C)', () => {
+  const LINK = 'https://buy.stripe.com/test_kit2900';
+  const ensureKit = (checkout_url?: string | null) => store.ensureOffer({
+    offer_id: 'client-kit',
+    kind: 'document',
+    display_name: 'Client kit',
+    pricing_kind: 'fixed',
+    amount_minor: 2_900,
+    currency: 'USD',
+    ...(checkout_url === undefined ? {} : { checkout_url }),
+    now: NOW,
+  });
+
+  it('sets, replays, changes and removes the link optimistically', () => {
+    ensureKit();
+    const set = store.setOfferCheckoutUrl({
+      offer_id: 'client-kit', expected_updated_at: NOW, checkout_url: LINK, now: NOW,
+    });
+    expect(set).toMatchObject({ result: 'updated', offer: { checkout_url: LINK, updated_at: NOW + 1 } });
+
+    // Asking for what is already there is answered, even on a stale token.
+    expect(store.setOfferCheckoutUrl({
+      offer_id: 'client-kit', expected_updated_at: NOW, checkout_url: LINK, now: NOW + 5,
+    })).toMatchObject({ result: 'unchanged', offer: { updated_at: NOW + 1 } });
+
+    // A different link on a stale token is refused, never silently applied.
+    expect(() => store.setOfferCheckoutUrl({
+      offer_id: 'client-kit',
+      expected_updated_at: NOW,
+      checkout_url: 'https://buy.stripe.com/test_other',
+      now: NOW + 6,
+    })).toThrow(SellerStoreConflictError);
+    expect(store.getOffer('client-kit')!.checkout_url).toBe(LINK);
+
+    const removed = store.setOfferCheckoutUrl({
+      offer_id: 'client-kit', expected_updated_at: NOW + 1, checkout_url: null, now: NOW + 7,
+    });
+    expect(removed).toMatchObject({ result: 'updated', offer: { checkout_url: null, updated_at: NOW + 7 } });
+  });
+
+  it('keeps an owner-set link through a recipe re-ensuring its offer', () => {
+    ensureKit();
+    store.setOfferCheckoutUrl({
+      offer_id: 'client-kit', expected_updated_at: NOW, checkout_url: LINK, now: NOW,
+    });
+    // `seller-offer-ensure` cannot name a link, so a recipe that re-validates its
+    // offer on every run passes none. That must not read as a different definition.
+    expect(ensureKit()).toMatchObject({ result: 'existing', offer: { checkout_url: LINK } });
+    // A caller that DOES name a link still has to name the same one.
+    expect(() => ensureKit('https://buy.stripe.com/test_other')).toThrow(SellerStoreConflictError);
+    expect(() => ensureKit(null)).toThrow(SellerStoreConflictError);
+  });
+
+  it('refuses a link the public page would not render', () => {
+    ensureKit();
+    for (const bad of [
+      'http://buy.stripe.com/test_kit2900',
+      'buy.stripe.com/test_kit2900',
+      'https://buy.stripe.com/test kit',
+      ' https://buy.stripe.com/test_kit2900',
+      '',
+    ]) {
+      expect(() => store.setOfferCheckoutUrl({
+        offer_id: 'client-kit', expected_updated_at: NOW, checkout_url: bad, now: NOW,
+      }), bad).toThrow(SellerStoreValidationError);
+    }
+    expect(store.getOffer('client-kit')!.checkout_url).toBeNull();
+  });
+
+  it('refuses a link that only breaks once the order reference is added to it', () => {
+    ensureKit();
+    // 500 characters renders on its own; with `?client_reference_id=oh_…` it would not.
+    const long = `https://buy.stripe.com/${'a'.repeat(500 - 'https://buy.stripe.com/'.length)}`;
+    expect(long).toHaveLength(500);
+    expect(() => store.setOfferCheckoutUrl({
+      offer_id: 'client-kit', expected_updated_at: NOW, checkout_url: long, now: NOW,
+    })).toThrow(/too long once Recued adds the order reference/);
+  });
+
+  it('names why a link cannot be held, so the owner is told the right mistake', () => {
+    expect(sellerOfferCheckoutUrlProblem(LINK)).toBeNull();
+    expect(sellerOfferCheckoutUrlProblem('http://buy.stripe.com/test_kit2900')).toBe('not_a_link');
+    expect(sellerOfferCheckoutUrlProblem('https://[buy.stripe.com/x')).toBe('not_a_link');
+    // Too long once the order reference is added, and too long before it: a long
+    // but well-formed link is never reported as "not a link".
+    expect(sellerOfferCheckoutUrlProblem(`https://buy.stripe.com/${'a'.repeat(477)}`)).toBe('too_long');
+    const overCap = `https://buy.stripe.com/${'a'.repeat(600)}`;
+    expect(sellerOfferCheckoutUrlProblem(overCap)).toBe('too_long');
+    ensureKit();
+    expect(() => store.setOfferCheckoutUrl({
+      offer_id: 'client-kit', expected_updated_at: NOW, checkout_url: overCap, now: NOW,
+    })).toThrow(/too long once Recued adds the order reference/);
+  });
+
+  it('refuses an archived offer and an offer that does not exist', () => {
+    ensureKit();
+    const archived = store.transitionOfferState({
+      offer_id: 'client-kit',
+      expected_state: 'draft',
+      expected_updated_at: NOW,
+      next_state: 'archived',
+      now: NOW,
+    });
+    expect(() => store.setOfferCheckoutUrl({
+      offer_id: 'client-kit',
+      expected_updated_at: archived.offer.updated_at,
+      checkout_url: LINK,
+      now: NOW + 2,
+    })).toThrow(/archived and cannot change/);
+    expect(() => store.setOfferCheckoutUrl({
+      offer_id: 'missing', expected_updated_at: NOW, checkout_url: LINK, now: NOW,
     })).toThrow(SellerStoreValidationError);
   });
 });

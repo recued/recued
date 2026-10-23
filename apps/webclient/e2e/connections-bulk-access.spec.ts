@@ -1,7 +1,8 @@
+import { HARNESS_ORIGIN } from './helpers/harness-origin.js';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { BULK_ACCESS_IDS as ids, installBulkAccessFixture } from './fixtures/connections-bulk-access.js';
 
-const origin = process.env.CONNECTIONS_UX_ORIGIN ?? 'http://127.0.0.1:4319';
+const origin = process.env.CONNECTIONS_UX_ORIGIN ?? HARNESS_ORIGIN;
 const panel = (page: Page) => page.locator('[data-bulk-access]');
 const action = (page: Page, name: string) => panel(page).locator(`[data-bulk-access-action="${name}"]`);
 const account = (page: Page, id: string) => panel(page).locator(`[data-bulk-access-account="${id}"]`);

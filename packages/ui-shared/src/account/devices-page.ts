@@ -46,6 +46,7 @@
 
 import { e } from '../template.js';
 import { section } from '../primitives/section.js';
+import { formatClientDateTime } from '../date-time.js';
 
 export type PairListEntryKind = 'webclient' | 'bridge' | 'cli';
 
@@ -74,6 +75,12 @@ export interface DevicesPageRow {
 
 export interface DevicesPageState {
   rows: DevicesPageRow[];
+  /** Opt in only when the host wires `refresh-devices`. A check time is
+   *  published after a successful roster read, and retained on failure. */
+  refresh?: {
+    pending: boolean;
+    lastSuccessfulAt?: number;
+  };
   /** When set, the row with the matching `instance_id` renders the
    *  inline two-stage confirm panel below it. The host transitions
    *  this slice on Revoke / Cancel clicks. Only one row at a time. */
@@ -100,6 +107,25 @@ const KIND_LABEL: Record<PairListEntryKind, string> = {
 };
 
 const COLUMN_COUNT = 4;
+
+const renderRefresh = (refresh: DevicesPageState['refresh']): string => {
+  if (refresh === undefined) return '';
+  const checked = refresh.lastSuccessfulAt === undefined
+    ? undefined
+    : new Date(refresh.lastSuccessfulAt);
+  const checkedLabel = checked !== undefined && Number.isFinite(checked.getTime())
+    ? `Last successful check: <time datetime="${e(checked.toISOString())}">${e(formatClientDateTime(checked))}</time>`
+    : 'Not checked yet';
+  return `
+    <div class="account-devices-refresh">
+      <button type="button" class="account-devices-action"
+        data-action="refresh-devices" aria-label="Refresh devices"${refresh.pending ? ' aria-disabled="true" aria-busy="true"' : ''}>
+        ${refresh.pending ? 'Refreshing…' : 'Refresh'}
+      </button>
+      <p class="account-devices-last-checked" data-devices-last-checked role="status">${checkedLabel}</p>
+    </div>
+  `;
+};
 
 const formatRelative = (epochMs: number, nowMs: number): string => {
   if (!epochMs) return 'Unknown';
@@ -248,6 +274,7 @@ export const renderDevicesPage = (state: DevicesPageState): string => {
   });
   const rows = sorted.map((r) => renderRow(r, state, nowMs)).join('');
   const body = `
+    ${renderRefresh(state.refresh)}
     <div class="account-devices-table-scroll" data-recued-scroll-rail>
       <table class="account-devices-table" role="table" aria-label="Paired devices">
         <thead>

@@ -109,7 +109,8 @@ import { createInMemoryServerKeyStore, ed25519Verify } from '../keys/index.js';
 
 describe('composeClientSecurityContext', () => {
   it('builds client-token, cert-stack, and passport-fetch deps', async () => {
-    const options = makeOptions();
+    const getBackupRecovery = vi.fn(() => ({ backup_status: 'unavailable' as const, filevault_recovery_key_status: 'absent' as const }));
+    const options = makeOptions({ getBackupRecovery });
 
     const context = await composeClientSecurityContext(options);
 
@@ -137,7 +138,9 @@ describe('composeClientSecurityContext', () => {
       auditLog: options.auditLog,
       getExposureMachine: options.getExposureMachine,
       pairedInstances: options.pairedInstances,
+      getBackupRecovery,
     });
+    expect(getBackupRecovery).not.toHaveBeenCalled();
     expect(context).toEqual({
       clientTokens: { tag: 'client-tokens' },
       tokenRotationEmitter: { tag: 'token-rotation-emitter' },

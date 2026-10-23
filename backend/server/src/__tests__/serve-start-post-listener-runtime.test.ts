@@ -3,6 +3,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ArchiveBackupHealthStatus, ArchiveBackupIntegrityStatus, LifecycleStatus } from '@recued/contracts';
 
 import { stripSourceComments } from './helpers/source-guards.js';
 
@@ -246,6 +247,43 @@ const makeOptions = (
   }) as unknown as StartPostListenerRuntimeOptions;
 
 describe('startPostListenerRuntime', () => {
+  it('wires passive cached backup observers into READY heartbeats', async () => {
+    runtimeMocks.composeCertStackLate.mockResolvedValue({ tlsCertSource: undefined, tlsRenewerConfigured: false });
+    runtimeMocks.startHousekeepingStartup.mockResolvedValue({ scheduler: undefined });
+    const destination = { connection_name: 'private-fixture', destination_id: 'a'.repeat(64) };
+    const health: ArchiveBackupHealthStatus = { checked_at: Date.now(), monitoring: 'active', destination,
+      policy: { alerts_enabled: true, backup_max_age_hours: 36, recovery_max_age_days: 30 }, alerts: [],
+      backup: { state: 'due' }, recovery: { state: 'current' } };
+    const integrity: ArchiveBackupIntegrityStatus = { monitoring: 'active', destination,
+      policy: { enabled: true, schedule: { cadence: 'daily', hour_utc: 4, minute_utc: 0, weekday_utc: 0 } },
+      last_run: { operation_id: 'private-run', destination_id: destination.destination_id,
+        started_at: Date.now() - 1000, outcome: 'failed', total: 1, checked: 1, failed: 1, skipped: 0 } };
+    const backupHealth = { status: vi.fn(() => health), save: vi.fn(() => health), tick: vi.fn(async () => {}), stop: vi.fn(async () => {}), resume: vi.fn() };
+    const backupIntegrity = { status: vi.fn(() => integrity), save: vi.fn(() => integrity), tick: vi.fn(async () => {}), stop: vi.fn(async () => {}), resume: vi.fn() };
+    const lifecycle: LifecycleStatus = { state: 'booting', boot_at: Date.now(), uptime_s: 1, restart_count: 0, restart_pending: false, supervisor_mode: 'native' };
+    const base = makeOptions(), broadcast = vi.fn();
+    const options = makeOptions({ backupHealth, backupIntegrity, getLifecycleSnapshot: () => lifecycle,
+      getSigningIdentity: () => undefined,
+      server: { ...base.server, wsServer: { ...base.server.wsServer, broadcastServerHeartbeat: broadcast } } });
+    await startPostListenerRuntime(options);
+    const spec = vi.mocked(options.backgroundServices.registerInterval).mock.calls.map(([entry]) => entry)
+      .find(entry => entry.name === 'server-heartbeat-emitter');
+    expect(spec).toBeDefined();
+    await spec?.tick();
+    expect(backupHealth.status).not.toHaveBeenCalled(); expect(broadcast).not.toHaveBeenCalled();
+    lifecycle.state = 'running';
+    await spec?.tick(); await spec?.tick();
+    expect(broadcast).toHaveBeenCalledTimes(2);
+    expect(broadcast).toHaveBeenLastCalledWith(expect.objectContaining({ lifecycle_state: 'running', backup_health: {
+      age_ms: expect.any(Number), monitoring: 'active', backup_state: 'due', recovery_test_state: 'current', integrity: { monitoring: 'active', state: 'failed' },
+    } }));
+    expect(backupHealth.status).toHaveBeenCalledTimes(1); expect(backupIntegrity.status).toHaveBeenCalledTimes(1);
+    for (const service of [backupHealth, backupIntegrity]) {
+      expect(service.tick).not.toHaveBeenCalled(); expect(service.save).not.toHaveBeenCalled();
+    }
+    expect(JSON.stringify(broadcast.mock.calls)).not.toContain('private-');
+  });
+
   it('starts runtime services in order and returns/publishes mutable refs', async () => {
     const order: string[] = [];
     const schedulersBundle = { tag: 'schedulers-bundle' };
@@ -283,6 +321,8 @@ describe('startPostListenerRuntime', () => {
     const options = makeOptions({
       restoreDrills: { tag: 'restore-drills' } as never,
       backupHealth: { tag: 'backup-health' } as never,
+      backupWatchdog: { tag: 'backup-watchdog' } as never,
+      backupIntegrity: { tag: 'backup-integrity' } as never,
       publishSchedulersBundle: vi.fn(() => {
         order.push('publish-schedulers');
       }),
@@ -313,6 +353,8 @@ describe('startPostListenerRuntime', () => {
     expect(runtimeMocks.startSchedulers).toHaveBeenCalledWith({
       restoreDrills: options.restoreDrills,
       backupHealth: options.backupHealth,
+      backupWatchdog: options.backupWatchdog,
+      backupIntegrity: options.backupIntegrity,
       registry: options.backgroundServices,
       db: options.storage.db,
       scheduleStore: options.scheduleStore,

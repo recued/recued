@@ -8,6 +8,8 @@
  * long-lived mounted sessions stay event/focus-driven to avoid permanent IDB
  * reads. */
 
+import { readWebLockProvider } from '../runtime/web-locks.js';
+
 export const PAIR_TAB_CONVERGENCE_CHANNEL_NAME =
   'recued.webclient.pair-complete.v1' as const;
 
@@ -220,15 +222,11 @@ export const createBrowserPairTabConvergence = (
   if (broadcast === null && typeof view.setInterval !== 'function') {
     return null;
   }
-  const recoverySuccessorLockCandidate =
+  const recoverySuccessorLockProvider = readWebLockProvider(() =>
     options.recoverySuccessorLockProvider !== undefined
       ? options.recoverySuccessorLockProvider
-      : view.navigator?.locks ?? null;
-  const recoverySuccessorLockProvider =
-    recoverySuccessorLockCandidate !== null
-    && typeof recoverySuccessorLockCandidate.request === 'function'
-      ? recoverySuccessorLockCandidate
-      : null;
+      : view.navigator?.locks,
+  );
 
   const listeners = new Set<(hint: PairTabConvergenceHint) => void>();
   const recoverySuccessorLeases = new Set<PairRecoverySuccessorLease>();

@@ -85,6 +85,7 @@ import {
   createIntakeFormSubmitHandler,
   type CoordinateIntakeFormPairedRun,
   type IntakeFormNonceStore,
+  type IntakeFormTurnedAwayEvent,
   type ResolveIntakeFormRecipePair,
 } from './handlers/intake-form.js';
 import {
@@ -198,6 +199,8 @@ export interface ReceptionPortHandlerDeps {
    * submit handler invokes it only after a paired pending submission is
    * durable; only its checked hosted URL can authorize a 303. */
   readonly coordinateIntakeFormPairedRun?: CoordinateIntakeFormPairedRun;
+  /** D-207 — tells the owner when a visitor is shown the paired-run error page. */
+  readonly noticeIntakeFormTurnedAway?: (event: IntakeFormTurnedAwayEvent) => void;
   /** Form-PII AEAD key derived from the reception sub-DEK via
    *  `deriveFormSubmissionPiiKeyFromSubDek`. Separate from the
    *  booking-PII key by HKDF info label so the two streams stay
@@ -637,6 +640,9 @@ export const createReceptionPortHandler = (
           ? {
               coordinatePairedRun: deps.coordinateIntakeFormPairedRun,
             }
+          : {}),
+        ...(deps.noticeIntakeFormTurnedAway
+          ? { noticeTurnedAway: deps.noticeIntakeFormTurnedAway }
           : {}),
         ...(deps.receptionDeploymentMode !== undefined
           ? { receptionDeploymentMode: deps.receptionDeploymentMode }

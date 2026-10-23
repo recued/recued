@@ -20,9 +20,12 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  KEY_HEALTH_CANCEL_BTN_ATTR,
   KEY_HEALTH_CARD_ATTR,
+  KEY_HEALTH_CONFIRM_BTN_ATTR,
   KEY_HEALTH_PANEL_ATTR,
   KEY_HEALTH_PANEL_STATE_ATTR,
+  KEY_HEALTH_ROTATE_BTN_ATTR,
   KEYFILE_POSTURE_CARD_ATTR,
   KEYFILE_POSTURE_CONSEQUENCE_ATTR,
   KEYFILE_POSTURE_REMEDIATION_ATTR,
@@ -61,6 +64,7 @@ interface FakeElement {
   getAttribute(k: string): string | null;
   hasAttribute(k: string): boolean;
   appendChild(el: FakeElement): FakeElement;
+  insertBefore(el: FakeElement, reference: FakeElement | null): FakeElement;
   removeChild(el: FakeElement): FakeElement;
   readonly firstChild: FakeElement | null;
   remove(): void;
@@ -89,6 +93,13 @@ const makeFakeElement = (tagName: string): FakeElement => {
     hasAttribute: (k) => attrs.has(k),
     appendChild: (next) => {
       children.push(next);
+      next.parent = el;
+      return next;
+    },
+    insertBefore: (next, reference) => {
+      const index = reference === null ? children.length : children.indexOf(reference);
+      if (index < 0) throw new Error('insertBefore: not a child');
+      children.splice(index, 0, next);
       next.parent = el;
       return next;
     },
@@ -483,5 +494,80 @@ describe('D-212 §7.10 — the keyfile posture card on the Key Health page', () 
 
     expect(toneOf(host)).toBe('sealed');
     expect(findByAttr(host, KEYFILE_POSTURE_CONSEQUENCE_ATTR)).toBeNull();
+  });
+});
+
+const deferredStatus = () => {
+  let resolve!: (value: ServerSystemStatus) => void;
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<ServerSystemStatus>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+};
+
+describe('Keyfile reads preserve the current controls', () => {
+  it.each(['success', 'error'] as const)('a late posture %s keeps the inventory nodes and inserts the card first', async (outcome) => {
+    const status = deferredStatus();
+    const { host, mount } = setup({ loadSystemStatus: () => status.promise });
+    await flush();
+    const cards = findAllByAttr(host, KEY_HEALTH_CARD_ATTR);
+    const rotate = findByAttr(host, KEY_HEALTH_ROTATE_BTN_ATTR);
+    if (outcome === 'success') status.resolve(statusWith('none'));
+    else status.reject(new Error('Posture unavailable.'));
+    await mount.whenReady();
+    const current = findAllByAttr(host, KEY_HEALTH_CARD_ATTR);
+    for (let index = 0; index < cards.length; index += 1) expect(current[index]).toBe(cards[index]);
+    expect(findByAttr(host, KEY_HEALTH_ROTATE_BTN_ATTR)).toBe(rotate);
+    expect(toneOf(host)).toBe(outcome === 'success' ? 'unsealed' : 'unreadable');
+    expect(postureCard(host)!.parent!.firstChild).toBe(postureCard(host));
+    mount.dispose();
+  });
+
+  it.each(['success', 'error'] as const)('a late posture %s leaves confirmation controls attached until Cancel', async (outcome) => {
+    const status = deferredStatus();
+    const { host, mount } = setup({
+      loadHealth: async () => selfHostView({ master_dek: 'available' }),
+      loadSystemStatus: () => status.promise,
+    });
+    await flush();
+    mount.clickRotate('master_dek');
+    const confirm = findByAttr(host, KEY_HEALTH_CONFIRM_BTN_ATTR);
+    const cancel = findByAttr(host, KEY_HEALTH_CANCEL_BTN_ATTR);
+    if (outcome === 'success') status.resolve(statusWith('none'));
+    else status.reject(new Error('Posture unavailable.'));
+    await mount.whenReady();
+    expect(mount.getState()).toBe('confirm');
+    expect(findByAttr(host, KEY_HEALTH_CONFIRM_BTN_ATTR)).toBe(confirm);
+    expect(findByAttr(host, KEY_HEALTH_CANCEL_BTN_ATTR)).toBe(cancel);
+    mount.clickCancel();
+    expect(toneOf(host)).toBe(outcome === 'success' ? 'unsealed' : 'unreadable');
+    mount.dispose();
+  });
+
+  it.each(['success', 'error'] as const)('Retry can finish while an older posture %s is still pending', async (outcome) => {
+    const older = deferredStatus();
+    let healthCalls = 0;
+    let postureCalls = 0;
+    const { host, mount } = setup({
+      loadHealth: async () => {
+        healthCalls += 1;
+        if (healthCalls === 1) throw new Error('Inventory unavailable.');
+        return selfHostView();
+      },
+      loadSystemStatus: () => ++postureCalls === 1 ? older.promise : Promise.resolve(statusWith('machine')),
+    });
+    await flush();
+    expect(mount.getState()).toBe('load_error');
+    const initial = mount.whenReady();
+    await mount.clickRetry();
+    expect(mount.getState()).toBe('idle');
+    expect(toneOf(host)).toBe('sealed');
+    const card = postureCard(host);
+    if (outcome === 'success') older.resolve(statusWith('none'));
+    else older.reject(new Error('Old posture unavailable.'));
+    await initial;
+    expect(postureCard(host)).toBe(card);
+    expect(toneOf(host)).toBe('sealed');
+    expect(healthCalls).toBe(2);
+    mount.dispose();
   });
 });

@@ -237,6 +237,8 @@ describe('D-207 slice 3c — a form that cannot sell REFUSES; it never says than
     expect(out.kind).toBe('failed');
     expect(orders.listOrders({})).toHaveLength(0);
     expect(handleExecute).not.toHaveBeenCalled();
+    // Not a reason the owner fixes on the offer: the notice says "could not finish".
+    expect(out).not.toHaveProperty('refusal');
   });
 
   it('an offer with no hosted-checkout link', async () => {
@@ -245,12 +247,34 @@ describe('D-207 slice 3c — a form that cannot sell REFUSES; it never says than
 
     expect(out.kind).toBe('failed');
     expect(handleExecute).not.toHaveBeenCalled();
+    // The owner's notice names the reason, and the buyer leaves no order behind. One opened
+    // before the refusal looked like any order still waiting for payment.
+    expect(out).toMatchObject({
+      refusal: { reason: 'no_checkout_link', offer_id: OFFER, recipe_id: 'sell-a-brief' },
+    });
+    expect(orders.listOrders({})).toHaveLength(0);
+  });
+
+  it('an offer whose link breaks once the order reference is added to it', async () => {
+    // `ensureOffer` holds any link the page renders; only the owner's own setter also
+    // measures it with the reference added. So a recipe-set link can still be too long.
+    activeOffer({ checkout_url: `https://buy.stripe.com/${'a'.repeat(480)}` });
+    const out = await submit({ seller_offer_id: OFFER });
+
+    expect(out.kind).toBe('failed');
+    expect(handleExecute).not.toHaveBeenCalled();
+    expect(out).toMatchObject({
+      refusal: { reason: 'checkout_link_unusable', offer_id: OFFER, recipe_id: 'sell-a-brief' },
+    });
   });
 
   it('an offer that does not exist', async () => {
     const out = await submit({ seller_offer_id: 'no-such-offer' });
     expect(out.kind).toBe('failed');
     expect(handleExecute).not.toHaveBeenCalled();
+    expect(out).toMatchObject({
+      refusal: { reason: 'offer_missing', offer_id: 'no-such-offer', recipe_id: 'sell-a-brief' },
+    });
   });
 
   it('an offer that is not active — a draft or withdrawn offer cannot be sold', async () => {
@@ -269,11 +293,15 @@ describe('D-207 slice 3c — a form that cannot sell REFUSES; it never says than
 
     expect(out.kind).toBe('failed');
     expect(orders.listOrders({})).toHaveLength(0);
+    expect(out).toMatchObject({
+      refusal: { reason: 'offer_not_active', state: 'draft', offer_id: OFFER, recipe_id: 'sell-a-brief' },
+    });
   });
 
   it('a server with no seller substrate at all', async () => {
     const out = await submit({ seller_offer_id: OFFER }, false);
     expect(out.kind).toBe('failed');
     expect(handleExecute).not.toHaveBeenCalled();
+    expect(out).not.toHaveProperty('refusal');
   });
 });

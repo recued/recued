@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import {
-  ARTIFACTS, CHAT_ACTIVATION, CHAT_ANSWER_WAITING, CHAT_INPUT, CHAT_MESSAGE,
+  CHAT_ACTIVATION, CHAT_ANSWER_WAITING, CHAT_INPUT, CHAT_MESSAGE,
   CHAT_SEND, CHAT_SESSION_ROW, CHAT_SOURCE_HANDOFF, CONNECTIONS_ROUTE,
   HARNESS_URL, SHARED_REFERENCE, SHARED_REFERENCE_ID, installFullAppHooks,
 } from './helpers/full-app.js';
@@ -88,7 +88,7 @@ test('the Connections landing explains the choices and starts with one clear act
   expect(geometry.right).toBeLessThanOrEqual(geometry.viewport + 0.5);
   expect(geometry.pageWidth).toBeLessThanOrEqual(geometry.viewport);
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-connections-first-run-mobile.png`,
+    path: test.info().outputPath(`full-app-connections-first-run-mobile.png`),
     fullPage: true,
   });
 
@@ -963,7 +963,7 @@ test('configured Google and Microsoft sign-in stay out of the way of connecting'
   expect(geometry.pageWidth).toBeLessThanOrEqual(geometry.viewport);
   expect(geometry.right).toBeLessThanOrEqual(geometry.viewport + 0.5);
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-connections-google-ready-mobile.png`,
+    path: test.info().outputPath(`full-app-connections-google-ready-mobile.png`),
     fullPage: true,
   });
 
@@ -1148,7 +1148,7 @@ test('a connected mailbox hands its first useful question into Chat', async ({ p
   expect(geometry.right).toBeLessThanOrEqual(geometry.viewport + 0.5);
   expect(geometry.pageWidth).toBeLessThanOrEqual(geometry.viewport);
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-connections-first-sync-mobile.png`,
+    path: test.info().outputPath(`full-app-connections-first-sync-mobile.png`),
     fullPage: true,
   });
   await success.getByRole('button', { name: 'Continue to Chat' }).click();
@@ -1164,7 +1164,7 @@ test('a connected mailbox hands its first useful question into Chat', async ({ p
   await expect(page.locator(`[${CHAT_ACTIVATION}]`)).toHaveCount(0);
   await expect(page.locator(`[${CHAT_INPUT}]`)).toHaveValue('');
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-chat-connected-source-pending-mobile.png`,
+    path: test.info().outputPath(`full-app-chat-connected-source-pending-mobile.png`),
     fullPage: true,
   });
 
@@ -1187,7 +1187,7 @@ test('a connected mailbox hands its first useful question into Chat', async ({ p
   await handoff.locator(`[${CHAT_SOURCE_ACTION}="primary"]`).click();
   await expect(page.locator(`[${CHAT_INPUT}]`)).toBeFocused();
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-chat-connected-source-ready-mobile.png`,
+    path: test.info().outputPath(`full-app-chat-connected-source-ready-mobile.png`),
     fullPage: true,
   });
 
@@ -1249,7 +1249,7 @@ test('a connected-source answer stays source-aware through its first follow-up',
   await expect(page.locator(`[${CHAT_ANSWER_WAITING}]`))
     .toHaveText('Searching connected mail…');
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-chat-source-answer-searching-mobile.png`,
+    path: test.info().outputPath(`full-app-chat-source-answer-searching-mobile.png`),
     fullPage: true,
   });
 
@@ -1436,7 +1436,7 @@ test('a connected-source answer stays source-aware through its first follow-up',
   expect(geometry.right).toBeLessThanOrEqual(geometry.viewport + 0.5);
   expect(geometry.pageWidth).toBeLessThanOrEqual(geometry.viewport);
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-chat-source-references-mobile.png`,
+    path: test.info().outputPath(`full-app-chat-source-references-mobile.png`),
     fullPage: true,
   });
   await referencesToggle.click();
@@ -1479,7 +1479,7 @@ test('a connected-source answer stays source-aware through its first follow-up',
     followupContext.locator(`[${CHAT_FOLLOWUP_CONTEXT_CLEAR}]`),
   ).toHaveText('Clear suggestion');
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-chat-source-followup-draft-mobile.png`,
+    path: test.info().outputPath(`full-app-chat-source-followup-draft-mobile.png`),
     fullPage: true,
   });
   await expect(
@@ -1617,7 +1617,7 @@ test('a connected-source answer stays source-aware through its first follow-up',
     followupGeometry.viewport,
   );
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-chat-source-followup-context-mobile.png`,
+    path: test.info().outputPath(`full-app-chat-source-followup-context-mobile.png`),
     fullPage: true,
   });
 
@@ -1736,7 +1736,7 @@ test('missing OAuth configuration becomes a guided Gmail and Microsoft setup', a
   expect(setupGeometry.pageWidth).toBeLessThanOrEqual(setupGeometry.viewport);
   expect(setupGeometry.right).toBeLessThanOrEqual(setupGeometry.viewport + 0.5);
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-connections-google-setup-mobile.png`,
+    path: test.info().outputPath(`full-app-connections-google-setup-mobile.png`),
     fullPage: true,
   });
 

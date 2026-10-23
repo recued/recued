@@ -16,13 +16,11 @@
  *  reconnect doesn't briefly flash a STALE pill before the first fresh beat —
  *  it stays hidden until real health data returns.
  *
- *  ── v1 scope (A1) ───────────────────────────────────────────────────
- *  The server emitter sends a minimal snapshot (gated on lifecycle `running`),
- *  so in practice the pill shows green "Server · <uptime>" while connected and
- *  nothing otherwise. The busy/paused/attention states render correctly if a
- *  richer snapshot ever arrives (enriching the emitter is a separate slice). */
+ *  READY heartbeats carry pause, pressure, and cached backup evidence. Local
+ *  arrival time establishes freshness; the server clock can differ. Backup
+ *  warnings add attention after the existing higher-priority states. */
 
-import { pressureSurfaceRows } from '@recued/contracts';
+import { pressureSurfaceRows, serverBackupHealthView } from '@recued/contracts';
 import type { ServerHeartbeatSnapshot } from '@recued/contracts';
 import {
   mountServerPill,
@@ -65,15 +63,25 @@ export const SERVER_CONTROL_STATUS_ATTR =
 /** Stable hook for the storage read-out list. */
 export const SERVER_CONTROL_STORAGE_ATTR =
   'data-recued-webclient-server-control-storage';
+export const SERVER_CONTROL_BACKUP_ATTR =
+  'data-recued-webclient-server-control-backup';
 
 const SERVER_CONTROL_TITLE_ID = 'recued-webclient-server-control-title';
 const SERVER_CONTROL_STATUS_ID = 'recued-webclient-server-control-status';
 
 /** Account-dialog styles for the pill, scoped under {@link SERVER_PILL_HOST_ATTR}.
  *  Keeps the status quiet and near-monochrome; the
- *  dot is the only color signal (green = running; the others are
- *  forward-compat for a future richer snapshot). */
+ *  dot is the color signal for running, busy, and attention states. */
 export const SERVER_PILL_STYLES = `
+[${SERVER_PILL_HOST_ATTR}] .server-control-backup {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border, #ddd);
+  overflow-wrap: anywhere;
+}
+[${SERVER_PILL_HOST_ATTR}] .server-control-backup-title { font-weight: 600; }
+[${SERVER_PILL_HOST_ATTR}] .server-control-backup ul { padding-left: 1.2rem; margin-block: 6px; }
+[${SERVER_PILL_HOST_ATTR}] .server-control-backup--attention .server-control-backup-title { color: var(--fg, #27272a); }
 [${SERVER_PILL_HOST_ATTR}] .server-pill {
   display: inline-flex;
   align-items: center;
@@ -294,6 +302,9 @@ export interface MountWebclientServerPillOptions {
    *  restart just exits the process and stays down — a footgun. The crash-halt
    *  state surfaces it as the honest recovery action. */
   runRequestRestart?: () => Promise<{ accepted: boolean }>;
+  /** Close Account and navigate through the shell. False keeps this surface
+   * open when another committed Account action currently owns navigation. */
+  onOpenBackupRecovery?: () => boolean | void;
   /** Reports whether a fresh heartbeat-backed control target exists. Socket
    * state alone is not sufficient because reconnect deliberately drops the
    * cached heartbeat before the next server frame. */
@@ -733,6 +744,13 @@ export const mountWebclientServerPill = (
         + `<ul class="server-control-storage-list" ${SERVER_CONTROL_STORAGE_ATTR}>${body}</ul>`
         + `</div>`;
     })();
+    const backup = serverBackupHealthView(latest?.backup_health,
+      latestReceivedAt === null ? 0 : (opts.now ?? Date.now)() - latestReceivedAt);
+    const backupHtml = !backup ? '' : `<div class="server-control-backup${backup.warnings.length ? ' server-control-backup--attention' : ''}" ${SERVER_CONTROL_BACKUP_ATTR}>`
+      + '<div class="server-control-backup-title">Backup &amp; Recovery</div>'
+      + `<ul>${backup.rows.map(row => `<li>${escapeHtml(row)}</li>`).join('')}</ul>`
+      + (opts.onOpenBackupRecovery ? button('open-backup', 'Open Backup &amp; Recovery') : '')
+      + '</div>';
     popoverHost.innerHTML =
       `<div class="server-control-popover-frame" ${SERVER_CONTROL_POPOVER_ATTR}`
       + ` role="dialog" aria-labelledby="${SERVER_CONTROL_TITLE_ID}"`
@@ -743,6 +761,7 @@ export const mountWebclientServerPill = (
       + ` ${SERVER_CONTROL_STATUS_ATTR}>${detail}</div>`
       + errorHtml
       + storageHtml
+      + backupHtml
       + (actions ? `<div class="server-control-actions">${actions}</div>` : '')
       + `</div>`;
     if (focusWasInside) {
@@ -954,6 +973,16 @@ export const mountWebclientServerPill = (
     if (!el) return;
     event.preventDefault();
     switch (el.getAttribute('data-action')) {
+      case 'open-backup':
+        if (!controlsAvailable() || busy || restarting || !opts.onOpenBackupRecovery) break;
+        try {
+          if (opts.onOpenBackupRecovery() === false) throw new Error('Account navigation is owned');
+          closePopover();
+        } catch {
+          error = 'Backup & Recovery could not be opened. Finish the current Account action and try again.';
+          renderPopover('open-backup');
+        }
+        break;
       case 'pause-request': confirming = 'pause'; renderPopover('pause-confirm'); break;
       case 'pause-cancel': confirming = null; renderPopover('pause-request'); break;
       case 'pause-confirm': void doSetPaused(true); break;
@@ -1000,7 +1029,8 @@ export const mountWebclientServerPill = (
     host: pillHost,
     // B1 gate: health is only meaningful while the socket is up; otherwise the
     // banner + Account recovery copy own the down-signal, so the pill hides.
-    getSnapshot: () => (opts.status() === 'connected' ? latest : null),
+    getSnapshot: () => (opts.status() === 'connected' && latest !== null
+      ? { ...latest, last_seen_at: Number.isFinite(latest.last_seen_at) && latest.last_seen_at > 0 ? latestReceivedAt ?? 0 : 0 } : null),
     clickable: controllable,
     ...(controllable ? { onClick: onPillClick } : {}),
     ...(opts.now !== undefined ? { now: opts.now } : {}),

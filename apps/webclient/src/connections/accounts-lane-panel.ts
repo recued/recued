@@ -76,7 +76,7 @@ import {
   type FoundationalOAuthContinuityState,
   type FoundationalOAuthTerminalState,
 } from './foundational-oauth-continuity.js';
-import { humanizeRpcError } from '../shell/rpc-error-copy.js';
+import { classifyRpcError, humanizeRpcError } from '../shell/rpc-error-copy.js';
 
 // ════════════════════════════════════════════════════════════════
 // Caller seams (per lane)
@@ -121,6 +121,9 @@ export interface MailLaneCallers {
     mutation_enabled: boolean;
   }) => Promise<{ slug: string }>;
   delete: (args: { slug: string }) => Promise<{ ok: true }>;
+  /** `collection.mail.resync` — rebuild the mailbox's connection and sync it
+   *  again, as after a restart. Optional so older mounts still type. */
+  resync?: (args: { slug: string }) => Promise<unknown>;
 }
 
 /** `server.getOAuthClientConfig` result — per-provider client id, `null`
@@ -1834,15 +1837,22 @@ export const mountAccountsLanePanel = (
     const callers = laneCallers(state.lane);
     if (
       callers === undefined
-      || state.lane === 'mail'
-      || (callers as CalendarLaneCallers | FileLaneCallers).resync === undefined
+      || (callers as MailLaneCallers | CalendarLaneCallers | FileLaneCallers).resync === undefined
     ) {
       setRowError(slug, 'Re-sync is not available for this account.');
       render(true);
       return;
     }
-    const resync = (callers as CalendarLaneCallers | FileLaneCallers).resync!;
-    void runRowAction('resync', slug, () => resync({ slug }), 'reload-stay');
+    const resync = (callers as MailLaneCallers | CalendarLaneCallers | FileLaneCallers).resync!;
+    // A server from before mail Re-sync has no such call, and the webclient
+    // updates separately: say what to do instead of naming the missing call.
+    const call = state.lane === 'mail'
+      ? () => resync({ slug }).catch((err: unknown) => {
+          if (classifyRpcError(err).code === 'unknown_method') throw new Error('Update this server to re-sync mail.');
+          throw err;
+        })
+      : () => resync({ slug });
+    void runRowAction('resync', slug, call, 'reload-stay');
   };
 
   const openAuthenticationManagement = async (slug: string): Promise<void> => {

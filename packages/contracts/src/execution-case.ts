@@ -1092,7 +1092,16 @@ export interface ExecutionCaseCard {
  *  ⛔ RIDES THE DYNAMIC TAIL, never the cacheable prefix. D-164 holds the tool
  *  catalog in a byte-stable head worth a measured −49.9% input at 98% cached;
  *  this block is emitted only on turns that actually carry an alias, so it
- *  varies per turn and would invalidate that head every time. */
+ *  varies per turn and would invalidate that head every time.
+ *
+ *  ⛔ A PLACE ALIAS IS WRITTEN, NOT EXPLAINED AWAY (2026-10-21). A place the
+ *  owner types reaches the model as typed (`createOwnerPlaceHold`) while a
+ *  record's place stays aliased, so the model cannot tell whether they are one
+ *  place. Told to say it could not see the place, it said so in 15 of 32
+ *  answers and sometimes wrote the alias as well, and the owner read the
+ *  restored "Linked place: Lisbon. I cannot see which place the record names".
+ *  It now writes the alias, which the owner reads as the place, and claims
+ *  neither way. Prompt-tuning log 2026-10-21d. */
 export const PII_ALIAS_NOTICE =
   'Some values here are privacy aliases — shaped like `pii.PersonN` or'
   + ' `mN@dN.invalid`, where N is a number. They stand in for real people,'
@@ -1107,9 +1116,10 @@ export const PII_ALIAS_NOTICE =
   + '⛔ Never rebuild a real value from those fragments. A reconstructed address'
   + ' or name is wrong even when it looks right, and it will not resolve — pass'
   + ' the alias instead.\n'
-  + 'A place alias (`pii.AddressN`) hides which place a record names, so it may be'
-  + ' the very place the owner names in their message. Never say it is a different'
-  + ' place; say you cannot see which place the record names.';
+  + 'A place alias (`pii.AddressN`) hides which place a record names. It may be the'
+  + ' place the owner names in their message or another one, so never say whether'
+  + " it is that place. To tell the owner the record's place, write its alias: they"
+  + ' read the real place name where you wrote it.';
 
 export const EXECUTION_CASE_CARD_NOTICE =
   'Historical evidence only. Judge applicability to the current request.\n'

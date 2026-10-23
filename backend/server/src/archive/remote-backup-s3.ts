@@ -17,10 +17,10 @@ export interface RemoteObjectIdentity { etag?: string; version_id?: string }
 export interface RemoteArchiveBytes { bytes: number; sha256: string }
 export interface RemoteBackupTransport {
   upload(key: string, path: string, expected: RemoteArchiveBytes, onMultipart: (id: string | null) => void): Promise<void>;
-  verify(key: string, expected: RemoteArchiveBytes, identity?: RemoteObjectIdentity): Promise<RemoteObjectIdentity>;
+  verify(key: string, expected: RemoteArchiveBytes, identity?: RemoteObjectIdentity, signal?: AbortSignal): Promise<RemoteObjectIdentity>;
   retrieve(key: string, path: string, expected: RemoteArchiveBytes, identity?: RemoteObjectIdentity, signal?: AbortSignal): Promise<void>;
-  remove(key: string, identity: RemoteObjectIdentity): Promise<void>;
-  abort(key: string, uploadId: string): Promise<void>;
+  remove(key: string, identity: RemoteObjectIdentity, signal?: AbortSignal): Promise<void>;
+  abort(key: string, uploadId: string, signal?: AbortSignal): Promise<void>;
 }
 export class RemoteBackupTransferError extends Error {
   constructor(readonly kind: 'transfer_unconfirmed' | 'verification_failed' | 'destination_unavailable') {
@@ -97,8 +97,8 @@ export const createS3RemoteBackupTransport = (options: {
         body: Readable.toWeb(source) as ReadableStream<Uint8Array> });
     } finally { source.destroy(); }
   };
-  const abort = async (key: string, uploadId: string): Promise<void> => {
-    const response = await request('DELETE', key, { query: { uploadId } });
+  const abort = async (key: string, uploadId: string, signal?: AbortSignal): Promise<void> => {
+    const response = await request('DELETE', key, { query: { uploadId }, ...(signal ? { signal } : {}) });
     const ok = response.ok || response.status === 404; await discard(response); if (!ok) fail();
   };
   const readObject = async (key: string, expected: RemoteArchiveBytes, identity: RemoteObjectIdentity = {}, path?: string, signal?: AbortSignal): Promise<RemoteObjectIdentity> => {
@@ -165,12 +165,12 @@ export const createS3RemoteBackupTransport = (options: {
         if (!completed) { try { await abort(key, uploadId); onMultipart(null); } catch { /* durable id permits later cleanup */ } }
       }
     },
-    verify: (key, expected, identity) => readObject(key, expected, identity),
+    verify: (key, expected, identity, signal) => readObject(key, expected, identity, undefined, signal),
     async retrieve(key, path, expected, identity, signal) { await readObject(key, expected, identity, path, signal); },
-    async remove(key, identity) {
+    async remove(key, identity, signal) {
       if (!strongEtag(identity.etag ?? null)) return fail();
       const response = await request('DELETE', key, { headers: { 'if-match': identity.etag! },
-        ...(identity.version_id ? { query: { versionId: identity.version_id } } : {}) });
+        ...(identity.version_id ? { query: { versionId: identity.version_id } } : {}), ...(signal ? { signal } : {}) });
       const ok = response.ok || response.status === 404; await discard(response); if (!ok) fail();
     },
     abort,

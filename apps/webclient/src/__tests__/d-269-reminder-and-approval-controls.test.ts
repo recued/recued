@@ -27,11 +27,15 @@ import {
 import {
   mountKindPolicyPanel,
   KIND_POLICY_ENABLED_ATTR,
+  KIND_POLICY_ERROR_ATTR,
   KIND_POLICY_PANEL_ATTR,
   KIND_POLICY_UNREACHABLE_ATTR,
   KIND_POLICY_OFFSET_ATTR,
   KIND_POLICY_ROW_ATTR,
   KIND_POLICY_STATE_ATTR,
+  KIND_POLICY_STATUS_ATTR,
+  KIND_POLICY_READ_STATUS_ATTR,
+  KIND_POLICY_RETRY_ATTR,
 } from '../settings/notification-kind-policy-panel.js';
 import {
   mountQuietHoursPanel,
@@ -43,6 +47,11 @@ import {
   QUIET_HOURS_TZ_LINK_ATTR,
   QUIET_HOURS_BLOCKED_ATTR,
   QUIET_HOURS_ROW_ATTR,
+  QUIET_HOURS_FROM_ATTR,
+  QUIET_HOURS_TO_ATTR,
+  QUIET_HOURS_ERROR_ATTR,
+  type QuietHoursGetCaller,
+  type QuietHoursSetCaller,
 } from '../settings/quiet-hours-panel.js';
 import {
   bootstrapSettingsRoute,
@@ -61,6 +70,7 @@ interface FakeEl {
   checked: boolean;
   selected: boolean;
   disabled: boolean;
+  validity: { badInput: boolean };
   attrs: Map<string, string>;
   children: FakeEl[];
   parent: FakeEl | null;
@@ -87,6 +97,7 @@ const makeFakeElement = (tag: string): FakeEl => {
     tagName: tag.toUpperCase(),
     textContent: '', type: '', value: '',
     checked: false, selected: false, disabled: false,
+    validity: { badInput: false },
     attrs: new Map(), children: [], listeners: new Map(),
     parent: null,
     setAttribute(k, v) { el.attrs.set(k, v); },
@@ -209,15 +220,16 @@ const mountKinds = async (
     const next = policies.map((p) => (p.kind === args.kind ? { ...p, ...args } : p));
     return { policies: next } satisfies NotificationKindPolicyGetResponse;
   });
+  const runGet = vi.fn(async () => ({ policies }));
   const panel = mountKindPolicyPanel({
     host: host as unknown as HTMLElement,
     document: fakeDocument,
-    runGet: async () => ({ policies }),
+    runGet,
     runSet,
     ...(describe === undefined ? {} : { describeChannels: describe }),
   });
   await flush();
-  return { host, panel, sent, runSet };
+  return { host, panel, sent, runSet, runGet };
 };
 
 describe('D-269 step 2 — the reminder offset is reachable, per kind', () => {
@@ -304,6 +316,151 @@ describe('D-269 step 2 — the reminder offset is reachable, per kind', () => {
   });
 });
 
+describe('notification timing save feedback', () => {
+  const deferred = <T>() => {
+    let resolve!: (value: T) => void;
+    let reject!: (reason: Error) => void;
+    const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+    return { promise, resolve, reject };
+  };
+
+  for (const field of ['enabled', 'offset'] as const) {
+    for (const outcome of ['success', 'failure'] as const) {
+      it(`shows a pending ${field} save, blocks duplicate changes, and reports ${outcome}`, async () => {
+        const h = await mountKinds();
+        const pending = deferred<NotificationKindPolicyGetResponse>();
+        h.runSet.mockReturnValueOnce(pending.promise);
+        const original = one(h.host, field === 'enabled' ? KIND_POLICY_ENABLED_ATTR : KIND_POLICY_OFFSET_ATTR, 'booking');
+        original.value = String(6 * HOUR);
+        original.dispatchEvent({ type: 'change' });
+        expect(one(h.host, KIND_POLICY_STATUS_ATTR).textContent).toBe('Saving notification settings…');
+        expect(one(h.host, KIND_POLICY_STATUS_ATTR).getAttribute('role')).toBe('status');
+        expect(one(h.host, KIND_POLICY_STATUS_ATTR).getAttribute('tabindex')).toBe('-1');
+        expect(byAttr(h.host, KIND_POLICY_ENABLED_ATTR).every(node => node.disabled)).toBe(true);
+        expect(byAttr(h.host, KIND_POLICY_OFFSET_ATTR).every(node => node.disabled)).toBe(true);
+        // Even an already-removed node's event cannot dispatch a second write.
+        for (const handler of original.listeners.get('change') ?? []) handler({ type: 'change' });
+        await h.panel.refresh();
+        expect(h.runGet).toHaveBeenCalledTimes(1);
+        expect(h.panel.getPolicies()).toEqual(KIND_SEED);
+        const patch: NotificationKindPolicySetRequest = field === 'enabled'
+          ? { kind: 'booking', enabled: false } : { kind: 'booking', offset_ms: 6 * HOUR };
+        expect(h.runSet).toHaveBeenCalledExactlyOnceWith(patch);
+        if (outcome === 'success') pending.resolve({ policies: KIND_SEED.map(p => p.kind === 'booking' ? { ...p, ...patch } : p) });
+        else pending.reject(new Error('Timing setting unavailable.'));
+        await flush();
+        expect(one(h.host, KIND_POLICY_ENABLED_ATTR, 'booking').disabled).toBe(false);
+        if (outcome === 'success') {
+          expect(one(h.host, KIND_POLICY_STATUS_ATTR).textContent).toBe('Notification settings saved.');
+          expect(byAttr(h.host, KIND_POLICY_ERROR_ATTR)).toHaveLength(0);
+          expect(h.panel.getPolicies().find(p => p.kind === 'booking')).toMatchObject(patch);
+        } else {
+          expect(one(h.host, KIND_POLICY_ERROR_ATTR).textContent).toBe('Timing setting unavailable.');
+          expect(one(h.host, KIND_POLICY_ERROR_ATTR).getAttribute('role')).toBe('alert');
+          expect(byAttr(h.host, KIND_POLICY_STATUS_ATTR)).toHaveLength(0);
+          expect(h.panel.getPolicies()).toEqual(KIND_SEED);
+          const retry = one(h.host, field === 'enabled' ? KIND_POLICY_ENABLED_ATTR : KIND_POLICY_OFFSET_ATTR, 'booking');
+          retry.value = String(6 * HOUR);
+          retry.dispatchEvent({ type: 'change' });
+          await flush();
+          expect(h.runSet).toHaveBeenCalledTimes(2);
+          expect(h.runSet).toHaveBeenLastCalledWith(patch);
+          expect(one(h.host, KIND_POLICY_STATUS_ATTR).textContent).toBe('Notification settings saved.');
+        }
+      });
+    }
+  }
+
+  for (const outcome of ['success', 'failure'] as const) {
+    it(`ignores an older read ${outcome} that arrives after a successful save`, async () => {
+      const h = await mountKinds();
+      const old = deferred<NotificationKindPolicyGetResponse>();
+      h.runGet.mockReturnValueOnce(old.promise);
+      const reading = h.panel.refresh();
+      await flush();
+      one(h.host, KIND_POLICY_ENABLED_ATTR, 'booking').dispatchEvent({ type: 'change' });
+      await flush();
+      if (outcome === 'success') old.resolve({ policies: KIND_SEED });
+      else old.reject(new Error('Old read failed.'));
+      await reading;
+      expect(h.panel.getPolicies().find(p => p.kind === 'booking')?.enabled).toBe(false);
+      expect(h.panel.getState()).toBe('ready');
+      expect(h.panel.getError()).toBeNull();
+      expect(one(h.host, KIND_POLICY_STATUS_ATTR).textContent).toBe('Notification settings saved.');
+    });
+
+    it(`drops a disposed save ${outcome} reply and refuses further reads and writes`, async () => {
+      const h = await mountKinds();
+      const pending = deferred<NotificationKindPolicyGetResponse>();
+      h.runSet.mockReturnValueOnce(pending.promise);
+      const original = one(h.host, KIND_POLICY_ENABLED_ATTR, 'booking');
+      original.dispatchEvent({ type: 'change' });
+      const waiting = allText(h.host);
+      h.panel.dispose();
+      if (outcome === 'success') pending.resolve({ policies: KIND_SEED });
+      else pending.reject(new Error('Disposed write failed.'));
+      await flush();
+      for (const handler of original.listeners.get('change') ?? []) handler({ type: 'change' });
+      await h.panel.refresh();
+      expect(allText(h.host)).toBe(waiting);
+      expect(h.runGet).toHaveBeenCalledTimes(1);
+      expect(h.runSet).toHaveBeenCalledTimes(1);
+    });
+  }
+});
+
+describe('notification settings initial read recovery', () => {
+  it('shares each pending attempt with public refresh callers and permits a fresh attempt after failure', async () => {
+    let resolve!: (value: NotificationKindPolicyGetResponse) => void;
+    let reject!: (error: Error) => void;
+    const firstRead = new Promise<NotificationKindPolicyGetResponse>((_, fail) => { reject = fail; });
+    const secondRead = new Promise<NotificationKindPolicyGetResponse>(done => { resolve = done; });
+    const runGet = vi.fn().mockReturnValueOnce(firstRead).mockReturnValueOnce(secondRead);
+    const runSet = vi.fn();
+    const host = makeFakeElement('div');
+    const panel = mountKindPolicyPanel({ host: host as unknown as HTMLElement, document: fakeDocument, runGet, runSet });
+    const first = panel.refresh();
+    expect(panel.refresh()).toBe(first);
+    await flush();
+    expect(runGet).toHaveBeenCalledTimes(1);
+    reject(new Error('Initial read unavailable.'));
+    await first;
+    expect(panel.getState()).toBe('error');
+    expect(one(host, KIND_POLICY_ERROR_ATTR).textContent).toBe('Initial read unavailable.');
+    const second = panel.refresh();
+    expect(second).not.toBe(first);
+    expect(panel.refresh()).toBe(second);
+    expect(one(host, KIND_POLICY_READ_STATUS_ATTR).textContent).toBe('Retrying notification settings…');
+    await flush();
+    expect(runGet).toHaveBeenCalledTimes(2);
+    resolve({ policies: KIND_SEED });
+    await second;
+    expect(panel.getState()).toBe('ready');
+    expect(panel.getPolicies()).toEqual(KIND_SEED);
+    expect(byAttr(host, KIND_POLICY_RETRY_ATTR)).toHaveLength(0);
+    expect(runSet).not.toHaveBeenCalled();
+    panel.dispose();
+  });
+
+  it('makes an empty initial snapshot recoverable and uses the next confirmed settings', async () => {
+    const runGet = vi.fn().mockResolvedValueOnce({ policies: [] }).mockResolvedValueOnce({ policies: KIND_SEED });
+    const runSet = vi.fn();
+    const host = makeFakeElement('div');
+    const panel = mountKindPolicyPanel({ host: host as unknown as HTMLElement, document: fakeDocument, runGet, runSet });
+    await panel.refresh();
+    expect(one(host, KIND_POLICY_ERROR_ATTR).textContent).toBe('Could not read your notification settings.');
+    expect(one(host, KIND_POLICY_RETRY_ATTR).getAttribute('aria-disabled')).toBe('false');
+    expect(byAttr(host, KIND_POLICY_ENABLED_ATTR)).toHaveLength(0);
+    await panel.refresh();
+    expect(panel.getPolicies()).toEqual(KIND_SEED);
+    expect(byAttr(host, KIND_POLICY_ENABLED_ATTR)).toHaveLength(NOTIFICATION_ANCHORED_KINDS.length);
+    expect(byAttr(host, KIND_POLICY_ERROR_ATTR)).toHaveLength(0);
+    expect(runGet).toHaveBeenCalledTimes(2);
+    expect(runSet).not.toHaveBeenCalled();
+    panel.dispose();
+  });
+});
+
 // ─── the quiet-hours approval opt-in ─────────────────────────────────────────
 
 const quietSnapshot = (
@@ -321,16 +478,18 @@ const quietSnapshot = (
 const mountQuiet = async (
   snapshot: QuietHoursGetResponse,
   clientZone = 'Asia/Hong_Kong',
+  runSet?: QuietHoursSetCaller,
+  runGet: QuietHoursGetCaller = async () => snapshot,
 ) => {
   const sent: QuietHoursSetRequest[] = [];
   const host = makeFakeElement('div');
   const panel = mountQuietHoursPanel({
     host: host as unknown as HTMLElement,
     document: fakeDocument,
-    runGet: async () => snapshot,
+    runGet,
     runSet: async (args: QuietHoursSetRequest) => {
       sent.push(args);
-      return { ...snapshot, policy: { ...snapshot.policy, ...args } };
+      return runSet ? runSet(args) : { ...snapshot, policy: { ...snapshot.policy, ...args } };
     },
     now: () => Date.parse('2026-06-15T20:00:00Z'),
     clientZone,
@@ -381,6 +540,106 @@ describe('D-269 step 5 — holding approvals is reachable, and argued against', 
     box.dispatchEvent({ type: 'change' });
     await flush();
     expect(sent).toEqual([]);
+  });
+});
+
+describe('quiet-hours draft recovery', () => {
+  const deferred = <T>() => {
+    let resolve!: (value: T) => void;
+    let reject!: (reason: Error) => void;
+    const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+    return { promise, resolve, reject };
+  };
+  const editWindow = (host: FakeEl, from = '23:30', to = '06:15') => {
+    for (const [attr, value] of [[QUIET_HOURS_FROM_ATTR, from], [QUIET_HOURS_TO_ATTR, to]] as const) {
+      const input = one(host, attr);
+      input.value = value;
+      input.dispatchEvent({ type: 'input' });
+    }
+  };
+
+  it('keeps the entered window through a held failure and submits the same minutes on retry', async () => {
+    const gate = deferred<QuietHoursGetResponse>();
+    const confirmed = { ...quietSnapshot(), policy: { ...quietSnapshot().policy, from_minute: 1410, to_minute: 375 } };
+    const runSet = vi.fn<QuietHoursSetCaller>().mockReturnValueOnce(gate.promise).mockResolvedValueOnce(confirmed);
+    const runGet = vi.fn(async () => quietSnapshot());
+    const { host, panel, sent } = await mountQuiet(quietSnapshot(), undefined, runSet, runGet);
+    editWindow(host);
+    one(host, QUIET_HOURS_SAVE_ATTR).click();
+    expect(one(host, QUIET_HOURS_FROM_ATTR).value).toBe('23:30');
+    expect(one(host, QUIET_HOURS_TO_ATTR).value).toBe('06:15');
+    expect(one(host, QUIET_HOURS_FROM_ATTR).disabled).toBe(true);
+    expect(panel.getPreview()?.declared_text).toBe('22:00 → 08:00');
+    await panel.refresh();
+    expect(runGet).toHaveBeenCalledTimes(1);
+    gate.reject(new Error('Connection interrupted.'));
+    await vi.waitFor(() => expect(panel.getError()).toBe('Connection interrupted.'));
+    expect(one(host, QUIET_HOURS_ERROR_ATTR).getAttribute('role')).toBe('alert');
+    expect(one(host, QUIET_HOURS_FROM_ATTR).value).toBe('23:30');
+    one(host, QUIET_HOURS_SAVE_ATTR).click();
+    await vi.waitFor(() => expect(panel.getPreview()?.declared_text).toBe('23:30 → 06:15'));
+    expect(sent).toEqual([{ from_minute: 1410, to_minute: 375 }, { from_minute: 1410, to_minute: 375 }]);
+    expect(panel.getError()).toBeNull();
+  });
+
+  it('validation preserves an incomplete window and the other time without issuing a write', async () => {
+    const { host, panel, sent } = await mountQuiet(quietSnapshot());
+    editWindow(host, '23:30', '');
+    one(host, QUIET_HOURS_SAVE_ATTR).click();
+    expect(one(host, QUIET_HOURS_FROM_ATTR).value).toBe('23:30');
+    expect(one(host, QUIET_HOURS_TO_ATTR).value).toBe('');
+    expect(panel.getError()).toBe('Enter both times as HH:MM.');
+    expect(sent).toEqual([]);
+  });
+
+  it('repeated checkbox changes use the latest confirmed state and never save the time draft', async () => {
+    let current = quietSnapshot();
+    const { host, panel, sent } = await mountQuiet(current, undefined, async args => {
+      current = { ...current, policy: { ...current.policy, ...args } };
+      return current;
+    });
+    editWindow(host);
+    one(host, QUIET_HOURS_APPROVAL_ATTR).dispatchEvent({ type: 'change' });
+    await vi.waitFor(() => expect(one(host, QUIET_HOURS_APPROVAL_ATTR).checked).toBe(true));
+    one(host, QUIET_HOURS_APPROVAL_ATTR).dispatchEvent({ type: 'change' });
+    await vi.waitFor(() => expect(one(host, QUIET_HOURS_APPROVAL_ATTR).checked).toBe(false));
+    expect(sent).toEqual([{ applies_to: ['notification', 'approval'] }, { applies_to: ['notification'] }]);
+    expect(one(host, QUIET_HOURS_FROM_ATTR).value).toBe('23:30');
+    expect(one(host, QUIET_HOURS_TO_ATTR).value).toBe('06:15');
+    expect(panel.getPreview()?.declared_text).toBe('22:00 → 08:00');
+  });
+
+  it.each(['success', 'error'] as const)('a rejected older read cannot replace a save %s', async outcome => {
+    const reading = deferred<QuietHoursGetResponse>();
+    const writing = deferred<QuietHoursGetResponse>();
+    const runGet = vi.fn(async () => quietSnapshot());
+    const { host, panel } = await mountQuiet(quietSnapshot(), undefined, () => writing.promise, runGet);
+    runGet.mockReturnValueOnce(reading.promise);
+    const refreshing = panel.refresh();
+    editWindow(host); one(host, QUIET_HOURS_SAVE_ATTR).click();
+    if (outcome === 'success') writing.resolve({ ...quietSnapshot(), policy: { ...quietSnapshot().policy, from_minute: 1410, to_minute: 375 } });
+    else writing.reject(new Error('Write failed.'));
+    await vi.waitFor(() => expect(one(host, QUIET_HOURS_SAVE_ATTR).disabled).toBe(false));
+    reading.reject(new Error('Stale read failed.')); await refreshing;
+    expect(panel.getState()).toBe('ready');
+    expect(panel.getError()).toBe(outcome === 'success' ? null : 'Write failed.');
+    expect(one(host, QUIET_HOURS_FROM_ATTR).value).toBe('23:30');
+    expect(panel.getPreview()?.declared_text).toBe(outcome === 'success' ? '23:30 → 06:15' : '22:00 → 08:00');
+  });
+
+  it('a refresh failure keeps the draft and an older success cannot clear that failure', async () => {
+    const old = deferred<QuietHoursGetResponse>(), latest = deferred<QuietHoursGetResponse>();
+    const runGet = vi.fn(async () => quietSnapshot());
+    const { host, panel } = await mountQuiet(quietSnapshot(), undefined, undefined, runGet);
+    editWindow(host);
+    runGet.mockReturnValueOnce(old.promise).mockReturnValueOnce(latest.promise);
+    const first = panel.refresh(), second = panel.refresh();
+    latest.reject(new Error('Newest read failed.')); await second;
+    old.resolve(quietSnapshot()); await first;
+    expect(panel.getState()).toBe('error');
+    expect(panel.getError()).toBe('Newest read failed.');
+    expect(one(host, QUIET_HOURS_FROM_ATTR).value).toBe('23:30');
+    expect(one(host, QUIET_HOURS_TO_ATTR).value).toBe('06:15');
   });
 });
 
@@ -571,7 +830,7 @@ describe('D-269 REV 18 — there is a way to the timezone from here', () => {
     const blocked = one(host, QUIET_HOURS_BLOCKED_ATTR);
     const link = byAttr(blocked, QUIET_HOURS_TZ_LINK_ATTR);
     expect(link).toHaveLength(1);
-    expect(link[0]!.attrs.get('href')).toBe('#settings/server');
+    expect(link[0]!.attrs.get('href')).toBe('#settings/server/timezone');
   });
 
   it('⚠ and it is a LINK, never a second picker', async () => {
@@ -580,7 +839,7 @@ describe('D-269 REV 18 — there is a way to the timezone from here', () => {
     const { host } = await mountQuiet(quietSnapshot(['notification']));
     for (const link of byAttr(host, QUIET_HOURS_TZ_LINK_ATTR)) {
       expect(link.tagName).toBe('A');
-      expect(link.attrs.get('href')).toBe('#settings/server');
+      expect(link.attrs.get('href')).toBe('#settings/server/timezone');
     }
     expect(byAttr(host, QUIET_HOURS_TZ_LINK_ATTR).length).toBeGreaterThan(0);
   });
@@ -615,6 +874,186 @@ describe('D-269 REV 18 — the two rows are named for their ASYMMETRY', () => {
   });
 });
 
+
+describe('notification timing reads without waiting for channels', () => {
+  const deferred = <T>() => {
+    let resolve!: (value: T) => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+    return { promise, resolve, reject };
+  };
+  const mount = (channels: Promise<{ rows: Roster }>, read = async (): Promise<NotificationKindPolicyGetResponse> => ({ policies: KIND_SEED })) => {
+    const host = makeFakeElement('div'); const runGet = vi.fn(read);
+    const runSet = vi.fn(async () => ({ policies: KIND_SEED })); const describe = vi.fn(() => channels);
+    const panel = mountKindPolicyPanel({ host: host as unknown as HTMLElement, document: fakeDocument, runGet, runSet, describeChannels: describe });
+    return { host, panel, runGet, runSet, describe };
+  };
+
+  for (const outcome of ['success', 'error'] as const) {
+    it(`keeps the timing read pending when channels finish with ${outcome} first`, async () => {
+      const channels = deferred<{ rows: Roster }>(); const policy = deferred<NotificationKindPolicyGetResponse>();
+      const h = mount(channels.promise, () => policy.promise); const reading = h.panel.refresh(); let finished = false;
+      void reading.then(() => { finished = true; }); const loading = one(h.host, KIND_POLICY_READ_STATUS_ATTR);
+      if (outcome === 'success') channels.resolve({ rows: IN_APP_ONLY }); else channels.reject(new Error('Channels unavailable.'));
+      await flush(); expect(finished).toBe(false); expect(h.panel.getState()).toBe('loading'); expect(h.panel.getError()).toBeNull();
+      expect(one(h.host, KIND_POLICY_READ_STATUS_ATTR)).toBe(loading); expect(loading.textContent).toBe('Loading notification settings…');
+      expect(byAttr(h.host, KIND_POLICY_ENABLED_ATTR)).toHaveLength(0); expect(byAttr(h.host, KIND_POLICY_RETRY_ATTR)).toHaveLength(0);
+      policy.resolve({ policies: KIND_SEED }); await reading;
+      expect(h.panel.getState()).toBe('ready'); expect(h.panel.getPolicies()).toEqual(KIND_SEED);
+      expect(byAttr(h.host, KIND_POLICY_UNREACHABLE_ATTR)).toHaveLength(outcome === 'success' ? 1 : 0);
+      expect(h.runGet).toHaveBeenCalledTimes(1); expect(h.describe).toHaveBeenCalledTimes(1); expect(h.runSet).not.toHaveBeenCalled(); h.panel.dispose();
+    });
+
+    it(`loads timing first and updates only the hint after channel ${outcome}`, async () => {
+      const channels = deferred<{ rows: Roster }>(); const h = mount(channels.promise);
+      await h.panel.refresh(); expect(h.panel.getState()).toBe('ready');
+      const timing = one(h.host, KIND_POLICY_OFFSET_ATTR, 'booking'); const policies = h.panel.getPolicies();
+      expect(byAttr(h.host, KIND_POLICY_UNREACHABLE_ATTR)).toHaveLength(0);
+      if (outcome === 'success') channels.resolve({ rows: IN_APP_ONLY }); else channels.reject(new Error('Channels unavailable.'));
+      await flush();
+      expect(one(h.host, KIND_POLICY_OFFSET_ATTR, 'booking')).toBe(timing); expect(h.panel.getPolicies()).toBe(policies);
+      expect(byAttr(h.host, KIND_POLICY_UNREACHABLE_ATTR)).toHaveLength(outcome === 'success' ? 1 : 0);
+      expect(h.panel.getState()).toBe('ready'); expect(h.panel.getError()).toBeNull();
+      expect(h.runGet).toHaveBeenCalledTimes(1); expect(h.describe).toHaveBeenCalledTimes(1); expect(h.runSet).not.toHaveBeenCalled();
+      h.panel.dispose();
+    });
+
+    it(`keeps a policy error and its retry connected after channel ${outcome}`, async () => {
+      const channels = deferred<{ rows: Roster }>();
+      const h = mount(channels.promise, async () => { throw new Error('Timing unavailable.'); });
+      await h.panel.refresh(); expect(h.panel.getState()).toBe('error'); const retry = one(h.host, KIND_POLICY_RETRY_ATTR);
+      if (outcome === 'success') channels.resolve({ rows: IN_APP_ONLY }); else channels.reject(new Error('Channels unavailable.'));
+      await flush(); expect(h.panel.getState()).toBe('error'); expect(h.panel.getError()).toBe('Timing unavailable.');
+      expect(one(h.host, KIND_POLICY_RETRY_ATTR)).toBe(retry); expect(one(h.host, KIND_POLICY_ERROR_ATTR).textContent).toBe('Timing unavailable.');
+      expect(byAttr(h.host, KIND_POLICY_ENABLED_ATTR)).toHaveLength(0); expect(h.runGet).toHaveBeenCalledTimes(1);
+      expect(h.runSet).not.toHaveBeenCalled(); h.panel.dispose();
+    });
+
+    it(`ignores a channel ${outcome} after disposal`, async () => {
+      const channels = deferred<{ rows: Roster }>(); const h = mount(channels.promise); await h.panel.refresh();
+      const before = allText(h.host); const timing = one(h.host, KIND_POLICY_OFFSET_ATTR, 'booking'); h.panel.dispose();
+      if (outcome === 'success') channels.resolve({ rows: IN_APP_ONLY }); else channels.reject(new Error('Channels unavailable.'));
+      await flush(); await h.panel.refresh();
+      expect(allText(h.host)).toBe(before); expect(one(h.host, KIND_POLICY_OFFSET_ATTR, 'booking')).toBe(timing);
+      expect(byAttr(h.host, KIND_POLICY_UNREACHABLE_ATTR)).toHaveLength(0); expect(h.runGet).toHaveBeenCalledTimes(1);
+      expect(h.describe).toHaveBeenCalledTimes(1); expect(h.runSet).not.toHaveBeenCalled();
+    });
+  }
+
+  it('retries failed timing reads without waiting for or duplicating the optional lookup', async () => {
+    const channels = deferred<{ rows: Roster }>(); let reads = 0;
+    const h = mount(channels.promise, async () => { if (++reads === 1) throw new Error('Timing unavailable.'); return { policies: KIND_SEED }; });
+    await h.panel.refresh(); one(h.host, KIND_POLICY_RETRY_ATTR).click();
+    await Promise.all(Array.from({ length: 10 }, () => h.panel.refresh()));
+    expect(h.panel.getState()).toBe('ready'); expect(h.panel.getPolicies()).toEqual(KIND_SEED);
+    expect(h.runGet).toHaveBeenCalledTimes(2); expect(h.describe).toHaveBeenCalledTimes(1); expect(h.runSet).not.toHaveBeenCalled();
+    channels.resolve({ rows: REACHABLE }); await flush(); expect(h.runGet).toHaveBeenCalledTimes(2); h.panel.dispose();
+  });
+
+  it('keeps an initial roster unknown after newer confirmed channel changes', async () => {
+    const channels = deferred<{ rows: Roster }>(); const h = mount(channels.promise); await h.panel.refresh();
+    h.panel.updateChannelNotification('telegram', true); h.panel.updateChannelNotification('telegram', false);
+    const timing = one(h.host, KIND_POLICY_OFFSET_ATTR, 'booking'); channels.resolve({ rows: IN_APP_ONLY }); await flush();
+    expect(byAttr(h.host, KIND_POLICY_UNREACHABLE_ATTR)).toHaveLength(0);
+    expect(one(h.host, KIND_POLICY_OFFSET_ATTR, 'booking')).toBe(timing); expect(h.runGet).toHaveBeenCalledTimes(1); h.panel.dispose();
+  });
+});
+
+describe('notification reachability follows confirmed channel changes', () => {
+  it('updates only the hint and keeps timing controls, policy values and reads intact', async () => {
+    const describeChannels = vi.fn(async () => ({ rows: IN_APP_ONLY }));
+    const h = await mountKinds(KIND_SEED, describeChannels);
+    const timing = one(h.host, KIND_POLICY_OFFSET_ATTR, 'booking');
+    const before = h.panel.getPolicies();
+    h.panel.updateChannelNotification('telegram', true);
+    expect(byAttr(h.host, KIND_POLICY_UNREACHABLE_ATTR)).toHaveLength(0);
+    expect(one(h.host, KIND_POLICY_OFFSET_ATTR, 'booking')).toBe(timing);
+    expect(h.panel.getPolicies()).toBe(before);
+    h.panel.updateChannelNotification('telegram', false);
+    expect(byAttr(h.host, KIND_POLICY_UNREACHABLE_ATTR)).toHaveLength(1);
+    expect(one(h.host, KIND_POLICY_OFFSET_ATTR, 'booking')).toBe(timing);
+    expect(h.runGet).toHaveBeenCalledTimes(1);
+    expect(describeChannels).toHaveBeenCalledTimes(1);
+    expect(h.runSet).not.toHaveBeenCalled();
+    h.panel.dispose();
+  });
+
+  it('keeps other external channels reachable and excludes the always-on in-app channel', async () => {
+    const h = await mountKinds(KIND_SEED, async () => ({ rows: [
+      ...REACHABLE, { channel: 'slack', notification: true },
+    ] }));
+    h.panel.updateChannelNotification('telegram', false);
+    expect(byAttr(h.host, KIND_POLICY_UNREACHABLE_ATTR)).toHaveLength(0);
+    h.panel.updateChannelNotification('slack', false);
+    expect(byAttr(h.host, KIND_POLICY_UNREACHABLE_ATTR)).toHaveLength(1);
+    h.panel.updateChannelNotification('ui', true);
+    expect(byAttr(h.host, KIND_POLICY_UNREACHABLE_ATTR)).toHaveLength(1);
+    h.panel.dispose();
+  });
+
+  for (const describe of [undefined, async () => { throw new Error('Roster unavailable.'); }]) {
+    it(`keeps an ${describe === undefined ? 'absent' : 'unavailable'} roster unknown when the last known channel turns off`, async () => {
+      const h = await mountKinds(KIND_SEED, describe);
+      h.panel.updateChannelNotification('telegram', true);
+      h.panel.updateChannelNotification('slack', true);
+      h.panel.updateChannelNotification('telegram', false);
+      expect(byAttr(h.host, KIND_POLICY_UNREACHABLE_ATTR)).toHaveLength(0);
+      h.panel.updateChannelNotification('slack', false);
+      expect(byAttr(h.host, KIND_POLICY_UNREACHABLE_ATTR)).toHaveLength(0);
+      h.panel.dispose();
+    });
+  }
+
+  for (const enabled of [true, false]) {
+    for (const outcome of ['success', 'error'] as const) {
+      it(`ignores an older roster ${outcome} after notifications turn ${enabled ? 'on' : 'off'}`, async () => {
+        let resolve!: (value: { rows: Roster }) => void;
+        let reject!: (error: Error) => void;
+        const old = new Promise<{ rows: Roster }>((done, fail) => { resolve = done; reject = fail; });
+        const describe = vi.fn().mockResolvedValueOnce({ rows: enabled ? IN_APP_ONLY : REACHABLE }).mockReturnValueOnce(old);
+        const h = await mountKinds(KIND_SEED, describe);
+        const reading = h.panel.refresh();
+        h.panel.updateChannelNotification('telegram', enabled);
+        if (outcome === 'success') resolve({ rows: enabled ? IN_APP_ONLY : REACHABLE });
+        else reject(new Error('Old roster failed.'));
+        await reading; await flush();
+        expect(byAttr(h.host, KIND_POLICY_UNREACHABLE_ATTR)).toHaveLength(enabled ? 0 : 1);
+        expect(h.panel.getPolicies()).toEqual(KIND_SEED);
+        h.panel.dispose();
+      });
+    }
+  }
+
+  for (const outcome of ['success', 'error'] as const) {
+    it(`shares a pending roster across policy refreshes and permits another lookup after ${outcome}`, async () => {
+      let resolve!: (value: { rows: Roster }) => void;
+      let reject!: (error: Error) => void;
+      const pending = new Promise<{ rows: Roster }>((done, fail) => { resolve = done; reject = fail; });
+      const describe = vi.fn().mockReturnValueOnce(pending).mockResolvedValueOnce({ rows: REACHABLE });
+      const h = await mountKinds(KIND_SEED, describe);
+      await Promise.all([h.panel.refresh(), h.panel.refresh()]);
+      expect(h.panel.getState()).toBe('ready'); expect(describe).toHaveBeenCalledTimes(1);
+      expect(h.runGet).toHaveBeenCalledTimes(3); expect(byAttr(h.host, KIND_POLICY_UNREACHABLE_ATTR)).toHaveLength(0);
+      if (outcome === 'success') resolve({ rows: IN_APP_ONLY });
+      else reject(new Error('Channel read unavailable.'));
+      await flush();
+      expect(byAttr(h.host, KIND_POLICY_UNREACHABLE_ATTR)).toHaveLength(outcome === 'success' ? 1 : 0);
+      await h.panel.refresh(); await flush();
+      expect(describe).toHaveBeenCalledTimes(2); expect(h.runGet).toHaveBeenCalledTimes(4);
+      expect(byAttr(h.host, KIND_POLICY_UNREACHABLE_ATTR)).toHaveLength(0);
+      expect(h.panel.getPolicies()).toEqual(KIND_SEED); expect(h.runSet).not.toHaveBeenCalled();
+      h.panel.dispose();
+    });
+  }
+
+  it('drops channel changes after disposal', async () => {
+    const h = await mountKinds(KIND_SEED, async () => ({ rows: IN_APP_ONLY }));
+    const warning = one(h.host, KIND_POLICY_UNREACHABLE_ATTR);
+    h.panel.dispose(); h.panel.updateChannelNotification('telegram', true);
+    expect(one(h.host, KIND_POLICY_UNREACHABLE_ATTR)).toBe(warning);
+    expect(h.runGet).toHaveBeenCalledTimes(1); expect(h.runSet).not.toHaveBeenCalled();
+  });
+});
 
 describe('D-269 REV 19 — the panel says when nothing it sets can reach you', () => {
   it('⛔⛔ in-app only ⇒ it says so, and points at the panel that fixes it', async () => {

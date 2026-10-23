@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import {
-  ARTIFACTS, DRAWER_TOGGLE, SHELL_CONTENT, SHELL_HOST, SHELL_TOPBAR,
+  DRAWER_TOGGLE, SHELL_CONTENT, SHELL_HOST, SHELL_TOPBAR,
   installFullAppHooks,
 } from './helpers/full-app.js';
 
@@ -85,7 +85,7 @@ for (const { hash, route, marker } of ROUTES) {
     expect(await page.evaluate(() => window.__app.activeRoute())).toBe(route);
     // The persistent shell survived the content swap (chrome is not re-mounted).
     await expect(page.locator(`[${SHELL_HOST}]`)).toBeVisible();
-    await page.screenshot({ path: `${ARTIFACTS}/full-app-${route}.png`, fullPage: false });
+    await page.screenshot({ path: test.info().outputPath(`full-app-${route}.png`), fullPage: false });
   });
 }
 

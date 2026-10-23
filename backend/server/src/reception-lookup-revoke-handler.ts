@@ -12,19 +12,21 @@ import type {
   ReceptionLookupRevokeInput,
   ReceptionLookupRevokeResult,
 } from '@recued/contracts';
+import { RpcError } from '@recued/contracts';
 
 import {
   RECEPTION_CREDENTIAL_ID_MAX,
   type ReceptionManageCredentialStore,
 } from './storage/reception-manage-credential-store.js';
 
-export class ReceptionLookupRevokeRpcError extends Error {
-  constructor(
-    readonly code: string,
-    message: string,
-    readonly status: number,
-  ) {
-    super(message);
+/** ⛔ AN `RpcError`, OR ITS CODE NEVER REACHES THE CLIENT. The dispatcher round-trips
+ *  the code and status of an `RpcError` only and sends anything else as `500 internal`.
+ *  This class extended plain `Error`, which no live server ever showed, because
+ *  `server.ts` dropped this slice's deps until 2026-10-21 (`archive-rpc-wiring.test.ts`). */
+export class ReceptionLookupRevokeRpcError extends RpcError {
+  declare readonly status: number;
+  constructor(code: string, message: string, status: number) {
+    super(code, message, status);
     this.name = 'ReceptionLookupRevokeRpcError';
   }
 }

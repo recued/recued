@@ -8,6 +8,7 @@ import type {
   RecordsSearchResult,
   RecordsSchemaSnapshot,
 } from '@recued/contracts';
+import { RECORDS_QUOTA_NO_LIMIT } from '@recued/contracts';
 import { bootstrapDataRoute } from '../bootstrap-data-route.js';
 import { initialRecordsBrowseState } from '../records-view-controls.js';
 import {
@@ -131,6 +132,42 @@ const state = (overrides: Partial<RecordsExplorerState> = {}): RecordsExplorerSt
 });
 
 describe('D-221 #data Records explorer', () => {
+  it('uses escaped schema labels in the table and detail while retaining raw keys in diagnostics', () => {
+    const labelled = { ...namespace('publisher-a'), schema: { ...schema, entities: { job: {
+      ...schema.entities.job!, fields: schema.entities.job!.fields.map(field => field.key === 'title'
+        ? { ...field, label: 'Work <title>' } : field),
+    } } } };
+    const list = renderRecordsExplorer(state({ selectedNamespace: labelled }));
+    expect(list).toContain('<th scope="col">Work &lt;title&gt;</th>');
+    expect(list).toContain('<th scope="col">Record ID</th>');
+    expect(list).toContain('<th scope="col">Amount</th>');
+    expect(list).not.toContain('<title>');
+    expect(list).not.toContain('alice@example.test');
+    const detail = renderRecordsExplorer(state({ selectedNamespace: labelled, detail: record }));
+    expect(detail).toContain('<dt>Work &lt;title&gt; ');
+    expect(detail).toContain('&quot;key&quot;: &quot;title&quot;');
+  });
+
+  it('offers filter recovery only for an applied filtered query and locks it during reader work', () => {
+    const filtered = { ...initialRecordsBrowseState({ filters: { title: { op: 'prefix', value: 'missing' } } }), records: [] };
+    const html = renderRecordsExplorer(state(filtered));
+    expect(html).toContain('No records match the applied filters.');
+    expect(html).toContain('data-action="records-clear-filters">Clear filters</button>');
+    for (const flag of ['exporting', 'outboxRefreshing', 'changesRefreshing', 'markingReviewed'] as const) {
+      const busy = renderRecordsExplorer(state({ ...filtered, [flag]: true }));
+      expect(busy).toContain('data-action="records-clear-filters" aria-disabled="true"');
+    }
+    const loading = renderRecordsExplorer(state({ ...filtered, loading: true }));
+    expect(loading).toContain('Loading results…');
+    expect(loading).not.toContain('data-action="records-clear-filters"');
+    const unfiltered = renderRecordsExplorer(state({ records: [], view: { filters: {} } }));
+    expect(unfiltered).toContain('No records in this kind.');
+    expect(unfiltered).not.toContain('data-action="records-clear-filters"');
+    const failed = renderRecordsExplorer(state({ ...filtered, error: 'Read unavailable' }));
+    expect(failed).toContain('No records are shown. Check the message above.');
+    expect(failed).not.toContain('No records match');
+  });
+
   // ⛔ THE QUOTA LINES ARE THE ONLY PLACE THIS SCREEN SPEAKS IN BYTES, and they
   // used to read `42 / 1,000 bytes` / `1,048,576 / 10,000,000 bytes` — digit
   // soup at the width a ceiling actually has. Pin the RENDERED text: nothing
@@ -164,6 +201,57 @@ describe('D-221 #data Records explorer', () => {
     expect(html).toContain('<dt>Migration reserve</dt><dd>40 KB</dd>');
     // The bare unit word is gone with the raw number — the value carries it now.
     expect(html).not.toContain(' bytes');
+  });
+
+  // ⛔ THE GLOBAL LIMITS HAVE NO DEFAULT. Unset, they arrive as `RECORDS_QUOTA_NO_LIMIT`, and
+  // this read "All Records rows 0 / 9,007,199,254,740,991 0%" and "All payload 0 B / 8192.00 TB"
+  // on a fresh server. Every fixture above sets a limit, which is why nothing caught it.
+  it('says "no limit" for a limit nobody set, never the number that stands for it', () => {
+    const html = renderRecordsExplorer(state({
+      globalQuota: {
+        row_count: 1_234,
+        payload_bytes: 2048,
+        outbox_count: 0,
+        reserved_payload_bytes: 0,
+        row_limit: RECORDS_QUOTA_NO_LIMIT,
+        byte_limit: RECORDS_QUOTA_NO_LIMIT,
+        outbox_limit: RECORDS_QUOTA_NO_LIMIT,
+      },
+    }));
+    expect(html).toContain('<dt>All Records rows</dt><dd>1,234 <small>no limit</small></dd>');
+    expect(html).toContain('<dt>All payload</dt><dd>2 KB <small>no limit</small></dd>');
+    expect(html).toContain('<dt>All event backlog</dt><dd>0 <small>no limit</small></dd>');
+    expect(html).not.toMatch(/9,007,199|9007199|8192\.00 TB/);
+    // A pack's own limits are real (its defaults), and keep their "used / limit · %".
+    expect(html).toContain('<dt>Rows</dt><dd>');
+    expect(html).toMatch(/<dt>Rows<\/dt><dd>[\d,]+ \/ [\d,]+ <small>\d+%<\/small>/);
+  });
+
+  it('names each pack the way the owner knows it, and keeps its full ref as the identity', () => {
+    const named = (publisher: string): RecordsNamespaceView => ({ ...namespace(publisher), display_name: 'Job Board' });
+    const html = renderRecordsExplorer(state({
+      namespaces: [named('publisher-a'), named('publisher-b')],
+      selectedNamespace: named('publisher-a'),
+      kinds: [{ kind: 'customer_invoice', rows: 2, payload_bytes: 84 }],
+      selectedKind: null,
+    }));
+    const nav = html.slice(html.indexOf('<nav class="records-namespace-nav"'), html.indexOf('</nav>'));
+    expect(nav).toContain('<strong>Job Board</strong>');
+    // Two packs with one name: the publisher line tells them apart.
+    expect(nav).toContain('<span>by publisher-a</span>');
+    expect(nav).toContain('<span>by publisher-b</span>');
+    expect(nav).not.toContain('<strong>same-board</strong>');
+    // The full ref is still what a click selects.
+    expect(nav).toContain('data-records-namespace="publisher-a/same-board"');
+    expect(html).toContain('<h3>Job Board</h3><p>by publisher-a · ready · v3</p>');
+    // A record kind reads as words too.
+    expect(html).toMatch(/data-records-kind="customer_invoice"[^>]*>\s*Customer invoice <span>2<\/span>/);
+  });
+
+  it('falls back to the pack’s slug made readable when the server does not name it', () => {
+    const html = renderRecordsExplorer(state());
+    expect(html).toContain('<strong>Same board</strong>');
+    expect(html).toContain('<h3>Same board</h3>');
   });
 
   it('gives Records controls a consistent full-size interaction target', () => {
@@ -456,7 +544,10 @@ const fakeDocument = (): Document => {
 };
 
 describe('D-221 Records route control-plane seam', () => {
-  const browsingRoute = (search: (args: RecordsOwnerSearchRequest) => Promise<RecordsSearchResult>) => {
+  const browsingRoute = (
+    search: (args: RecordsOwnerSearchRequest) => Promise<RecordsSearchResult>,
+    recordsExportCaller?: Parameters<typeof bootstrapDataRoute>[0]['recordsExportCaller'],
+  ) => {
     const root = fakeElement();
     const broadcasts = new Map<string, () => void>();
     const definition = { tab: 'records' as const, owner: namespace('publisher-a').owner, entity: 'job',
@@ -466,7 +557,7 @@ describe('D-221 Records route control-plane seam', () => {
       savedView: { id: 'view_00000000-0000-4000-8000-000000000001', name: 'Jobs', revision: 1, created_at: 1, updated_at: 1, definition },
       recordsNamespaceListCaller: async () => ({ namespaces: [namespace('publisher-a')], global_quota: globalQuota }),
       recordsKindListCaller: async () => ({ kinds: [{ kind: 'job', rows: 3, payload_bytes: 42 }] }),
-      recordsSearchCaller: search, sharedListCaller: async () => ({ entries: [] }),
+      recordsSearchCaller: search, recordsExportCaller, sharedListCaller: async () => ({ entries: [] }),
       liveRefreshDebounceMs: 0,
       subscribe: (kind, handler) => {
         if (kind === 'warehouse' || kind === 'memory') broadcasts.set(kind, () => handler({} as never));
@@ -480,6 +571,39 @@ describe('D-221 Records route control-plane seam', () => {
     };
     return { root, route, click, definition, broadcast: (kind: string) => broadcasts.get(kind)?.() };
   };
+
+  it('does not misreport a successful empty read as a load failure after an export fails', async () => {
+    const search = vi.fn(async () => ({ records: [] }));
+    const exporter = vi.fn(async () => { throw new Error('Export service unavailable'); });
+    const { root, route, click, definition } = browsingRoute(search, exporter);
+    await route.whenLoaded();
+    expect(root.children[0]!.innerHTML).toContain('No records match the applied filters.');
+    click('records-export-kind');
+    await vi.waitFor(() => expect(root.children[0]!.innerHTML).toContain('Export service unavailable'));
+    expect(root.children[0]!.innerHTML).not.toContain('Results could not be loaded.');
+    expect(root.children[0]!.innerHTML).toContain('No records are shown. Check the message above.');
+    expect(search).toHaveBeenCalledTimes(1);
+    expect(exporter).toHaveBeenCalledTimes(1);
+    expect(route.currentView()).toEqual(definition);
+    route.dispose();
+  });
+
+  it('clears filters from a later page without its cursor, sort changes, or saved-view writes', async () => {
+    const search = vi.fn<(args: RecordsOwnerSearchRequest) => Promise<RecordsSearchResult>>()
+      .mockResolvedValueOnce({ records: [record], next_cursor: 'filtered-next' })
+      .mockResolvedValueOnce({ records: [], prev_cursor: 'filtered-prev' })
+      .mockResolvedValue({ records: [record], next_cursor: 'unfiltered-next' });
+    const { route, click, definition } = browsingRoute(search);
+    const original = structuredClone(definition);
+    await route.whenLoaded();
+    click('records-next-page'); await route.whenLoaded();
+    click('records-clear-filters'); await route.whenLoaded();
+    expect(search.mock.calls[2]![0]).toEqual({ owner: definition.owner, entity: 'job',
+      sort: '-amount', limit: 100, include_orphaned: true });
+    expect(route.currentView()).toEqual({ tab: 'records', owner: definition.owner, entity: 'job', sort: '-amount' });
+    expect(definition).toEqual(original);
+    route.dispose();
+  });
 
   it('does not let background broadcasts reset a later page or an unfinished filter', async () => {
     const search = vi.fn<(args: RecordsOwnerSearchRequest) => Promise<RecordsSearchResult>>()

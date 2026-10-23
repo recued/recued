@@ -70,7 +70,7 @@
 
 import { createActionDispatcher } from '@recued/ui-shared/action-dispatcher';
 // D-210 WS3 — the authoring default a fresh calendar end-mode seeds.
-import { INTAKE_FORM_CALENDAR_DEFAULT_DURATION_MINUTES } from '@recued/contracts';
+import { INTAKE_FORM_CALENDAR_DEFAULT_DURATION_MINUTES, intakeFormChoiceText } from '@recued/contracts';
 
 import type {
   ApprovalLinkConfig,
@@ -707,26 +707,46 @@ const coerceScalarValue = (event: FieldDelegateEvent): unknown => {
   return event.value;
 };
 
-/** Coerce a repeater cell's raw input. Two cells need more than the
- *  `control` says:
- *    - `form_definition.fields` rows surface `values` as a comma-joined
- *      string (`row.values.join(', ')`); the contract row carries
- *      `values: string[]`.
- *    - `day_of_week` is a numeric `select` cell — the contract row
- *      types it `number`; preserve the existing cell value's type. */
+/** Coerce a repeater cell's raw input. `day_of_week` needs more than the
+ *  `control` says: it is a numeric `select` cell, and the contract row types
+ *  it `number`, so the existing cell value's type is preserved. (An intake
+ *  field's choices cell is not coerced here: `setIntakeChoicesFromCell`
+ *  writes two keys.) */
 const coerceCellValue = (event: FieldDelegateEvent, current: unknown): unknown => {
-  if (event.repeaterKey === 'form_definition.fields' && event.rowField === 'values') {
-    return event.value
-      .split(',')
-      .map((entry) => entry.trim())
-      .filter((entry) => entry.length > 0);
-  }
   if (event.control === 'number') return Number(event.value);
   if (event.control === 'toggle') return event.checked;
   if (event.control === 'select') {
     return typeof current === 'number' ? Number(event.value) : event.value;
   }
   return event.value;
+};
+
+/** An intake field's choices cell shows each choice as a visitor reads it
+ *  (its label, else its value), comma-separated, so that is the text an owner
+ *  edits. An entry that still reads as one of the row's choices, by that text
+ *  or by its stored value, keeps the value and its label, so a recipe that
+ *  reads the value keeps working. Any other entry is a new choice whose value
+ *  is the text typed. */
+const setIntakeChoicesFromCell = (row: Record<string, unknown>, text: string): void => {
+  const values = Array.isArray(row.values)
+    ? row.values.filter((value): value is string => typeof value === 'string')
+    : [];
+  // A choice typed as its stored value needs no entry: it is its own value.
+  const valueOf = new Map<string, string>();
+  for (const value of values) valueOf.set(intakeFormChoiceText(row, value), value);
+  const next = text
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+    .map((entry) => valueOf.get(entry) ?? entry);
+  const labels = next.flatMap((value) => {
+    const shown = intakeFormChoiceText(row, value);
+    return shown === value ? [] : [[value, shown] as const];
+  });
+  row.values = next;
+  // `fromEntries`, not assignment: a choice named `__proto__` stays a key.
+  if (labels.length > 0) row.value_labels = Object.fromEntries(labels);
+  else delete row.value_labels;
 };
 
 /** Multiselect fields whose array elements are `number`, not `string` —
@@ -770,6 +790,10 @@ export const applyFieldDelegateEvent = (
     }
     if (row === null || typeof row !== 'object') return;
     const target = row as Record<string, unknown>;
+    if (event.repeaterKey === 'form_definition.fields' && event.rowField === 'values') {
+      setIntakeChoicesFromCell(target, event.value);
+      return;
+    }
     target[event.rowField] = coerceCellValue(event, target[event.rowField]);
     return;
   }

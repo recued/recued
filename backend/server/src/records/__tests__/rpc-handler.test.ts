@@ -6,6 +6,7 @@ import type {
   RecordsSchemaSnapshot,
 } from '@recued/contracts';
 import { makeRecordsRpcHandlers } from '../../records-rpc-handler.js';
+import { bundledPackName, resolveBundledPackManifest } from '../../bundled-pack-source.js';
 import type { WsClient } from '../../ws-server.js';
 import { createRecordsStore } from '../store.js';
 import { createSavedDataViewStore } from '../../saved-data-view-store.js';
@@ -39,6 +40,47 @@ const binding = (action: RecordsExecutionBinding['action']): RecordsExecutionBin
 
 const paired = { instance_id: 'paired-device' } as WsClient;
 const unpaired = { instance_id: null } as WsClient;
+
+describe('the Records pack list names each pack the way the owner knows it', () => {
+  it('lists a namespace with its pack’s name, and without one when the name is not known', async () => {
+    const db = new Database(':memory:');
+    const store = createRecordsStore(db);
+    store.installNamespace({
+      owner,
+      version: 1,
+      storage_schema_hash: 'a'.repeat(64),
+      declaration_hash: 'b'.repeat(64),
+      artifact_digest: 'artifact-1',
+      schema,
+      bindings: { create: binding('create') },
+    });
+    const list = async (packName?: (o: RecordsPackRef) => string | null) =>
+      (await makeRecordsRpcHandlers({ store, ...(packName ? { packName } : {}) })!
+        .handlers['records.namespace.list'](undefined, paired)).namespaces[0];
+
+    expect(await list((o) => (o.pack_slug === 'board' ? '  Job Board ' : null)))
+      .toMatchObject({ owner, display_name: 'Job Board' });
+    // Unknown, blank, or a lookup that fails: listed by its identity alone, never failed.
+    expect(await list(() => null)).not.toHaveProperty('display_name');
+    expect(await list(() => '  ')).not.toHaveProperty('display_name');
+    expect(await list(() => { throw new Error('roster unreadable'); })).not.toHaveProperty('display_name');
+    expect(await list()).not.toHaveProperty('display_name');
+    db.close();
+  });
+
+  it('takes the name from the pack roster only when the publisher matches', () => {
+    // A foundation pack: the server embeds it, so it resolves in the public tree too,
+    // which ships no community/ (a marketplace pack such as decision-log does not).
+    const slug = 'personal-organizer-foundation';
+    const manifest = resolveBundledPackManifest(undefined, slug);
+    expect(manifest).not.toBeNull();
+    expect(bundledPackName({ publisher: manifest!.publisher, pack_slug: slug })).toBe(manifest!.name);
+    expect(manifest!.name).not.toBe(slug);
+    // Another publisher's pack with the same slug is not this one.
+    expect(bundledPackName({ publisher: 'someone-else', pack_slug: slug })).toBeNull();
+    expect(bundledPackName({ publisher: manifest!.publisher, pack_slug: 'no-such-pack' })).toBeNull();
+  });
+});
 
 describe('D-221 Records owner rpc', () => {
   it('refuses an unpaired client on EVERY method, not just the one the surface is named for', async () => {

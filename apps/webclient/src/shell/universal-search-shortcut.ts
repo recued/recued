@@ -29,10 +29,15 @@ export const UNIVERSAL_SEARCH_SHORTCUT = 'Control+/ Meta+/';
  *  Find chip is where this one has to be said. Keeping the spelling here means
  *  the chord and the label it advertises cannot drift apart. */
 export const universalSearchShortcutLabel = (doc: Document): string => {
-  const platform = doc.defaultView?.navigator?.platform
-    ?? (globalThis as { navigator?: Navigator }).navigator?.platform
-    ?? '';
-  return /Mac|iPhone|iPad|iPod/i.test(platform) ? '⌘/' : 'Ctrl /';
+  try {
+    const platform = doc.defaultView?.navigator?.platform
+      ?? (globalThis as { navigator?: Navigator }).navigator?.platform
+      ?? '';
+    return /Mac|iPhone|iPad|iPod/i.test(platform) ? '⌘/' : 'Ctrl /';
+  } catch {
+    // A shortcut hint must not prevent Chat from opening when Navigator is restricted.
+    return 'Ctrl /';
+  }
 };
 
 export type UniversalSearchShortcutEvent = Pick<

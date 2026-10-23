@@ -935,6 +935,41 @@ const deleteMail = async (deps: MailEnrollDeps, slug: string): Promise<{ ok: tru
 };
 
 // ────────────────────────────────────────────────────────────────
+// resync — the owner's Re-sync on a mailbox
+// ────────────────────────────────────────────────────────────────
+
+/** Rebuilds the mailbox's live connection and starts its sync again, as at a
+ *  restart (`collection.mail.resync`): the stop and restart a credential change
+ *  makes, under the same per-account lock, so it cannot race a repair or a
+ *  removal. The restart is the stack's own start, so a locked vault still
+ *  defers the sync. Resolves once the mailbox is live; its listing runs on in
+ *  the background, and a sign-in that fails shows in its status, as at boot. */
+export const handleMailResync = async (
+  deps: MailEnrollDeps,
+  args: { slug?: unknown },
+): Promise<{ ok: true }> => {
+  const slug = requireSlug(args.slug);
+  return withCollectionAuthenticationLock(deps.instances.authenticationLocks, 'mail:' + slug, async () => {
+    if (!deps.instances.get('mail', slug)) {
+      throw new RpcError('not_found', `collection.mail.resync: instance '${slug}' not found`, 404);
+    }
+    const lifecycle = deps.authenticationChange;
+    if (!lifecycle) {
+      throw new RpcError('not_configured', 'collection.mail.resync requires the mail composition root', 503);
+    }
+    // A stop that fails has already taken the mailbox out of service, and the
+    // stack logs why: the restart below rebuilds it either way.
+    await lifecycle.stop(slug).catch(() => undefined);
+    try {
+      await lifecycle.restart(slug);
+    } catch {
+      throw new RpcError('restart_failed', 'The mailbox could not be started again. Try again, or restart the server.', 500);
+    }
+    return { ok: true };
+  });
+};
+
+// ────────────────────────────────────────────────────────────────
 // helpers exported for the compose root
 // ────────────────────────────────────────────────────────────────
 

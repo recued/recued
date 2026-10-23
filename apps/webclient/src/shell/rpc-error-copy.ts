@@ -95,6 +95,15 @@ const CONNECTION_COPY: Record<
     copy: "Your server isn't responding right now.",
     suppressible: false,
   },
+  // The server refused the call before running it because too many were
+  // already running. `rpc-conn.ts` sends a refused call again until its own
+  // timeout, so this only reaches a surface when the server stayed that busy
+  // for the whole wait. Its raw message named "RPC calls".
+  rpc_overloaded: {
+    kind: 'unresponsive',
+    copy: 'Your server is busy right now. Try again in a moment.',
+    suppressible: false,
+  },
   connection_lost: {
     kind: 'in_doubt',
     copy: 'The connection dropped before this finished, so Recued does not know what happened.',

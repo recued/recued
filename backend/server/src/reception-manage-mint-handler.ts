@@ -36,19 +36,21 @@ import type {
   ReceptionManageMintInput,
   ReceptionManageMintResult,
 } from '@recued/contracts';
+import { RpcError } from '@recued/contracts';
 
 import type { ReceptionManageCredentialStore } from './storage/reception-manage-credential-store.js';
 import type { FormSubmissionStore, FormSubmissionSummary } from './storage/reception-form-store.js';
 import type { WorkEntityStore } from './storage/work-entity-store.js';
 import { RECEPTION_MANAGE_PATH } from './ports/reception/handlers/manage.js';
 
-export class ReceptionManageMintRpcError extends Error {
-  constructor(
-    readonly code: string,
-    message: string,
-    readonly status: number,
-  ) {
-    super(message);
+/** ⛔ AN `RpcError`, OR ITS CODE NEVER REACHES THE CLIENT. The dispatcher round-trips
+ *  the code and status of an `RpcError` only and sends anything else as `500 internal`.
+ *  This class extended plain `Error`, which no live server ever showed, because
+ *  `server.ts` dropped this slice's deps until 2026-10-21 (`archive-rpc-wiring.test.ts`). */
+export class ReceptionManageMintRpcError extends RpcError {
+  declare readonly status: number;
+  constructor(code: string, message: string, status: number) {
+    super(code, message, status);
     this.name = 'ReceptionManageMintRpcError';
   }
 }

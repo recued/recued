@@ -90,11 +90,14 @@ export interface CalendarSeriesSnapshot {
   keep: readonly string[];
 }
 
-/** CalDAV: every row one calendar's resources make in a window, after a scan
- *  that read every resource. A row of that calendar inside the window and not
- *  in `keep` is one no resource makes: an event deleted while Recued was not
- *  watching, or a row an older reader filed under another identity (it took
- *  an alert's UID for its event's). It is removed. */
+/** Every row one calendar makes in a window, after a listing that read all of
+ *  it: CalDAV's scan of every resource, or Google's and Outlook's listing of the
+ *  window in place of a sync token or delta link (expired, or not yet held, or
+ *  Outlook's window moving), which reports no deletion. A row of that calendar
+ *  inside the window and not in `keep` is one the calendar no longer holds: an
+ *  event deleted while Recued was not watching, or a row an older reader filed
+ *  under another identity (it took an alert's UID for its event's). It is
+ *  removed. */
 export interface CalendarSnapshot {
   calendar_id: string;
   /** Inclusive bounds on `start_at`. */
@@ -102,10 +105,23 @@ export interface CalendarSnapshot {
   keep: readonly string[];
 }
 
+/** The `start_at` bounds a listing of `[from, until)` speaks for: a day in from
+ *  each end. Google and Outlook match an all-day event by midnight in the
+ *  calendar's own zone while its row may keep another midnight, up to 14 hours
+ *  apart, so a row near either end may be one the listing left out though the
+ *  event is still there. */
+export const listedWindow = (from: number, until: number): CalendarSnapshot['window'] => ({
+  start: from + 86_400_000,
+  end: until - 86_400_000,
+});
+
 /** One event delivered by the continuous sync loop. */
 export interface CalendarSyncEvent {
-  /** `series` (CalDAV): reconcile one event's rows with `series`. */
-  kind: 'created' | 'updated' | 'deleted' | 'series';
+  /** `series` (CalDAV): reconcile one event's rows with `series`.
+   *  `calendar` (Google, Outlook): reconcile one calendar's rows with
+   *  `calendar`, after a listing of the whole window: one that replaced an
+   *  expired or missing cursor, or Outlook's new link when its window moves. */
+  kind: 'created' | 'updated' | 'deleted' | 'series' | 'calendar';
   /** Stable identifier within this provider/account. gcal: event id,
    *  graph: message id, caldav: `<calendar>:<uid>[:<occurrence>]`. The
    *  collection hashes into `record_id`. */
@@ -114,6 +130,8 @@ export interface CalendarSyncEvent {
   payload?: ProviderEventPayload;
   /** Present on `series`. */
   series?: CalendarSeriesSnapshot;
+  /** Present on `calendar`. */
+  calendar?: CalendarSnapshot;
 }
 
 export type CalendarSyncCallback = (

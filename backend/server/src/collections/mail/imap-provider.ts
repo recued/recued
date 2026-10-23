@@ -83,6 +83,7 @@ import {
   type MailSyncFailureKind,
   type MailSyncOutcomeListener,
   type InboundMailAttachmentPart,
+  type MailFolderSnapshot,
   type MailMessageDirection,
   type MailMoveDestination,
   type MailMoveOutcome,
@@ -109,6 +110,9 @@ import type { OAuthAccountStore } from './oauth.js';
 
 export interface ImapClient extends EventEmitter {
   readonly usable: boolean;
+  /** The open folder as the server last described it (`exists` follows each
+   *  EXISTS and EXPUNGE), `false` while none is open. */
+  readonly mailbox?: MailboxObject | false;
   connect(): Promise<void>;
   logout(): Promise<void>;
   close(): void;
@@ -352,10 +356,11 @@ export interface CreateImapProviderOptions {
   /** D-127 P1.5 — Message-Id UUID generator hook. Defaults to
    *  `node:crypto.randomUUID`. Tests inject a deterministic value. */
   messageIdUuid?: () => string;
-  /** Durable pair-local journal for live IDLE notifications. IMAP has no
-   *  provider cursor equivalent to Gmail historyId or Graph deltaLink, so a
-   *  callback rejection must be remembered explicitly until the collection
-   *  acknowledges it. Production always supplies the shared account store. */
+  /** Durable pair-local journal for live IDLE notifications: IMAP pushes a
+   *  notification once, so a callback rejection must be remembered explicitly
+   *  until the collection acknowledges it. It also keeps each folder's UID
+   *  cursor (`imap.<slug>.cursor.<folder>`). Production always supplies the
+   *  shared account store. */
   deliveryStore?: OAuthAccountStore;
 }
 
@@ -630,6 +635,20 @@ const hasAttachments = (parsed: ParsedMail): boolean =>
 
 const sourceIdFor = (uid: number, folder: string): string => `${uid}@${folder}`;
 
+/** UIDs per `UID SEARCH` when a catch-up asks which known messages remain. */
+const CATCH_UP_UID_CHUNK = 500;
+
+/** UIDVALIDITY as text (imapflow hands back a bigint), `null` if absent. */
+const uidValidityOf = (box: MailboxObject | undefined): string | null => {
+  const value = (box as { uidValidity?: unknown } | undefined)?.uidValidity;
+  return typeof value === 'bigint' || typeof value === 'number' ? String(value) : null;
+};
+/** UIDNEXT, `null` if absent or not a positive integer. */
+const uidNextOf = (box: MailboxObject | undefined): number | null => {
+  const value = (box as { uidNext?: unknown } | undefined)?.uidNext;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
+};
+
 type ImapMailboxIdentity = { path: string; specialUse?: string };
 
 /** RFC 6154 special-use flags are language-neutral. `INBOX` is the one
@@ -779,6 +798,22 @@ interface FolderState {
   /** Fallback for servers that cannot emit QRESYNC VANISHED UIDs. Sequence
    *  numbers are mailbox positions, not identifiers, and shift on EXPUNGE. */
   seqToUid: Map<number, number>;
+  /** UIDVALIDITY and UIDNEXT as the folder's last open reported them, `null`
+   *  where the server did not: a catch-up fetches the UIDs from `uidNext` up. */
+  uidValidity: string | null;
+  uidNext: number | null;
+  /** UIDs IDLE delivered while a catch-up runs, so the catch-up does not
+   *  deliver the same message twice; `null` when none runs. */
+  createdDuringCatchUp: Set<number> | null;
+  /** The highest UID delivered as `created`: where IDLE moves the cursor. */
+  highestCreated: number;
+  /** The stored cursor's UIDNEXT (`imap.<slug>.cursor.<folder>`): every UID
+   *  below it was delivered or known. `null` when none is stored for this
+   *  folder's current UIDVALIDITY. */
+  storedUidNext: number | null;
+  /** Set when an IDLE batch failed: a lower UID may be unfetched, so the
+   *  stored cursor waits for a catch-up to account for it. */
+  cursorHeld: boolean;
 }
 
 interface PendingImapDelivery {
@@ -1012,6 +1047,53 @@ export const createImapProvider = (
     pendingDeliveries.delete(key);
   };
 
+  /** A folder's UID cursor, kept beside the delivery journal so a restart can
+   *  fetch what was added while the server was down, moved-in mail included,
+   *  whatever its date. Outside `pending_delivery.` (its loader refuses rows it
+   *  cannot read); removing the mailbox removes every `imap.<slug>.` key. */
+  const cursorKey = (folder: string): string =>
+    `imap.${opts.slug}.cursor.${Buffer.from(folder, 'utf8').toString('base64url')}`;
+
+  /** The stored UIDNEXT, or `null` when none is stored, it cannot be read, or
+   *  it was kept under another UIDVALIDITY (every UID then names another
+   *  message, and only a full re-list reads the folder again). */
+  const loadCursor = async (folder: string, uidValidity: string | null): Promise<number | null> => {
+    if (!opts.deliveryStore || uidValidity === null) return null;
+    let raw: string | null;
+    try {
+      raw = await opts.deliveryStore.get(cursorKey(folder));
+    } catch (err) {
+      markError(`imap cursor read failed folder=${folder}`, err);
+      return null;
+    }
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw) as { schema_version?: unknown; uid_validity?: unknown; uid_next?: unknown };
+      if (parsed.schema_version !== 1 || parsed.uid_validity !== uidValidity) return null;
+      const next = parsed.uid_next;
+      return typeof next === 'number' && Number.isSafeInteger(next) && next > 0 ? next : null;
+    } catch {
+      return null;
+    }
+  };
+
+  /** Moves a folder's stored cursor up to `uidNext`, once every UID below it
+   *  was delivered or known. Never back, and not while `cursorHeld`. */
+  const advanceCursor = async (state: FolderState, uidNext: number): Promise<void> => {
+    if (!opts.deliveryStore || state.uidValidity === null || state.cursorHeld) return;
+    if (state.storedUidNext !== null && uidNext <= state.storedUidNext) return;
+    try {
+      await opts.deliveryStore.set(cursorKey(state.folder), JSON.stringify({
+        schema_version: 1,
+        uid_validity: state.uidValidity,
+        uid_next: uidNext,
+      }));
+      state.storedUidNext = uidNext;
+    } catch (err) {
+      markError(`imap cursor write failed folder=${state.folder}`, err);
+    }
+  };
+
   const deliverAcknowledged = async (
     delivery: PendingImapDelivery,
     event: Parameters<ProviderSyncCallback>[0],
@@ -1108,6 +1190,10 @@ export const createImapProvider = (
           { kind, source_id: canonical.source_id, message: canonical },
           cb,
         );
+        if (kind === 'created') {
+          state.createdDuringCatchUp?.add(msg.uid);
+          state.highestCreated = Math.max(state.highestCreated, msg.uid);
+        }
       }
       if (!found) {
         // A flags/update notification can race an EXPUNGE. If we already knew
@@ -1204,6 +1290,126 @@ export const createImapProvider = (
     state.deliveryRetryTask = task;
   };
 
+  /** Every message the folder holds and its flags, in one `UID FETCH 1:*
+   *  (FLAGS)` (`MailFolderSnapshot`). `null` when the read cannot be taken for
+   *  the whole folder: fewer messages than the folder said it held, or a
+   *  client that does not say. */
+  const readFolder = async (state: FolderState, client: ImapClient): Promise<MailFolderSnapshot | null> => {
+    const read_at = nowOf();
+    const heldBefore = client.mailbox ? client.mailbox.exists : undefined;
+    if (typeof heldBefore !== 'number') return null;
+    const messages = new Map<string, { is_read: boolean; is_flagged: boolean }>();
+    if (heldBefore > 0) {
+      for await (const msg of client.fetch('1:*', { uid: true, flags: true }, { uid: true })) {
+        if (!Number.isSafeInteger(msg.uid) || msg.uid <= 0) continue;
+        const flags = msg.flags ?? new Set<string>();
+        messages.set(sourceIdFor(msg.uid, state.folder), {
+          is_read: flags.has('\\Seen'),
+          is_flagged: flags.has('\\Flagged'),
+        });
+      }
+    }
+    // A message can arrive or go during the read; fewer than both counts is a
+    // short read, and a short read would take what it missed for deleted.
+    const heldAfter = client.mailbox ? client.mailbox.exists : undefined;
+    if (typeof heldAfter !== 'number' || messages.size < Math.min(heldBefore, heldAfter)) {
+      markError(`imap folder read was short folder=${state.folder} read=${messages.size} held=${heldBefore}`, null);
+      return null;
+    }
+    return { folder: state.folder, read_at, messages };
+  };
+
+  /** Mail that arrived, and mail removed, while a folder was not listening.
+   *  IDLE reports only what happens while it is attached: a reconnect brought
+   *  the folder back with what came in meanwhile counted into its size and
+   *  never fetched, so that mail waited for a restart's re-list; and a message
+   *  expunged meanwhile stayed in the warehouse. `startSync` has the same gap
+   *  between the first scan's listing and IDLE attaching.
+   *
+   *  New: the UIDs from the last open's UIDNEXT up that nothing delivered
+   *  (`known`, the UIDs the folder held before it stopped listening, and what
+   *  IDLE has delivered since this open). Gone: a known UID the window no
+   *  longer lists is asked about by UID first, because a message that only aged
+   *  out of the window is still there. After a restart (`reconcile`), first the
+   *  flags of every message, for the collection to check its rows against
+   *  (`readFolder`). Runs after the listeners attach, so nothing that arrives
+   *  meanwhile is missed; one batch, one `poll` attempt. */
+  const startCatchUp = (
+    state: FolderState,
+    cb: ProviderSyncCallback,
+    args: {
+      from: number | null;
+      known: ReadonlySet<number>;
+      goneCandidates: readonly number[];
+      /** After a restart: reconcile the folder's stored rows (`readFolder`). */
+      reconcile?: boolean;
+    },
+  ): void => {
+    const client = state.client;
+    if (!client || (args.from === null && args.goneCandidates.length === 0 && !args.reconcile)) return;
+    // Opened before any await: IDLE was attached just before this call, and
+    // whatever it delivers from here on is recorded for the loop below.
+    const deliveredByIdle = new Set<number>();
+    state.createdDuringCatchUp = deliveredByIdle;
+    let task!: Promise<void>;
+    task = outcomes.run('poll', async () => {
+      let acknowledged = true;
+      let highestSeen = 0;
+      if (args.reconcile) {
+        // The flags changed and the messages deleted while the server was
+        // down. Not held like a delivery: the next start reads the folder
+        // again, and the cursor does not depend on it.
+        try {
+          const snapshot = await readFolder(state, client);
+          if (stopped || state.client !== client) return;
+          if (snapshot) await cb({ kind: 'folder', source_id: state.folder, folder: snapshot });
+        } catch (err) {
+          markError(`imap folder reconcile failed folder=${state.folder}`, err);
+        }
+      }
+      if (args.from !== null) {
+        const from = args.from;
+        const listed = await client.search({ uid: `${from}:*` }, { uid: true });
+        // `N:*` names the highest UID even when it is below N.
+        const fresh = (listed || [])
+          .filter((uid) => uid >= from && !args.known.has(uid))
+          .sort((a, b) => a - b);
+        for (const uid of listed || []) highestSeen = Math.max(highestSeen, uid);
+        for (const uid of fresh) {
+          if (stopped || state.client !== client) return;
+          if (deliveredByIdle.has(uid)) continue;
+          if (!(await fetchAndEmit(state, uid, 'created', cb))) acknowledged = false;
+        }
+      }
+      for (let i = 0; i < args.goneCandidates.length; i += CATCH_UP_UID_CHUNK) {
+        if (stopped || state.client !== client) return;
+        const chunk = args.goneCandidates.slice(i, i + CATCH_UP_UID_CHUNK);
+        const still = new Set((await client.search({ uid: chunk.join(',') }, { uid: true })) || []);
+        for (const uid of chunk) {
+          if (still.has(uid)) continue;
+          if (!(await fetchAndEmit(state, uid, 'deleted', cb))) acknowledged = false;
+        }
+      }
+      if (!acknowledged) {
+        scheduleDeliveryRetry(state, cb);
+        return;
+      }
+      // Every UID below this open's UIDNEXT, and every one just listed, is now
+      // delivered or known, and IDLE carries on from here: the stored cursor
+      // moves up, and an earlier failed IDLE batch no longer holds it.
+      if (state.uidNext !== null) {
+        state.cursorHeld = false;
+        await advanceCursor(state, Math.max(state.uidNext, highestSeen + 1));
+      }
+    }).catch((err) => {
+      markError(`imap catch-up failed folder=${state.folder}`, err);
+    }).finally(() => {
+      if (state.createdDuringCatchUp === deliveredByIdle) state.createdDuringCatchUp = null;
+      state.pollTasks.delete(task);
+    });
+    state.pollTasks.add(task);
+  };
+
   const attachListeners = (
     state: FolderState,
     cb: ProviderSyncCallback,
@@ -1243,6 +1449,11 @@ export const createImapProvider = (
             allAcknowledged = false;
           }
         }
+        // Every new message of this batch is delivered, so the stored cursor
+        // moves past them. A failed batch may leave a lower UID unfetched: the
+        // cursor then waits for a catch-up.
+        if (!allAcknowledged) state.cursorHeld = true;
+        else if (state.highestCreated > 0) await advanceCursor(state, state.highestCreated + 1);
         return allAcknowledged;
       });
     };
@@ -1345,6 +1556,8 @@ export const createImapProvider = (
       if (stopped) return;
 
       let candidate: ImapClient | null = null;
+      let box: MailboxObject | undefined;
+      let known = new Set<number>();
       try {
         state.stopIdle?.();
       } catch { /* stale handle */ }
@@ -1364,7 +1577,9 @@ export const createImapProvider = (
           return;
         }
         state.direction = await resolveFolderDirection(candidate, state.folder);
-        await candidate.mailboxOpen(state.folder);
+        box = await candidate.mailboxOpen(state.folder);
+        // What the folder held before it stopped listening, for the catch-up.
+        known = new Set(state.seqToUid.values());
         // Sequence positions can change while disconnected. Rebuild the
         // mapping for the same backfill window rather than carrying stale
         // positions into a non-QRESYNC EXPUNGE fallback.
@@ -1388,6 +1603,23 @@ export const createImapProvider = (
 
       state.stopIdle = attachListeners(state, cb);
       scheduleDeliveryRetry(state, cb);
+      // What came and went while the folder was down (`startCatchUp`).
+      const validity = uidValidityOf(box);
+      const renumbered = state.uidValidity !== null && validity !== null && validity !== state.uidValidity;
+      const from = state.uidNext;
+      const inWindow = new Set(state.seqToUid.values());
+      state.uidValidity = validity ?? state.uidValidity;
+      state.uidNext = uidNextOf(box) ?? state.uidNext;
+      if (renumbered) {
+        // Every UID changed meaning, so there is nothing to compare with: the
+        // next start's re-list reads the folder under its new numbering. The
+        // stored cursor named the old numbering, so it is dropped and held.
+        markError(`imap UIDVALIDITY changed folder=${state.folder}; missed mail waits for the next start`, null);
+        state.storedUidNext = null;
+        state.cursorHeld = true;
+      } else {
+        startCatchUp(state, cb, { from, known, goneCandidates: [...known].filter((uid) => !inWindow.has(uid)) });
+      }
       state.attempts = 0;
       lastSuccessfulSyncAt = nowOf();
       // This folder is back — reported as provider-wide success only if it was
@@ -2378,6 +2610,13 @@ export const createImapProvider = (
     kind: 'imap',
     slug: opts.slug,
     sendCapable,
+    /** True once every folder opened with a stored cursor its UIDVALIDITY still
+     *  matches: the catch-up when sync starts then fetches what was added while
+     *  the server was down, moved-in mail included, so a restart lists only the
+     *  days since the last sync. Read after `connect`, as the collection does. */
+    get resumesFromCursor() {
+      return connected && folders.size > 0 && [...folders.values()].every((state) => state.storedUidNext !== null);
+    },
     // D-239 — a GETTER, not a captured value: the probe constructs a client
     // and we do not want to pay for that (nor to run an injected factory)
     // during provider construction, which happens on every boot for every
@@ -2407,10 +2646,11 @@ export const createImapProvider = (
         for (const folder of cfg.folders) {
           const client = makeClient(folder);
           let direction: MailMessageDirection = 'unknown';
+          let box: MailboxObject | undefined;
           try {
             await client.connect();
             direction = await resolveFolderDirection(client, folder);
-            await client.mailboxOpen(folder);
+            box = await client.mailboxOpen(folder);
           } catch (err) {
             try { client.close(); } catch { /* failed transport containment */ }
             throw err;
@@ -2425,6 +2665,12 @@ export const createImapProvider = (
             pollTasks: new Set(),
             attempts: 0,
             seqToUid: new Map(),
+            uidValidity: uidValidityOf(box),
+            uidNext: uidNextOf(box),
+            createdDuringCatchUp: null,
+            highestCreated: 0,
+            storedUidNext: await loadCursor(folder, uidValidityOf(box)),
+            cursorHeld: false,
           });
         }
       } catch (err) {
@@ -2471,8 +2717,22 @@ export const createImapProvider = (
       }
       await loadPendingDeliveries();
       for (const state of folders.values()) {
+        // What the first scan listed; anything newer arrived before IDLE
+        // attached, and the catch-up fetches it (`startCatchUp`).
+        const known = new Set(state.seqToUid.values());
         state.stopIdle = attachListeners(state, cb);
         scheduleDeliveryRetry(state, cb);
+        // From the stored cursor after a restart (it reaches mail added while
+        // the server was down, moved-in mail included), else this open's
+        // UIDNEXT. With a stored cursor the folder kept its numbering, so its
+        // rows can be checked against it: the flags changed and the messages
+        // deleted meanwhile.
+        startCatchUp(state, cb, {
+          from: state.storedUidNext ?? state.uidNext,
+          known,
+          goneCandidates: [],
+          reconcile: state.storedUidNext !== null,
+        });
       }
       return async (): Promise<void> => {
         // Detach listeners but leave the clients open — `close` owns

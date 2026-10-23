@@ -35,6 +35,7 @@ import {
   INTAKE_FORM_VISITOR_TEXT_MAX,
   INTAKE_FORM_VISITOR_TEXTAREA_MAX,
   INTAKE_FORM_VISITOR_EMAIL_MAX,
+  intakeFormChoiceText,
   type IntakeFormConfigField,
   type IntakeFormVisitorFieldRequirement,
   type VisitorReceipt,
@@ -217,8 +218,9 @@ const renderEnumField = (field: IntakeFormConfigField): string => {
   const placeholder = field.required
     ? '<option value="" disabled selected>Select…</option>'
     : '<option value="">—</option>';
+  // The visitor reads a choice's label ("Under 10k"); the form sends its value.
   const opts = (field.values ?? [])
-    .map((v) => `<option value="${htmlEscape(v)}">${htmlEscape(v)}</option>`)
+    .map((v) => `<option value="${htmlEscape(v)}">${htmlEscape(intakeFormChoiceText(field, v))}</option>`)
     .join('');
   return `<div class="rcp-field">
 <label for="rcp-${htmlEscape(field.name)}">${htmlEscape(field.label)}${requireMark(field.required)}</label>

@@ -156,6 +156,27 @@ const buildFakeCaches = (initial: ReadonlyArray<string> = []): {
 };
 
 describe('D-148 § A.4 — service-worker registration helper', () => {
+  it.each(['navigator', 'serviceWorker'] as const)(
+    'keeps optional service-worker startup non-fatal when browser access throws at %s', async blocked => {
+      const original = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+      const denied = (): never => { throw new Error('private browser policy detail'); };
+      Object.defineProperty(globalThis, 'navigator', {
+        configurable: true,
+        ...(blocked === 'navigator' ? { get: denied }
+          : { value: Object.defineProperty({}, 'serviceWorker', { get: denied }) }),
+      });
+      try {
+        const handle = await registerServiceWorker();
+        expect(handle.isRegistered).toBe(false);
+        await expect(handle.unregister()).resolves.toBe(false);
+        await expect(unregisterServiceWorker()).resolves.toBe(false);
+      } finally {
+        if (original) Object.defineProperty(globalThis, 'navigator', original);
+        else Reflect.deleteProperty(globalThis, 'navigator');
+      }
+    },
+  );
+
   it('exports the documented constants', () => {
     expect(WEBCLIENT_SERVICE_WORKER_URL).toBe('./sw.js');
     expect(WEBCLIENT_SERVICE_WORKER_SCOPE).toBe('./');

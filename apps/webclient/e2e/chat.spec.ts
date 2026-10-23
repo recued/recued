@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { openChatHistory } from './helpers/chat-history.js';
 import {
-  ARTIFACTS, CHAT_ACTIVATION, CHAT_ACTIVATION_ACTION, CHAT_COMPOSER_ACTION,
+  CHAT_ACTIVATION, CHAT_ACTIVATION_ACTION, CHAT_COMPOSER_ACTION,
   CHAT_HISTORY_LANDING, CHAT_INPUT, CHAT_MESSAGE, CHAT_SEND, CHAT_SESSION_ROW,
   CHAT_SETUP, CHAT_SOURCE_HANDOFF, DRAWER_LINK, DRAWER_TOGGLE, HARNESS_URL,
   RUN_PALETTE, installFullAppHooks,
@@ -92,7 +92,7 @@ test('the first-run Chat landing offers outcomes and seeds a prompt without send
   expect(geometry.left).toBeGreaterThanOrEqual(-0.5);
   expect(geometry.right).toBeLessThanOrEqual(geometry.viewport + 0.5);
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-first-run-mobile.png`,
+    path: test.info().outputPath(`full-app-first-run-mobile.png`),
     fullPage: true,
   });
 });
@@ -124,7 +124,7 @@ test('Set up Chat saves a model, returns to Chat, and focuses the starter prompt
   ).toHaveValue('gpt-4.1-mini');
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-chat-setup-mobile.png`,
+    path: test.info().outputPath(`full-app-chat-setup-mobile.png`),
     fullPage: true,
   });
   await page.locator(`[${CHAT_SETUP_KEY}]`).fill('sk-test-only');
@@ -165,7 +165,7 @@ test('Set up Chat saves a model, returns to Chat, and focuses the starter prompt
   expect(bounds!.x).toBeGreaterThanOrEqual(-0.5);
   expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(390.5);
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-chat-setup-complete-mobile.png`,
+    path: test.info().outputPath(`full-app-chat-setup-complete-mobile.png`),
     fullPage: true,
   });
 });
@@ -428,7 +428,7 @@ test('a returning user can find, continue, reload, and leave an exact chat', asy
   expect(historyBounds!.x).toBeGreaterThanOrEqual(-0.5);
   expect(historyBounds!.x + historyBounds!.width).toBeLessThanOrEqual(390.5);
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-chat-history-mobile.png`,
+    path: test.info().outputPath(`full-app-chat-history-mobile.png`),
     fullPage: true,
   });
 
@@ -1739,7 +1739,7 @@ test('a reviewed write stays explicit from approval through the Chat handoff', a
     card.getByRole('button', { name: 'Don’t approve' }),
   ).toBeVisible();
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-chat-plan-review-mobile.png`,
+    path: test.info().outputPath(`full-app-chat-plan-review-mobile.png`),
     fullPage: true,
   });
 
@@ -1799,7 +1799,7 @@ test('a reviewed write stays explicit from approval through the Chat handoff', a
     'A message is ready in the box. Read it, then send it when you are ready.',
   );
   await page.screenshot({
-    path: `${ARTIFACTS}/full-app-chat-plan-continuation-mobile.png`,
+    path: test.info().outputPath(`full-app-chat-plan-continuation-mobile.png`),
     fullPage: true,
   });
 

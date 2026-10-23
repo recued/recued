@@ -1,8 +1,9 @@
+import { HARNESS_ORIGIN } from './helpers/harness-origin.js';
 import { expect, test, type Page } from '@playwright/test';
 import { openSavedViewList } from './helpers/saved-data-views.js';
 
 test.use({ timezoneId: 'America/Los_Angeles', viewport: { width: 390, height: 844 } });
-const URL_BASE = 'http://127.0.0.1:4319/full-app-harness.html?data=work-entities-paged&task_filters=1';
+const URL_BASE = `${HARNESS_ORIGIN}/full-app-harness.html?data=work-entities-paged&task_filters=1`;
 const row = (page: Page, id: number) => page.locator(`[data-action="open-edit-work-entity"][data-entity-id="task-${id}"]`);
 const boot = async (page: Page): Promise<void> => {
   await page.clock.setFixedTime(new Date('2026-09-07T14:00:00-07:00'));
@@ -68,7 +69,7 @@ test('saved task filters survive reload and their relative dates advance on reop
     expect(box.right).toBeLessThanOrEqual(390);
     expect(box.height).toBeGreaterThanOrEqual(44);
   }
-  await page.screenshot({ path: '/tmp/recued-task-data-view.png', fullPage: true });
+  await page.screenshot({ path: test.info().outputPath('recued-task-data-view.png'), fullPage: true });
 });
 
 test('completion and overdue filters compose, and due sorting applies before Load more', async ({ page }) => {

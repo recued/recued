@@ -1,8 +1,9 @@
+import { HARNESS_ORIGIN } from './helpers/harness-origin.js';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { installConnectionsUxFixture } from './fixtures/connections-ux.js';
 import { ACCESS_COMPARISON_IDS as ids, installAccessComparisonFixture } from './fixtures/connections-access-comparison.js';
 
-const origin = process.env.CONNECTIONS_UX_ORIGIN ?? 'http://127.0.0.1:4319';
+const origin = process.env.CONNECTIONS_UX_ORIGIN ?? HARNESS_ORIGIN;
 const route = (page: Page) => page.locator('[data-recued-connections-route]');
 const historyRow = (page: Page, id = ids.recheck) => route(page).locator('[data-authentication-verification="' + id + '"]');
 const accessPanel = (page: Page) => route(page).locator('.authentication-access');

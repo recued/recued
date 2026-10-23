@@ -14,6 +14,7 @@ import {
   type LifecycleStatus,
   type PressureDetails,
   type ServerHeartbeatSnapshot,
+  type ServerBackupHealthSnapshot,
 } from '@recued/contracts';
 import type {
   BackgroundServiceRegistry,
@@ -69,6 +70,7 @@ const harness = (opts: {
   getLifecycleSnapshot?: () => LifecycleStatus | undefined;
   serverId?: string | null;
   serverHealth?: () => ServerHealthSnapshot | undefined;
+  backupHealth?: () => ServerBackupHealthSnapshot | undefined;
   broadcast?: (p: ServerHeartbeatSnapshot) => void;
   now?: () => number;
   intervalMs?: number;
@@ -85,6 +87,7 @@ const harness = (opts: {
     ...(opts.serverHealth !== undefined
       ? { getServerHealth: opts.serverHealth }
       : {}),
+    ...(opts.backupHealth ? { getBackupHealth: opts.backupHealth } : {}),
     ...(opts.now ? { now: opts.now } : {}),
     ...(opts.intervalMs !== undefined ? { intervalMs: opts.intervalMs } : {}),
   });
@@ -92,6 +95,31 @@ const harness = (opts: {
 };
 
 describe('composeServerHeartbeatEmitter', () => {
+  it('merges backup summaries independently of storage-health reads', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const backup: ServerBackupHealthSnapshot = { age_ms: 5000, monitoring: 'active', backup_state: 'due', recovery_test_state: 'current', integrity: { monitoring: 'active', state: 'failed' } };
+    try {
+      const broadcast = vi.fn<(p: ServerHeartbeatSnapshot) => void>();
+      harness({ snapshot: lifecycleStatus('running'), serverId: 'fixture', serverHealth: () => { throw new Error('synthetic gate error'); }, backupHealth: () => backup, broadcast, now: () => 5000 }).interval().tick();
+      expect(broadcast).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ server_id: 'fixture', last_seen_at: 5000, backup_health: backup }));
+    } finally { warn.mockRestore(); }
+  });
+
+  it('preserves liveness and other health when a wired backup source fails or is unavailable', () => {
+    for (const backupHealth of [() => undefined, () => { throw new Error('private provider failure'); }]) {
+      const broadcast = vi.fn<(p: ServerHeartbeatSnapshot) => void>();
+      harness({ snapshot: lifecycleStatus('running'), serverId: 'fixture', serverHealth: () => ({ paused: true }), backupHealth, broadcast, now: () => 5000 }).interval().tick();
+      expect(broadcast).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ server_id: 'fixture', last_seen_at: 5000, paused: true,
+        backup_health: { age_ms: 0, monitoring: 'unavailable', integrity: { monitoring: 'unavailable', state: 'unavailable' } } }));
+      expect(JSON.stringify(broadcast.mock.calls)).not.toContain('private');
+    }
+  });
+
+  it('does not observe backup state before the lifecycle is ready', () => {
+    const backupHealth = vi.fn(() => undefined), h = harness({ snapshot: lifecycleStatus('booting'), backupHealth });
+    h.interval().tick(); expect(backupHealth).not.toHaveBeenCalled(); expect(h.broadcast).not.toHaveBeenCalled();
+  });
+
   it('registers a server-heartbeat-emitter timer at the default cadence, fireImmediate off', () => {
     const h = harness({ snapshot: lifecycleStatus('running') });
     const spec = h.interval();

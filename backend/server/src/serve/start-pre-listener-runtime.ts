@@ -1,5 +1,6 @@
 import type { RuntimeConfigStore } from '@recued/config';
 import type { ContactMergeScanMode } from '@recued/contracts';
+import { backupRecoveryForPassport } from '../archive/passport-backup-evidence.js';
 
 import {
   composeClientSecurityContext,
@@ -168,6 +169,7 @@ export const startPreListenerRuntime = async (
     pairedInstances: options.storage.pairedInstances,
     getWsHandleForLockout: options.getWsHandleForLockout,
     getExposureMachine: options.getExposureMachine,
+    getBackupRecovery: () => backupRecoveryForPassport(options.archiveDeps),
     env: options.env,
   });
   // Publish the passport-export substrate to the (already-constructed)
@@ -259,7 +261,9 @@ export const startPreListenerRuntime = async (
     },
     runtime: {
       ...(options.archiveDeps?.unattendedBackups ? { unattendedBackups: options.archiveDeps.unattendedBackups } : {}),
+      ...(options.archiveDeps?.backupIntegrity ? { backupIntegrity: options.archiveDeps.backupIntegrity } : {}),
       ...(options.archiveDeps?.backupHealth ? { backupHealth: options.archiveDeps.backupHealth } : {}),
+      ...(options.archiveDeps?.backupWatchdog ? { backupWatchdog: options.archiveDeps.backupWatchdog } : {}),
       ...(options.archiveDeps?.restoreDrills ? { restoreDrills: options.archiveDeps.restoreDrills } : {}),
       dbPath: options.dbPath,
       runtimeConfig: options.runtimeConfig,

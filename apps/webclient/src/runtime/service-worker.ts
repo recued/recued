@@ -62,7 +62,7 @@ export const WEBCLIENT_SERVICE_WORKER_SCOPE = './' as const;
  *
  *  `service-worker-cache-name-parity.test.ts` now reads `public/sw.js` and
  *  fails if the two disagree. Bump BOTH or that test goes red. */
-export const WEBCLIENT_SHELL_CACHE_NAME = 'webclient-shell-v100' as const;
+export const WEBCLIENT_SHELL_CACHE_NAME = 'webclient-shell-v101' as const;
 
 /** The prefix every cache this app owns carries. Mirrors `CACHE_PREFIX` in
  *  `public/sw.js` — same second-copy hazard as the name above, same reason it
@@ -156,18 +156,23 @@ const NULL_HANDLE: ServiceWorkerHandle = Object.freeze({
 const resolveContainer = (
   environment: ServiceWorkerEnvironment | undefined,
 ): ServiceWorkerContainerShape | null => {
-  const navigatorOverride = environment?.navigator;
-  if (navigatorOverride !== undefined) {
-    return navigatorOverride?.serviceWorker ?? null;
+  try {
+    const navigatorOverride = environment?.navigator;
+    if (navigatorOverride !== undefined) {
+      return navigatorOverride?.serviceWorker ?? null;
+    }
+    // The platform `ServiceWorkerContainer` is a superset of our shape;
+    // cast through unknown so the structural compare doesn't trip on
+    // platform-only return types we don't surface (e.g.
+    // `register(...): Promise<ServiceWorkerRegistration>`).
+    const g = globalThis as unknown as {
+      navigator?: { serviceWorker?: ServiceWorkerContainerShape };
+    };
+    return g.navigator?.serviceWorker ?? null;
+  } catch {
+    // Restricted optional browser APIs must not reject startup registration.
+    return null;
   }
-  // The platform `ServiceWorkerContainer` is a superset of our shape;
-  // cast through unknown so the structural compare doesn't trip on
-  // platform-only return types we don't surface (e.g.
-  // `register(...): Promise<ServiceWorkerRegistration>`).
-  const g = globalThis as unknown as {
-    navigator?: { serviceWorker?: ServiceWorkerContainerShape };
-  };
-  return g.navigator?.serviceWorker ?? null;
 };
 
 const resolveCaches = (

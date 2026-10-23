@@ -123,6 +123,7 @@ export const EXPOSURE_LAN_CHECK_ATTR = 'data-recued-exposure-lan-check';
 export const EXPOSURE_PRESET_ROW_ATTR = 'data-recued-exposure-preset';
 export const EXPOSURE_PATH_ROW_ATTR = 'data-recued-exposure-path';
 export const EXPOSURE_CELL_ATTR = 'data-recued-exposure-cell';
+export const EXPOSURE_GRID_GUIDANCE_ATTR = 'data-recued-exposure-grid-guidance';
 export const EXPOSURE_PUBLIC_MCP_BTN_ATTR = 'data-recued-exposure-public-mcp';
 export const EXPOSURE_PRESET_LABEL_ATTR = 'data-recued-exposure-preset-label';
 export const EXPOSURE_ACTION_ERROR_ATTR = 'data-recued-exposure-action-error';
@@ -383,6 +384,7 @@ const PANEL_COPY = {
   grid_col_public: 'Public',
   custom_badge: 'Custom',
   ddns_hint: 'Set up a web address first, under Settings, Server, Hostnames.',
+  public_address_hint: 'To allow access from the internet, set up a web address under Settings, Server, Hostnames.',
   public_mcp_on: 'You have agreed to this. AI apps can reach /mcp from outside your network once you switch it on.',
   public_mcp_off: 'You have not agreed to this yet. To open /mcp you have to type the phrase to confirm.',
   connect_example: 'Connection example…',
@@ -441,8 +443,14 @@ export const mountExposurePanel = (
   let busy = false;
   let loadError: string | null = null;
   let actionError: string | null = null;
+  let activeRead: Promise<void> | null = null;
+  let readLoading = false;
+  let readGeneration = 0;
+  let readFocusTarget: HTMLElement | null = null;
   let publicMcpModal: PublicMcpModalState = { kind: 'idle' };
   let connectExampleOpen = false;
+  let connectExampleFocusNodes: HTMLElement[] = [];
+  let connectExampleCard: HTMLElement | null = null;
   let wsLockoutModal: WsLockoutModalState = { kind: 'idle' };
   const modalIdBase = `recued-exposure-modal-${++exposurePanelIdSequence}`;
   let modalReturnFocus: ModalReturnFocusTarget | null = null;
@@ -490,6 +498,7 @@ export const mountExposurePanel = (
 
   // ── Render driver ────────────────────────────────────────────────
   let lanPosture: Omit<ExposureLanPosture, 'reachedFromOutside'> | null = null;
+  let lanPostureHost: HTMLElement | null = null;
   let checkingLan = false;
 
   const runLanCheck = (): void => {
@@ -510,7 +519,13 @@ export const mountExposurePanel = (
   };
 
   const renderLanPosture = (): void => {
-    if (lanPosture === null) return;
+    if (disposed || lanPostureHost === null) return;
+    clearChildren(lanPostureHost);
+    if (lanPosture === null) {
+      lanPostureHost.setAttribute('hidden', '');
+      return;
+    }
+    lanPostureHost.removeAttribute('hidden');
     const section = doc.createElement('section');
     section.className = 'exposure-lan-posture';
     section.setAttribute(EXPOSURE_LAN_POSTURE_ATTR, 'true');
@@ -540,38 +555,53 @@ export const mountExposurePanel = (
       button.addEventListener('click', runLanCheck);
       section.appendChild(button);
     }
-    wrapper.appendChild(section);
+    lanPostureHost.appendChild(section);
   };
 
   const render = (): void => {
     if (disposed) return;
+    const keepReadFocus = readFocusTarget !== null && doc.activeElement === readFocusTarget;
+    readFocusTarget = null;
+    lanPostureHost = null;
+    const connectFocusIndex = connectExampleFocusNodes.length === 0 ? 0
+      : connectExampleFocusNodes.findIndex(node => node === doc.activeElement);
+    const connectScrollTop = connectExampleCard?.scrollTop ?? 0;
+    const connectScrollLeft = connectExampleFocusNodes[connectFocusIndex]?.scrollLeft ?? 0;
+    connectExampleFocusNodes = [];
+    connectExampleCard = null;
     clearChildren(wrapper);
     const model = currentModel();
 
     if (loadError !== null) {
       renderLoadError();
-      return;
-    }
-    if (model === null) {
+    } else if (readLoading || model === null) {
       const loading = doc.createElement('p');
       loading.className = 'exposure-loading';
       loading.setAttribute('role', 'status');
+      loading.setAttribute('aria-atomic', 'true');
+      loading.setAttribute('tabindex', '-1');
       loading.textContent = PANEL_COPY.loading;
       wrapper.appendChild(loading);
-      return;
+      readFocusTarget = loading;
+    } else {
+      renderHeader(model);
+      if (actionError !== null) renderActionError();
+      renderPresets(model);
+      renderGrid(model);
+      renderPublicMcpCard(model);
+      renderApexPicker(model);
+      lanPostureHost = doc.createElement('div');
+      wrapper.appendChild(lanPostureHost);
+      renderLanPosture();
+      // Modals render last so they overlay (CSS positions them fixed).
+      if (publicMcpModal.kind !== 'idle') renderPublicMcpModal();
+      if (wsLockoutModal.kind !== 'idle') renderWsLockoutModal();
+      if (connectExampleOpen) renderConnectExampleModal(connectFocusIndex, connectScrollTop, connectScrollLeft);
     }
-
-    renderHeader(model);
-    if (actionError !== null) renderActionError();
-    renderPresets(model);
-    renderGrid(model);
-    renderPublicMcpCard(model);
-    renderApexPicker(model);
-    renderLanPosture();
-    // Modals render last so they overlay (CSS positions them fixed).
-    if (publicMcpModal.kind !== 'idle') renderPublicMcpModal();
-    if (wsLockoutModal.kind !== 'idle') renderWsLockoutModal();
-    if (connectExampleOpen) renderConnectExampleModal();
+    const modalOpen = publicMcpModal.kind !== 'idle' || wsLockoutModal.kind !== 'idle' || connectExampleOpen;
+    if (keepReadFocus && !modalOpen && readFocusTarget && (readFocusTarget.getClientRects?.().length ?? 1) > 0) {
+      readFocusTarget.focus?.();
+    }
   };
 
   const setBusy = (next: boolean): void => {
@@ -592,59 +622,74 @@ export const mountExposurePanel = (
     if (disposed) return;
     if (state !== null && next.last_changed_at < state.last_changed_at) return;
     state = next;
+    loadError = null;
+    readLoading = false;
     render();
   };
 
-  const refresh = async (): Promise<void> => {
-    if (disposed) return;
+  const refresh = (): Promise<void> => {
+    if (disposed) return Promise.resolve();
+    if (activeRead !== null) return activeRead;
+    const generation = ++readGeneration;
+    const stateBeforeRead = state;
     loadError = null;
-    // Fire both reads concurrently; the grid only needs `state`, the
-    // DDNS gate is advisory copy so a failed DDNS probe degrades to
-    // `has_ddns: false` rather than blocking the whole panel.
-    const ddnsPromise = opts.runHasDdns
-      ? opts.runHasDdns().catch(() => false)
-      : Promise.resolve(false);
-    // D-272 — the bind posture, alongside the others. ⚠ Advisory like the DDNS
-    // probe: a failure leaves the section unrendered rather than blocking the
-    // grid, because "we could not read the bind" is not a reason to withhold
-    // the path resolution the reader came for.
-    if (opts.readLanPosture !== undefined) {
-      void opts.readLanPosture()
-        .then((posture) => {
-          if (disposed || posture === undefined) return;
-          lanPosture = posture;
-          render();
-        })
-        .catch(() => { /* section stays unrendered — see above */ });
-    }
-    let got: Awaited<ReturnType<ExposureGetCaller>>;
-    try {
-      got = await opts.runGet();
-    } catch (err) {
-      if (disposed) return;
-      loadError = PANEL_COPY.load_error;
-      // Surface the humanized detail in console-less envs via the banner
-      // copy; the static copy already covers the user-facing message.
-      void err;
-      render();
-      return;
-    }
-    if (disposed) return;
-    // ⛔ The server's own gate answer when it gives one. The hostname-list
-    // guess (`runHasDdns`) is for an older server only: it counted a Pro name
-    // as enough while the server refused every Public choice, so an owner was
-    // offered a button that always failed.
-    hasDdns = typeof got.has_public_address === 'boolean'
-      ? got.has_public_address
-      : await ddnsPromise;
-    if (disposed) return;
-    apexMode = got.apex_mode;
-    // `applyNewState` runs the monotonic guard so a broadcast that landed
-    // during the read window isn't clobbered; render unconditionally
-    // afterwards so the freshly-resolved `hasDdns` + the cleared loading /
-    // load-error state always paint, even when the read was a stale no-op.
-    applyNewState(got.state);
+    readLoading = true;
     render();
+    const read = (async (): Promise<void> => {
+      // Fire both reads concurrently; the grid only needs `state`, the
+      // DDNS gate is advisory copy so a failed DDNS probe degrades to
+      // `has_ddns: false` rather than blocking the whole panel.
+      const ddnsPromise = opts.runHasDdns
+        ? opts.runHasDdns().catch(() => false)
+        : Promise.resolve(false);
+      // D-272 — the bind posture, alongside the others. ⚠ Advisory like the DDNS
+      // probe: a failure leaves the section unrendered rather than blocking the
+      // grid, because "we could not read the bind" is not a reason to withhold
+      // the path resolution the reader came for.
+      if (opts.readLanPosture !== undefined) {
+        void opts.readLanPosture()
+          .then((posture) => {
+            if (disposed || generation !== readGeneration || posture === undefined) return;
+            lanPosture = posture;
+            renderLanPosture();
+          })
+          .catch(() => { /* section stays unrendered — see above */ });
+      }
+      let got: Awaited<ReturnType<ExposureGetCaller>>;
+      try {
+        got = await opts.runGet();
+      } catch (err) {
+        // A live state received during this read already recovered the page.
+        if (disposed || state !== stateBeforeRead) return;
+        loadError = PANEL_COPY.load_error;
+        readLoading = false;
+        // Surface the humanized detail in console-less envs via the banner
+        // copy; the static copy already covers the user-facing message.
+        void err;
+        render();
+        return;
+      }
+      if (disposed) return;
+      // ⛔ The server's own gate answer when it gives one. The hostname-list
+      // guess (`runHasDdns`) is for an older server only: it counted a Pro name
+      // as enough while the server refused every Public choice, so an owner was
+      // offered a button that always failed.
+      hasDdns = typeof got.has_public_address === 'boolean'
+        ? got.has_public_address
+        : await ddnsPromise;
+      if (disposed) return;
+      apexMode = got.apex_mode;
+      readLoading = false;
+      // `applyNewState` runs the monotonic guard so a broadcast that landed
+      // during the read window isn't clobbered. Even a stale grid read can
+      // supply the independently read gate + apex, which still need to paint.
+      applyNewState(got.state);
+      if (state !== got.state) render();
+    })().finally(() => {
+      if (activeRead === read) activeRead = null;
+    });
+    activeRead = read;
+    return read;
   };
 
   // ── Dispatch firing (non-modal direct actions) ───────────────────
@@ -906,6 +951,7 @@ export const mountExposurePanel = (
   };
 
   const cancelModal = (): void => {
+    connectExampleOpen = false;
     if (publicMcpModal.kind !== 'idle') {
       publicMcpModal = closePublicMcpModal();
       pendingPathAfterAck = null;
@@ -947,17 +993,22 @@ export const mountExposurePanel = (
     msg.textContent = loadError ?? PANEL_COPY.load_error;
     box.appendChild(msg);
     const retry = makeButton('Retry', EXPOSURE_RETRY_BTN_ATTR, 'secondary', () => {
+      if (disposed || findEl(EXPOSURE_RETRY_BTN_ATTR) !== retry) return;
       void refresh();
     });
+    retry.setAttribute('aria-label', 'Retry loading exposure settings');
     box.appendChild(retry);
     wrapper.appendChild(box);
+    readFocusTarget = retry;
   }
 
   function renderHeader(model: ExposurePageModel): void {
     const heading = doc.createElement('h3');
     heading.className = 'exposure-title';
     heading.textContent = PANEL_COPY.heading;
+    heading.setAttribute('tabindex', '-1');
     wrapper.appendChild(heading);
+    readFocusTarget = heading;
 
     const intro = doc.createElement('p');
     intro.className = 'exposure-help';
@@ -1047,11 +1098,25 @@ export const mountExposurePanel = (
     section.className = 'exposure-grid';
     const legend = doc.createElement('p');
     legend.className = 'exposure-legend';
+    legend.setAttribute('id', `${modalIdBase}-paths`);
     legend.textContent = PANEL_COPY.grid_legend;
     section.appendChild(legend);
 
+    const guidanceId = model.path_rows.some(row => row.requires_ddns_for_public && !row.resolution.public)
+      ? `${modalIdBase}-public-address` : undefined;
+    if (guidanceId !== undefined) {
+      const hint = doc.createElement('p');
+      hint.className = 'exposure-help exposure-hint';
+      hint.setAttribute('id', guidanceId);
+      hint.setAttribute(EXPOSURE_GRID_GUIDANCE_ATTR, '');
+      hint.textContent = PANEL_COPY.public_address_hint;
+      section.appendChild(hint);
+    }
+
     const table = doc.createElement('table');
     table.className = 'exposure-grid-table';
+    table.setAttribute('aria-labelledby', `${modalIdBase}-paths`);
+    if (guidanceId !== undefined) table.setAttribute('aria-describedby', guidanceId);
     const thead = doc.createElement('thead');
     const headRow = doc.createElement('tr');
     for (const text of [
@@ -1060,6 +1125,7 @@ export const mountExposurePanel = (
       PANEL_COPY.grid_col_public,
     ]) {
       const th = doc.createElement('th');
+      th.setAttribute('scope', 'col');
       th.textContent = text;
       headRow.appendChild(th);
     }
@@ -1084,7 +1150,7 @@ export const mountExposurePanel = (
       tr.appendChild(pathCell);
 
       tr.appendChild(renderCell(row.path, 'lan', row.resolution.lan, false));
-      // The public cell is disabled (with a hint) when DDNS is missing —
+      // The public cell is disabled (with shared guidance) when DDNS is missing —
       // a public bind with no public address resolves nowhere (DD#2).
       // The /mcp + /ws gate hints ride on the row but don't disable the
       // cell; the gate fires on click.
@@ -1094,6 +1160,7 @@ export const mountExposurePanel = (
           'public',
           row.resolution.public,
           row.requires_ddns_for_public && !row.resolution.public,
+          guidanceId,
         ),
       );
       tbody.appendChild(tr);
@@ -1108,6 +1175,7 @@ export const mountExposurePanel = (
     cell: 'lan' | 'public',
     checked: boolean,
     disabledForDdns: boolean,
+    guidanceId?: string,
   ): HTMLElement {
     const td = doc.createElement('td');
     td.className = 'exposure-grid-cell';
@@ -1118,6 +1186,7 @@ export const mountExposurePanel = (
     input.className = 'exposure-cell-checkbox';
     input.setAttribute(EXPOSURE_CELL_ATTR, `${path}.${cell}`);
     input.setAttribute('aria-label', `${path} ${cell}`);
+    if (disabledForDdns && guidanceId !== undefined) input.setAttribute('aria-describedby', guidanceId);
     if (checked) input.checked = true;
     if (busy || disabledForDdns) {
       input.disabled = true;
@@ -1126,12 +1195,6 @@ export const mountExposurePanel = (
     input.addEventListener('change', () => onCellClick(path, cell));
     label.appendChild(input);
     td.appendChild(label);
-    if (disabledForDdns) {
-      const hint = doc.createElement('span');
-      hint.className = 'exposure-hint exposure-hint-inline';
-      hint.textContent = PANEL_COPY.ddns_hint;
-      td.appendChild(hint);
-    }
     return td;
   }
 
@@ -1165,7 +1228,12 @@ export const mountExposurePanel = (
         PANEL_COPY.connect_example,
         EXPOSURE_CONNECT_BTN_ATTR,
         'secondary',
-        () => { connectExampleOpen = true; render(); },
+        () => {
+          modalReturnFocus = { attr: EXPOSURE_CONNECT_BTN_ATTR };
+          modalPhraseSelection = null;
+          connectExampleOpen = true;
+          render();
+        },
         busy,
       ));
     }
@@ -1176,15 +1244,16 @@ export const mountExposurePanel = (
    *  what to paste into an agent, derived from the SAME `buildMcpClientSnippets`
    *  the contracts route uses, so the two surfaces cannot drift into printing
    *  different endpoints for one server. */
-  function renderConnectExampleModal(): void {
+  function renderConnectExampleModal(focusIndex: number, scrollTop: number, scrollLeft: number): void {
     const url = opts.getServerUrl?.();
     if (url === undefined || url === '') return;
-    const { overlay, body, actions } = renderModalShell(
+    const { overlay, card, body, actions } = renderModalShell(
       PANEL_COPY.connect_modal_title,
       PANEL_COPY.connect_modal_subtitle,
       [PANEL_COPY.connect_modal_note],
     );
     overlay.setAttribute(EXPOSURE_CONNECT_MODAL_ATTR, '');
+    const controls: HTMLElement[] = [];
     for (const snippet of buildMcpClientSnippets(url)) {
       const h = doc.createElement('h5');
       h.className = 'exposure-connect-snippet-label';
@@ -1193,16 +1262,39 @@ export const mountExposurePanel = (
       const pre = doc.createElement('pre');
       pre.className = 'exposure-connect-snippet';
       pre.setAttribute(EXPOSURE_CONNECT_SNIPPET_ATTR, snippet.id);
+      pre.setAttribute('role', 'region');
+      pre.setAttribute('aria-label', snippet.label);
+      pre.setAttribute('tabindex', '0');
       pre.textContent = snippet.body;
+      pre.addEventListener('keydown', (event) => {
+        const key = event as KeyboardEvent;
+        if (key.altKey || key.ctrlKey || key.metaKey || key.shiftKey) return;
+        if (key.key !== 'ArrowLeft' && key.key !== 'ArrowRight') return;
+        if (pre.scrollWidth <= pre.clientWidth) return;
+        // WebKit can leave a focused pre unscrolled after an arrow key.
+        key.preventDefault?.();
+        pre.scrollLeft += key.key === 'ArrowRight' ? 40 : -40;
+      });
       body.appendChild(pre);
+      controls.push(pre);
     }
-    actions.appendChild(makeButton(
+    const close = makeButton(
       PANEL_COPY.connect_modal_close,
       EXPOSURE_MODAL_CANCEL_ATTR,
       'secondary',
-      () => { connectExampleOpen = false; render(); },
+      cancelModal,
       false,
-    ));
+    );
+    actions.appendChild(close);
+    controls.push(close);
+    // Include the read-only examples in the cycle on every browser. A redraw
+    // follows the live owner and leaves focus elsewhere if the owner moved.
+    connectExampleFocusNodes = [overlay, ...controls];
+    connectExampleCard = card;
+    card.scrollTop = scrollTop;
+    const initialControl = connectExampleFocusNodes[focusIndex] ?? null;
+    ownModalFocus(overlay, controls, initialControl, false);
+    if (initialControl !== null) initialControl.scrollLeft = scrollLeft;
   }
 
   function renderApexPicker(model: ExposurePageModel): void {
@@ -1308,7 +1400,7 @@ export const mountExposurePanel = (
     title: string,
     subtitle: string,
     bullets: ReadonlyArray<string>,
-  ): { overlay: HTMLElement; body: HTMLElement; actions: HTMLElement } {
+  ): { overlay: HTMLElement; card: HTMLElement; body: HTMLElement; actions: HTMLElement } {
     const overlay = doc.createElement('div');
     overlay.className = 'exposure-modal-overlay';
     overlay.setAttribute(EXPOSURE_MODAL_ATTR, '');
@@ -1354,7 +1446,7 @@ export const mountExposurePanel = (
 
     overlay.appendChild(card);
     wrapper.appendChild(overlay);
-    return { overlay, body, actions };
+    return { overlay, card, body, actions };
   }
 
   function renderPhraseInput(
@@ -1503,17 +1595,17 @@ export const mountExposurePanel = (
   function ownModalFocus(
     overlay: HTMLElement,
     controls: ReadonlyArray<HTMLElement>,
-    initialControl: HTMLElement,
+    initialControl: HTMLElement | null,
     submitting: boolean,
   ): void {
     const enabledControls = (): HTMLElement[] =>
       controls.filter((control) =>
         !(control as HTMLElement & { disabled?: boolean }).disabled,
       );
-    const focusElement = (element: HTMLElement): void => {
+    const focusElement = (element: HTMLElement, preventScroll = true): void => {
       (element as HTMLElement & {
         focus?: (options?: FocusOptions) => void;
-      }).focus?.({ preventScroll: true });
+      }).focus?.({ preventScroll });
     };
 
     overlay.addEventListener('keydown', (event) => {
@@ -1526,22 +1618,19 @@ export const mountExposurePanel = (
       }
       if (keyEvent.key !== 'Tab') return;
 
+      // Own every step, not just wrapping: native WebKit tabbing can skip
+      // buttons between the phrase input and the end of the dialog.
+      keyEvent.preventDefault?.();
       const available = enabledControls();
       if (available.length === 0) {
-        keyEvent.preventDefault?.();
         focusElement(overlay);
         return;
       }
-      const active = doc.activeElement;
-      const currentIndex = available.indexOf(active as HTMLElement);
-      const wrapsBackward = keyEvent.shiftKey && currentIndex <= 0;
-      const wrapsForward = !keyEvent.shiftKey &&
-        (currentIndex < 0 || currentIndex === available.length - 1);
-      if (!wrapsBackward && !wrapsForward) return;
-      keyEvent.preventDefault?.();
-      focusElement(
-        wrapsBackward ? available[available.length - 1]! : available[0]!,
-      );
+      const currentIndex = available.indexOf(doc.activeElement as HTMLElement);
+      const nextIndex = currentIndex < 0
+        ? (keyEvent.shiftKey ? available.length - 1 : 0)
+        : (currentIndex + (keyEvent.shiftKey ? -1 : 1) + available.length) % available.length;
+      focusElement(available[nextIndex]!, false);
     });
 
     if (submitting) {
@@ -1549,6 +1638,7 @@ export const mountExposurePanel = (
       focusElement(overlay);
       return;
     }
+    if (initialControl === null) return;
     focusElement(initialControl);
     if (initialControl === controls[0] && modalPhraseSelection !== null) {
       const input = initialControl as HTMLInputElement & {
@@ -1668,6 +1758,8 @@ export const mountExposurePanel = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      connectExampleFocusNodes = [];
+      connectExampleCard = null;
       if (unsubscribe) unsubscribe();
       try {
         opts.host.removeChild(wrapper);
@@ -1825,7 +1917,6 @@ export const EXPOSURE_PANEL_STYLES = `
 [${EXPOSURE_PANEL_ATTR}] .exposure-preset-subtitle { color: var(--fg-muted); }
 [${EXPOSURE_PANEL_ATTR}] .exposure-preset-desc { color: var(--fg-muted); font-size: 12px; line-height: 1.4; }
 [${EXPOSURE_PANEL_ATTR}] .exposure-hint { color: var(--danger); font-size: 12px; }
-[${EXPOSURE_PANEL_ATTR}] .exposure-hint-inline { display: block; margin-top: 2px; }
 [${EXPOSURE_PANEL_ATTR}] .exposure-grid { display: flex; flex-direction: column; gap: 8px; }
 [${EXPOSURE_PANEL_ATTR}] .exposure-grid-table {
   width: 100%;
@@ -1850,12 +1941,9 @@ export const EXPOSURE_PANEL_STYLES = `
 [${EXPOSURE_PANEL_ATTR}] .exposure-grid-path {
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
 }
-[${EXPOSURE_PANEL_ATTR}] .exposure-grid-path-name { font-weight: 600; }
-[${EXPOSURE_PANEL_ATTR}] .exposure-grid-path-subtitle { color: var(--fg-muted); font-size: 12px; }
+[${EXPOSURE_PANEL_ATTR}] .exposure-grid-path-name { display: block; font-weight: 600; }
+[${EXPOSURE_PANEL_ATTR}] .exposure-grid-path-subtitle { display: block; margin-top: 2px; color: var(--fg-muted); font-size: 12px; }
 [${EXPOSURE_PANEL_ATTR}] .exposure-cell-target {
   box-sizing: border-box;
   display: inline-flex;
@@ -1943,6 +2031,10 @@ export const EXPOSURE_PANEL_STYLES = `
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
 }
 [${EXPOSURE_PANEL_ATTR}] .exposure-modal-title { margin: 0; font-size: 15px; font-weight: 600; }
+[${EXPOSURE_CONNECT_MODAL_ATTR}] .exposure-modal-card {
+  max-height: calc(100dvh - 48px);
+  overflow-y: auto;
+}
 [${EXPOSURE_PANEL_ATTR}] .exposure-modal-subtitle { margin: 0; color: var(--fg-muted); line-height: 1.45; }
 [${EXPOSURE_PANEL_ATTR}] .exposure-modal-bullets { margin: 0; padding-left: 18px; color: var(--fg-muted); display: flex; flex-direction: column; gap: 4px; }
 [${EXPOSURE_PANEL_ATTR}] .exposure-modal-body { display: flex; flex-direction: column; gap: 8px; }

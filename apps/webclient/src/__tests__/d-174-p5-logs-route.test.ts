@@ -356,6 +356,15 @@ const mountRoute = (overrides: {
   return { doc, root, route, listCaller, getCaller };
 };
 
+const clickLogsAction = (shell: FakeEl, action: string): void => {
+  const target = { closest: () => ({
+    getAttribute: (name: string) => name === 'data-recued-logs-action' ? action : null,
+  }) };
+  for (const listener of shell.listeners.get('click') ?? []) {
+    listener({ target } as unknown as Event);
+  }
+};
+
 describe('D-174 P5 - Runs route', () => {
   it('renders the execution.list History table with filters, color-coded status/policy chips, detail-pane links, and cursor pagination', async () => {
     const calls: ExecutionListQuery[] = [];
@@ -614,6 +623,201 @@ describe('D-174 P5 - Runs route', () => {
     expect(shell.innerHTML).not.toContain('Applying…');
 
     rig.route.dispose();
+  });
+
+  it('clears every filter and cursor in one request, replacing paged rows and the recipe-scoped list address', async () => {
+    const cursor = { last_started_at: NOW - 1_000, last_run_id: 'run-1' };
+    const cleared = deferred<Awaited<ReturnType<RunsListCaller>>>();
+    const listCaller = vi.fn<RunsListCaller>()
+      .mockResolvedValueOnce({ runs: [runRow()], next_cursor: cursor })
+      .mockResolvedValueOnce({ runs: [runRow()], next_cursor: cursor })
+      .mockResolvedValueOnce({ runs: [runRow({ run_id: 'run-older' })], next_cursor: cursor })
+      .mockImplementationOnce(() => cleared.promise);
+    const replaceState = vi.fn();
+    const onHashSync = vi.fn();
+    const rig = mountRoute({ listCaller, initialRecipeId: 'mail/send-digest', replaceState, onHashSync });
+    await rig.route.whenLoaded();
+    await rig.route.setFilters({ status: 'failed', origin: 'contracted_user', time_range: '7d' });
+    await rig.route.loadMore();
+    expect(rig.route.getRuns()).toHaveLength(2);
+    const shell = rig.root.children[0]!;
+    clickLogsAction(shell, 'clear-filters');
+    clickLogsAction(shell, 'clear-filters');
+    clickLogsAction(shell, 'apply-filters');
+    expect(listCaller).toHaveBeenCalledTimes(4);
+    expect(listCaller.mock.calls[3]?.[0]).toEqual({ limit: 25 });
+    expect(rig.route.getFilters()).toEqual({ status: 'all', origin: 'all', recipe_id: '', time_range: 'all' });
+    expect(rig.route.getNextCursor()).toBeNull();
+    expect(shell.innerHTML).toContain('Clearing…');
+    expect(shell.innerHTML).toContain('aria-disabled="true" aria-busy="true"');
+    expect(replaceState).toHaveBeenCalledWith(null, '', '#logs');
+    expect(onHashSync).toHaveBeenCalledWith('#logs');
+    cleared.resolve({ runs: [runRow({ run_id: 'run-all' })] });
+    await vi.waitFor(() => expect(rig.route.getRuns().map(row => row.run_id)).toEqual(['run-all']));
+    expect(shell.innerHTML).toContain('>Clear filters</button>');
+    expect(shell.innerHTML).not.toContain('Clearing…');
+    rig.route.dispose();
+  });
+
+  it('keeps the initial recipe scope while the feed is still loading', async () => {
+    const initial = deferred<Awaited<ReturnType<RunsListCaller>>>();
+    const listCaller = vi.fn<RunsListCaller>(() => initial.promise);
+    const rig = mountRoute({ listCaller, initialRecipeId: 'mail/send-digest' });
+    clickLogsAction(rig.root.children[0]!, 'clear-filters');
+    expect(listCaller).toHaveBeenCalledTimes(1);
+    expect(rig.route.getFilters().recipe_id).toBe('mail/send-digest');
+    initial.resolve({ runs: [] });
+    await rig.route.whenLoaded();
+    rig.route.dispose();
+  });
+
+  it('preserves an open exact run and its Chat return when clearing the history filters', async () => {
+    const replaceState = vi.fn();
+    const chatReturn = { sessionId: 'session-1', planId: 'plan-1' };
+    const rig = mountRoute({ initialRunId: 'run-1', chatReturn, replaceState });
+    await rig.route.whenLoaded();
+    await rig.route.setFilters({ status: 'failed', origin: 'contracted_user', time_range: '24h' });
+    const writes = replaceState.mock.calls.length;
+    const selected = rig.route.getSelectedRun();
+    clickLogsAction(rig.root.children[0]!, 'clear-filters');
+    await vi.waitFor(() => expect(rig.listCaller).toHaveBeenLastCalledWith({ limit: 25 }));
+    expect(rig.route.getSelectedRun()).toBe(selected);
+    expect(replaceState).toHaveBeenCalledTimes(writes);
+    expect(rig.root.children[0]!.innerHTML).toContain('Back to this Chat action');
+    rig.route.dispose();
+  });
+
+  it('keeps the cleared query retryable after a failed refresh', async () => {
+    const listCaller = vi.fn<RunsListCaller>()
+      .mockResolvedValueOnce({ runs: [runRow()] })
+      .mockRejectedValueOnce(new Error('History unavailable.'))
+      .mockResolvedValueOnce({ runs: [runRow({ run_id: 'run-recovered' })] });
+    const rig = mountRoute({ listCaller, initialRecipeId: 'mail/send-digest' });
+    await rig.route.whenLoaded();
+    const shell = rig.root.children[0]!;
+    clickLogsAction(shell, 'clear-filters');
+    await vi.waitFor(() => expect(rig.route.getLoadErrors().feed).toBe('History unavailable.'));
+    expect(rig.route.getFilters()).toEqual({ status: 'all', origin: 'all', recipe_id: '', time_range: 'all' });
+    expect(shell.innerHTML).not.toContain('Clearing…');
+    clickLogsAction(shell, 'clear-filters');
+    await vi.waitFor(() => expect(rig.route.getRuns()[0]?.run_id).toBe('run-recovered'));
+    expect(listCaller).toHaveBeenCalledTimes(3);
+    expect(listCaller).toHaveBeenLastCalledWith({ limit: 25 });
+    expect(rig.route.getLoadErrors().feed).toBeUndefined();
+    rig.route.dispose();
+  });
+
+  it('keeps one summary copy in flight through History repaints', async () => {
+    const write = deferred<void>();
+    const writeText = vi.fn((_text: string) => write.promise);
+    const rig = mountRoute({ initialRunId: 'run-1' });
+    await rig.route.whenLoaded();
+    Object.assign(rig.doc, { defaultView: { navigator: { clipboard: { writeText } } } });
+    const shell = rig.root.children[0]!;
+    clickLogsAction(shell, 'copy-run-summary');
+    await rig.route.refresh();
+    expect(shell.innerHTML).toContain('Copying run summary…');
+    clickLogsAction(shell, 'copy-run-summary');
+    expect(writeText).toHaveBeenCalledOnce();
+    const text = writeText.mock.calls[0]?.[0];
+    expect(text).toContain('Run ID: run-1');
+    expect(text).not.toMatch(/SECRET|super-secret|agent-1|contract-1|checkpoint-1|ask-1|conn-1/);
+    write.resolve();
+    await Promise.resolve(); await Promise.resolve();
+    await rig.route.refresh();
+    expect(shell.innerHTML).toContain('Run summary copied.');
+    rig.route.dispose();
+  });
+
+  it.each([true, false])('ignores a stale clipboard completion after changing runs (success=%s)', async success => {
+    const write = deferred<void>();
+    const rig = mountRoute({ initialRunId: 'run-1', getCaller: async ({ run_id }) => {
+      const run = runDetail(); run.audit.run_id = run_id; return { run };
+    } });
+    await rig.route.whenLoaded();
+    Object.assign(rig.doc, { defaultView: { navigator: { clipboard: { writeText: () => write.promise } } } });
+    clickLogsAction(rig.root.children[0]!, 'copy-run-summary');
+    await rig.route.openRun('run-2');
+    if (success) write.resolve(); else write.reject(new Error('old clipboard denial'));
+    await Promise.resolve(); await Promise.resolve();
+    await rig.route.refresh();
+    const html = rig.root.children[0]!.innerHTML;
+    expect(html).toContain('data-recued-logs-run-summary="run-2"');
+    expect(html).not.toMatch(/Copying run summary|Run summary copied|Recued could not copy/);
+    rig.route.dispose();
+  });
+
+  it.each(['missing', 'denied', 'throwing-getter'])('offers manual text when the clipboard is %s', async mode => {
+    const rig = mountRoute({ initialRunId: 'run-1' });
+    await rig.route.whenLoaded();
+    const navigator = mode === 'denied'
+      ? { clipboard: { writeText: async () => { throw new Error('private clipboard failure'); } } }
+      : {};
+    if (mode === 'throwing-getter') Object.defineProperty(navigator, 'clipboard', { get() { throw new Error('private clipboard failure'); } });
+    Object.assign(rig.doc, { defaultView: { navigator } });
+    clickLogsAction(rig.root.children[0]!, 'copy-run-summary');
+    await Promise.resolve(); await Promise.resolve();
+    await rig.route.refresh();
+    expect(rig.root.children[0]!.innerHTML).toContain('Recued could not copy it. Copy the summary below.');
+    expect(rig.root.children[0]!.innerHTML).not.toContain('private clipboard failure');
+    rig.route.dispose();
+  });
+
+  it('offers manual text after a five-second clipboard deadline and ignores a late success', async () => {
+    vi.useFakeTimers();
+    const write = deferred<void>();
+    const rig = mountRoute({ initialRunId: 'run-1' });
+    try {
+      await rig.route.whenLoaded();
+      Object.assign(rig.doc, { defaultView: { navigator: { clipboard: { writeText: () => write.promise } } } });
+      clickLogsAction(rig.root.children[0]!, 'copy-run-summary');
+      await vi.advanceTimersByTimeAsync(5_000);
+      await rig.route.refresh();
+      expect(rig.root.children[0]!.innerHTML).toContain('Recued could not copy it. Copy the summary below.');
+      write.resolve(); await vi.advanceTimersByTimeAsync(0);
+      await rig.route.refresh();
+      expect(rig.root.children[0]!.innerHTML).not.toContain('Run summary copied.');
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { rig.route.dispose(); vi.useRealTimers(); }
+  });
+
+  it('cancels the clipboard deadline when the route is disposed', async () => {
+    vi.useFakeTimers();
+    const rig = mountRoute({ initialRunId: 'run-1' });
+    try {
+      await rig.route.whenLoaded();
+      Object.assign(rig.doc, { defaultView: { navigator: { clipboard: { writeText: () => new Promise<void>(() => {}) } } } });
+      clickLogsAction(rig.root.children[0]!, 'copy-run-summary');
+      rig.route.dispose();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { rig.route.dispose(); vi.useRealTimers(); }
+  });
+
+  it.each([true, false])('keeps a retry pending when a timed-out write settles (success=%s)', async success => {
+    vi.useFakeTimers();
+    const first = deferred<void>(); const retry = deferred<void>();
+    const writeText = vi.fn((_text: string) => first.promise)
+      .mockImplementationOnce(() => first.promise).mockImplementationOnce(() => retry.promise);
+    const rig = mountRoute({ initialRunId: 'run-1' });
+    try {
+      await rig.route.whenLoaded();
+      Object.assign(rig.doc, { defaultView: { navigator: { clipboard: { writeText } } } });
+      clickLogsAction(rig.root.children[0]!, 'copy-run-summary');
+      await vi.advanceTimersByTimeAsync(5_000);
+      clickLogsAction(rig.root.children[0]!, 'copy-run-summary');
+      expect(writeText).toHaveBeenCalledTimes(2);
+      if (success) first.resolve(); else first.reject(new Error('late first write'));
+      await vi.advanceTimersByTimeAsync(0);
+      await rig.route.refresh();
+      expect(rig.root.children[0]!.innerHTML).toContain('Copying run summary…');
+      clickLogsAction(rig.root.children[0]!, 'copy-run-summary');
+      expect(writeText).toHaveBeenCalledTimes(2);
+      retry.resolve(); await vi.advanceTimersByTimeAsync(0);
+      await rig.route.refresh();
+      expect(rig.root.children[0]!.innerHTML).toContain('Run summary copied.');
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { rig.route.dispose(); vi.useRealTimers(); }
   });
 
   it('renders Status + Policy as separate color-coded chips, hiding Policy on allowed runs (kills the double-OK)', async () => {

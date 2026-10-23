@@ -1720,6 +1720,31 @@ describe('D-169 P1.5 NEXT-#1 pair-fallback outcome contract', () => {
     }
   });
 
+  it.each(['navigator', 'userAgent', 'platform', 'userAgentData', 'userAgentData.platform'])(
+    'opens pairing with a generic device label when %s access is blocked', async blocked => {
+      const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+      const denied = (): never => { throw new Error('Private browser hint policy'); };
+      const navigator = { userAgent: 'Chrome/120.0.0.0', platform: 'MacIntel', userAgentData: { platform: 'macOS' } };
+      if (blocked === 'userAgentData.platform') Object.defineProperty(navigator.userAgentData, 'platform', { get: denied });
+      else if (blocked !== 'navigator') Object.defineProperty(navigator, blocked, { get: denied });
+      Object.defineProperty(globalThis, 'navigator', {
+        configurable: true,
+        ...(blocked === 'navigator' ? { get: denied } : { value: navigator }),
+      });
+      try {
+        const dom = makeFakeDocument(); const deps = makeDeps(dom, buildUnpairedStore());
+        mockState.bootstrapWebclient.mockRejectedValueOnce(new WebclientUnpairedError('webclient_token missing'));
+        await expect(runBootstrapWithPairFallback(deps)).resolves.toEqual({ kind: 'pair-form' });
+        expect(mockState.mountPairCodeInputHost).toHaveBeenCalledOnce();
+        expect(mountOptions()[0]?.displayName).toBe('Web browser');
+        expect(dom.getMessageHtml()).not.toContain('Private browser hint policy');
+      } finally {
+        if (originalNavigator) Object.defineProperty(globalThis, 'navigator', originalNavigator);
+        else Reflect.deleteProperty(globalThis, 'navigator');
+      }
+    },
+  );
+
   it('returns pair-form and mounts the pair-code host when bootstrapWebclient throws WebclientUnpairedError', async () => {
     const dom = makeFakeDocument();
     const deps = makeDeps(dom, buildUnpairedStore());

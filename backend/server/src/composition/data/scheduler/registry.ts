@@ -44,6 +44,8 @@ import { bootCronScheduler, CRON_SCHEDULER_NAME } from './cron/boot.js';
 import { bootAutoRunScheduler, AUTO_RUN_SCHEDULER_NAME } from './auto-run/boot.js';
 import { bootUnattendedBackups, UNATTENDED_BACKUP_SCHEDULER_NAME } from './unattended-backups/boot.js';
 import { bootBackupHealth, BACKUP_HEALTH_SCHEDULER_NAME } from './backup-health/boot.js';
+import { bootBackupWatchdog, BACKUP_WATCHDOG_SCHEDULER_NAME } from './backup-watchdog/boot.js';
+import { bootBackupIntegrity, BACKUP_INTEGRITY_SCHEDULER_NAME } from './backup-integrity/boot.js';
 import { bootRestoreDrills, RESTORE_DRILL_SERVICE_NAME } from './restore-drills/boot.js';
 import {
   bootHousekeepingRegistration,
@@ -55,7 +57,9 @@ import {
  *  prerequisites (e.g., no `scheduleStore` for cron, no `db` for
  *  auto-run) return `undefined` from `boot()` so the slot is skipped. */
 export interface SchedulerBootContext {
+  readonly backupIntegrity?: import('../../../archive/backup-integrity.js').BackupIntegrity;
   readonly backupHealth?: import('../../../archive/backup-health.js').BackupHealth;
+  readonly backupWatchdog?: import('../../../archive/backup-watchdog.js').BackupWatchdog;
   readonly unattendedBackups?: import('../../../archive/unattended-backups.js').UnattendedBackups;
   readonly restoreDrills?: import('../../../archive/restore-drills.js').RestoreDrills;
   /** D-269 — the server's declared IANA zone, for cron schedules that carry
@@ -146,7 +150,9 @@ export interface SchedulerEntry {
  *  background-services registry walks its own reverse-registration order
  *  at stopAll time, independent of this array. */
 export const SCHEDULER_REGISTRY: readonly SchedulerEntry[] = [
+  { name: BACKUP_INTEGRITY_SCHEDULER_NAME, boot: bootBackupIntegrity },
   { name: BACKUP_HEALTH_SCHEDULER_NAME, boot: bootBackupHealth },
+  { name: BACKUP_WATCHDOG_SCHEDULER_NAME, boot: bootBackupWatchdog },
   { name: RESTORE_DRILL_SERVICE_NAME, boot: bootRestoreDrills },
   { name: UNATTENDED_BACKUP_SCHEDULER_NAME, boot: bootUnattendedBackups },
   {

@@ -1050,6 +1050,37 @@ describe('mountAccountMenu', () => {
     expect(dom.activeElement()).toBe(nestedControl);
   });
 
+  for (const phase of ['pending', 'confirmed'] as const) {
+    it.each(['page', 'Account'] as const)(`keeps an active ${phase} control review through Escape from %s focus`, owner => {
+      let returnFromControls = (): void => undefined;
+      const { dom, host, mount } = setup({
+        onReviewConnectionDiagnosisServerControls: (_diagnosis, handoff) => {
+          returnFromControls = handoff.onReturn;
+          handoff.onReceipt({ action: 'pause', phase });
+          return 'opened';
+        },
+      });
+      mount.setConnectionDiagnosisControlAvailability('p1', true);
+      mount.openConnectionDiagnosis({ id: 'escape-owner', profileId: 'p1',
+        profileLabel: 'Home server', areaLabel: 'Contracts', interruptionReason: 'connection' });
+      findByAttr(host, ACCOUNT_MENU_CONNECTION_DIAGNOSIS_CONTROLS_ATTR)!.click();
+      const target = owner === 'page' ? dom.create('body') : findByAttr(host, ACCOUNT_MENU_POPOVER_ATTR)!;
+      target.focus();
+      // WebKit pointer activation can leave focus outside the reconstructed
+      // child. Its active handoff still owns the first Escape.
+      dom.fire('keydown', { key: 'Escape', target });
+      expect(mount.isOpen()).toBe(true);
+      expect(dom.activeElement()).toBe(target);
+      returnFromControls();
+      const outcome = findByAttr(host, ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN_ATTR)!;
+      expect(dom.activeElement()).toBe(outcome);
+      dom.fire('keydown', { key: 'Escape', target: outcome });
+      expect(mount.isOpen()).toBe(false);
+      expect(dom.activeElement()).toBe(findByAttr(host, ACCOUNT_MENU_TRIGGER_ATTR));
+      mount.dispose();
+    });
+  }
+
   it('keeps a dismissed diagnosis quiet and rejects or retires another active profile', () => {
     const onConnectionDiagnosisClosed = vi.fn();
     const { host, mount } = setup({ onConnectionDiagnosisClosed });

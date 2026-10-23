@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn, spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -29,10 +29,31 @@ const makeTmp = (): string => {
   return tmp;
 };
 
+/** How long one synchronous child (`node --import tsx bin.ts …`, `npx tsx -e …`) may run.
+ *  ⚠ Was 20 s for `runBin` and 10 s for the two inline imports. A full sweep runs at the lowest
+ *  CPU priority, and at load ~15 with memory in swap importing serve-entry went past 10 s: the
+ *  child was stopped and came back as "expected 143 to be +0" (sweep at `dd8839641`,
+ *  2026-10-22). This file took 293 s in that sweep and 28 s alone. */
+const CHILD_LIMIT_MS = 90_000;
+/** A test's own bound for `children` synchronous runs, plus its checks. ⚠ Vitest fails a
+ *  synchronous test that ran past its timeout even though its timer could not fire while the
+ *  child blocked, so the bound must cover every child the test waits on. */
+const forChildren = (children: number): number => children * CHILD_LIMIT_MS + 30_000;
+
+/** `spawnSync` under `CHILD_LIMIT_MS`. A child the limit stops fails in words: spawnSync reports
+ *  it as `ETIMEDOUT`, while the exit code it leaves (143 here) says nothing about why. */
+const spawnChild = (command: string, args: string[], options: SpawnSyncOptionsWithStringEncoding) => {
+  const result = spawnSync(command, args, { ...options, timeout: CHILD_LIMIT_MS });
+  if ((result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') {
+    throw new Error(`the child was still running after ${CHILD_LIMIT_MS / 1000} s and was stopped: a hang, or a machine too loaded to start it (${command} ${args[0] ?? ''})`);
+  }
+  return result;
+};
+
 const runBin = (
   args: string[],
   options: { env?: Record<string, string | undefined>; loaderTracePath?: string } = {},
-) => spawnSync(
+) => spawnChild(
   process.execPath,
   [
     '--import',
@@ -50,7 +71,6 @@ const runBin = (
       ...options.env,
       ...(options.loaderTracePath ? { RECUED_MODULE_LOAD_TRACE: options.loaderTracePath } : {}),
     },
-    timeout: 20_000,
   },
 );
 
@@ -270,6 +290,15 @@ const stopProcessGroup = (pid: number | undefined, signal: NodeJS.Signals): void
   }
 };
 
+/** A boot helper asks its server to stop after this, and kills it this long after starting:
+ *  THREE BOUNDS, ONE ORDER — stop (100 s) < kill (120 s) < the test's own bound (`forBoots`). */
+const BOOT_STOP_MS = 100_000;
+const BOOT_KILL_MS = 120_000;
+/** A test's own bound for `boots` server boots, each killed by `BOOT_KILL_MS` at the latest.
+ *  ⚠ The --mcp tests had 25 s and 60 s, below their helper's 100 s stop: under load the test
+ *  timed out first and failed as "Test timed out" instead of naming the slow boot. */
+const forBoots = (boots: number): number => boots * BOOT_KILL_MS + 60_000;
+
 const runServeUntilBanner = (dbPath: string): Promise<{
   stdout: string;
   stderr: string;
@@ -341,7 +370,7 @@ const runServeUntilBanner = (dbPath: string): Promise<{
   // still fails.
   const forceStop = setTimeout(() => {
     stopProcessGroup(child.pid, 'SIGKILL');
-  }, 120_000);
+  }, BOOT_KILL_MS);
   forceStop.unref();
 
   const timeout = setTimeout(() => {
@@ -352,9 +381,9 @@ const runServeUntilBanner = (dbPath: string): Promise<{
     // completion and reported `timedOut === true` — the SPAWNED boot had blown
     // its OWN budget, which the outer timeout had been masking all along.
     // ⚠ THREE BOUNDS, ONE ORDER: inner timeout (100s) < SIGKILL (120s) < the
-    // per-test vitest bound (180s). Invert any pair and the failure stops
+    // per-test vitest bound (`forBoots`, 180s for one). Invert any pair and the failure stops
     // naming its own cause — the invariant `d-261-boot` documents for its pair.
-  }, 100_000);
+  }, BOOT_STOP_MS);
 
   child.stdout.on('data', (chunk: Buffer) => {
     stdout += chunk.toString('utf8');
@@ -398,10 +427,12 @@ const parseJsonRpcLines = (stdout: string): Array<Record<string, unknown>> =>
     });
 
 const runMcpUntilToolsList = (
-  dbPath: string,
+  /** `null` passes no `--db`, so the realm lands at the standard path: under
+   *  the HOME / XDG_DATA_HOME / LOCALAPPDATA a test gives in `options.env`. */
+  dbPath: string | null,
   /** D-228 — `token` appends `--token <bearer>` so a boot can carry a contract.
    *  Without it the server offers nothing (slice 6), which is its own test. */
-  options: { loaderTracePath?: string; token?: string } = {},
+  options: { loaderTracePath?: string; token?: string; env?: Record<string, string> } = {},
 ): Promise<{
   stdout: string;
   stderr: string;
@@ -416,8 +447,7 @@ const runMcpUntilToolsList = (
       ...(options.loaderTracePath ? ['--loader', moduleLoadRecorderPath] : []),
       binPath,
       '--mcp',
-      '--db',
-      dbPath,
+      ...(dbPath !== null ? ['--db', dbPath] : []),
       ...(options.token !== undefined ? ['--token', options.token] : []),
     ],
     {
@@ -428,6 +458,7 @@ const runMcpUntilToolsList = (
         TSX_TSCONFIG_PATH: serverTsconfigPath,
         RECUED_BOOT_TRACE: '1',
         ...(options.loaderTracePath ? { RECUED_MODULE_LOAD_TRACE: options.loaderTracePath } : {}),
+        ...options.env,
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     },
@@ -448,7 +479,7 @@ const runMcpUntilToolsList = (
   // pays the same cold-boot cost plus catalog composition.
   const forceStop = setTimeout(() => {
     stopProcessGroup(child.pid, 'SIGKILL');
-  }, 120_000);
+  }, BOOT_KILL_MS);
   forceStop.unref();
 
   const timeout = setTimeout(() => {
@@ -460,9 +491,9 @@ const runMcpUntilToolsList = (
     // completion and reported `timedOut === true` — the SPAWNED boot had blown
     // its OWN budget, which the outer timeout had been masking all along.
     // ⚠ THREE BOUNDS, ONE ORDER: inner timeout (100s) < SIGKILL (120s) < the
-    // per-test vitest bound (180s). Invert any pair and the failure stops
+    // per-test vitest bound (`forBoots`, 180s for one). Invert any pair and the failure stops
     // naming its own cause — the invariant `d-261-boot` documents for its pair.
-  }, 100_000);
+  }, BOOT_STOP_MS);
 
   child.stdout.on('data', (chunk: Buffer) => {
     stdout += chunk.toString('utf8');
@@ -506,7 +537,7 @@ describe('production router', () => {
     expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
     expect(result.stderr).toBe('');
     expect(existsSync(dbPath)).toBe(false);
-  });
+  }, forChildren(1));
 
   it('prints help without opening the configured DB path', () => {
     const dir = makeTmp();
@@ -518,7 +549,7 @@ describe('production router', () => {
     expect(result.stdout).toContain('recued');
     expect(result.stdout).toContain('Daemon (background):');
     expect(existsSync(dbPath)).toBe(false);
-  });
+  }, forChildren(1));
 
   /** ⛔ `recued version` printed the help page, and the help page never said
    *  which version it was (reported 2026-09-28). */
@@ -534,7 +565,7 @@ describe('production router', () => {
     expect(word.stdout.trim()).toBe(flag.stdout.trim());
     expect(word.stderr).toBe('');
     expect(existsSync(dbPath)).toBe(false);
-  });
+  }, forChildren(2));
 
   it('help names the version on its first line and says how to print it', () => {
     const version = runBin(['--version']).stdout.trim();
@@ -543,7 +574,7 @@ describe('production router', () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain(`recued ${version} — `);
     expect(result.stdout).toContain('version, --version, -v');
-  });
+  }, forChildren(2));
 
   /** ⛔ `recued --db-path X audit` opened the DEFAULT realm and exited 0: the
    *  flag set a config key nothing read. The flags went with their settings on
@@ -582,7 +613,7 @@ describe('production router', () => {
 
     expect(existsSync(wanted)).toBe(false);
     expect(readdirSync(home)).toEqual([]);
-  });
+  }, forChildren(3));
 
   it('reverts a staged update before importing SQLite or the ordinary update profile', () => {
     const dir = makeTmp();
@@ -629,7 +660,7 @@ describe('production router', () => {
     expect(events.some((event) => event.detail === './cli-context/update-staged-rollback.js'))
       .toBe(true);
     expect(events.every((event) => event.db_open_attempted === false)).toBe(true);
-  }, 30_000);
+  }, forChildren(1));
 
   it('reverts a physically swapped update when apply_staged was lost before SQLite imports', () => {
     const dir = makeTmp();
@@ -678,7 +709,7 @@ describe('production router', () => {
     expect(forbiddenRecoveryLoad).toEqual([]);
     expect(parseBootTrace(result.stderr).every((event) => event.db_open_attempted === false))
       .toBe(true);
-  }, 30_000);
+  }, forChildren(1));
 
   it('does not let pre-SQLite recovery mistake the source runtime for a Recued binary', () => {
     const dir = makeTmp();
@@ -704,7 +735,7 @@ describe('production router', () => {
     expect(result.stderr).toContain('not the packaged Recued binary');
     expect(parseBootTrace(result.stderr).every((event) => event.db_open_attempted === false))
       .toBe(true);
-  }, 30_000);
+  }, forChildren(1));
 
   it('supervises on Node\'s own modules: no SQLite, no database, no serve runtime, no update graph', () => {
     // ⛔ The Windows supervisor outlives every update of a session, and whatever
@@ -736,7 +767,7 @@ describe('production router', () => {
     const events = parseBootTrace(result.stderr);
     expect(events.some((event) => event.profile === 'supervise')).toBe(true);
     expect(events.every((event) => event.db_open_attempted === false)).toBe(true);
-  }, 30_000);
+  }, forChildren(1));
 
   it('traces --version as profile none with no DB-open attempt', () => {
     const result = runBin(['--version'], {
@@ -756,10 +787,10 @@ describe('production router', () => {
     });
     expect(events.map((event) => event.phase)).toContain('dispatch-version');
     expect(events.every((event) => event.db_open_attempted === false)).toBe(true);
-  });
+  }, forChildren(1));
 
   it('initializes the runtime role before cheap dispatch paths', () => {
-    const result = spawnSync(
+    const result = spawnChild(
       'npx',
       [
         '--no-install',
@@ -784,14 +815,13 @@ describe('production router', () => {
           ...process.env,
           TSX_TSCONFIG_PATH: serverTsconfigPath,
         },
-        timeout: 10_000,
       },
     );
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('role:server');
     expect(result.stderr).toBe('');
-  });
+  }, forChildren(1));
 
   it('sets the runtime role before argv parsing', () => {
     const source = readFileSync(binPath, 'utf8');
@@ -816,12 +846,12 @@ describe('production router', () => {
     expect(result.status).toBe(0);
     expect(loaded.length).toBeGreaterThan(0);
     expect(loaded.filter(forbiddenLoadedModule)).toEqual([]);
-  });
+  }, forChildren(1));
 
   it('imports serve-entry without import-time boot modules', () => {
     const dir = makeTmp();
     const tracePath = join(dir, 'serve-entry-modules.jsonl');
-    const result = spawnSync(
+    const result = spawnChild(
       'npx',
       [
         '--no-install',
@@ -839,7 +869,6 @@ describe('production router', () => {
           TSX_TSCONFIG_PATH: serverTsconfigPath,
           RECUED_MODULE_LOAD_TRACE: tracePath,
         },
-        timeout: 10_000,
       },
     );
 
@@ -849,7 +878,7 @@ describe('production router', () => {
     expect(result.stdout.trim()).toBe('imported');
     expect(loaded.length).toBeGreaterThan(0);
     expect(loaded.filter(forbiddenLoadedModule)).toEqual([]);
-  });
+  }, forChildren(1));
 
   it('serve-entry owns in-process serve instead of a process delegate', () => {
     const source = readFileSync(serveEntryPath, 'utf8');
@@ -875,7 +904,7 @@ describe('production router', () => {
     // `vitest run` (3,717 files) it is competing for CPU with the whole tree,
     // and the release runs EXACTLY that suite in the exported projection —
     // so a timeout here fails a release while the code is fine.
-  }, 180_000);
+  }, forBoots(1));
 
   it.each([
     ['pair', ['pair']],
@@ -908,7 +937,7 @@ describe('production router', () => {
       allowedCommands: ['pair'],
       allowedContexts: ['pair'],
     }))).toEqual([]);
-  });
+  }, forChildren(1));
 
   it('keeps pair generate output stable after normalizing generated codes', () => {
     const dir = makeTmp();
@@ -926,7 +955,7 @@ describe('production router', () => {
     expect(first.status).toBe(0);
     expect(second.status).toBe(0);
     expect(normalizePairOutput(second.stdout)).toBe(normalizePairOutput(first.stdout));
-  }, 30_000);
+  }, forChildren(2));
 
   it.each([
     ['recent entries', ['audit']],
@@ -959,7 +988,7 @@ describe('production router', () => {
         backendServerSourceValue(value, 'server-vault') ||
         backendServerSourceValue(value, 'key-manager'),
     }))).toEqual([]);
-  }, 30_000);
+  }, forChildren(2));
 
   it('routes the llm profile through the LLM profile context', () => {
     const dir = makeTmp();
@@ -1019,7 +1048,7 @@ describe('production router', () => {
           directContextImport.startsWith('@recued/llm/');
       },
     }))).toEqual([]);
-  });
+  }, forChildren(1));
 
   it('keeps llm output stable for DB-backed no-flag subcommands', () => {
     const dir = makeTmp();
@@ -1045,7 +1074,7 @@ describe('production router', () => {
     // `vitest run` (3,717 files) it is competing for CPU with the whole tree,
     // and the release runs EXACTLY that suite in the exported projection —
     // so a timeout here fails a release while the code is fine.
-  }, 180_000);
+  }, forChildren(4));
 
   it('preserves llm subcommand flags inside the profile context', () => {
     const dir = makeTmp();
@@ -1076,7 +1105,7 @@ describe('production router', () => {
     expect(show.stdout).toContain('***1234');
     expect(show.stdout).not.toContain('sk-secret-abcd1234');
     expect(show.stdout).toContain('"supports_json": true');
-  }, 30_000);
+  }, forChildren(2));
 
   /** ⛔⛔ CONTRACT MOVED — D-228 slice 6. This asserted that a bare `--mcp` boot
    *  lists `recued_listRecipes` / `recued_dataTimeline` / `recipe.run` /
@@ -1172,7 +1201,7 @@ describe('production router', () => {
     // …and the checklist still FILTERS at the same time — an ungranted tool is
     // absent, so this is a composed-then-filtered catalog, not "everything".
     expect(toolNames).not.toContain('recued_saveRecipe');
-  }, 60_000);
+  }, forBoots(2));
 
   it('routes --mcp through the MCP profile context; a token-less boot offers NOTHING', async () => {
     const dir = makeTmp();
@@ -1214,7 +1243,39 @@ describe('production router', () => {
       allowCompositionBin: true,
       allowMcpServer: true,
     }))).toEqual([]);
-  }, 25_000);
+  }, forBoots(1));
+
+  // ⛔ stdout IS the MCP stream on stdio, so every line on it must be JSON-RPC.
+  // The other --mcp cases pass `--db`, which never announces a new realm, and
+  // their reader skips non-JSON lines, so a first run that printed "[recued]
+  // creating a new realm database at …" ahead of the `initialize` reply passed
+  // them all. This boot has no `--db`: it creates the realm at the standard path
+  // and must say so on stderr.
+  it('a first --mcp run that creates the realm keeps stdout to JSON-RPC', async () => {
+    const dir = makeTmp();
+    const result = await runMcpUntilToolsList(null, {
+      env: {
+        HOME: dir,
+        XDG_DATA_HOME: join(dir, 'data'),
+        LOCALAPPDATA: join(dir, 'appdata'),
+        DB_PATH: '',
+      },
+    });
+    const lines = result.stdout.split('\n').filter(Boolean);
+    const notJson = lines.filter((line) => {
+      try {
+        JSON.parse(line);
+        return false;
+      } catch {
+        return true;
+      }
+    });
+
+    expect(result.timedOut).toBe(false);
+    expect(parseJsonRpcLines(result.stdout)).toContainEqual(expect.objectContaining({ id: 2 }));
+    expect(notJson).toEqual([]);
+    expect(result.stderr).toContain('[recued] creating a new realm database at');
+  }, forBoots(1));
 
   it('routes archive through the archive profile context and preserves archive flags', () => {
     const dir = makeTmp();
@@ -1255,7 +1316,7 @@ describe('production router', () => {
       allowedCommands: ['archive'],
       allowedContexts: ['archive'],
     }))).toEqual([]);
-  }, 30_000);
+  }, forChildren(1));
 
   // D-178 slice 5 — the `upgrade` subcommand + its `cli-context/upgrade`
   // profile are deleted (the legacy D-108 npm self-upgrade flow is superseded
@@ -1291,7 +1352,7 @@ describe('production router', () => {
     expect(loaded.filter((entry) => profileBoundaryForbiddenLoadedModule(entry, {
       allowedContexts: ['daemon'],
     }))).toEqual([]);
-  }, 30_000);
+  }, forChildren(1));
 
   it('prints missing daemon log output without creating the DB path', () => {
     const dir = makeTmp();
@@ -1311,7 +1372,7 @@ describe('production router', () => {
       allowedCommands: ['logs'],
       allowedContexts: ['daemon'],
     }))).toEqual([]);
-  });
+  }, forChildren(1));
 
   // ⛔ RETIRED 2026-10-07. Both reached the server over the rpc socket with the
   // raw realm token, refused (401) on every release from 26.8.1 — and this test
@@ -1342,7 +1403,7 @@ describe('production router', () => {
         allowedCommands: ['auth'],
         allowedContexts: ['daemon'],
       }))).toEqual([]);
-    }, 30_000);
+    }, forChildren(1));
   }
 
   it('has no forbidden router static imports', () => {

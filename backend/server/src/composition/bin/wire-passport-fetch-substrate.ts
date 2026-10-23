@@ -18,7 +18,7 @@
  *       pin-state transition (`seeded` / `promoted` / `idempotent` /
  *       `observed_fingerprint_unknown`) gates on.
  *  The rest of the projection is signed-over but unread; the
- *  capability / recovery / key_health blocks ship conservative
+ *  capability / key_health blocks ship conservative
  *  defaults because `support_redacted` collapses most of them into
  *  summaries (clients_by_kind) or strips them entirely.
  *
@@ -62,7 +62,7 @@ import { createSqlitePassportHistoryStore } from '../../passport/history-store.j
 import { DEFAULT_EXPOSURE_STATE } from '../../exposure/index.js';
 import type { ExposureStateMachine } from '../../exposure/index.js';
 import type { PairedInstancesStore } from '../../paired-instances-store.js';
-import type { ServerPassportNetworkBlock } from '@recued/contracts';
+import type { ServerPassportNetworkBlock, ServerPassportRecoveryBlock } from '@recued/contracts';
 
 /** Inputs. Both gate handles are passed as `T | undefined` so the
  *  caller can feed the same let-binding refs it holds today. `certStack`
@@ -91,6 +91,8 @@ export interface ComposePassportFetchSubstrateDeps {
    *  returns an empty roster (the prior honest default). Read via the
    *  cross-user `listAllActive()` since this composer holds no user_id. */
   readonly pairedInstances?: PairedInstancesStore | undefined;
+  /** Resolved per fetch/export; failure must not block reconnect signing. */
+  readonly getBackupRecovery?: () => ServerPassportRecoveryBlock;
 }
 
 /** Bundle. `passportFetchDeps` mirrors the let-binding bin.ts threads
@@ -289,10 +291,10 @@ export const composePassportFetchSubstrate = (
         installed_packs: [],
         connections: [],
       }),
-      loadRecovery: () => ({
-        backup_status: 'unconfigured',
-        filevault_recovery_key_status: 'absent',
-      }),
+      loadRecovery: () => {
+        try { if (deps.getBackupRecovery) return deps.getBackupRecovery(); } catch { /* No raw provider text in a signed passport. */ }
+        return { backup_status: 'unavailable', filevault_recovery_key_status: 'absent' };
+      },
       loadKeyHealth: () => ({
         master_dek: { status: 'healthy' },
         sub_dek: { status: 'healthy' },

@@ -25,7 +25,8 @@ export interface MailFactSendersDeps {
   readonly callers: MailFactSenderCallers;
   readonly actionAttr: string;
   readonly render: () => void;
-  readonly focus: (key: string) => void;
+  /** A reply with `from` may redirect only that control's current focus. */
+  readonly focus: (key: string, from?: string) => void;
   /** "Make a template": the editor, on the sender's newest email. */
   readonly makeTemplate: (email: MailFactEmailRef) => void;
   /** Whether the Templates editor can be opened on an email. */
@@ -47,6 +48,7 @@ export const createMailFactSenders = (deps: MailFactSendersDeps): MailFactSender
   let result: MailFactSendersResult | null = null;
   let loading = false;
   let error: string | null = null;
+  let readFailed = false;
   let busy: string | null = null;
   let seq = 0;
   let disposed = false;
@@ -58,11 +60,12 @@ export const createMailFactSenders = (deps: MailFactSendersDeps): MailFactSender
     deps.canMakeTemplate ? `snd:make:${address}` : `snd:dismiss:${address}`;
 
   const load = async (silent: boolean): Promise<void> => {
-    if (callers.listSenders === undefined) return;
+    if (disposed || callers.listSenders === undefined) return;
     const mine = ++seq;
+    const recovering = readFailed;
     loading = true;
     if (!silent) {
-      error = null;
+      if (!readFailed) error = null;
       deps.render();
     }
     try {
@@ -70,9 +73,17 @@ export const createMailFactSenders = (deps: MailFactSendersDeps): MailFactSender
       if (disposed || mine !== seq) return;
       result = next;
       error = null;
+      readFailed = false;
+      if (recovering) {
+        const first = next.senders[0];
+        deps.focus(first !== undefined && (deps.canMakeTemplate || callers.dismissSender !== undefined)
+          ? rowFocus(first.address)
+          : next.dismissed.length > 0 && callers.dismissSender !== undefined ? 'snd:dismissed' : 'view:senders', 'snd:retry');
+      }
     } catch (failure) {
       if (disposed || mine !== seq) return;
       error = humanizeRpcError(failure);
+      readFailed = true;
     }
     loading = false;
     deps.render();
@@ -106,6 +117,7 @@ export const createMailFactSenders = (deps: MailFactSendersDeps): MailFactSender
       if (disposed) return;
       busy = null;
       error = humanizeRpcError(failure);
+      readFailed = false;
       deps.render();
     }
   };
@@ -159,9 +171,11 @@ export const createMailFactSenders = (deps: MailFactSendersDeps): MailFactSender
       if (callers.listSenders === undefined) return '<p class="mail-facts-subtle">This server cannot count senders.</p>';
       return `
         <p class="mail-facts-intro">The senders you get the most mail from that no template and no standard reads, over the last 30 days. A template for one turns its mail into facts.</p>
-        ${error !== null ? `<p class="mail-facts-error" role="alert">${e(error)}</p>` : ''}
+        ${error !== null ? `<p class="mail-facts-error" role="alert">${e(error)}${readFailed
+          ? ` <button type="button" class="data-button" ${actionAttr}="mail-facts-snd-retry" ${FOCUS}="snd:retry"${loading || busy !== null ? ' aria-disabled="true" aria-busy="true"' : ''}>${loading ? 'Retrying…' : 'Try again'}</button>`
+          : ''}</p>` : ''}
         ${result === null
-          ? `<p class="mail-facts-subtle" aria-live="polite">${loading ? 'Counting your mail…' : 'Loading…'}</p>`
+          ? error === null ? '<p class="mail-facts-subtle" aria-live="polite">Counting your mail…</p>' : ''
           : `${renderList(result)}${renderDismissed(result)}`}`;
     },
 
@@ -170,6 +184,9 @@ export const createMailFactSenders = (deps: MailFactSendersDeps): MailFactSender
     handleAction: (action, target) => {
       const address = target.getAttribute('data-address') ?? '';
       switch (action) {
+        case 'mail-facts-snd-retry':
+          if (readFailed && !loading && busy === null && !disposed) void load(false);
+          return true;
         case 'mail-facts-snd-make': {
           const slug = target.getAttribute('data-slug');
           const record_id = target.getAttribute('data-record-id');

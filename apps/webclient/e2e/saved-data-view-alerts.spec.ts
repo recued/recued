@@ -1,8 +1,9 @@
+import { HARNESS_ORIGIN } from './helpers/harness-origin.js';
 import { expect, test, type Page } from '@playwright/test';
 import type { SavedDataView } from '@recued/contracts';
 import { openSavedViewList } from './helpers/saved-data-views.js';
 
-const BASE = 'http://127.0.0.1:4319/full-app-harness.html';
+const BASE = `${HARNESS_ORIGIN}/full-app-harness.html`;
 const ID = 'view_00000000-0000-4000-8000-000000000003';
 const KEY = 'recued-test-saved-data-views';
 const tools = (page: Page) => page.locator('[data-saved-data-views]');
@@ -114,7 +115,7 @@ test('Records alerts preserve saved filters across enable, reload, pause and res
   await openSavedViewList(page);
   await tools(page).getByRole('button', { name: 'Refresh saved views', exact: true }).click();
   await expect(opened(page)).toContainText('Alerts resume when the data is available');
-  await tools(page).screenshot({ path: '/tmp/recued-records-alert-controls.png' });
+  await tools(page).screenshot({ path: test.info().outputPath('recued-records-alert-controls.png') });
   await expect(opened(page)).toContainText('Alerts waiting for your records');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });

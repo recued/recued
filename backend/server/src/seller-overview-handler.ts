@@ -37,6 +37,8 @@ import {
   type SellerManualTierUpsertResponse,
   type SellerOfferStateTransitionRequest,
   type SellerOfferStateTransitionResponse,
+  type SellerOfferCheckoutUrlUpdateRequest,
+  type SellerOfferCheckoutUrlUpdateResponse,
   type SellerOverview,
   type SellerOverviewLlmGateway,
   type SellerOverviewReadinessItem,
@@ -93,6 +95,7 @@ import { reapplyPackage, SellerPackageReapplyError } from './seller/package-reap
 import {
   SellerStoreConflictError,
   SellerStoreValidationError,
+  sellerOfferCheckoutUrlProblem,
   type SellerStore,
 } from './storage/seller-store.js';
 import type { WsClient } from './ws-server.js';
@@ -101,6 +104,7 @@ export type SellerOverviewMethods =
   | 'server.seller.getOverview'
   | 'server.seller.listOrders'
   | 'server.seller.transitionOfferState'
+  | 'server.seller.setOfferCheckoutUrl'
   | 'server.seller.updateSettings'
   | 'server.seller.acknowledgeLlmGatewayPaid'
   | 'server.seller.upsertManualTier'
@@ -163,6 +167,7 @@ const SELLER_CREATE_PASS_TIER_METHOD = 'server.seller.createPassTier';
 const SELLER_SETTINGS_UPDATE_METHOD = 'server.seller.updateSettings';
 const SELLER_OFFER_STATE_TRANSITION_METHOD =
   'server.seller.transitionOfferState';
+const SELLER_OFFER_CHECKOUT_URL_METHOD = 'server.seller.setOfferCheckoutUrl';
 const SELLER_MANUAL_CUSTOMER_METHOD = 'server.seller.issueManualCustomer';
 const SELLER_MANUAL_CUSTOMER_EXTEND_METHOD = 'server.seller.extendManualCustomer';
 const SELLER_MANUAL_CUSTOMER_SWAP_TIER_METHOD = 'server.seller.swapManualCustomerTier';
@@ -772,6 +777,93 @@ export const transitionSellerOfferState = (
         'conflict',
         `${method}: ${error.message}`,
         409,
+        method,
+      );
+    }
+    throw error;
+  }
+};
+
+/** What the owner reads when Settings → Seller cannot save a checkout link. The
+ *  page shows a server refusal word for word (`humanizeRpcError`), so each is in
+ *  the owner's words: no method, no store code, no field name. A live drive
+ *  showed the store's own text there instead: `server.seller.setOfferCheckoutUrl:
+ *  seller_store_invalid: checkout_url is too long…`. */
+const CHECKOUT_LINK_REFUSALS = {
+  not_a_link: 'That is not a full payment link. Paste the whole link, starting with https://.',
+  too_long: 'That link is too long. Recued adds each order\u2019s reference to it, and the '
+    + 'result would be too long to use. Use the short link your payment company gives you.',
+  archived: 'This offer is put away, so its checkout link cannot change.',
+  changed: 'This offer changed after this page loaded. Reload the page and try again.',
+  missing: 'This offer no longer exists.',
+} as const;
+
+/** D-207 ruling (C) — the owner sets, changes or removes where an offer's buyers pay.
+ *  The store applies the public renderer's own URL predicate and the runner's own
+ *  stamping, so a link saved here is one a selling form can always render. */
+export const setSellerOfferCheckoutUrl = (
+  deps: SellerOverviewHandlerDeps,
+  request: SellerOfferCheckoutUrlUpdateRequest,
+): SellerOfferCheckoutUrlUpdateResponse => {
+  const method = SELLER_OFFER_CHECKOUT_URL_METHOD;
+  if (!isRecord(request)) {
+    throw badSellerRequest(method, 'args must be an object');
+  }
+  const allowedFields = new Set(['offer_id', 'expected_updated_at', 'checkout_url']);
+  const unknownField = Object.keys(request).find((field) => !allowedFields.has(field));
+  if (unknownField !== undefined) {
+    throw badSellerRequest(method, `unknown field '${unknownField}'`);
+  }
+  const badRequest = (message: string) => badSellerRequest(method, message);
+  const offer_id = requiredStringField(request, 'offer_id', badRequest);
+  const expected_updated_at = request.expected_updated_at;
+  if (
+    typeof expected_updated_at !== 'number'
+    || !Number.isSafeInteger(expected_updated_at)
+    || expected_updated_at < 0
+  ) {
+    throw badRequest('expected_updated_at must be a non-negative safe integer');
+  }
+  // Required, and explicit: removing the link is `null`, never a missing field.
+  const checkout_url = request.checkout_url;
+  if (checkout_url !== null && typeof checkout_url !== 'string') {
+    throw badRequest('checkout_url must be a link, or null to remove it');
+  }
+
+  try {
+    if (deps.sellerStore.getOffer(offer_id) === null) {
+      throw new RpcError('not_found', CHECKOUT_LINK_REFUSALS.missing, 404, method);
+    }
+    const problem = checkout_url === null ? null : sellerOfferCheckoutUrlProblem(checkout_url);
+    if (problem !== null) {
+      throw new RpcError('bad_request', CHECKOUT_LINK_REFUSALS[problem], 400, method);
+    }
+    const updated = deps.sellerStore.setOfferCheckoutUrl({
+      offer_id,
+      expected_updated_at,
+      checkout_url,
+      now: deps.now?.() ?? Date.now(),
+    });
+    return {
+      ...updated,
+      overview: buildSellerOverview(deps),
+    };
+  } catch (error) {
+    if (error instanceof RpcError) throw error;
+    // The only conflict is the optimistic token: the offer moved since the page read it.
+    if (error instanceof SellerStoreConflictError) {
+      throw new RpcError('conflict', CHECKOUT_LINK_REFUSALS.changed, 409, method);
+    }
+    if (error instanceof SellerStoreValidationError) {
+      // The store refuses an archived offer only after it compares the link, so ask
+      // the row rather than repeat the store's order of checks here.
+      if (deps.sellerStore.getOffer(offer_id)?.state === 'archived') {
+        throw new RpcError('bad_request', CHECKOUT_LINK_REFUSALS.archived, 400, method);
+      }
+      throw new RpcError(
+        'bad_request',
+        `${method}: ${error.message}`,
+        400,
         method,
       );
     }
@@ -1651,6 +1743,7 @@ export const makeSellerOverviewHandlers = (
       'server.seller.getOverview',
       'server.seller.listOrders',
       'server.seller.transitionOfferState',
+      'server.seller.setOfferCheckoutUrl',
       'server.seller.updateSettings',
       'server.seller.acknowledgeLlmGatewayPaid',
       'server.seller.upsertManualTier',
@@ -1672,6 +1765,8 @@ export const makeSellerOverviewHandlers = (
         listSellerOrders(deps, request),
       'server.seller.transitionOfferState': async (request) =>
         transitionSellerOfferState(deps, request),
+      'server.seller.setOfferCheckoutUrl': async (request) =>
+        setSellerOfferCheckoutUrl(deps, request),
       'server.seller.updateSettings': async (request) =>
         updateSellerSettings(deps, request),
       'server.seller.acknowledgeLlmGatewayPaid': async (request) =>

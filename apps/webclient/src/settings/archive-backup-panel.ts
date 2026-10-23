@@ -55,7 +55,9 @@
 
 import { isValidRecoveryKey } from '@recued/crypto';
 import { formatClientDateTime } from '@recued/ui-shared';
+import { buildPassportRecoverySummary, renderPassportRecoverySummary, PASSPORT_RECOVERY_SUMMARY_STYLES, type PassportRecoverySummary } from './passport-recovery-summary.js';
 import { mountArchiveImportReceipt, type ArchiveImportReceiptController } from './archive-import-receipt.js';
+import type { RestoreReadinessOptions } from './post-restore-readiness.js';
 import type {
   ArchiveImportRebind,
   ArchiveJobStatus,
@@ -278,6 +280,7 @@ export type ArchiveBackupView =
 
 export interface MountArchiveBackupPanelOptions {
   importReceipt?: ArchiveImportReceiptController;
+  restoreReadiness?: RestoreReadinessOptions;
   /** Host element the panel renders into. */
   host: HTMLElement;
   /** DOM document seam. Defaults to `globalThis.document`. */
@@ -387,6 +390,7 @@ const COPY = {
   backup_cta: 'Back up all my data',
   restore_cta: 'Restore from a backup',
   passport_only_cta: 'Save just this server’s identity',
+  passport_sharing: 'This support file also shares backup, recovery test, S3 scan, and monitor states. It says whether you reported a drill alert and whether a fresh ping was acknowledged. It hides monitor URLs, storage names, receipt IDs, and evidence times.',
 
   // Export
   export_body:
@@ -477,6 +481,7 @@ const COPY = {
 // ════════════════════════════════════════════════════════════════
 
 export const ARCHIVE_BACKUP_PANEL_STYLES = `
+${PASSPORT_RECOVERY_SUMMARY_STYLES}
 [${ARCHIVE_BACKUP_PANEL_ATTR}] .archive-backup-block {
   display: flex;
   flex-direction: column;
@@ -764,6 +769,7 @@ export const mountArchiveBackupPanel = (
 
   // Passport-only export
   let passportJson: string | null = null;
+  let passportSummary: PassportRecoverySummary | null = null, passportGeneration = 0;
 
   // ── Wrapper ────────────────────────────────────────────────────
   const wrapper = doc.createElement('div');
@@ -773,6 +779,7 @@ export const mountArchiveBackupPanel = (
   const receiptHost = doc.createElement('aside'); receiptHost.setAttribute('hidden', ''); wrapper.appendChild(receiptHost);
   const detachReceipt = opts.importReceipt === undefined ? () => undefined
     : mountArchiveImportReceipt({ host: receiptHost, document: doc, controller: opts.importReceipt,
+      ...(opts.restoreReadiness === undefined ? {} : { readiness: opts.restoreReadiness }),
       onDismissFocus: () => {
         for (const attr of [ARCHIVE_RESTORE_START_BTN_ATTR, ARCHIVE_RESTORE_MNEMONIC_ATTR,
           ARCHIVE_BACKUP_MNEMONIC_ATTR, ARCHIVE_RESTORE_ARM_ATTR, ARCHIVE_BACKUP_CANCEL_BTN_ATTR]) {
@@ -996,6 +1003,7 @@ export const mountArchiveBackupPanel = (
     restoreUploadProgress = { sent: 0, total: 0 };
     restoreUploadLabel = '';
     passportJson = null;
+    passportSummary = null; passportGeneration++;
   };
 
   // ── Export ─────────────────────────────────────────────────────
@@ -1323,14 +1331,18 @@ export const mountArchiveBackupPanel = (
     const returnFromStart = controlHasFocus(ARCHIVE_PASSPORT_START_BTN_ATTR);
     clearResult();
     passportJson = null;
+    passportSummary = null; const ownGeneration = ++passportGeneration;
     setView(
       'passport-exporting',
       returnFromStart ? ARCHIVE_BACKUP_BUSY_ATTR : undefined,
     );
     try {
       const res = await opts.runPassportExport({ profile: 'support_redacted' });
-      if (disposed) return;
-      passportJson = JSON.stringify(res.passport, null, 2);
+      if (disposed || passportGeneration !== ownGeneration) return;
+      const json = JSON.stringify(res.passport, null, 2), snapshot: unknown = JSON.parse(json);
+      if (!snapshot || typeof snapshot !== 'object' || !('profile' in snapshot) || snapshot.profile !== 'support_redacted') throw new Error('The server did not return a support Passport. Export again before sharing.');
+      passportJson = json;
+      passportSummary = buildPassportRecoverySummary(snapshot);
       resultLine = COPY.passport_done;
       resultTone = 'ok';
       const returnFromBusy = controlHasFocus(ARCHIVE_BACKUP_BUSY_ATTR);
@@ -1339,7 +1351,7 @@ export const mountArchiveBackupPanel = (
         returnFromBusy ? ARCHIVE_PASSPORT_DOWNLOAD_BTN_ATTR : undefined,
       );
     } catch (err) {
-      if (disposed) return;
+      if (disposed || passportGeneration !== ownGeneration) return;
       resultLine = `${COPY.passport_failed} ${messageOf(err)}`;
       resultTone = 'bad';
       const returnFromBusy = controlHasFocus(ARCHIVE_BACKUP_BUSY_ATTR);
@@ -1522,6 +1534,7 @@ export const mountArchiveBackupPanel = (
     // this drives only the no-confirm `support_redacted` profile. Gated on the
     // caller so the archive flows still work when it isn't wired.
     if (opts.runPassportExport !== undefined) {
+      block.appendChild(makeBody(COPY.passport_sharing));
       const passportActions = doc.createElement('div');
       passportActions.className = 'archive-backup-actions';
       passportActions.appendChild(
@@ -1995,6 +2008,7 @@ export const mountArchiveBackupPanel = (
   const renderPassportDone = (block: HTMLElement): void => {
     const result = makeResultLine();
     if (result) block.appendChild(result);
+    if (passportSummary) block.appendChild(renderPassportRecoverySummary(doc, passportSummary));
 
     const ta = doc.createElement('textarea');
     ta.setAttribute(ARCHIVE_PASSPORT_JSON_ATTR, '');
@@ -2114,6 +2128,7 @@ export const mountArchiveBackupPanel = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      passportGeneration++; passportJson = null; passportSummary = null;
       detachReceipt();
       cancelPoll();
       cancelDownload();

@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { LocalChangeSetDecision } from '@recued/contracts';
-import { resourceFixture, resourceFixtureDisposers } from './preapproval-resources-fixture.js';
+import { CRASH_CASE_TIMEOUT_MS, CRASH_WRITER_LIMIT_MS, resourceFixture, resourceFixtureDisposers } from './preapproval-resources-fixture.js';
 const inputFile = process.env.RECUED_LOCAL_SET_CRASH_INPUT;
 const root = resolve(import.meta.dirname,'../../../..'), dirs: string[] = [];
 type Fixture = Awaited<ReturnType<typeof resourceFixture>>;
@@ -50,12 +50,15 @@ it.skipIf(Boolean(inputFile)).each(cases)('recovers $direction after process dea
   const input = join(dir,'request.json'), output = join(dir,'state.json');
   writeFileSync(input,JSON.stringify({ direction,phase,output }));
   const child = spawn(process.execPath,[join(root,'node_modules/vitest/vitest.mjs'),'run',resolve(import.meta.filename),
-    '--pool=forks','--maxWorkers=1','--project=backend-shared','--teardownTimeout=1000','-t','local change set crash writer'],
+    '--pool=forks','--maxWorkers=1','--project=backend-shared','--teardownTimeout=1000',`--testTimeout=${CRASH_WRITER_LIMIT_MS}`,
+    '-t','local change set crash writer'],
   { cwd: root,env: { ...process.env,RECUED_LOCAL_SET_CRASH_INPUT: input },stdio: ['ignore','pipe','pipe'] });
   let trace = ''; child.stdout.on('data',bytes => { trace += String(bytes); }); child.stderr.on('data',bytes => { trace += String(bytes); });
-  const timer = setTimeout(() => child.kill('SIGKILL'),60_000);
+  let stopped = false;
+  const timer = setTimeout(() => { stopped = true; child.kill('SIGKILL'); },CRASH_WRITER_LIMIT_MS);
   const code = await new Promise<number | null>((done,reject) => { child.once('error',reject); child.once('exit',done); });
   clearTimeout(timer); writeFileSync(join(dir,'expected-crash.log'),trace);
+  expect(stopped,`the crash writer was still running after ${CRASH_WRITER_LIMIT_MS / 1000} s and was stopped: a hang, or a machine too loaded to start it`).toBe(false);
   expect(code,trace.slice(-3000)).not.toBe(0); expect(existsSync(output),trace.slice(-3000)).toBe(true);
   const state = JSON.parse(readFileSync(output,'utf8')) as State; dirs.push(state.previous.dir);
   expect(state.stage).toBe('killed'); expect(() => process.kill(state.pid,0)).toThrow();
@@ -74,4 +77,4 @@ it.skipIf(Boolean(inputFile)).each(cases)('recovers $direction after process dea
   expect(f.changed).not.toHaveBeenCalled(); expect(f.calendarUpdates).not.toHaveBeenCalled();
   const second = await f.reopen();
   expect(await second.composed.handlers.localChanges!.get(state.decision.change_set_id,second.origin)).toEqual(result);
-},90_000);
+},CRASH_CASE_TIMEOUT_MS);

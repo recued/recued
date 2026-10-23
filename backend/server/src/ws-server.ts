@@ -55,6 +55,7 @@ import {
   composeHandlers,
   createPendingMap,
   getPref,
+  RPC_WS_MAX_IN_FLIGHT_PER_CLIENT,
   SERVER_RPC_METHOD_SET,
   WS_VERSION_SUBPROTOCOL,
   decodeBearerSubprotocol,
@@ -334,6 +335,7 @@ import {
   makeReceptionHandlers,
   makeReceptionInboxRpcHandlers,
   makeReceptionRecordRpcHandlers,
+  makeReceptionRecordOpenRpcHandlers,
   makeReceptionLookupRevokeRpcHandlers,
   makeReceptionManageMintRpcHandlers,
   type ReceptionInboxDeps,
@@ -544,8 +546,11 @@ export const RPC_WS_MAX_PAYLOAD_BYTES = 4 * 1024 * 1024;
  *  ceiling, however, one buggy or compromised bearer can enqueue an
  *  unbounded number of slow handlers and retain their request state until the
  *  downstream calls settle. The global ceiling also covers reconnect/many-tab
- *  fan-out that would evade a per-socket limit. */
-export const RPC_WS_MAX_IN_FLIGHT_PER_CLIENT = 64;
+ *  fan-out that would evade a per-socket limit.
+ *
+ *  The per-socket number lives in contracts because the webclient keeps its
+ *  own calls under it (`rpc-conn.ts`). */
+export { RPC_WS_MAX_IN_FLIGHT_PER_CLIENT };
 export const RPC_WS_MAX_IN_FLIGHT_GLOBAL = 256;
 
 /** Maximum simultaneously running upload chunks / archive chunks / archive
@@ -2206,6 +2211,9 @@ const buildWsBinding = (
     // D-210 step 2a — `reception.record.list`. Admin-gated in the handler like the inbox
     // trio; the `reception.` reserved prefix keeps it off MCP.
     makeReceptionRecordRpcHandlers(receptionRecordDeps),
+    // D-149 § N.6 — `reception.record.open`, one record opened for the paired owner. Its own
+    // slice: unregistered (`not_configured`) unless the reception key is wired with it.
+    makeReceptionRecordOpenRpcHandlers(receptionRecordDeps),
     // D-210 Appendix B — `reception.manage.mint` (on-the-go reschedule link).
     // Admin-gated in the handler; the `reception.` reserved prefix keeps it off MCP.
     makeReceptionManageMintRpcHandlers(receptionManageMintDeps),

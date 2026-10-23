@@ -366,6 +366,9 @@ export const mountKeyHealthPanel = (
   let lastErrorMessage = '';
   let loadErrorMessage = '';
   let pendingActionFocus: Readonly<{ attr: string; value: string }> | null = null;
+  let readFocusTarget: HTMLElement | null = null;
+  let postureList: HTMLElement | null = null;
+  let postureCard: HTMLElement | null = null;
   // D-212 §7.10 — posture state, independent of the page state machine.
   // `null` here means "no seam wired" (render nothing); every other value
   // is something we can honestly show.
@@ -410,7 +413,16 @@ export const mountKeyHealthPanel = (
       if (disposed || token !== postureToken) return;
       posture = { kind: 'unreadable', message: messageOf(err) };
     }
-    render();
+    // The read owns this card, not the inventory controls or a confirmation
+    // the operator may have opened while it was pending.
+    if (state === 'idle' && postureList !== null) {
+      const card = renderKeyfilePostureCard();
+      if (card !== null) {
+        postureCard?.remove();
+        postureList.insertBefore(card, postureList.firstChild);
+        postureCard = card;
+      }
+    }
   };
 
   const runLoad = async (): Promise<void> => {
@@ -426,13 +438,7 @@ export const mountKeyHealthPanel = (
       view = result;
       loadErrorMessage = '';
       transitionTo('idle');
-      if (pendingActionFocus !== null) {
-        focusIfSupported(findBtn(
-          pendingActionFocus.attr,
-          pendingActionFocus.value,
-        ));
-        pendingActionFocus = null;
-      }
+      pendingActionFocus = null;
     } catch (err) {
       if (disposed) return;
       loadErrorMessage = messageOf(err);
@@ -509,7 +515,10 @@ export const mountKeyHealthPanel = (
     btn.textContent = label;
     btn.className = `rx-btn rx-btn-${variant} rx-btn-sm key-health-btn`;
     if (disabledFlag) btn.disabled = true;
-    btn.addEventListener('click', onClick);
+    btn.addEventListener('click', () => {
+      if (disposed || findBtn(attr, attrValue) !== btn) return;
+      onClick();
+    });
     return btn;
   };
 
@@ -683,8 +692,11 @@ export const mountKeyHealthPanel = (
     const status = doc.createElement('p');
     status.className = 'key-health-help';
     status.setAttribute('role', 'status');
+    status.setAttribute('aria-atomic', 'true');
+    status.setAttribute('tabindex', '-1');
     status.textContent = COPY.loading;
     wrapper.appendChild(status);
+    readFocusTarget = status;
   };
 
   const renderLoadError = (): void => {
@@ -693,14 +705,16 @@ export const mountKeyHealthPanel = (
     heading.textContent = COPY.load_error_heading;
     const hint = doc.createElement('p');
     hint.className = 'key-health-help';
+    hint.setAttribute('role', 'alert');
     hint.textContent = loadErrorMessage || 'Check the server is connected, then try again.';
     const actions = doc.createElement('div');
     actions.className = 'key-health-actions';
-    actions.appendChild(
-      makeButton('Retry', KEY_HEALTH_RETRY_BTN_ATTR, '', 'primary', () => {
-        pendingLoadPromise = runLoad();
-      }),
-    );
+    const retry = makeButton('Retry', KEY_HEALTH_RETRY_BTN_ATTR, '', 'primary', () => {
+      pendingLoadPromise = runLoad();
+    });
+    retry.setAttribute('aria-label', 'Retry loading key health');
+    actions.appendChild(retry);
+    readFocusTarget = retry;
     wrapper.appendChild(heading);
     wrapper.appendChild(hint);
     wrapper.appendChild(actions);
@@ -710,6 +724,8 @@ export const mountKeyHealthPanel = (
     const heading = doc.createElement('h3');
     heading.className = 'key-health-title';
     heading.textContent = COPY.intro_heading;
+    heading.setAttribute('tabindex', '-1');
+    readFocusTarget = heading;
     const body = doc.createElement('p');
     body.className = 'key-health-help';
     body.textContent = COPY.intro_body;
@@ -723,6 +739,8 @@ export const mountKeyHealthPanel = (
     // how a standing disclosure stops standing.
     const keyfileCard = renderKeyfilePostureCard();
     if (keyfileCard !== null) list.appendChild(keyfileCard);
+    postureList = list;
+    postureCard = keyfileCard;
     for (const key_class of KEY_HEALTH_DISPLAY_ORDER) {
       list.appendChild(renderCard(key_class));
     }
@@ -849,13 +867,13 @@ export const mountKeyHealthPanel = (
 
     const actions = doc.createElement('div');
     actions.className = 'key-health-actions';
-    actions.appendChild(
-      makeButton('Close', KEY_HEALTH_CLOSE_BTN_ATTR, '', 'secondary', () => {
-        pendingAction = null;
-        lastSuccess = null;
-        pendingLoadPromise = runLoad();
-      }),
-    );
+    const close = makeButton('Close', KEY_HEALTH_CLOSE_BTN_ATTR, '', 'secondary', () => {
+      pendingAction = null;
+      lastSuccess = null;
+      pendingLoadPromise = runLoad();
+    });
+    actions.appendChild(close);
+    readFocusTarget = close;
     wrapper.appendChild(actions);
   };
 
@@ -903,6 +921,10 @@ export const mountKeyHealthPanel = (
 
   const render = (): void => {
     if (disposed) return;
+    const keepReadFocus = readFocusTarget !== null && doc.activeElement === readFocusTarget;
+    readFocusTarget = null;
+    postureList = null;
+    postureCard = null;
     clearChildren();
     switch (state) {
       case 'loading':
@@ -926,6 +948,12 @@ export const mountKeyHealthPanel = (
       case 'error':
         renderError();
         break;
+    }
+    const target = keepReadFocus && state === 'idle' && pendingActionFocus !== null
+      ? findBtn(pendingActionFocus.attr, pendingActionFocus.value) ?? readFocusTarget
+      : readFocusTarget;
+    if (keepReadFocus && target && (target.getClientRects?.().length ?? 1) > 0) {
+      focusIfSupported(target);
     }
   };
 

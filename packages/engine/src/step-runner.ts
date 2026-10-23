@@ -198,7 +198,7 @@ export const runStep = async (step: RecipeStep, ctx: ExecutionContext): Promise<
         ctx,
         id,
         'RECIPE_FAIL_ON_TRIGGERED',
-        `fail_on triggered on step ${id}`,
+        failReasonOf(step) ?? `fail_on triggered on step ${id}`,
         failKind === 'policy' || failKind === 'config' ? { fail_kind: failKind } : {},
       );
       return { id, type, skipped: false, result, error, duration_ms: Date.now() - start };
@@ -1278,10 +1278,23 @@ const buildStepMeta = (
   return out;
 };
 
+/** The step's `fail_reason`: the words its author wrote for the person whose run
+ *  it stops. Absent, blank or not a string ⇒ undefined, and the stop keeps its
+ *  default message. Taken as written, never resolved (see `BaseStep.fail_reason`),
+ *  and bounded here too, because a recipe sent inline is not validated. */
+const FAIL_REASON_MAX_CHARS = 500;
+const failReasonOf = (step: RecipeStep): string | undefined => {
+  const reason = (step as { fail_reason?: unknown }).fail_reason;
+  if (typeof reason !== 'string') return undefined;
+  const text = reason.trim();
+  if (text.length === 0) return undefined;
+  return text.length <= FAIL_REASON_MAX_CHARS ? text : `${text.slice(0, FAIL_REASON_MAX_CHARS - 1)}…`;
+};
+
 const runGuard = (step: RecipeStep, ctx: ExecutionContext): null => {
   const s = step as Record<string, unknown>;
   if (evaluateCondition(s.guard as string, ctx.stores)) {
-    throw Object.assign(new Error('Guard triggered'), { code: 'RECIPE_GUARD_TRIGGERED' });
+    throw Object.assign(new Error(failReasonOf(step) ?? 'Guard triggered'), { code: 'RECIPE_GUARD_TRIGGERED' });
   }
   return null;
 };

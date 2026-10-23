@@ -81,7 +81,7 @@ export type ReceptionOrderContextResult =
  *  provider would then read ambiguously. */
 export const receptionCheckoutUrl = (
   checkoutUrl: string,
-  correlation: SellerOrderCheckoutCorrelation,
+  correlation: Pick<SellerOrderCheckoutCorrelation, 'client_reference_id'>,
 ): string | null => {
   try {
     const url = new URL(checkoutUrl);

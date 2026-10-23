@@ -1333,3 +1333,109 @@ describe('D-149 follow-on — mountAuthoringForm: hard-ceiling expiry derivation
     view.dispose();
   });
 });
+
+// ══════════════════════════════════════════════════════════════════
+// intake_form — a choice box's labels (`value_labels`)
+// ══════════════════════════════════════════════════════════════════
+
+describe('intake_form — choices read as the visitor sees them', () => {
+  /** As "Use template" seeds the client-inquiry form: codes stored, each with its text. */
+  const labelledSeed = (): IntakeFormConfig => ({
+    display_name: 'Client inquiry',
+    form_definition: {
+      form_definition_id: 'fd_client_inquiry_v1',
+      fields: [
+        { name: 'your_name', type: 'text', label: 'Your name', required: true },
+        {
+          name: 'timeline',
+          type: 'enum',
+          label: 'Timeline',
+          required: false,
+          values: ['asap', 'this_quarter', 'exploring'],
+          value_labels: { asap: 'As soon as possible', this_quarter: 'This quarter', exploring: 'Just exploring' },
+        },
+      ],
+    },
+    submission_processing_rule: {
+      target_kind: 'task',
+      fields_to_include_in_target: ['your_name'],
+      fields_to_attach_as_metadata: ['timeline'],
+    },
+    anti_spam: {
+      honeypot_fields: [],
+      rate_limit_per_ip: 5,
+      require_proof_of_work: false,
+      require_captcha: false,
+    },
+    required_visitor_fields: { email: 'required' },
+  });
+
+  const mountLabelled = () => {
+    const host = makeFakeHost();
+    const shell = makeFakeShell();
+    const view = mountAuthoringForm({
+      host: host.host,
+      shell: shell.shell,
+      kind: 'intake_form',
+      initialConfig: labelledSeed(),
+      packetDeclaration: {
+        packet_kind: 'intake_form_packet',
+        source_query_ref: { kind: 'reception_form_definition', form_definition_id: 'fd_client_inquiry_v1' },
+      },
+    });
+    const editChoices = (value: string) => host.field({
+      control: 'text',
+      repeaterKey: 'form_definition.fields',
+      rowIndex: 1,
+      rowField: 'values',
+      value,
+    });
+    const submittedTimeline = async (): Promise<Record<string, unknown>> => {
+      host.click({ action: 'reception-form-submit' });
+      await flush();
+      const [submitted] = shell.fns.createEndpoint.mock.calls[0] as unknown as readonly [
+        { metadata: { form_definition: { fields: Array<Record<string, unknown>> } } },
+      ];
+      return submitted.metadata.form_definition.fields[1]!;
+    };
+    return { ...host, view, editChoices, submittedTimeline };
+  };
+
+  it('shows the choices as the visitor reads them, and saves the codes with their text', async () => {
+    const f = mountLabelled();
+    expect(f.getHtml()).toContain('value="As soon as possible, This quarter, Just exploring"');
+    expect(await f.submittedTimeline()).toMatchObject({
+      values: ['asap', 'this_quarter', 'exploring'],
+      value_labels: { asap: 'As soon as possible', this_quarter: 'This quarter', exploring: 'Just exploring' },
+    });
+    f.view.dispose();
+  });
+
+  it('an edit keeps each choice it still names with its code and text, and adds a typed one as itself', async () => {
+    // Reordered, one dropped, one added — as an owner types into the cell.
+    const f = mountLabelled();
+    f.editChoices('Just exploring, As soon as possible, Next month');
+    const timeline = await f.submittedTimeline();
+    expect(timeline.values).toEqual(['exploring', 'asap', 'Next month']);
+    expect(timeline.value_labels).toEqual({ exploring: 'Just exploring', asap: 'As soon as possible' });
+    f.view.dispose();
+  });
+
+  it('a choice typed as its stored code is still that choice', async () => {
+    const f = mountLabelled();
+    f.editChoices('asap, This quarter');
+    const timeline = await f.submittedTimeline();
+    expect(timeline.values).toEqual(['asap', 'this_quarter']);
+    expect(timeline.value_labels).toEqual({ asap: 'As soon as possible', this_quarter: 'This quarter' });
+    f.view.dispose();
+  });
+
+  it('carries no label map once no labelled choice is left', async () => {
+    const f = mountLabelled();
+    f.editChoices('Soon, Later');
+    const timeline = await f.submittedTimeline();
+    expect(timeline.values).toEqual(['Soon', 'Later']);
+    expect(timeline).not.toHaveProperty('value_labels');
+    f.view.dispose();
+  });
+});

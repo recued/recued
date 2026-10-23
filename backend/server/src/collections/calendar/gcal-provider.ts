@@ -16,8 +16,9 @@ import { managedOAuthFetcherFor, type ManagedOAuthConsumers } from '../../manage
  *
  *  Incremental sync uses `events.list` with `syncToken`. Expired tokens
  *  surface as HTTP 410 Gone — the adapter drops the cached token and
- *  re-runs a full-window scan on the next tick, reconciling by
- *  `source_id` as the warehouse is authoritative for reads.
+ *  lists the whole window again in the same tick. That listing reports no
+ *  deletion, so a row in the window it does not hold is removed
+ *  (`CalendarSnapshot`).
  *
  *  Recurrence expansion is server-side (`singleEvents=true`); every
  *  emitted instance carries the raw RRULE via `recurrence_rule` and
@@ -41,7 +42,7 @@ import {
   readProviderStringContinuation,
 } from '../../provider-pagination-guard.js';
 
-import { calendarSyncFailureOf } from './provider.js';
+import { calendarSyncFailureOf, listedWindow } from './provider.js';
 import type {
   CalendarProvider,
   CalendarProviderHealth,
@@ -656,7 +657,16 @@ export const createGcalProvider = (
       // Persist the sync token only when the full page chain completed
       // — a mid-page abort leaves the token unset so the next tick
       // re-scans the window and picks up the rest.
-      if (!aborted && !calendarFailed && lastSyncToken) {
+      // ⛔ And only for a calendar that has none. Every start scans again, and
+      // the scan's fresh token replaced the one the last poll left, which is
+      // the one that reports the events deleted while the server was down.
+      // The scan lists no deleted event (`showDeleted: false`), so their rows
+      // stayed for good. Kept, the first poll replays every change since that
+      // token, deletions included, as Graph's calendar keeps its delta link. A
+      // token Google no longer accepts gets its 410 there, and the window is
+      // listed again.
+      if (!aborted && !calendarFailed && lastSyncToken
+        && !(await opts.accountStore.get(syncTokenKey(cal.id)))) {
         await opts.accountStore.set(syncTokenKey(cal.id), lastSyncToken);
       }
     }
@@ -673,12 +683,10 @@ export const createGcalProvider = (
     seriesRules = new Map();
     const calendars = await selectedCalendars();
     const now = nowOf();
-    const timeMin = new Date(
-      now - opts.config.expansion_past_days * 86_400_000,
-    ).toISOString();
-    const timeMax = new Date(
-      now + opts.config.expansion_future_days * 86_400_000,
-    ).toISOString();
+    const windowFrom = now - opts.config.expansion_past_days * 86_400_000;
+    const windowUntil = now + opts.config.expansion_future_days * 86_400_000;
+    const timeMin = new Date(windowFrom).toISOString();
+    const timeMax = new Date(windowUntil).toISOString();
 
     for (const cal of calendars) {
       let syncToken: string | undefined =
@@ -691,6 +699,8 @@ export const createGcalProvider = (
         let lastSyncToken: string | undefined;
         let retry = false;
         let deliveryFailed = false;
+        // A pass without a token lists the whole window: the ids it lists.
+        const listed: string[] | null = syncToken ? null : [];
         const pagination = new ProviderPaginationGuard('Google calendar sync');
         do {
           pagination.claim(pageToken ?? '');
@@ -728,6 +738,7 @@ export const createGcalProvider = (
           }
 
           for (const event of page.items ?? []) {
+            if (listed && event.status !== 'cancelled') listed.push(event.id);
             pendingQueueSize++;
             try {
               if (event.status === 'cancelled') {
@@ -768,6 +779,23 @@ export const createGcalProvider = (
         } while (pageToken);
 
         if (retry) continue;
+        // That listing reports no deletion, and after a 410 it replaces a token
+        // that would have: an event it did not list is gone, so its row is
+        // removed (`CalendarSnapshot`). Not acknowledged, the token is not
+        // stored, and the next tick lists the window again.
+        if (listed && !deliveryFailed) {
+          try {
+            await cb({
+              kind: 'calendar',
+              source_id: cal.id,
+              calendar: { calendar_id: cal.id, window: listedWindow(windowFrom, windowUntil), keep: listed },
+            });
+          } catch (err) {
+            markError(`gcal reconcile failed calendar=${cal.id}`, err);
+            deliveryFailed = true;
+            clean = false;
+          }
+        }
         // A callback rejection means the collection did not durably ingest the
         // event. Retain the prior syncToken so Google replays this complete
         // range on the next tick; collection upserts/deletes are idempotent.

@@ -1,4 +1,4 @@
-/** Settings → Transparency panel (D-145 § B.8.9).
+/** Settings → Privacy → Transparency panel (D-145 § B.8.9).
  *
  *  User-facing controls for the chat activity disclosure's visibility
  *  policy: the master "Show inline thought stream" toggle, the three
@@ -15,9 +15,9 @@
  *  `runPrefsSet`), mirroring `notifications-panel.ts`. The bootstrap
  *  wires the pair rpc conn through thunks; tests inject fakes.
  *
- *  DD#2 — Render-on-transition rebuild via `createElement`, same as
- *  the notifications / TLS / Privacy panels. Every state change
- *  rebuilds the panel's inner DOM; no diffing.
+ *  DD#2 — Preference controls rebuild on transitions via `createElement`.
+ *  Read-retry feedback stays attached while loading or failing so keyboard
+ *  focus remains with Retry; no diffing of preference controls.
  *
  *  DD#3 — Saves are serialized + authoritative. One control change →
  *  one `prefs.set` with a single-key patch; every control ARIA-locks
@@ -62,6 +62,8 @@ export const TRANSPARENCY_PANEL_FAILURE_ROW_ATTR =
 /** Detail-level `<select>` hook. */
 export const TRANSPARENCY_PANEL_TIER_ATTR = 'data-recued-transparency-tier';
 export const TRANSPARENCY_PANEL_ERROR_ATTR = 'data-recued-transparency-error';
+export const TRANSPARENCY_PANEL_LOAD_STATUS_ATTR = 'data-recued-transparency-load-status';
+export const TRANSPARENCY_PANEL_RETRY_ATTR = 'data-recued-transparency-retry';
 /** Muted "stream is currently off" hint shown while the master toggle
  *  is off. */
 export const TRANSPARENCY_PANEL_OFF_HINT_ATTR =
@@ -79,8 +81,8 @@ export type TransparencyPrefsSetCaller = (args: {
 }) => Promise<{ prefs: InstancePrefs }>;
 
 export interface MountTransparencyPanelOptions {
-  /** Host element the panel renders into; inner DOM is rebuilt on
-   *  every state transition and cleared on `dispose()`. */
+  /** Host element: preference controls rebuild on transitions; read-retry
+   *  feedback stays attached until recovery. Cleared on `dispose()`. */
   host: HTMLElement;
   document: Document;
   runPrefsGet: TransparencyPrefsGetCaller;
@@ -102,8 +104,7 @@ export interface TransparencyPanelMount {
   /** A user-started preference write whose authoritative response has not
    *  settled. Initial preference loading is deliberately excluded. */
   hasInFlightWork(): boolean;
-  /** Initial-load promise — resolves after the first `runPrefsGet`
-   *  settles (either phase). */
+  /** Latest initial or retry read — resolves when `runPrefsGet` settles. */
   whenLoaded(): Promise<void>;
   /** Latest save promise — resolves after the in-flight `runPrefsSet`
    *  settles; immediately-resolved when no save has fired. */
@@ -172,10 +173,26 @@ export const mountTransparencyPanel = (
     error: null,
   };
   let pendingLoad: Promise<void> = Promise.resolve();
+  let readPending = false;
+  let loadFailed = false;
+  let showingLoadFeedback = false;
   let pendingSave: Promise<void> | null = null;
   let pendingValue: boolean | string | null = null;
 
   opts.host.setAttribute(TRANSPARENCY_PANEL_HOST_ATTR, '');
+
+  // Keep the retry attached through loading and repeated failures so keyboard
+  // focus stays with the owner while a read is in flight.
+  const loadFeedback = doc.createElement('div');
+  const loadStatus = doc.createElement('div');
+  loadStatus.setAttribute(TRANSPARENCY_PANEL_LOAD_STATUS_ATTR, '');
+  loadStatus.setAttribute('aria-atomic', 'true');
+  const retry = doc.createElement('button');
+  retry.type = 'button';
+  retry.className = 'rx-btn rx-btn-secondary';
+  retry.textContent = 'Retry transparency settings';
+  retry.setAttribute(TRANSPARENCY_PANEL_RETRY_ATTR, '');
+  loadFeedback.appendChild(loadStatus);
 
   const clearChildren = (node: HTMLElement): void => {
     while (node.firstChild) node.removeChild(node.firstChild);
@@ -221,14 +238,20 @@ export const mountTransparencyPanel = (
   };
 
   const doLoad = async (): Promise<void> => {
+    if (disposed || readPending || state.saving !== null) return;
+    readPending = true;
     setState({ phase: 'loading', error: null });
     try {
       const { prefs } = await opts.runPrefsGet();
       if (disposed) return;
+      const returnToControl = doc.activeElement === retry;
       setState({ phase: 'ready', prefs, error: null });
+      if (returnToControl) focusControl(MASTER_ROW.key);
     } catch (err) {
       if (disposed) return;
       setState({ phase: 'error', error: errMessage(err) });
+    } finally {
+      readPending = false;
     }
   };
 
@@ -259,7 +282,7 @@ export const mountTransparencyPanel = (
   };
 
   const saveOne = (key: InstancePrefKey, value: boolean | string): void => {
-    if (state.saving !== null) return;
+    if (disposed || state.phase !== 'ready' || state.saving !== null) return;
     pendingSave = doSave(
       { [key]: value } as Partial<InstancePrefs>,
       key,
@@ -306,22 +329,30 @@ export const mountTransparencyPanel = (
 
   const render = (): void => {
     if (disposed) return;
+    if (state.phase !== 'ready') {
+      const failed = state.phase === 'error';
+      if (failed && !loadFailed) {
+        loadFailed = true;
+        loadFeedback.appendChild(retry);
+      }
+      loadStatus.className = failed ? '' : 'transparency-muted';
+      loadStatus.setAttribute('role', failed ? 'alert' : 'status');
+      if (failed) loadStatus.setAttribute(TRANSPARENCY_PANEL_ERROR_ATTR, '');
+      else loadStatus.removeAttribute(TRANSPARENCY_PANEL_ERROR_ATTR);
+      loadStatus.textContent = failed
+        ? `Could not load transparency settings: ${state.error ?? 'unknown error'}`
+        : loadFailed ? 'Retrying transparency settings…' : 'Loading transparency settings…';
+      retry.setAttribute('aria-disabled', String(!failed));
+      retry.setAttribute('aria-busy', String(!failed));
+      if (!showingLoadFeedback) {
+        clearChildren(opts.host);
+        opts.host.appendChild(loadFeedback);
+        showingLoadFeedback = true;
+      }
+      return;
+    }
+    showingLoadFeedback = false;
     clearChildren(opts.host);
-
-    if (state.phase === 'loading') {
-      const loading = doc.createElement('div');
-      loading.className = 'transparency-muted';
-      loading.textContent = 'Loading transparency settings...';
-      opts.host.appendChild(loading);
-      return;
-    }
-    if (state.phase === 'error') {
-      const error = doc.createElement('div');
-      error.setAttribute(TRANSPARENCY_PANEL_ERROR_ATTR, '');
-      error.textContent = `Could not load transparency settings: ${state.error ?? 'unknown error'}`;
-      opts.host.appendChild(error);
-      return;
-    }
 
     renderToggleRow(opts.host, MASTER_ROW);
 
@@ -409,6 +440,10 @@ export const mountTransparencyPanel = (
     }
   };
 
+  retry.addEventListener('click', () => {
+    if (disposed || readPending || state.phase !== 'error' || state.saving !== null) return;
+    pendingLoad = doLoad();
+  });
   render();
   pendingLoad = doLoad();
 

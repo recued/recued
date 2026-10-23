@@ -205,6 +205,12 @@ export const composeMailBoot = (
       // D-318 — the chat mailbox's mail is the conversation with Recued, and so
       // are its answers and requests in the owner's other mailboxes.
       if (isConversation(msg, ctx)) return;
+      // A contact counts once per message that involves it (the store's
+      // `interaction_count` rule), and a message's people never change. A
+      // restart's re-list and a flag change re-upsert it, and observing it
+      // again bumped every participant's count, which moves its record hash
+      // and derives its enrichments again.
+      if (!ctx.first_seen) return;
       // D-121 Phase 1 — derive contacts from From/To/CC.
       // Errors swallowed inside the collection's try/catch so
       // a bad row never rolls back ingest.

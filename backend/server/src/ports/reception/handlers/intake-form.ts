@@ -44,8 +44,10 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { verifyReceptionSameOrigin } from './same-origin.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createBoundedNonceStore } from '../../../bounded-nonce-store.js';
+import type { ReceptionSaleRefusal } from '../../../reception-recipe-runner.js';
 import {
   validateIntakeFormSubmission,
+  intakeFormChoiceText,
   isReceptionFormPairBinding,
   receptionPairBindingEquals,
   INTAKE_FORM_DEFAULT_SUBMIT_BUTTON_LABEL,
@@ -236,9 +238,22 @@ export type CoordinateIntakeFormPairedRun = (input: {
    *  common outcome for a door that writes, not an edge case. */
   | { readonly kind: 'held' }
   /** Could not proceed. The visitor was on a form that promised something further (a
-   *  checkout) and is not getting it — so they MUST be told. See the fall-through below. */
-  | { readonly kind: 'refused' }
+   *  checkout) and is not getting it — so they MUST be told. See the fall-through below.
+   *  `refusal` names the reason when it is one the owner can fix; the owner's notice says it. */
+  | { readonly kind: 'refused'; readonly refusal?: ReceptionSaleRefusal }
 >;
+
+/** D-207 — what the owner is told when a visitor on a paired form is shown the error page
+ *  (`reception-turned-away-notice.ts`). Every value is the owner's or the server's: the
+ *  visitor's answers stay sealed. */
+export interface IntakeFormTurnedAwayEvent {
+  readonly endpoint_id: string;
+  readonly submission_id: string;
+  /** The form's name, as the owner wrote it. */
+  readonly form_name: string;
+  readonly at: number;
+  readonly refusal?: ReceptionSaleRefusal;
+}
 
 /** D-207 slice 1c — the visitor-facing response for a paired submit.
  *
@@ -661,6 +676,10 @@ export interface IntakeFormSubmitHandlerDeps {
   readonly now: () => number;
   readonly resolveRecipePair?: ResolveIntakeFormRecipePair;
   readonly coordinatePairedRun?: CoordinateIntakeFormPairedRun;
+  /** D-207 — tell the owner each time a visitor is shown the paired-run error page. Never
+   *  awaited: the visitor's page does not wait on the owner's channels. Absent ⇒ nobody is
+   *  told, as before. */
+  readonly noticeTurnedAway?: (event: IntakeFormTurnedAwayEvent) => void;
   /** D-149 § A.20.3 / § A.20.7 — deployment mode for the Public Trust
    *  Footer carried in the Visitor Receipt's `privacy_footer` slot.
    *  Absent ⇒ the receipt renders without a privacy footer. */
@@ -999,6 +1018,7 @@ export const createIntakeFormSubmitHandler = (
     // that checked those targets went with it: an unreachable guard that looks like
     // protection is worse than no guard at all.
     let pairedRunDisposition: IntakeFormPairedRunDisposition = null;
+    let pairedRunRefusal: ReceptionSaleRefusal | undefined;
     // D-207 slice 2 — the paired run's `output.render` blocks, when it completed.
     let pairedRunRender: ReadonlyArray<ReceptionOutputBlock> | null = null;
     if (nonceStamp.pair_binding !== null && outcome === 'pending') {
@@ -1022,6 +1042,7 @@ export const createIntakeFormSubmitHandler = (
             pairedRunDisposition = 'held';
           } else {
             pairedRunDisposition = 'refused';
+            pairedRunRefusal = checkout.refusal;
           }
         } catch {
           // The intake itself is already durable and must not be duplicated by
@@ -1082,6 +1103,19 @@ export const createIntakeFormSubmitHandler = (
       pair_renders_response: pairRendersResponse,
     });
     if (submitResponse.kind === 'error') {
+      // The visitor is told it did not work, so the owner is told too: they can fix the
+      // offer or the form, and the page below promises the visitor a reply.
+      try {
+        deps.noticeTurnedAway?.({
+          endpoint_id,
+          submission_id,
+          form_name: config.display_name,
+          at: now,
+          ...(pairedRunRefusal === undefined ? {} : { refusal: pairedRunRefusal }),
+        });
+      } catch {
+        // Telling the owner must never cost the visitor their page.
+      }
       writeHtmlResponse(
         res,
         renderIntakeFormErrorHtml({
@@ -1141,7 +1175,9 @@ export const createIntakeFormSubmitHandler = (
           ? raw === 'true'
             ? 'Yes'
             : 'No'
-          : String(raw);
+          : f.type === 'enum'
+            ? intakeFormChoiceText(f, String(raw))
+            : String(raw);
       if (value.length === 0) continue;
       fieldsEcho.push({ label: f.label, value });
     }

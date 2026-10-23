@@ -47,7 +47,7 @@
     "admitted_command_root_count": 15,
     "excluded_command_root_count": 21,
     "operation_count": 18,
-    "composition_bytes": 20917,
+    "composition_bytes": 21107,
     "risk_counts": {
       "read": 18
     },

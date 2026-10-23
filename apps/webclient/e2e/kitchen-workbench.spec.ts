@@ -1,6 +1,7 @@
+import { HARNESS_ORIGIN } from './helpers/harness-origin.js';
 import { expect, test, type Page } from '@playwright/test';
 
-const url = 'http://127.0.0.1:4319/kitchen-harness.html?surface=recipe&fixture=editor';
+const url = `${HARNESS_ORIGIN}/kitchen-harness.html?surface=recipe&fixture=editor`;
 const open = async (page: Page, extra = ''): Promise<void> => {
   await page.goto(url + extra);
   await page.waitForFunction(() => window.__harness?.mounted === true);
@@ -175,7 +176,7 @@ test('sample testing reports real intermediate values, missing mocks, and stale 
 });
 
 test('pack searches filter operations and data rows without changing the draft', async ({ page }) => {
-  await page.goto('http://127.0.0.1:4319/kitchen-harness.html?surface=pack&fixture=largest');
+  await page.goto(`${HARNESS_ORIGIN}/kitchen-harness.html?surface=pack&fixture=largest`);
   await page.waitForFunction(() => window.__harness?.mounted === true);
   await page.locator('[data-recued-ingredient-builder-section-nav="operations"]').click();
   await page.getByRole('searchbox', { name: 'Search the operations' }).fill('no-such-operation-xyz');
@@ -247,8 +248,8 @@ test('settings, value editors and test results stay usable on narrow screens', a
   await page.locator('[data-recued-recipe-test-step="read"]').click();
   const widths = await page.evaluate(() => ({ width: document.documentElement.scrollWidth, viewport: innerWidth }));
   expect(widths.width).toBeLessThanOrEqual(widths.viewport);
-  await page.screenshot({ path: '/tmp/kitchen-workbench-phone.png', fullPage: true });
+  await page.screenshot({ path: test.info().outputPath('kitchen-workbench-phone.png'), fullPage: true });
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.evaluate(() => window.scrollTo(0, 0));
-  await page.screenshot({ path: '/tmp/kitchen-workbench-desktop.png' });
+  await page.screenshot({ path: test.info().outputPath('kitchen-workbench-desktop.png') });
 });

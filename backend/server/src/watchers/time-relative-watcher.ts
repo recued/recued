@@ -16,8 +16,9 @@
  *  one, offsets describe the boundary set.
  *
  *  Per-fire state is persisted in `time_relative_watcher_state` keyed
- *  on `(recipe_id, slug, record_id, offset_label)` so the same
- *  boundary fires exactly once per record per offset. The sweeper
+ *  on `(recipe_id, slug, record_id, offset_label)`, with the date each
+ *  fire was for, so the same boundary fires once per record per offset
+ *  per date. The sweeper
  *  runs every `TIME_RELATIVE_SWEEP_MS` (60 s) — recipe authors don't
  *  see the sweeper directly; the watcher returns `should_run: true`
  *  on its next per-recipe tick when one or more boundaries crossed
@@ -44,6 +45,15 @@
  *  The task path (D-193 reminders) is unchanged: a pending reminder is an
  *  obligation, due whenever it became due.
  *
+ *  ⛔ A meeting that moves (2026-10-22). The ledger kept no date, so a
+ *  meeting moved from 10:00 to 15:00 after its "30 minutes before" fired at
+ *  9:30 got nothing at 14:30. Each fire now keeps the date its record had
+ *  (`stored_anchor`), and a record whose date moved since fires that boundary
+ *  again at the new date, if it falls after the earlier fire and crossed no
+ *  more than `TIME_RELATIVE_MOVED_GRACE_MS` before it is seen. A meeting moved
+ *  earlier was already announced, and an edit to a meeting that is over would
+ *  only repeat a notice the owner had.
+ *
  *  `instance` (2026-10-05) watches one calendar instead of every one, and
  *  each fire names the instance its record came from (`trigger_instance`).
  *  Three shipped recipes read the meeting's details from the calendar their
@@ -66,6 +76,11 @@ const ARMED_TABLE = 'time_relative_watcher_armed';
  *  that crossed in the hour before install still fires (a meeting starting in
  *  20 minutes still gets its "30 minutes before"), and nothing older does. */
 export const TIME_RELATIVE_FIRST_CHECK_GRACE_MS = 60 * 60_000;
+/** A boundary that moved with its record (a meeting moved later after its
+ *  notice) fires again only if it crossed this recently. An edit to a meeting
+ *  that is over, or every stored date shifting at once, must not send the
+ *  notices again, late. */
+export const TIME_RELATIVE_MOVED_GRACE_MS = TIME_RELATIVE_FIRST_CHECK_GRACE_MS;
 /** Calendar rows are read a page at a time, so no cap can hide one. */
 const CALENDAR_PAGE_SIZE = 500;
 
@@ -79,6 +94,11 @@ export interface TimeRelativeWatcherStateRow {
   record_id: string;
   offset_label: string;
   fired_at: number;
+  /** The record's anchor as it held it when this fired: an all-day event's
+   *  stored UTC midnight, not the local one it is read at, so a new zone moves
+   *  no fire. Null for a fire recorded before 2026-10-22 or by an older
+   *  server; it counts for whatever date its record has. */
+  stored_anchor: number | null;
 }
 
 /** Raw watcher arguments as the recipe author passes them. The kernel
@@ -150,6 +170,7 @@ export const ensureTimeRelativeWatcherSchema = (db: Database.Database): void => 
       record_id    TEXT NOT NULL,
       offset_label TEXT NOT NULL,
       fired_at     INTEGER NOT NULL,
+      stored_anchor INTEGER,
       PRIMARY KEY (recipe_id, slug, record_id, offset_label)
     );
 
@@ -168,6 +189,11 @@ export const ensureTimeRelativeWatcherSchema = (db: Database.Database): void => 
   const columns = db.prepare(`PRAGMA table_info(${ARMED_TABLE})`).all() as Array<{ name: string }>;
   if (!columns.some((column) => column.name === 'scope')) {
     db.exec(`ALTER TABLE ${ARMED_TABLE} ADD COLUMN scope TEXT NOT NULL DEFAULT ''`);
+  }
+  // `stored_anchor` (the date a fire was for) came on 2026-10-22.
+  const stateColumns = db.prepare(`PRAGMA table_info(${STATE_TABLE})`).all() as Array<{ name: string }>;
+  if (!stateColumns.some((column) => column.name === 'stored_anchor')) {
+    db.exec(`ALTER TABLE ${STATE_TABLE} ADD COLUMN stored_anchor INTEGER`);
   }
 };
 
@@ -229,13 +255,13 @@ export const handleTimeRelativeWatcher = async (
   const now = (deps.now ?? Date.now)();
   const slug = args.slug ?? 'time-relative-watcher';
   const findFiredStmt = deps.db.prepare(
-    `SELECT 1 FROM ${STATE_TABLE}
+    `SELECT fired_at, stored_anchor FROM ${STATE_TABLE}
        WHERE recipe_id = ? AND slug = ? AND record_id = ? AND offset_label = ?`,
   );
   const recordFireStmt = deps.db.prepare(
     `INSERT OR REPLACE INTO ${STATE_TABLE}
-       (recipe_id, slug, record_id, offset_label, fired_at)
-       VALUES (?, ?, ?, ?, ?)`,
+       (recipe_id, slug, record_id, offset_label, fired_at, stored_anchor)
+       VALUES (?, ?, ?, ?, ?, ?)`,
   );
   // D-193 audit follow-on — the prior attempt time for a reminder fire
   // key. Reminders bypass the exactly-once ledger (they retry until
@@ -262,24 +288,39 @@ export const handleTimeRelativeWatcher = async (
   /** ⛔ An all-day calendar event's start and end are DAYS (`calendar-days.ts`):
    *  it starts at the local midnight of its first day where the owner is, not
    *  at the UTC midnight it is stored at. Read as stored, "a day before" a
-   *  holiday fired at 4 pm two days before it in Los Angeles. */
-  const anchorOf = (record: unknown): number | null => {
-    const anchor = readAnchor(record, args.anchor_field);
-    if (anchor === null || (args.anchor_field !== 'start_at' && args.anchor_field !== 'end_at')) return anchor;
+   *  holiday fired at 4 pm two days before it in Los Angeles. `stored` is the
+   *  anchor as the record holds it (`readAnchor`), which the ledger keeps. */
+  const anchorOf = (record: unknown, stored: number): number => {
+    if (args.anchor_field !== 'start_at' && args.anchor_field !== 'end_at') return stored;
     const hot = (record as { hot_fields?: Record<string, unknown> }).hot_fields;
-    if (hot === undefined || (hot.is_all_day !== true && hot.is_all_day !== 1)) return anchor;
-    if (typeof hot.start_at !== 'number' || typeof hot.end_at !== 'number') return anchor;
+    if (hot === undefined || (hot.is_all_day !== true && hot.is_all_day !== 1)) return stored;
+    if (typeof hot.start_at !== 'number' || typeof hot.end_at !== 'number') return stored;
     const span = eventSpanIn({ start_at: hot.start_at, end_at: hot.end_at, is_all_day: true }, zone);
     return args.anchor_field === 'start_at' ? span.start : span.end;
   };
+
+  /** Whether a boundary that already fired fires again. Only when its record's
+   *  date moved since (a fire with no date recorded counts for any date), and
+   *  the boundary at the new date comes after that fire and crossed no more
+   *  than `TIME_RELATIVE_MOVED_GRACE_MS` ago. */
+  const firesAgain = (
+    fired: { fired_at: number; stored_anchor: number | null },
+    stored: number,
+    targetAt: number,
+  ): boolean =>
+    fired.stored_anchor !== null
+    && fired.stored_anchor !== stored
+    && targetAt > fired.fired_at
+    && targetAt >= now - TIME_RELATIVE_MOVED_GRACE_MS;
 
   const evaluateRecord = (
     record: unknown,
     floor = Number.NEGATIVE_INFINITY,
     instance: string | null = null,
   ): TimeRelativeWatcherOutput | null => {
-    const anchor = anchorOf(record);
-    if (anchor === null) return null;
+    const stored = readAnchor(record, args.anchor_field);
+    if (stored === null) return null;
+    const anchor = anchorOf(record, stored);
 
     // Optional filter — recipe authors gate by hot_fields. The full
     // engine condition vocabulary lives in `@recued/contracts`'s
@@ -299,7 +340,8 @@ export const handleTimeRelativeWatcher = async (
       const targetAt = anchor + offsetMs;
       // Boundary "crossed" iff target_at is at or before now. The
       // per-`(recipe, slug, record, offset)` state table prevents
-      // double-fires across ticks + server restarts.
+      // double-fires across ticks + server restarts, for the date each
+      // fire was for (`firesAgain`).
       // ⛔ And not before the recipe started watching (`floor`). Without it
       // a watcher installed onto an active warehouse fired once for every
       // boundary already behind it: a calendar's whole retained past, one
@@ -308,9 +350,11 @@ export const handleTimeRelativeWatcher = async (
       if (targetAt < floor) continue;
       const recordId = readRecordId(record);
       if (!recordId) continue;
-      const fired = findFiredStmt.get(args.recipe_id, slug, recordId, offsetLabel);
-      if (fired) continue;
-      recordFireStmt.run(args.recipe_id, slug, recordId, offsetLabel, now);
+      const fired = findFiredStmt.get(args.recipe_id, slug, recordId, offsetLabel) as
+        | { fired_at: number; stored_anchor: number | null }
+        | undefined;
+      if (fired && !firesAgain(fired, stored, targetAt)) continue;
+      recordFireStmt.run(args.recipe_id, slug, recordId, offsetLabel, now, stored);
       return {
         should_run: true,
         fired: true,
@@ -331,9 +375,10 @@ export const handleTimeRelativeWatcher = async (
   // attempted) candidate and records that one.
   const reminderFireCandidate = (
     record: unknown,
-  ): { recordId: string; offsetLabel: string; anchor: number; priorFiredAt: number } | null => {
-    const anchor = anchorOf(record);
-    if (anchor === null) return null;
+  ): { recordId: string; offsetLabel: string; anchor: number; stored: number; priorFiredAt: number } | null => {
+    const stored = readAnchor(record, args.anchor_field);
+    if (stored === null) return null;
+    const anchor = anchorOf(record, stored);
     if (args.filter !== undefined && args.filter.length > 0) {
       const obj = record as { hot_fields?: unknown };
       const blob = JSON.stringify(obj.hot_fields ?? record);
@@ -348,7 +393,7 @@ export const handleTimeRelativeWatcher = async (
         | { fired_at?: number }
         | undefined;
       const priorFiredAt = row && typeof row.fired_at === 'number' ? row.fired_at : 0;
-      return { recordId, offsetLabel, anchor, priorFiredAt };
+      return { recordId, offsetLabel, anchor, stored, priorFiredAt };
     }
     return null;
   };
@@ -364,7 +409,7 @@ export const handleTimeRelativeWatcher = async (
     // with the rest until it delivers or leaves `reminder_pending`.
     // Non-reminder task watches keep exactly-once + return-on-first.
     let bestReminder:
-      | { record: unknown; recordId: string; offsetLabel: string; anchor: number; priorFiredAt: number }
+      | { record: unknown; recordId: string; offsetLabel: string; anchor: number; stored: number; priorFiredAt: number }
       | null = null;
     for (let offset = 0; ; offset += TASK_PAGE_SIZE) {
       const records = deps.workEntityStore
@@ -386,7 +431,7 @@ export const handleTimeRelativeWatcher = async (
       if (records.length < TASK_PAGE_SIZE) break;
     }
     if (bestReminder) {
-      recordFireStmt.run(args.recipe_id, slug, bestReminder.recordId, bestReminder.offsetLabel, now);
+      recordFireStmt.run(args.recipe_id, slug, bestReminder.recordId, bestReminder.offsetLabel, now, bestReminder.stored);
       return {
         should_run: true,
         fired: true,

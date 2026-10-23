@@ -1,8 +1,7 @@
 import { expect, test } from '@playwright/test';
+import { HARNESS_ORIGIN } from './harness-origin.js';
 
-const HARNESS_ORIGIN = process.env.WEBCLIENT_HARNESS_ORIGIN ?? 'http://127.0.0.1:4319';
 export const HARNESS_URL = `${HARNESS_ORIGIN}/full-app-harness.html`;
-export const ARTIFACTS = 'apps/webclient/e2e/.playwright-artifacts';
 export const FIXED_NOW = 1_700_000_000_000;
 export const CHAT_SETUP = 'data-recued-ai-models-chat-setup';
 export const SETTINGS_NAV_ITEM = 'data-recued-settings-nav-item';

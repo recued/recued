@@ -117,17 +117,21 @@ export const deriveDeviceDisplayName = (
  *  `deriveDeviceDisplayName` stays trivially testable. Best-effort —
  *  any access failure falls through to the bare default. */
 export const resolveDeviceDisplayName = (): string => {
-  const nav = (globalThis as {
-    navigator?: {
-      userAgent?: string;
-      platform?: string;
-      userAgentData?: { platform?: string };
-    };
-  }).navigator;
-  if (!nav) return deriveDeviceDisplayName();
-  return deriveDeviceDisplayName({
-    userAgent: nav.userAgent ?? null,
-    platform: nav.platform ?? null,
-    uaDataPlatform: nav.userAgentData?.platform ?? null,
-  });
+  try {
+    const nav = (globalThis as {
+      navigator?: {
+        userAgent?: string;
+        platform?: string;
+        userAgentData?: { platform?: string };
+      };
+    }).navigator;
+    if (!nav) return deriveDeviceDisplayName();
+    return deriveDeviceDisplayName({
+      userAgent: nav.userAgent ?? null,
+      platform: nav.platform ?? null,
+      uaDataPlatform: nav.userAgentData?.platform ?? null,
+    });
+  } catch {
+    return deriveDeviceDisplayName();
+  }
 };

@@ -1,6 +1,7 @@
+import { HARNESS_ORIGIN } from './helpers/harness-origin.js';
 import { expect, test } from '@playwright/test';
 
-const url = 'http://127.0.0.1:4319/kitchen-harness.html?surface=recipe&fixture=editor';
+const url = `${HARNESS_ORIGIN}/kitchen-harness.html?surface=recipe&fixture=editor`;
 
 test('reference choices respect parallel prefetch and sequential execution order', async ({ page }) => {
   await page.goto(url.replace('fixture=editor', 'fixture=parallel'));
@@ -123,7 +124,7 @@ test('undoing an unfinished rename keeps the preceding recipe edit', async ({ pa
 
 for (const kind of ['operations', 'fields'] as const) {
   test(`adding pack ${kind} while searching reveals the new row`, async ({ page }) => {
-    await page.goto('http://127.0.0.1:4319/kitchen-harness.html?surface=pack&fixture=largest');
+    await page.goto(`${HARNESS_ORIGIN}/kitchen-harness.html?surface=pack&fixture=largest`);
     await page.locator(`[data-recued-ingredient-builder-section-nav="${kind === 'operations' ? 'operations' : 'data'}"]`).click();
     const search = page.getByRole('searchbox', { name: kind === 'operations' ? 'Search the operations' : 'Search the data fields' });
     await search.fill('no-match-xyz');

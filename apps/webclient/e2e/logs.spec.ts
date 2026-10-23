@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import {
   HARNESS_URL, LIVE_CONTROL_RUN_CONTROL, LIVE_CONTROL_TOGGLE,
   SHARED_PROVENANCE, SHARED_PROVENANCE_DETAIL, SHARED_PROVENANCE_PRIMARY,
@@ -15,6 +15,265 @@ const LOGS_PASS_ROW = 'data-recued-logs-pass-row';
 const LOGS_ERROR = 'data-recued-logs-error';
 
 installFullAppHooks();
+
+const RUN_SUMMARY = '[data-recued-logs-run-summary]';
+const RUN_SUMMARY_STATUS = '[data-recued-logs-run-summary-status]';
+const refreshLogsHistory = async (page: Page, cursor = 400): Promise<void> => {
+  const before = await page.evaluate(() => window.__app.rpcCallCount('execution.list'));
+  await page.evaluate(nextCursor => window.__app.fireMessage({
+    type: 'server_event', event: { kind: 'session_lifecycle', session_id: 'session-verification',
+      state: 'closed', prev_state: 'active', cursor: nextCursor },
+  }), cursor);
+  await page.waitForFunction(previous => window.__app.rpcCallCount('execution.list') > previous, before);
+  await expect(page.locator(`[${LOGS_ACTION}="apply-filters"]`)).not.toHaveAttribute('aria-busy');
+};
+
+declare global {
+  interface Window {
+    __logsSummaryCopy?: { texts: string[]; resolve?: () => void; reject?: () => void };
+  }
+}
+const deferRunSummaryClipboard = async (page: Page): Promise<void> => {
+  await page.addInitScript(() => {
+    const state = window.__logsSummaryCopy = { texts: [] } as NonNullable<Window['__logsSummaryCopy']>;
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+      writeText: (text: string) => {
+        state.texts.push(text);
+        return new Promise<void>((resolve, reject) => {
+          state.resolve = resolve;
+          state.reject = () => reject(new Error('private clipboard denial'));
+        });
+      },
+    } });
+  });
+};
+
+test('Chat stays usable when the platform getter is restricted', async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'platform', {
+      configurable: true,
+      get() { throw new Error('private browser policy detail'); },
+    });
+  });
+  await page.goto(`${HARNESS_URL}?chat=session#chat/new`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const find = page.getByRole('button', { name: 'Find', exact: true });
+  await expect(find).toBeVisible();
+  await expect(find).toHaveAttribute('title', 'Search everything on this server (Ctrl /)');
+  await expect(page.getByRole('button', { name: 'Run a Recipe', exact: true }).first())
+    .toHaveAttribute('title', 'Run a Recipe (Ctrl K)');
+  await find.click();
+  await expect(page).toHaveURL(/#data\/search$/);
+  await expect(page.locator('body')).not.toContainText('private browser policy detail');
+});
+
+for (const blocked of ['navigator', 'locks', 'request']) {
+  test(`Chat starts when Web Locks access throws at ${blocked}`, async ({ page }) => {
+    await page.addInitScript(property => {
+      const denied = (): never => { throw new Error('private browser policy detail'); };
+      if (property === 'navigator') {
+        Object.defineProperty(window, 'navigator', { configurable: true, get: denied });
+      } else {
+        Object.defineProperty(navigator, 'locks', {
+          configurable: true,
+          ...(property === 'locks' ? { get: denied }
+            : { value: Object.defineProperty({}, 'request', { get: denied }) }),
+        });
+      }
+    }, blocked);
+    await page.goto(`${HARNESS_URL}?chat=session#chat/new`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await expect(page.getByRole('textbox', { name: 'Message to Recued' })).toBeVisible();
+    await page.getByRole('button', { name: 'Find', exact: true }).click();
+    await expect(page).toHaveURL(/#data\/search$/);
+    await expect(page.locator('body')).not.toContainText('private browser policy detail');
+  });
+}
+
+for (const blocked of ['getUserMedia', 'codec getter', 'codec probe']) {
+  test(`Chat starts when voice capability discovery throws at ${blocked}`, async ({ page }) => {
+    await page.addInitScript(property => {
+      const denied = (): never => { throw new Error('private browser policy detail'); };
+      if (property === 'getUserMedia') {
+        Object.defineProperty(navigator.mediaDevices, 'getUserMedia', { get: denied });
+      } else {
+        Object.defineProperty(MediaRecorder, 'isTypeSupported',
+          property === 'codec getter' ? { get: denied } : { value: denied });
+      }
+    }, blocked);
+    await page.goto(`${HARNESS_URL}?chat=session#chat/new`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    const message = page.getByRole('textbox', { name: 'Message to Recued' });
+    await expect(message).toBeVisible();
+    await message.fill('Keep this draft');
+    await expect(message).toHaveValue('Keep this draft');
+    await expect(page.getByRole('button', { name: 'Record a voice note', exact: true })).toHaveCount(0);
+    await expect(page.locator('body')).not.toContainText('private browser policy detail');
+  });
+}
+
+for (const width of [375, 1280]) {
+  test(`Logs copies recorded run metadata by keyboard at ${width}px`, async ({ page, context }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`${HARNESS_URL}?journey=verification&logs_summary=1#logs/run-verify`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(page.url()).origin });
+    const summary = page.locator(RUN_SUMMARY);
+    const copy = summary.getByRole('button', { name: 'Copy run summary', exact: true });
+    await copy.focus(); await page.keyboard.press('Enter');
+    await expect(summary.locator(RUN_SUMMARY_STATUS)).toHaveText('Run summary copied.');
+    await expect(copy).toBeFocused();
+    const text = await page.evaluate(() => navigator.clipboard.readText());
+    await summary.getByText('View run summary', { exact: true }).click();
+    const field = summary.getByRole('textbox', { name: 'Run summary text' });
+    expect(text).toBe(await field.inputValue());
+    expect(text).toContain('Recipe: calendar/schedule-review\nRecipe hash: hash-verification-run\nRun ID: run-verify');
+    expect(text).toContain('Recorded status: in_doubt\nPolicy result: released-after-approval');
+    expect(text).toContain('Duration: 2000 ms\nSteps run: 4\nSteps skipped: 1\nItems attempted: 12\nFailed items: 3');
+    expect(text).toContain('Error codes: BAD_INPUT');
+    expect(text).not.toMatch(/private|server-verification|event-1/);
+    await expect(field).toHaveAttribute('readonly', '');
+    expect((await copy.boundingBox())!.height).toBeGreaterThanOrEqual(width === 375 ? 44 : 36);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await summary.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: test.info().outputPath('logs-run-summary.png') });
+  });
+}
+
+for (const mode of ['missing', 'denied', 'throwing-getter', 'throwing-write-getter']) {
+  test(`Logs offers selectable summary text when clipboard access is ${mode}`, async ({ page }) => {
+    const configureClipboard = (clipboardMode: string): void => {
+      Object.defineProperty(navigator, 'clipboard', clipboardMode === 'throwing-getter'
+        ? { configurable: true, get() { throw new Error('private clipboard detail'); } }
+        : { configurable: true, value: clipboardMode === 'missing' ? undefined
+          : clipboardMode === 'throwing-write-getter'
+            ? Object.defineProperty({}, 'writeText', { get() { throw new Error('private clipboard detail'); } })
+            : { writeText: () => Promise.reject(new Error('private clipboard detail')) } });
+    };
+    await page.addInitScript(configureClipboard, mode);
+    await page.goto(`${HARNESS_URL}?journey=verification&logs_summary=1#logs/run-verify`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    const summary = page.locator(RUN_SUMMARY);
+    await summary.getByRole('button', { name: 'Copy run summary', exact: true }).click();
+    const field = summary.getByRole('textbox', { name: 'Run summary text' });
+    await expect(field).toBeVisible(); await expect(field).toBeFocused();
+    expect(await field.evaluate((node: HTMLTextAreaElement) => node.selectionStart === 0 && node.selectionEnd === node.value.length)).toBe(true);
+    await expect(summary.locator(RUN_SUMMARY_STATUS)).toHaveText('Recued could not copy it. Copy the summary below.');
+    await expect(summary).not.toContainText('private clipboard detail');
+    if (mode === 'denied') {
+      await field.evaluate((node: HTMLTextAreaElement) => node.setSelectionRange(2, 10, 'backward'));
+      await refreshLogsHistory(page);
+      await expect(field).toBeFocused();
+      expect(await field.evaluate((node: HTMLTextAreaElement) => [node.selectionStart, node.selectionEnd, node.selectionDirection]))
+        .toEqual([2, 10, 'backward']);
+      await expect(summary.locator('details')).toHaveAttribute('open', '');
+      await summary.getByText('View run summary', { exact: true }).click();
+      await refreshLogsHistory(page, 401);
+      await expect(summary.locator('details')).not.toHaveAttribute('open', '');
+    }
+  });
+}
+
+test('Logs keeps summary copy single-flight and keyboard-owned through a background repaint', async ({ page }) => {
+  await deferRunSummaryClipboard(page);
+  await page.goto(`${HARNESS_URL}?journey=verification#logs/run-verify`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const summary = page.locator(RUN_SUMMARY);
+  const copy = summary.getByRole('button', { name: 'Copy run summary', exact: true });
+  await copy.focus(); await page.keyboard.press('Enter');
+  await expect(copy).toHaveAttribute('aria-busy', 'true');
+  await refreshLogsHistory(page);
+  await expect(copy).toHaveAttribute('aria-disabled', 'true');
+  await expect(copy).not.toHaveAttribute('disabled');
+  await expect(copy).toBeFocused();
+  await page.keyboard.press('Enter');
+  expect(await page.evaluate(() => window.__logsSummaryCopy?.texts.length)).toBe(1);
+  await page.evaluate(() => window.__logsSummaryCopy?.resolve?.());
+  await expect(summary.locator(RUN_SUMMARY_STATUS)).toHaveText('Run summary copied.');
+  await expect(copy).toBeFocused();
+  await expect(copy).not.toHaveAttribute('aria-busy');
+  expect(await summary.locator('textarea').inputValue()).toContain('Yield: Not recorded');
+});
+
+for (const width of [375, 1280]) {
+  test(`Logs preserves summary reading position and size through a refresh at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`${HARNESS_URL}?journey=verification&logs_summary=1#logs/run-verify`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    const summary = page.locator(RUN_SUMMARY);
+    const disclosure = summary.getByText('View run summary', { exact: true });
+    await disclosure.click();
+    const field = summary.getByRole('textbox', { name: 'Run summary text' });
+    const before = await field.evaluate((node: HTMLTextAreaElement) => {
+      node.style.height = '240px';
+      node.scrollTop = node.scrollHeight;
+      return { height: node.getBoundingClientRect().height, scrollTop: node.scrollTop };
+    });
+    expect(before.scrollTop).toBeGreaterThan(0);
+    await expect(disclosure).toBeFocused();
+    await refreshLogsHistory(page);
+    await expect(disclosure).toBeFocused();
+    expect(await field.evaluate((node: HTMLTextAreaElement) => ({
+      height: node.getBoundingClientRect().height, scrollTop: node.scrollTop,
+    }))).toEqual(before);
+  });
+}
+
+for (const success of [true, false]) {
+  test(`Logs ignores late clipboard ${success ? 'success' : 'denial'} after selecting another run`, async ({ page }) => {
+    await deferRunSummaryClipboard(page);
+    await page.goto(`${HARNESS_URL}?journey=verification&logs=paged#logs/run-verify`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    const summary = page.locator(RUN_SUMMARY);
+    const copy = summary.getByRole('button', { name: 'Copy run summary', exact: true });
+    await copy.click(); await expect(copy).toHaveAttribute('aria-busy', 'true');
+    await page.locator(`[${LOGS_ACTION}="load-more"]`).click();
+    await page.locator(`[${LOGS_ROW}="run-verify-older"] [${LOGS_ACTION}="open-detail"]`).click();
+    await expect(summary).toHaveAttribute('data-recued-logs-run-summary', 'run-verify-older');
+    await expect(copy).not.toHaveAttribute('aria-busy');
+    await copy.focus();
+    await page.evaluate(ok => ok ? window.__logsSummaryCopy?.resolve?.() : window.__logsSummaryCopy?.reject?.(), success);
+    await expect(summary.locator(RUN_SUMMARY_STATUS)).toBeEmpty();
+    await expect(summary.locator('details')).not.toHaveAttribute('open', '');
+    await expect(copy).toBeFocused();
+    expect(await summary.locator('textarea').inputValue()).toContain('Run ID: run-verify-older');
+  });
+}
+
+test('Logs does not move a newer focus when a delayed clipboard denial arrives', async ({ page }) => {
+  await deferRunSummaryClipboard(page);
+  await page.goto(`${HARNESS_URL}?journey=verification#logs/run-verify`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const summary = page.locator(RUN_SUMMARY);
+  await summary.getByRole('button', { name: 'Copy run summary', exact: true }).click();
+  const status = page.locator('[data-recued-logs-filter="status"]');
+  await status.focus();
+  await page.evaluate(() => window.__logsSummaryCopy?.reject?.());
+  await expect(summary.locator(RUN_SUMMARY_STATUS)).toContainText('Recued could not copy it.');
+  await expect(summary.getByRole('textbox', { name: 'Run summary text' })).toBeVisible();
+  await expect(status).toBeFocused();
+});
+
+test('Logs ignores a pending summary copy after leaving the route', async ({ page }) => {
+  await deferRunSummaryClipboard(page);
+  await page.goto(`${HARNESS_URL}?journey=verification#logs/run-verify`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator(RUN_SUMMARY).getByRole('button', { name: 'Copy run summary', exact: true }).click();
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+  await page.waitForFunction(() => window.__app.activeRoute() === 'recipes');
+  await page.evaluate(() => window.__logsSummaryCopy?.reject?.());
+  await expect(page.locator(RUN_SUMMARY)).toHaveCount(0);
+  await expect(page).toHaveURL(/#recipes$/);
+});
+
+test('Logs offers a summary only after the exact run detail arrives', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?journey=verification&hold_rpc=execution.get#logs/run-verify`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await expect(page.locator('[data-recued-logs-detail]')).toContainText('Loading run-verify');
+  await expect(page.locator(RUN_SUMMARY)).toHaveCount(0);
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('execution.get'))).toBe(1);
+  await expect(page.locator(RUN_SUMMARY)).toBeVisible();
+});
 
 test('Logs contains long run identifiers in mobile history and detail', async ({ page }) => {
   const longName = `Run${'N'.repeat(240)}`;
@@ -318,6 +577,110 @@ test('Logs keeps failed run-detail recovery keyboard-owned and single-flight', a
   await expect(heading).toBeFocused();
   await expect(retry).toHaveCount(0);
 });
+
+for (const width of [375, 1280]) {
+  test(`Logs clears all filters and the recipe URL scope by keyboard at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`${HARNESS_URL}?journey=verification&logs_filters=1#logs/recipe/calendar%2Fschedule-review`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    const status = page.locator('[data-recued-logs-filter="status"]');
+    const origin = page.locator('[data-recued-logs-filter="origin"]');
+    const time = page.locator('[data-recued-logs-filter="time_range"]');
+    const recipe = page.getByRole('combobox', { name: 'Show only one Recipe' });
+    await expect(page.locator(`[${LOGS_ROW}="run-verify"]`)).toBeVisible();
+    await status.selectOption('failed');
+    await origin.selectOption('contracted_user');
+    await time.selectOption('7d');
+    await page.locator(`[${LOGS_ACTION}="apply-filters"]`).click();
+    await expect(page.getByText('No runs match these filters.', { exact: true })).toBeVisible();
+    const before = await page.evaluate(() => window.__app.rpcCallCount('execution.list'));
+    await page.evaluate(() => window.__app.holdRpcResponses?.('execution.list'));
+    const clear = page.locator(`[${LOGS_ACTION}="clear-filters"]`);
+    await clear.focus();
+    await page.keyboard.press('Enter');
+    await expect(clear).toHaveText('Clearing…');
+    await expect(clear).toHaveAttribute('aria-disabled', 'true');
+    await expect(clear).toHaveAttribute('aria-busy', 'true');
+    await expect(clear).not.toHaveAttribute('disabled');
+    await expect(clear).toBeFocused();
+    await page.keyboard.press('Enter');
+    await clear.evaluate((button: HTMLButtonElement) => { button.click(); button.click(); });
+    expect(await page.evaluate(() => window.__app.rpcCallCount('execution.list'))).toBe(before + 1);
+    expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('execution.list'))).toBe(1);
+    await expect(clear).toHaveText('Clear filters');
+    await expect(clear).not.toHaveAttribute('aria-busy');
+    await expect(clear).not.toHaveAttribute('aria-disabled');
+    await expect(clear).toBeFocused();
+    await expect(status).toHaveValue('all');
+    await expect(origin).toHaveValue('all');
+    await expect(time).toHaveValue('all');
+    await expect(recipe).toHaveValue('');
+    await expect(page).toHaveURL(/#logs$/);
+    await expect(page.locator(`[${LOGS_ROW}="run-verify"]`)).toBeVisible();
+    expect((await clear.boundingBox())!.height).toBeGreaterThanOrEqual(width === 375 ? 44 : 36);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await clear.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: test.info().outputPath('logs-clear-filters.png') });
+    await page.reload();
+    await page.waitForFunction(() => window.__app?.ready === true);
+    await expect(recipe).toHaveValue('');
+    await expect(page.locator(`[${LOGS_ROW}="run-verify"]`)).toBeVisible();
+    await expect(page).toHaveURL(/#logs$/);
+  });
+}
+
+test('Logs keeps a newer filter draft and its focus when a clear request completes', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?journey=verification&logs_filters=1#logs`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const status = page.locator('[data-recued-logs-filter="status"]');
+  const clear = page.locator(`[${LOGS_ACTION}="clear-filters"]`);
+  await expect(clear).not.toHaveAttribute('aria-busy');
+  await page.evaluate(() => window.__app.holdRpcResponses?.('execution.list'));
+  await clear.click();
+  await expect(clear).toHaveText('Clearing…');
+  await status.focus();
+  await status.selectOption('failed');
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('execution.list'))).toBe(1);
+  await expect(clear).toHaveText('Clear filters');
+  await expect(status).toBeFocused();
+  await expect(status).toHaveValue('failed');
+});
+
+test('Logs keeps an exact run open when its filtered history is cleared', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?journey=verification&logs_filters=1#logs/run-verify`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const detail = page.locator('[data-recued-logs-detail="run-verify"]');
+  await expect(detail).toBeVisible();
+  const getCalls = await page.evaluate(() => window.__app.rpcCallCount('execution.get'));
+  await page.locator('[data-recued-logs-filter="status"]').selectOption('failed');
+  await page.locator(`[${LOGS_ACTION}="apply-filters"]`).click();
+  await expect(page.getByText('No runs match these filters.', { exact: true })).toBeVisible();
+  await page.locator(`[${LOGS_ACTION}="clear-filters"]`).click();
+  await expect(page.locator(`[${LOGS_ROW}="run-verify"]`)).toBeVisible();
+  await expect(detail).toBeVisible();
+  await expect(page).toHaveURL(/#logs\/run-verify$/);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('execution.get'))).toBe(getCalls);
+});
+
+for (const entry of ['history', 'deep-link'] as const) {
+  test(`Logs keeps Clear filters focused when a pending ${entry} run detail arrives`, async ({ page }) => {
+    const hash = entry === 'history' ? '#logs' : '#logs/run-verify';
+    await page.goto(`${HARNESS_URL}?journey=verification&logs_filters=1&hold_rpc=execution.get${hash}`);
+    await page.waitForFunction(() => window.__app?.ready === true);
+    if (entry === 'history') {
+      await page.locator(`[${LOGS_ROW}="run-verify"] [${LOGS_ACTION}="open-detail"]`).click();
+    }
+    await expect(page.locator('[data-recued-logs-detail]')).toContainText('Loading run-verify');
+    const clear = page.locator(`[${LOGS_ACTION}="clear-filters"]`);
+    await expect(clear).not.toHaveAttribute('aria-busy');
+    await clear.click();
+    await expect(clear).not.toHaveAttribute('aria-busy');
+    await expect(clear).toBeFocused();
+    expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('execution.get'))).toBe(1);
+    await expect(page.locator('[data-recued-logs-detail="run-verify"]')).toBeVisible();
+    await expect(clear).toBeFocused();
+  });
+}
 
 test('Logs preserves Apply focus through a filtered feed repaint', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });

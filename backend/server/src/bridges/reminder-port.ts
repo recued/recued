@@ -11,6 +11,10 @@ export interface BridgeReminderPortDeps {
   send(id: string, message: BridgeWireEnvelope): BridgeSendResult;
   timeoutMs?: number; now?(): number;
 }
+/** Bridge releases from before notification receipts. 0.0.2, the first Chrome
+ * Web Store build, drops `notification.probe` unanswered, so no probe can find it
+ * ready, yet it shows plain notifications. Every later release answers the probe. */
+const PRE_RECEIPT_BRIDGE_VERSIONS: ReadonlySet<string> = new Set(['0.0.1', '0.0.2']);
 /** OS acceptance is acknowledged by the paired bridge, not inferred from
  * pair presence or a WebSocket send. No content is retained in this port. */
 export const createBridgeReminderPort = (deps: BridgeReminderPortDeps): BridgeReminderPort & {
@@ -54,6 +58,10 @@ export const createBridgeReminderPort = (deps: BridgeReminderPortDeps): BridgeRe
     `recued-reminder-${createHash('sha256').update(JSON.stringify([envelope.group_id, envelope.destination.id])).digest('hex')}`;
   return {
     async ready() { return (await Promise.all(deps.registry.list().map(row => probe(row.client_token_id)))).some(Boolean); },
+    legacyConnected() {
+      return deps.registry.list().some(row => !!token(row.client_token_id) && PRE_RECEIPT_BRIDGE_VERSIONS.has(row.capabilities.software_version));
+    },
+    connectedIds() { return new Set(deps.registry.list().map(row => row.client_token_id)); },
     async destinations(settings) {
       const candidates = deps.tokens().filter(row => row.client_kind === 'bridge' && row.revoked_at === null
         && settings.bridges?.[row.token_id]?.notification !== false);

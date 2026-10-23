@@ -49,6 +49,7 @@ import {
   type RecipeDefinition,
   type ReceptionOrderContext,
   type ReceptionOrderContextRefusal,
+  type SellerOfferState,
 } from '@recued/contracts';
 
 import { handleExecute, type ExecuteHandlerDeps } from './execute-handler.js';
@@ -89,6 +90,20 @@ import {
  *  visitor a price the checkout then corrects. It can never charge one. */
 export const RECEPTION_SELLER_OFFER_CONFIG_KEY = 'seller_offer_id' as const;
 
+/** Why a selling form could not start a buyer's payment, when the owner can fix it. The
+ *  owner's notice (`reception-turned-away-notice.ts`) says which of these it was and where
+ *  to fix it. Any other failure carries none and is told as "could not finish". */
+export type ReceptionSaleRefusal = {
+  readonly offer_id: string;
+  /** The recipe that answers the form. Its page holds the "Offer to sell" setting. */
+  readonly recipe_id: string;
+} & (
+  | { readonly reason: 'offer_missing' }
+  | { readonly reason: 'offer_not_active'; readonly state: SellerOfferState }
+  | { readonly reason: 'no_checkout_link' }
+  | { readonly reason: 'checkout_link_unusable' }
+);
+
 export type ReceptionRunOutcome =
   /** The recipe ran to completion. `output.render` carries its `OutputSection` blocks —
    *  the substrate Slice 2's `render` response mode consumes. */
@@ -106,8 +121,13 @@ export type ReceptionRunOutcome =
    *  same; a surface that needs to tell them apart reads the run anchor's `commit_status`. */
   | { readonly kind: 'held' }
   /** The run failed. The visitor was promised something and is not getting it — the handler
-   *  must TELL them (slice 1c: no silent success page). */
-  | { readonly kind: 'failed'; readonly errors: unknown[] }
+   *  must TELL them (slice 1c: no silent success page). `refusal` is set when a selling form
+   *  could not open its order for a reason the owner can fix. */
+  | {
+    readonly kind: 'failed';
+    readonly errors: unknown[];
+    readonly refusal?: ReceptionSaleRefusal;
+  }
   /** No pair, or a pair with no minted door contract. Not an error: an unpaired endpoint is
    *  an ordinary intake form and its ordinary success page is correct. */
   | { readonly kind: 'no_door' };
@@ -190,7 +210,7 @@ const allowedToolsFor = (
 type OpenOrderResult =
   /** `context === null` means this pair sells nothing — a plain intake form. */
   | { readonly ok: true; readonly context: ReceptionOrderContext | null }
-  | { readonly ok: false; readonly error: string };
+  | { readonly ok: false; readonly error: string; readonly refusal?: ReceptionSaleRefusal };
 
 const REFUSAL_MESSAGE: Readonly<Record<ReceptionOrderContextRefusal, string>> = {
   offer_has_no_checkout_url:
@@ -223,6 +243,7 @@ const openOrderForPair = (
   config: Record<string, unknown> | undefined,
   input: ReceptionRunInput,
   deps: ReceptionRecipeRunnerDeps,
+  recipe_id: string,
 ): OpenOrderResult => {
   const offerId = config?.[RECEPTION_SELLER_OFFER_CONFIG_KEY];
   // No offer named ⇒ no order. §4.4, and the ONLY thing that distinguishes a selling form
@@ -242,7 +263,29 @@ const openOrderForPair = (
 
   const offer = deps.seller.offers.getOffer(offerId);
   if (offer === null) {
-    return { ok: false, error: `offer '${offerId}' does not exist` };
+    return {
+      ok: false,
+      error: `offer '${offerId}' does not exist`,
+      refusal: { reason: 'offer_missing', offer_id: offerId, recipe_id },
+    };
+  }
+  // Asked BEFORE the order opens, so a buyer who cannot pay leaves no order behind. One
+  // opened first looked like any order still waiting for payment, and was the owner's
+  // only sign of the buyer until the turned-away notice existed. `openOrder` and
+  // `buildReceptionOrderContext` still ask both questions themselves.
+  if (offer.state !== 'active') {
+    return {
+      ok: false,
+      error: `offer '${offerId}' is '${offer.state}', not active — it cannot be sold`,
+      refusal: { reason: 'offer_not_active', state: offer.state, offer_id: offerId, recipe_id },
+    };
+  }
+  if (offer.checkout_url === null || offer.checkout_url.length === 0) {
+    return {
+      ok: false,
+      error: REFUSAL_MESSAGE.offer_has_no_checkout_url,
+      refusal: { reason: 'no_checkout_link', offer_id: offerId, recipe_id },
+    };
   }
 
   let opened;
@@ -275,7 +318,19 @@ const openOrderForPair = (
     order: opened.order,
     correlation: opened.correlation,
   });
-  if (!built.ok) return { ok: false, error: REFUSAL_MESSAGE[built.refusal] };
+  if (!built.ok) {
+    return {
+      ok: false,
+      error: REFUSAL_MESSAGE[built.refusal],
+      refusal: {
+        reason: built.refusal === 'offer_has_no_checkout_url'
+          ? 'no_checkout_link'
+          : 'checkout_link_unusable',
+        offer_id: offerId,
+        recipe_id,
+      },
+    };
+  }
 
   return { ok: true, context: built.context };
 };
@@ -441,8 +496,14 @@ export const createReceptionRecipeRunner = (
       // returns no output, so the visitor would get a thank-you page carrying no way to
       // pay. The runner writes the order exactly as it already wrote the durable
       // submission row, and hands the recipe a READ-ONLY projection to render.
-      const order = openOrderForPair(config, input, deps);
-      if (!order.ok) return { kind: 'failed', errors: [order.error] };
+      const order = openOrderForPair(config, input, deps, pair.binding.recipe_id);
+      if (!order.ok) {
+        return {
+          kind: 'failed',
+          errors: [order.error],
+          ...(order.refusal === undefined ? {} : { refusal: order.refusal }),
+        };
+      }
 
       const result = await handleExecute(
         deps.executeDeps,

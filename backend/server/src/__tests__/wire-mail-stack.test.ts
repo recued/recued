@@ -361,6 +361,25 @@ describe('composeMailBoot', () => {
     expect(contactStore.observeBatch).not.toHaveBeenCalled();
   });
 
+  // A restart's re-list and a flag change upsert a message again, and observing
+  // it again bumped every participant's interaction_count, each boot.
+  it('observes a message\'s people once: when the message is first seen', () => {
+    const contactStore = makeContactStore();
+    const observations = [
+      { email: 'ada@example.com', source: 'email_from', event_at: 1_700_000_000_000 },
+    ] as ReturnType<typeof deriveContactsFromMail>;
+    vi.mocked(deriveContactsFromMail).mockReturnValueOnce(observations);
+
+    composeMailBoot(buildDeps({ contactStore }));
+    const [, storage] = lastComposeCall();
+    storage.onMessageUpserted?.(message(), upsertCtx({ first_seen: false }));
+    expect(contactStore.observeBatch).not.toHaveBeenCalled();
+
+    storage.onMessageUpserted?.(message(), upsertCtx({ first_seen: true }));
+    expect(deriveContactsFromMail).toHaveBeenCalledTimes(1);
+    expect(contactStore.observeBatch).toHaveBeenCalledWith(observations);
+  });
+
   it('registers and returns a mail storage gate when one is missing', () => {
     const registeredGate = { tag: 'registered' } as unknown as StorageGate;
     const gateRegistry = makeGateRegistry({ registered: registeredGate });

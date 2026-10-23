@@ -21,6 +21,9 @@
 
 import { twoClockWindowPreview, type TwoClockWindowView } from '@recued/ui-shared';
 import {
+  isValidIanaZone,
+  isValidQuietHoursMinute,
+  QUIET_HOURS_APPLIES_TO,
   resolveQuietHoursOccurrence,
   type QuietHoursGetResponse,
   type QuietHoursSetRequest,
@@ -33,6 +36,7 @@ export const QUIET_HOURS_FROM_ATTR = 'data-recued-quiet-hours-from';
 export const QUIET_HOURS_TO_ATTR = 'data-recued-quiet-hours-to';
 export const QUIET_HOURS_SAVE_ATTR = 'data-recued-quiet-hours-save';
 export const QUIET_HOURS_ERROR_ATTR = 'data-recued-quiet-hours-error';
+export const QUIET_HOURS_RETRY_ATTR = 'data-recued-quiet-hours-retry';
 export const QUIET_HOURS_DECLARED_ATTR = 'data-recued-quiet-hours-declared';
 export const QUIET_HOURS_ROW_ATTR = 'data-recued-quiet-hours-row';
 export const QUIET_HOURS_ROW_ROLE_ATTR = 'data-recued-quiet-hours-row-role';
@@ -41,8 +45,8 @@ export const QUIET_HOURS_APPROVAL_ATTR = 'data-recued-quiet-hours-approval';
 export const QUIET_HOURS_APPROVAL_HINT_ATTR = 'data-recued-quiet-hours-approval-hint';
 export const QUIET_HOURS_TZ_LINK_ATTR = 'data-recued-quiet-hours-timezone-link';
 
-/** Settings → Server, where the one timezone this window runs on is declared. */
-const SERVER_TIMEZONE_HREF = '#settings/server';
+/** Settings → Server → Timezone, where this window's clock is declared. */
+const SERVER_TIMEZONE_HREF = '#settings/server/timezone';
 
 export type QuietHoursGetCaller = () => Promise<QuietHoursGetResponse>;
 export type QuietHoursSetCaller = (
@@ -66,7 +70,12 @@ export interface QuietHoursPanelMount {
   /** True when the server says the window cannot be armed (no timezone). */
   isBlocked(): boolean;
   getError(): string | null;
+  /** Refreshes confirmed settings unless a pending save owns the result. */
   refresh(): Promise<void>;
+  /** User-started saves, including the two checkbox settings. */
+  hasInFlightWork(): boolean;
+  /** Protects edited windows and window saves whose outcome is still unknown. */
+  hasUnsavedChanges(): boolean;
   dispose(): void;
 }
 
@@ -96,6 +105,19 @@ const fromHHMM = (value: string): number | null => {
   return h * 60 + min;
 };
 
+const checkedSnapshot = (next: QuietHoursGetResponse): QuietHoursGetResponse => {
+  const policy = next?.policy;
+  if (!policy || typeof policy.enabled !== 'boolean'
+    || !isValidQuietHoursMinute(policy.from_minute) || !isValidQuietHoursMinute(policy.to_minute)
+    || !Array.isArray(policy.applies_to) || policy.applies_to.length === 0
+    || !policy.applies_to.every(kind => QUIET_HOURS_APPLIES_TO.includes(kind))
+    || !Number.isFinite(policy.updated_at) || policy.updated_at < 0
+    || typeof next.can_arm !== 'boolean' || !isValidIanaZone(next.resolved_zone)) {
+    throw new Error('Recued could not confirm the quiet hours settings. Try again.');
+  }
+  return next;
+};
+
 export const mountQuietHoursPanel = (
   opts: MountQuietHoursPanelOptions,
 ): QuietHoursPanelMount => {
@@ -111,6 +133,36 @@ export const mountQuietHoursPanel = (
   let saving = false;
   let disposed = false;
   let preview: TwoClockWindowView | null = null;
+  let loadGeneration = 0;
+  let initialRead: Promise<void> | null = null;
+  let readFailed = false;
+  let hasDraft = false;
+  let unconfirmedWindow = false;
+  let savingStatus: HTMLElement | null = null;
+  let view: {
+    toggle: HTMLInputElement;
+    from: HTMLInputElement;
+    to: HTMLInputElement;
+    save: HTMLButtonElement;
+    approvals: HTMLInputElement;
+    blockedHost: HTMLElement;
+    feedbackHost: HTMLElement;
+    previewHost: HTMLElement;
+    canArm: boolean | null;
+  } | null = null;
+
+  const windowRestored = (): boolean => view !== null && snapshot !== null
+    && !view.from.validity.badInput && !view.to.validity.badInput
+    && view.from.value === toHHMM(snapshot.policy.from_minute)
+    && view.to.value === toHHMM(snapshot.policy.to_minute);
+  const syncSavedWindow = (): void => {
+    if (!view || !snapshot || hasDraft || view.from.validity.badInput || view.to.validity.badInput
+      || doc.activeElement === view.from || doc.activeElement === view.to) return;
+    const from = toHHMM(snapshot.policy.from_minute);
+    const to = toHHMM(snapshot.policy.to_minute);
+    if (view.from.value !== from) view.from.value = from;
+    if (view.to.value !== to) view.to.value = to;
+  };
 
   const el = (tag: string, text?: string): HTMLElement => {
     const node = doc.createElement(tag);
@@ -118,15 +170,41 @@ export const mountQuietHoursPanel = (
     return node;
   };
 
+  // Keep read feedback attached through retries so native button focus survives.
+  const readFeedback = el('div');
+  readFeedback.className = 'qh-read-feedback';
+  const readStatus = el('p');
+  readStatus.setAttribute('aria-atomic', 'true');
+  const retry = doc.createElement('button');
+  retry.type = 'button';
+  retry.className = 'rx-btn rx-btn-secondary';
+  retry.textContent = 'Retry loading quiet hours';
+  retry.setAttribute(QUIET_HOURS_RETRY_ATTR, '');
+  retry.addEventListener('click', () => {
+    if (!disposed && snapshot === null && state === 'error') void refresh();
+  });
+  readFeedback.appendChild(readStatus);
+
   const save = async (patch: QuietHoursSetRequest): Promise<void> => {
-    if (saving) return;
+    if (saving || disposed) return;
+    const savesWindow = patch.from_minute !== undefined && patch.to_minute !== undefined;
+    // A failed write may have reached the server. Restoring the old times is
+    // still a draft until a fresh read or a window acknowledgement resolves it.
+    if (savesWindow) { hasDraft = true; unconfirmedWindow = true; }
+    loadGeneration += 1;
+    const initiator = view
+      ? [view.toggle, view.from, view.to, view.save, view.approvals].find(control => control === doc.activeElement)
+      : undefined;
     saving = true;
     error = null;
     render();
+    if (initiator) savingStatus?.focus?.({ preventScroll: true });
     try {
       const next = await opts.runSet(patch);
       if (disposed) return;
-      snapshot = next;
+      snapshot = checkedSnapshot(next);
+      // Checkbox writes acknowledge only their own setting, not the time draft.
+      if (savesWindow) { hasDraft = false; unconfirmedWindow = false; }
       state = 'ready';
     } catch (err) {
       if (disposed) return;
@@ -135,8 +213,12 @@ export const mountQuietHoursPanel = (
       // in the client is a second copy to drift.
       error = err instanceof Error ? err.message : String(err);
     } finally {
+      const held = doc.activeElement === savingStatus;
       saving = false;
-      if (!disposed) render();
+      if (!disposed) {
+        render();
+        if (held) (initiator?.disabled ? view?.save : initiator)?.focus?.({ preventScroll: true });
+      }
     }
   };
 
@@ -171,7 +253,7 @@ export const mountQuietHoursPanel = (
       clientLabel: 'Where you are now',
     });
 
-    const declared = el('p', `You set ${preview.declared_text}`);
+    const declared = el('p', `Saved window: ${preview.declared_text}`);
     declared.setAttribute(QUIET_HOURS_DECLARED_ATTR, '');
     into.appendChild(declared);
 
@@ -226,48 +308,101 @@ export const mountQuietHoursPanel = (
     }
   };
 
+  const updateView = (): void => {
+    if (!view || !snapshot) return;
+    if (hasDraft && !unconfirmedWindow && windowRestored()) hasDraft = false;
+    if (view.canArm !== snapshot.can_arm) {
+      view.blockedHost.innerHTML = '';
+      view.blockedHost.hidden = snapshot.can_arm;
+      view.canArm = snapshot.can_arm;
+      if (!snapshot.can_arm) {
+        // ⛔ SAY WHY AND WHERE TO GO. A disabled toggle with no explanation is how
+        // a safety feature becomes one nobody can turn on.
+        const p = el(
+          'p',
+          'Set this server’s timezone first — quiet hours is a wall clock, and the '
+          + 'server checks it with no browser attached.',
+        );
+        p.setAttribute(QUIET_HOURS_BLOCKED_ATTR, '');
+        // ⚠ The link belongs MOST here: this is the one state where the owner
+        // cannot use the feature at all, and "set it first" without a way there is
+        // the shape of instruction people give up on.
+        p.appendChild(el('span', ' '));
+        p.appendChild(timezoneLink(doc, 'Set the timezone'));
+        view.blockedHost.appendChild(p);
+      }
+    }
+    // Keep the native fields and their ancestors connected. Incomplete time
+    // segments and the active segment cannot be reconstructed from `value`.
+    syncSavedWindow();
+    view.toggle.checked = snapshot.policy.enabled;
+    view.toggle.disabled = saving || !snapshot.can_arm;
+    view.approvals.checked = snapshot.policy.applies_to.includes('approval');
+    view.approvals.disabled = saving || !snapshot.can_arm;
+    view.from.disabled = saving;
+    view.to.disabled = saving;
+    view.save.disabled = saving;
+    view.save.textContent = saving ? 'Saving…' : 'Save';
+    view.feedbackHost.innerHTML = '';
+    view.feedbackHost.hidden = error === null && !saving;
+    savingStatus = null;
+    if (error !== null) {
+      const p = el('p', error);
+      p.setAttribute(QUIET_HOURS_ERROR_ATTR, '');
+      p.setAttribute('role', 'alert');
+      view.feedbackHost.appendChild(p);
+    }
+    if (saving) {
+      savingStatus = el('p', 'Saving quiet hours…');
+      savingStatus.setAttribute('role', 'status');
+      savingStatus.setAttribute('tabindex', '-1');
+      view.feedbackHost.appendChild(savingStatus);
+    }
+    const active = doc.activeElement;
+    const heldLink = active?.getAttribute?.(QUIET_HOURS_TZ_LINK_ATTR) != null
+      && view.previewHost.contains?.(active);
+    view.previewHost.innerHTML = '';
+    renderPreview(view.previewHost);
+    if (heldLink) {
+      const link = view.previewHost.querySelector?.<HTMLElement>(`[${QUIET_HOURS_TZ_LINK_ATTR}]`);
+      (link ?? view.save).focus?.({ preventScroll: true });
+    }
+  };
+
   const render = (): void => {
     if (disposed) return;
-    opts.host.innerHTML = '';
     opts.host.setAttribute(QUIET_HOURS_PANEL_ATTR, '');
     opts.host.setAttribute(QUIET_HOURS_STATE_ATTR, state);
+    if (view) { updateView(); return; }
+    if (snapshot === null) {
+      const failed = state === 'error';
+      if (failed && !readFailed) { readFailed = true; readFeedback.appendChild(retry); }
+      readStatus.setAttribute('role', failed ? 'alert' : 'status');
+      if (failed) readStatus.setAttribute(QUIET_HOURS_ERROR_ATTR, '');
+      else readStatus.removeAttribute(QUIET_HOURS_ERROR_ATTR);
+      readStatus.textContent = failed ? error ?? 'Could not read quiet hours.'
+        : readFailed ? 'Retrying quiet hours…' : 'Loading quiet hours…';
+      retry.setAttribute('aria-disabled', String(!failed));
+      retry.setAttribute('aria-busy', String(!failed));
+      if (readFeedback.parentElement !== opts.host) {
+        opts.host.innerHTML = '';
+        opts.host.appendChild(el('h3', 'Quiet hours'));
+        opts.host.appendChild(readFeedback);
+      }
+      return;
+    }
+    const returnToTime = doc.activeElement === retry;
+    opts.host.innerHTML = '';
     opts.host.appendChild(el('h3', 'Quiet hours'));
 
-    if (state === 'loading') {
-      opts.host.appendChild(el('p', 'Loading…'));
-      return;
-    }
-    if (snapshot === null) {
-      const p = el('p', error ?? 'Could not read quiet hours.');
-      p.setAttribute(QUIET_HOURS_ERROR_ATTR, '');
-      opts.host.appendChild(p);
-      return;
-    }
-
-    if (!snapshot.can_arm) {
-      // ⛔ SAY WHY AND WHERE TO GO. A disabled toggle with no explanation is how
-      // a safety feature becomes one nobody can turn on.
-      const p = el(
-        'p',
-        'Set this server’s timezone first — quiet hours is a wall clock, and the '
-        + 'server checks it with no browser attached.',
-      );
-      p.setAttribute(QUIET_HOURS_BLOCKED_ATTR, '');
-      // ⚠ The link belongs MOST here: this is the one state where the owner
-      // cannot use the feature at all, and "set it first" without a way there is
-      // the shape of instruction people give up on.
-      p.appendChild(el('span', ' '));
-      p.appendChild(timezoneLink(doc, 'Set the timezone'));
-      opts.host.appendChild(p);
-    }
-
+    const blockedHost = el('div');
+    opts.host.appendChild(blockedHost);
     const toggle = doc.createElement('input');
     toggle.type = 'checkbox';
-    toggle.checked = snapshot.policy.enabled;
-    toggle.disabled = saving || !snapshot.can_arm;
     toggle.setAttribute(QUIET_HOURS_TOGGLE_ATTR, '');
     toggle.addEventListener('change', () => {
-      void save({ enabled: !snapshot!.policy.enabled });
+      if (!snapshot?.can_arm) return;
+      void save({ enabled: !snapshot.policy.enabled });
     });
     const toggleLabel = el('label');
     toggleLabel.appendChild(toggle);
@@ -276,30 +411,42 @@ export const mountQuietHoursPanel = (
 
     const fromInput = doc.createElement('input');
     fromInput.type = 'time';
-    fromInput.value = toHHMM(snapshot.policy.from_minute);
-    fromInput.disabled = saving;
     fromInput.setAttribute(QUIET_HOURS_FROM_ATTR, '');
+    fromInput.setAttribute('aria-label', 'Quiet hours start');
     const toInput = doc.createElement('input');
     toInput.type = 'time';
-    toInput.value = toHHMM(snapshot.policy.to_minute);
-    toInput.disabled = saving;
     toInput.setAttribute(QUIET_HOURS_TO_ATTR, '');
+    toInput.setAttribute('aria-label', 'Quiet hours end');
+    for (const input of [fromInput, toInput]) {
+      input.addEventListener('input', () => {
+        if (!saving && !disposed) hasDraft = unconfirmedWindow || !windowRestored();
+      });
+      input.addEventListener('blur', () => { if (!saving && !disposed) syncSavedWindow(); });
+    }
 
     const btn = doc.createElement('button');
     btn.type = 'button';
-    btn.textContent = saving ? 'Saving…' : 'Save';
-    btn.disabled = saving;
     btn.setAttribute(QUIET_HOURS_SAVE_ATTR, '');
-    btn.addEventListener('click', () => {
+    const submit = (): void => {
+      if (saving || disposed) return;
+      hasDraft = true;
       const from = fromHHMM(fromInput.value);
       const to = fromHHMM(toInput.value);
       if (from === null || to === null) {
         error = 'Enter both times as HH:MM.';
         render();
+        const invalid = from === null ? fromInput : toInput;
+        if (doc.activeElement !== invalid) invalid.focus?.({ preventScroll: true });
         return;
       }
       void save({ from_minute: from, to_minute: to });
-    });
+    };
+    btn.addEventListener('click', submit);
+    for (const input of [fromInput, toInput]) {
+      input.addEventListener('keydown', event => {
+        if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); submit(); }
+      });
+    }
 
     const fields = el('p');
     fields.appendChild(el('span', 'From '));
@@ -309,14 +456,9 @@ export const mountQuietHoursPanel = (
     fields.appendChild(btn);
     opts.host.appendChild(fields);
 
-    if (error !== null) {
-      const p = el('p', error);
-      p.setAttribute(QUIET_HOURS_ERROR_ATTR, '');
-      opts.host.appendChild(p);
-    }
-
+    const feedbackHost = el('div');
+    opts.host.appendChild(feedbackHost);
     const previewHost = el('div');
-    renderPreview(previewHost);
     opts.host.appendChild(previewHost);
 
     // ⛔ LAST, DELIBERATELY (REV 18). This sat between the on/off toggle and the
@@ -331,15 +473,13 @@ export const mountQuietHoursPanel = (
     // at the point of choosing it. Not hidden, not recommended." Hiding it would
     // make the rpc the only way in; recommending it would be wrong, because
     // pre-approval buys the same silence without the work waiting.
-    const holdsApprovals = snapshot.policy.applies_to.includes('approval');
     const approvals = doc.createElement('input');
     approvals.type = 'checkbox';
-    approvals.checked = holdsApprovals;
-    approvals.disabled = saving || !snapshot.can_arm;
     approvals.setAttribute(QUIET_HOURS_APPROVAL_ATTR, '');
     approvals.addEventListener('change', () => {
+      if (!snapshot?.can_arm) return;
       void save({
-        applies_to: holdsApprovals ? ['notification'] : ['notification', 'approval'],
+        applies_to: snapshot.policy.applies_to.includes('approval') ? ['notification'] : ['notification', 'approval'],
       });
     });
     const approvalsLabel = el('label');
@@ -357,22 +497,40 @@ export const mountQuietHoursPanel = (
     pointer.className = 'qh-hint';
     pointer.setAttribute(QUIET_HOURS_APPROVAL_HINT_ATTR, '');
     opts.host.appendChild(pointer);
-
+    view = { toggle, from: fromInput, to: toInput, save: btn, approvals, blockedHost, feedbackHost, previewHost, canArm: null };
+    updateView();
+    if (returnToTime) fromInput.focus({ preventScroll: true });
   };
 
-  const refresh = async (): Promise<void> => {
-    try {
-      const next = await opts.runGet();
-      if (disposed) return;
-      snapshot = next;
-      state = 'ready';
+  const refresh = (): Promise<void> => {
+    if (disposed || saving) return Promise.resolve();
+    if (snapshot === null && initialRead !== null) return initialRead;
+    const generation = ++loadGeneration;
+    const initial = snapshot === null;
+    if (initial) {
+      state = 'loading';
       error = null;
-    } catch (err) {
-      if (disposed) return;
-      state = 'error';
-      error = err instanceof Error ? err.message : String(err);
+      render();
     }
-    render();
+    const read = (async () => {
+      try {
+        const next = await opts.runGet();
+        if (disposed || generation !== loadGeneration) return;
+        snapshot = checkedSnapshot(next);
+        unconfirmedWindow = false;
+        state = 'ready';
+        error = null;
+      } catch (err) {
+        if (disposed || generation !== loadGeneration) return;
+        state = 'error';
+        error = err instanceof Error ? err.message : String(err);
+      }
+      render();
+    })();
+    if (!initial) return read;
+    const pending = read.finally(() => { if (initialRead === pending) initialRead = null; });
+    initialRead = pending;
+    return pending;
   };
 
   render();
@@ -384,7 +542,10 @@ export const mountQuietHoursPanel = (
     isBlocked: () => snapshot !== null && !snapshot.can_arm,
     getError: () => error,
     refresh,
-    dispose: () => { disposed = true; },
+    hasInFlightWork: () => !disposed && saving,
+    hasUnsavedChanges: () => !disposed && (hasDraft
+      || view?.from.validity.badInput === true || view?.to.validity.badInput === true),
+    dispose: () => { disposed = true; loadGeneration += 1; },
   };
 };
 
@@ -418,6 +579,15 @@ export const QUIET_HOURS_PANEL_STYLES = `
   display: flex;
   align-items: center;
   gap: 6px;
+}
+[${QUIET_HOURS_PANEL_ATTR}] .qh-read-feedback {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+[${QUIET_HOURS_PANEL_ATTR}] [${QUIET_HOURS_RETRY_ATTR}] {
+  min-height: 44px;
 }
 [${QUIET_HOURS_PANEL_ATTR}] [${QUIET_HOURS_DECLARED_ATTR}] {
   color: var(--fg-muted);

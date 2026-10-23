@@ -78,6 +78,11 @@ export interface HistoryDeps {
    *  `notification.recent` (`listActivitiesByAction('notification_fired')`).
    *  Absent → both return `[]`. */
   auditLog?: AuditLogStore;
+  /** The server's own public address (`publicAddress.baseUrl('root')`), or null when it has
+   *  none. A notice's `link_url` that starts with it points into the owner's app, so
+   *  `notification.recent` also gives it as `ui_link_url`. Absent ⇒ only a link that is
+   *  already in-app (`#…`) gets one. */
+  ownerBaseUrl?: () => string | null;
   /** D-270 — resolve one ask's "what will happen" rows. Absent ⇒ no ask carries
    *  `details` and every card renders exactly as it did before, which is the
    *  pre-D-270 behaviour and the deliberate fallback.
@@ -185,6 +190,24 @@ export const handleExecutionRecent = async (
  *  the same list-all work. The activity table is bounded by the D-120
  *  retention pruner; a dedicated indexed `listActivitiesByAction` read is
  *  a clean follow-on if notification volume ever makes this hot. */
+/** The in-app address a notice's link names, or undefined when it names somewhere else.
+ *
+ *  Every owner notice builds its link the same way: the in-app route (`#views/…`), prefixed
+ *  with the server's own public address when it has one (`saved-data-view-alert-runtime.ts`,
+ *  `reception-turned-away-notice.ts`, …). So a link that IS a route, or is this server's
+ *  address followed by one, is a place in the owner's app. ⛔ Matched against THIS server's
+ *  address only — a link to another site that happens to carry a `#fragment` is not a route. */
+export const noticeUiLink = (
+  link_url: string | undefined,
+  ownerBaseUrl: string | null | undefined,
+): string | undefined => {
+  if (link_url === undefined) return undefined;
+  if (link_url.startsWith('#')) return link_url;
+  if (typeof ownerBaseUrl !== 'string' || ownerBaseUrl === '') return undefined;
+  const prefix = `${ownerBaseUrl.replace(/\/+$/, '')}/#`;
+  return link_url.startsWith(prefix) ? link_url.slice(prefix.length - 1) : undefined;
+};
+
 export const handleNotificationRecent = async (
   deps: HistoryDeps,
   req: { limit?: number },
@@ -194,14 +217,22 @@ export const handleNotificationRecent = async (
   const rows = all
     .filter((a) => a.action === 'notification_fired')
     .slice(0, clampLimit(req.limit));
+  let ownerBaseUrl: string | null = null;
+  try {
+    ownerBaseUrl = deps.ownerBaseUrl?.() ?? null;
+  } catch {
+    // No address ⇒ only links already in-app get a `ui_link_url`.
+  }
   return {
     notifications: rows.map((a) => {
       const body = parseNotificationDetail(a.detail);
+      const ui_link_url = noticeUiLink(body.link_url, ownerBaseUrl);
       return {
         id: a.activity_id,
         ...(body.title !== undefined ? { title: body.title } : {}),
         text: body.text,
         ...(body.link_url !== undefined ? { link_url: body.link_url } : {}),
+        ...(ui_link_url !== undefined ? { ui_link_url } : {}),
         fired_at: a.timestamp,
       };
     }),

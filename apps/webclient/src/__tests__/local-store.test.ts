@@ -39,6 +39,48 @@ const sharedKv = (): IndexedDbKeyValue => {
 };
 
 describe('D-148 P4 — webclient local-store closed-list', () => {
+  it.each(['navigator', 'locks', 'request'] as const)(
+    'keeps roster operations ordered when Web Locks access throws at %s', async blocked => {
+      const original = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+      const denied = (): never => { throw new Error('private browser policy detail'); };
+      const locks = Object.defineProperty({}, 'request', { get: denied });
+      const navigator = blocked === 'locks'
+        ? Object.defineProperty({}, 'locks', { get: denied }) : { locks };
+      Object.defineProperty(globalThis, 'navigator', {
+        configurable: true,
+        ...(blocked === 'navigator' ? { get: denied } : { value: navigator }),
+      });
+      try {
+        const store = createIndexedDbWebclientLocalStore(sharedKv());
+        const id = await store.ensureProfile('wss://home.example/ws');
+        await Promise.all([
+          store.renameProfile(id, 'Home workspace'),
+          store.noteProfileConnected(id, 1_700_000_000_000),
+        ]);
+        expect(await store.listProfiles()).toEqual([
+          expect.objectContaining({ id, label: 'Home workspace', last_connected_at: 1_700_000_000_000 }),
+        ]);
+      } finally {
+        if (original) Object.defineProperty(globalThis, 'navigator', original);
+        else Reflect.deleteProperty(globalThis, 'navigator');
+      }
+    },
+  );
+
+  it('propagates an available lock request failure before writing the roster', async () => {
+    const error = new Error('lock request denied');
+    const values = new Map<string, unknown>();
+    const store = createIndexedDbWebclientLocalStore({
+      async get(key) { return values.get(key); },
+      async set(key, value) { values.set(key, value); },
+      async delete(key) { values.delete(key); },
+      async clear() { values.clear(); },
+      async keys() { return [...values.keys()]; },
+    }, { lockProvider: { request: () => Promise.reject(error) } });
+    await expect(store.ensureProfile('wss://home.example/ws')).rejects.toBe(error);
+    expect(values.size).toBe(0);
+  });
+
   it('exports the documented 5 fields', () => {
     expect([...WEBCLIENT_LOCAL_KEYS].sort()).toEqual([
       'cert_pin_state',

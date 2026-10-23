@@ -168,7 +168,7 @@ describe('startPreListenerRuntime', () => {
       return result;
     });
     const options = makeOptions({
-      archiveDeps: { restoreDrills: { tag: 'restore-drills' }, backupHealth: { tag: 'backup-health' } } as never,
+      archiveDeps: { restoreDrills: { tag: 'restore-drills' }, backupHealth: { tag: 'backup-health' }, backupIntegrity: { tag: 'backup-integrity' }, backupWatchdog: { tag: 'backup-watchdog' } } as never,
       publishUpstreamMergeRegistry: vi.fn(() => {
         order.push('publish-upstream');
       }),
@@ -214,8 +214,18 @@ describe('startPreListenerRuntime', () => {
       pairedInstances: options.storage.pairedInstances,
       getWsHandleForLockout: options.getWsHandleForLockout,
       getExposureMachine: options.getExposureMachine,
+      getBackupRecovery: expect.any(Function),
       env: options.env,
     });
+    const readBackupRecovery = preListenerMocks.composeClientSecurityContext.mock.calls[0]![0].getBackupRecovery;
+    expect(readBackupRecovery().backup_status).toBe('unavailable');
+    options.archiveDeps!.backupHealth!.status = () => ({ checked_at: Date.now(), monitoring: 'not_configured',
+      policy: { alerts_enabled: true, backup_max_age_hours: 36, recovery_max_age_days: 30 }, alerts: [] });
+    expect(readBackupRecovery().backup_status).toBe('unconfigured');
+    options.archiveDeps!.backupWatchdog!.status = () => ({ configured: true, enabled: true, state: 'acknowledged', last_acknowledged_at: 1234 });
+    expect(readBackupRecovery().backup_evidence!.watchdog).toMatchObject({ configured: true, state: 'acknowledged', last_acknowledged_at: 1234 });
+    options.archiveDeps!.backupWatchdog!.status = () => ({ configured: true, enabled: false, state: 'paused' });
+    expect(readBackupRecovery().backup_evidence!.watchdog!.state).toBe('paused');
     expect(preListenerMocks.composeRpcContext).toHaveBeenCalledWith({
       storage: options.storage,
       app: options.app,
@@ -262,6 +272,8 @@ describe('startPreListenerRuntime', () => {
       runtime: expect.objectContaining({
         restoreDrills: options.archiveDeps?.restoreDrills,
         backupHealth: options.archiveDeps?.backupHealth,
+        backupWatchdog: options.archiveDeps?.backupWatchdog,
+        backupIntegrity: options.archiveDeps?.backupIntegrity,
         dbPath: options.dbPath,
         executorConfig: options.executorConfig,
         certStack: clientSecurity.certStack,

@@ -1,6 +1,7 @@
+import { HARNESS_ORIGIN } from './helpers/harness-origin.js';
 import { expect, test, type Page } from '@playwright/test';
 
-const URL = 'http://127.0.0.1:4319/full-app-harness.html?chat_search=1';
+const URL = `${HARNESS_ORIGIN}/full-app-harness.html?chat_search=1`;
 const search = (page: Page) => page.getByRole('searchbox', { name: 'Search chats and messages' });
 const result = (page: Page, id: string) => page.locator(`[data-recued-chat-history-message="${id}"]`);
 const message = (page: Page, id: string) => page.locator(`[data-recued-chat-route-message="${id}"]`);

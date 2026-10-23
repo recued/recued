@@ -9,6 +9,7 @@ export class PickerElement {
   removeChild(child:PickerElement):PickerElement{this.children=this.children.filter(c=>c!==child);return child;}
   setAttribute(name:string,value:string):void{this.attrs.set(name,value);}
   getAttribute(name:string):string|null{return this.attrs.get(name)??null;}
+  removeAttribute(name:string):void{this.attrs.delete(name);}
   addEventListener(type:string,listener:(event:{key?:string;preventDefault():void})=>void):void{this.listeners.set(type,[...this.listeners.get(type)??[],listener]);}
   fire(type:string,key?:string):void{for(const listener of this.listeners.get(type)??[])listener({...(key?{key}:{}),preventDefault(){}});}
   click():void{if(!this.disabled)this.fire('click');}

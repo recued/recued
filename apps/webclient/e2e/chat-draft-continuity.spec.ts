@@ -1,3 +1,4 @@
+import { HARNESS_ORIGIN } from './helpers/harness-origin.js';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { build, type Plugin } from 'esbuild';
@@ -37,7 +38,7 @@ declare global { interface Window {
 // Real Chat UI, local RPC fixtures. No paired server, providers or production
 // bundle is needed to exercise composer ownership and browser navigation.
 const root = resolve(import.meta.dirname, '../../..');
-const origin = 'http://127.0.0.1:4319';
+const origin = HARNESS_ORIGIN;
 const input = (page: Page) => page.locator('[data-recued-chat-route-input]');
 const voiceControl = (page: Page) => page.locator('[data-recued-chat-route-voice]:not([data-recued-chat-route-voice="discard"])');
 const publishChatBusy = (page: Page, sessionId: string, busy: boolean) => page.evaluate(({ sessionId, busy }) => {

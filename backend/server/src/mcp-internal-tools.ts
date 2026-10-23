@@ -187,8 +187,8 @@ export const MCP_DISPATCH_ERROR_MESSAGES: Readonly<Record<
   // MCP agents that hit a write-classified tool see the same gate as
   // Mary's internal chat agent; the copy here is what surfaces in
   // the JSON-RPC error envelope the agent reads.
-  awaiting_approval: 'Write paused — Mary must approve the plan via chat.plan.approve before this tool fires.',
-  plan_cancelled: 'Write blocked — Mary cancelled the proposed plan via chat.plan.cancel.',
+  awaiting_approval: 'Write paused — the owner must approve the plan via chat.plan.approve before this tool fires.',
+  plan_cancelled: 'Write blocked — the owner cancelled the proposed plan via chat.plan.cancel.',
   // D-181 § 9 — the owner killed / cancelled-in-queue the dispatched run.
   // The appended `detail` carries the do-not-retry / resolve-with-user copy.
   run_cancelled: 'Run cancelled by the user.',

@@ -13,6 +13,13 @@
  *  asking `Intl` to render an instant IN the zone and reading the rendered wall
  *  clock back as if it were UTC. */
 
+import { createZonedDateTimeFormatter } from './zoned-date-time-formatter.js';
+
+const offsetFormatter = createZonedDateTimeFormatter({
+  hour12: false, year: 'numeric', month: '2-digit', day: '2-digit',
+  hour: '2-digit', minute: '2-digit', second: '2-digit',
+});
+
 /** A wall-clock string the mapping accepts: a date (`2026-07-20`) or a local
  *  datetime (`2026-07-20T19:30[:SS]`). A zone suffix is deliberately NOT
  *  accepted — the config's `timezone` is the authority, and a value carrying
@@ -25,16 +32,7 @@ const WALL_CLOCK_RE =
  *  rendered wall clock back as if it were UTC. This is the only way to get an
  *  IANA offset in the platform — there is no `Date` API for it. */
 export const zoneOffsetMsAt = (epochMs: number, timeZone: string): number => {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    hour12: false,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  }).formatToParts(new Date(epochMs));
+  const parts = offsetFormatter(timeZone).formatToParts(new Date(epochMs));
   const read = (type: string): number => {
     const raw = parts.find((p) => p.type === type)?.value;
     return raw === undefined ? Number.NaN : Number(raw);

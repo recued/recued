@@ -78,7 +78,7 @@ import {
 
 import type { ReceptionEndpointKind } from '@recued/contracts';
 // D-210 WS3 — the field-builder's type select DERIVES from this closed list.
-import { INTAKE_FORM_VISITOR_FIELD_TYPES } from '@recued/contracts';
+import { INTAKE_FORM_VISITOR_FIELD_TYPES, intakeFormChoiceText } from '@recued/contracts';
 
 import {
   RECEPTION_KIND_COPY,
@@ -715,7 +715,8 @@ const renderIntakeFieldCells = (
     rowIndex: index,
     rowField: 'values',
     label: 'The choices, separated by commas. Only for a Choice box',
-    value: row.values.join(', '),
+    // As visitors read them: a template's "Under 10k", not its stored `under_10k`.
+    value: row.values.map((value) => intakeFormChoiceText(row, value)).join(', '),
   });
 
 /** § A.5.5 — `approval_link.options` row: id, label, description. */

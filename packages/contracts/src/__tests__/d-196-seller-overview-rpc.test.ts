@@ -14,6 +14,7 @@ describe('D-196 seller overview rpc', () => {
     const methods: Array<keyof ServerRpcRegistry> = [
       'server.seller.getOverview',
       'server.seller.transitionOfferState',
+      'server.seller.setOfferCheckoutUrl',
       'server.seller.updateSettings',
       'server.seller.upsertManualTier',
       'server.seller.issueManualCustomer',

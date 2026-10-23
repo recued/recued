@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
-test.use({ timezoneId: 'America/Los_Angeles', viewport: { width: 390, height: 844 } });
-const base = 'http://127.0.0.1:4319/full-app-harness.html?data=today';
+test.use({ locale: 'en-US', timezoneId: 'America/Los_Angeles', viewport: { width: 390, height: 844 } });
+const base = '/full-app-harness.html?data=today';
 const boot = async (page: Page, extra = ''): Promise<void> => {
   await page.clock.install({ time: new Date('2026-09-08T12:00:00-07:00') });
   await page.goto(`${base}${extra}#data/today`);
@@ -25,11 +25,162 @@ test('Today merges all kinds, exposes source freshness, and renders within a mob
   await expect(today).toContainText('work-calendar');
   await expect(page.locator('[data-today-group="next"]')).toContainText('Prepare the demo');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.locator('[data-today-view]').screenshot({ path: '/tmp/recued-today-mobile.png' });
+  await page.locator('[data-today-view]').screenshot({ path: test.info().outputPath('recued-today-mobile.png') });
 });
 
 const mutations = (page: Page): Promise<unknown[]> => page.evaluate(() =>
   JSON.parse(sessionStorage.getItem('recued-test-today-mutations') ?? '[]') as unknown[]);
+
+const dueField = (page: Page) => page.getByLabel('New due date and time', { exact: true });
+const backgroundRefresh = async (page: Page): Promise<void> => {
+  const before = await page.evaluate(() => window.__app.rpcCallCount('work_entity.list'));
+  await page.evaluate(() => {
+    document.documentElement.dataset.todayHideTask = 'task-tomorrow';
+    window.__app.fireMessage({ type: 'server_event', event: {
+      kind: 'warehouse', collection: 'task', op: 'update', id: 'task-tomorrow', cursor: Date.now() + 10_000,
+    } });
+  });
+  await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('work_entity.list'))).toBeGreaterThan(before);
+  await expect(page.getByRole('link', { name: 'Prepare the demo', exact: true })).toHaveCount(0);
+};
+
+test('rescheduling keeps its input through a late first-load result', async ({ page }) => {
+  await page.clock.install({ time: new Date('2026-09-08T12:00:00-07:00') });
+  await page.goto(`${base}&hold_rpc=collection.list#today`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.getByRole('button', { name: 'Reschedule Review the brief', exact: true }).click();
+  const due = dueField(page); await due.fill('2026-09-10T09:30');
+  const original = await due.elementHandle();
+  // Timed events and all-day events are read sequentially. Release each real
+  // request after it starts so both late results can finish the first load.
+  for (const count of [1, 2]) {
+    await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('collection.list'))).toBe(count);
+    expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('collection.list'))).toBe(1);
+  }
+  await expect(page.locator('[data-today-view]')).toHaveAttribute('aria-busy', 'false');
+  expect(await original!.evaluate(input => input.isConnected && document.activeElement === input)).toBe(true);
+  await expect(due).toHaveValue('2026-09-10T09:30');
+  await expect(page.getByRole('link', { name: 'Design review', exact: true })).toBeVisible();
+  await due.press('Escape'); await expect(page.locator('[data-today-task-editor]')).toHaveCount(0);
+  expect(await mutations(page)).toEqual([]);
+});
+
+test('rescheduling refresh retains its field without reclaiming focus from Cancel', async ({ page }) => {
+  await boot(page);
+  await page.getByRole('button', { name: 'Reschedule Review the brief', exact: true }).click();
+  const due = dueField(page); await due.fill('2026-09-10T09:30');
+  const original = await due.elementHandle();
+  const cancel = page.locator('[data-today-task-editor]').getByRole('button', { name: 'Cancel', exact: true });
+  await cancel.focus(); await backgroundRefresh(page);
+  expect(await original!.evaluate(input => input.isConnected)).toBe(true);
+  await expect(cancel).toBeFocused(); await expect(due).toHaveValue('2026-09-10T09:30');
+  await page.keyboard.press('Enter'); await expect(page.locator('[data-today-task-editor]')).toHaveCount(0);
+  expect(await mutations(page)).toEqual([]);
+});
+
+test.describe('native segmented rescheduling', () => {
+  // Chromium exposes independently editable date/time segments. WebKit's native
+  // picker has different keyboard controls; the shared input lifecycle above
+  // and the existing Save/Cancel workflows run in both engines.
+  test.skip(({ browserName }) => browserName !== 'chromium', 'Exercises Chromium native date/time segments.');
+
+  const partial = async (page: Page, segment: number) => {
+    const due = dueField(page); await due.fill('2026-09-10T09:30'); await due.focus();
+    for (let index = 0; index < 8; index++) await page.keyboard.press('ArrowLeft');
+    for (let index = 0; index < segment; index++) await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('Backspace');
+    expect(await due.evaluate(input => (input as HTMLInputElement).validity.badInput)).toBe(true);
+    return due;
+  };
+  const tick = async (page: Page, expected = '12:01 PM') => {
+    await page.evaluate(() => {
+      const heartbeat = () => window.__app.fireMessage({ type: 'server_heartbeat', ts: Date.now() });
+      heartbeat(); setInterval(heartbeat, 10_000);
+    });
+    await page.clock.runFor(60_001);
+    await expect(page.locator('.today-updated')).toContainText(expected);
+  };
+
+  for (const [segment, index, text, expected] of [
+    ['month', 0, '10', '2026-10-10T09:30'],
+    ['day', 1, '11', '2026-09-11T09:30'],
+    ['year', 2, '2027', '2027-09-10T09:30'],
+    ['hour', 3, '10', '2026-09-10T10:30'],
+    ['minute', 4, '45', '2026-09-10T09:45'],
+  ] as const) {
+    for (const refresh of ['minute', 'broadcast'] as const) {
+      for (const width of [390, 1280]) {
+        test(`${segment} survives a ${refresh} refresh at ${width}px`, async ({ page }) => {
+          await page.setViewportSize({ width, height: 900 }); await boot(page);
+          await page.getByRole('button', { name: 'Reschedule Review the brief', exact: true }).click();
+          const due = await partial(page, index); const original = await due.elementHandle();
+          if (refresh === 'minute') await tick(page); else await backgroundRefresh(page);
+          expect(await original!.evaluate(input => input.isConnected && document.activeElement === input)).toBe(true);
+          expect(await due.evaluate(input => (input as HTMLInputElement).validity.badInput)).toBe(true);
+          await page.keyboard.type(text); await expect(due).toHaveValue(expected);
+          expect(await mutations(page)).toEqual([]);
+          await due.press('Enter');
+          await expect(page.locator('[data-today-task-notice]')).toHaveText('Rescheduled “Review the brief”.');
+          expect(await mutations(page)).toEqual([{ method: 'work_entity.upsert', args: {
+            kind: 'task', id: 'task-today', due_at: Date.parse(`${expected}:00-07:00`),
+          } }]);
+          expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+        });
+      }
+    }
+  }
+
+  test('partial edits survive a day boundary while surrounding tasks change groups', async ({ page }) => {
+    await boot(page);
+    await page.getByRole('button', { name: 'Reschedule Review the brief', exact: true }).click();
+    const due = await partial(page, 1);
+    await page.clock.setSystemTime(new Date('2026-09-09T00:00:00-07:00')); await tick(page, 'AM');
+    await expect(page.locator('[data-today-group="overdue"]')).toContainText('Review the brief');
+    await expect(page.locator('[data-today-group="today"]')).toContainText('Prepare the demo');
+    await page.keyboard.type('11'); await expect(due).toHaveValue('2026-09-11T09:30');
+    await due.press('Escape'); await expect(page.locator('[data-today-task-editor]')).toHaveCount(0);
+    expect(await mutations(page)).toEqual([]);
+  });
+
+  test('an invalid Save retains partial segments for correction and a single confirmed write', async ({ page }) => {
+    await boot(page);
+    await page.getByRole('button', { name: 'Reschedule Review the brief', exact: true }).click();
+    const due = await partial(page, 0); await backgroundRefresh(page);
+    await page.getByRole('button', { name: 'Save due date', exact: true }).click();
+    await expect(page.locator('[data-today-task-error]')).toContainText('Pick a valid due date');
+    await expect(due).toBeFocused();
+    expect(await due.evaluate(input => (input as HTMLInputElement).validity.badInput)).toBe(true);
+    expect(await mutations(page)).toEqual([]);
+    await page.keyboard.type('10'); await expect(due).toHaveValue('2026-10-10T09:30');
+    await due.press('Enter'); await expect(page.locator('[data-today-task-notice]')).toContainText('Rescheduled');
+    expect(await mutations(page)).toHaveLength(1);
+  });
+
+  test('a removed task keeps its partial editor explicit until Cancel applies the latest view', async ({ page }) => {
+    await boot(page, '&hold_rpc=work_entity.get');
+    await page.getByRole('button', { name: 'Reschedule Review the brief', exact: true }).click();
+    const due = await partial(page, 0);
+    await page.evaluate(() => {
+      document.documentElement.dataset.todayHideTask = 'task-today';
+      document.querySelector<HTMLButtonElement>('.today-refresh')!.click();
+    });
+    await expect(page.locator('.today-updated')).toContainText('Finish or cancel rescheduling to show the latest results.');
+    await expect(due).toBeFocused(); await page.keyboard.type('10'); await expect(due).toHaveValue('2026-10-10T09:30');
+    await due.press('Enter');
+    await expect(page.locator('[data-today-task-editor]')).toHaveAttribute('aria-busy', 'true');
+    await expect(due).toBeDisabled();
+    await expect.poll(() => page.evaluate(() => window.__app.rpcCallCount('work_entity.get'))).toBe(1);
+    expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('work_entity.get'))).toBe(1);
+    await expect(page.locator('[data-today-task-error]')).toContainText('This task cannot be changed here now');
+    await expect(page.locator('[data-today-task-editor]')).toHaveAttribute('aria-busy', 'false');
+    await expect(due).toBeEnabled();
+    await expect(due).toHaveValue('2026-10-10T09:30'); expect(await mutations(page)).toEqual([]);
+    await page.locator('[data-today-task-editor]').getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(page.locator('[data-today-task-editor]')).toHaveCount(0);
+    await expect(page.getByRole('link', { name: 'Review the brief', exact: true })).toHaveCount(0);
+    await expect(page.locator('.today-updated')).toContainText('Checked');
+  });
+});
 
 for (const [button, method, outcome] of [
   ['Done: Deliver the draft to Maya', 'work_entity.commitment.fulfill', 'Done'],
@@ -136,7 +287,7 @@ test('rescheduling a task below the fold reveals its editor and Cancel returns t
   const row = page.locator('[data-today-item]').filter({ has: page.getByRole('link', { name: 'Prepare the demo', exact: true }) });
   await expect(row.locator('[data-today-task-editor]')).toBeVisible();
   await expect(due).toHaveAccessibleDescription('Changes this task’s due date. Times use your device’s time zone.');
-  await row.screenshot({ path: '/tmp/recued-today-inline-editor.png' });
+  await row.screenshot({ path: test.info().outputPath('recued-today-inline-editor.png') });
   await page.locator('[data-today-task-editor]').getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(reschedule).toBeFocused();
   await expect(reschedule).toBeInViewport();
@@ -387,7 +538,7 @@ test('a fresh install says so on a FINISHED read, and its capture offer opens th
   // what pins this to a COMPLETED read: the claim "nothing is due" is only
   // honest once every source has answered.
   await page.clock.install({ time: new Date('2026-09-08T12:00:00-07:00') });
-  await page.goto('http://127.0.0.1:4319/full-app-harness.html?data=today-empty#data/today');
+  await page.goto('/full-app-harness.html?data=today-empty#data/today');
   await page.waitForFunction(() => window.__app?.ready === true);
 
   const view = page.locator('[data-today-view]');

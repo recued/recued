@@ -17,8 +17,8 @@
  * No sealed visitor PII, and no ciphertext either. D-149 § N.6 seals the visitor's fields;
  * D-173 I-3 keeps them sealed until the owner opens an item. This projection is the LIST, so
  * it carries neither the plaintext nor the ciphertext to decrypt it from — a reader that
- * wants the visitor's values must go through a gated per-record read, which does not exist
- * yet and is deliberately not invented here.
+ * wants the visitor's values goes through the gated per-record read, `reception.record.open`
+ * (below): one record, opened on the server, for a paired owner who asked for it.
  *
  * ## The two kinds are ONE TABLE and still TWO ARMS
  *
@@ -79,6 +79,10 @@ interface ReceptionRecordBase {
   /** What the record became. Empty until something materializes — which for a HELD row is the
    *  whole point: it is how the owner sees that nothing has. */
   readonly resolved: ReadonlyArray<ReceptionRecordResolution>;
+  /** The form's or booking page's name as the owner set it ("Buy the kit") — what a notice about
+   *  the record calls it. The owner's own words, not the visitor's. Absent when the endpoint is
+   *  gone, or from a server that does not name it; a reader falls back to `endpoint_id`. */
+  readonly form_name?: string;
 }
 
 export interface ReceptionBookingRecordSummary extends ReceptionRecordBase {
@@ -147,4 +151,37 @@ export interface ReceptionRecordListResult {
   /** `true` when the limit truncated the answer. ⛔ Never silently truncate: a reception list
    *  is exactly the surface where "I see all of them" must be either true or visibly false. */
   readonly truncated: boolean;
+}
+
+/** The longest record id `reception.record.open` accepts. Record ids are UUIDs; the bound only
+ *  keeps an odd caller from handing the store an unbounded key. */
+export const RECEPTION_RECORD_ID_MAX = 200;
+
+export interface ReceptionRecordOpenInput {
+  readonly record_id: string;
+}
+
+/** One thing the visitor told the form, in the owner's words: the field's label as the form
+ *  showed it when they sent it, and what they answered, written out ("Yes", "a, b"). */
+export interface ReceptionRecordAnswer {
+  readonly label: string;
+  readonly value: string;
+}
+
+/** D-149 § N.6's "Open submission detail": ONE record, opened.
+ *
+ *  🔑 This is the gated per-record read the list above refuses to be. The gate is the one
+ *  every `reception.*` method has — a paired admin client, and the reserved prefix that keeps
+ *  it off MCP, so the owner's AI cannot read a visitor's answers through it — plus the shape:
+ *  one record per call, opened on the server, never a ciphertext handed to the caller. The
+ *  owner's Inbox already shows a held item's answers the same way (D-173 A.9). */
+export interface ReceptionRecordOpenResult {
+  /** The same redacted summary the list carries, so the caller needs no second read. */
+  readonly record: ReceptionRecordSummary;
+  /** The form's or booking page's name as the owner set it. `null` when the endpoint is gone. */
+  readonly form_name: string | null;
+  /** The address the visitor gave, when there is one — what the owner writes back to. */
+  readonly visitor_email: string | null;
+  /** What the visitor answered, in the form's order. A question they left blank is left out. */
+  readonly answers: ReadonlyArray<ReceptionRecordAnswer>;
 }

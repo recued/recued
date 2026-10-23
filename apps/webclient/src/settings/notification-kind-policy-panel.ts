@@ -43,6 +43,9 @@ export const KIND_POLICY_ROW_ATTR = 'data-recued-kind-policy-row';
 export const KIND_POLICY_ENABLED_ATTR = 'data-recued-kind-policy-enabled';
 export const KIND_POLICY_OFFSET_ATTR = 'data-recued-kind-policy-offset';
 export const KIND_POLICY_ERROR_ATTR = 'data-recued-kind-policy-error';
+export const KIND_POLICY_STATUS_ATTR = 'data-recued-kind-policy-status';
+export const KIND_POLICY_READ_STATUS_ATTR = 'data-recued-kind-policy-read-status';
+export const KIND_POLICY_RETRY_ATTR = 'data-recued-kind-policy-retry';
 export const KIND_POLICY_UNREACHABLE_ATTR = 'data-recued-kind-policy-unreachable';
 
 export type KindPolicyGetCaller = () => Promise<NotificationKindPolicyGetResponse>;
@@ -110,7 +113,10 @@ export interface KindPolicyPanelMount {
   getState(): 'loading' | 'ready' | 'error';
   getPolicies(): NotificationKindPolicy[];
   getError(): string | null;
+  /** Resolves when timing settings settle; optional channel lookups continue separately. */
   refresh(): Promise<void>;
+  /** Apply a confirmed notification-axis change without reloading timing settings. */
+  updateChannelNotification(channel: string, enabled: boolean): void;
   dispose(): void;
 }
 
@@ -127,8 +133,22 @@ export const mountKindPolicyPanel = (
   let error: string | null = null;
   /** `null` ⇒ not known (never fetched, or the fetch failed). */
   let reachableWhenAway: boolean | null = null;
+  const channelNotifications = new Map<string, boolean>();
+  let hasChannelRoster = false;
+  let reachGeneration = 0;
+  let reachRead: Promise<void> | null = null;
   let saving = false;
   let disposed = false;
+  let saved = false;
+  let loadGeneration = 0;
+  let initialRead: Promise<void> | null = null;
+  let readFailed = false;
+  let showingReadFeedback = false;
+  type FocusKey = 'assets' | `${NotificationAnchoredKind}:${'enabled' | 'offset'}`;
+  const controls = new Map<FocusKey, HTMLElement>();
+  let savingStatus: HTMLElement | null = null;
+  let savingFocus: FocusKey | null = null;
+  let feedbackKind: NotificationAnchoredKind | null = null;
 
   const el = (tag: string, text?: string): HTMLElement => {
     const node = doc.createElement(tag);
@@ -136,9 +156,79 @@ export const mountKindPolicyPanel = (
     return node;
   };
 
+  const createHeading = (): HTMLElement => {
+    const heading = el('h3', 'What you are notified about');
+    heading.setAttribute('tabindex', '-1');
+    return heading;
+  };
+  // Keep the same feedback and button connected through pending reads and failures.
+  const readFeedback = el('div');
+  readFeedback.className = 'kp-read-feedback';
+  const readStatus = el('p');
+  readStatus.setAttribute(KIND_POLICY_READ_STATUS_ATTR, '');
+  readStatus.setAttribute('aria-atomic', 'true');
+  const retry = doc.createElement('button');
+  retry.type = 'button';
+  retry.className = 'rx-btn rx-btn-secondary';
+  retry.textContent = 'Retry loading notification settings';
+  retry.setAttribute(KIND_POLICY_RETRY_ATTR, '');
+  retry.addEventListener('click', () => {
+    if (!disposed && policies.length === 0 && state !== 'loading') void refresh();
+  });
+  readFeedback.appendChild(readStatus);
+
+  const reachabilityNote = el('p');
+  reachabilityNote.className = 'kp-note';
+  reachabilityNote.setAttribute('role', 'status');
+  reachabilityNote.setAttribute('aria-atomic', 'true');
+  const renderReachability = (): void => {
+    if (reachableWhenAway === false) {
+      reachabilityNote.removeAttribute('hidden');
+      reachabilityNote.setAttribute(KIND_POLICY_UNREACHABLE_ATTR, '');
+      reachabilityNote.textContent = 'Only in-app notifications are on, so these will be waiting in Recued '
+        + 'rather than reaching you. Turn on a channel above.';
+    } else {
+      reachabilityNote.setAttribute('hidden', '');
+      reachabilityNote.removeAttribute(KIND_POLICY_UNREACHABLE_ATTR);
+      reachabilityNote.textContent = '';
+    }
+  };
+  const updateReachability = (): void => {
+    reachableWhenAway = [...channelNotifications].some(([channel, enabled]) => channel !== 'ui' && enabled)
+      ? true : hasChannelRoster ? false : null;
+    renderReachability();
+  };
+
+  const renderFeedback = (into: HTMLElement): void => {
+    if (error !== null) {
+      const p = el('p', error);
+      p.setAttribute(KIND_POLICY_ERROR_ATTR, '');
+      p.setAttribute('role', 'alert');
+      into.appendChild(p);
+    } else if (saving || saved) {
+      const status = el('p', saving ? 'Saving notification settings…' : 'Notification settings saved.');
+      status.setAttribute(KIND_POLICY_STATUS_ATTR, '');
+      status.setAttribute('role', 'status');
+      status.setAttribute('aria-atomic', 'true');
+      if (saving) {
+        status.setAttribute('tabindex', '-1');
+        savingStatus = status;
+      }
+      into.appendChild(status);
+    }
+  };
+
+  const focusOwned = (node: HTMLElement): void => {
+    node.focus?.({ preventScroll: true });
+    node.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+  };
+
   const save = async (patch: NotificationKindPolicySetRequest): Promise<void> => {
-    if (saving) return;
+    if (saving || disposed) return;
+    loadGeneration += 1;
     saving = true;
+    saved = false;
+    feedbackKind = patch.kind;
     error = null;
     render();
     try {
@@ -146,6 +236,7 @@ export const mountKindPolicyPanel = (
       if (disposed) return;
       policies = next.policies;
       state = 'ready';
+      saved = true;
     } catch (err) {
       if (disposed) return;
       // Verbatim — the server owns why an offset was refused, and a second copy
@@ -159,32 +250,47 @@ export const mountKindPolicyPanel = (
 
   const render = (): void => {
     if (disposed) return;
-    opts.host.innerHTML = '';
+    const recovering = doc.activeElement === retry;
+    const owner = [...controls].find(([, node]) => node === doc.activeElement)?.[0]
+      ?? (savingStatus !== null && doc.activeElement === savingStatus ? savingFocus : null);
+    controls.clear();
+    savingStatus = null;
     opts.host.setAttribute(KIND_POLICY_PANEL_ATTR, '');
     opts.host.setAttribute(KIND_POLICY_STATE_ATTR, state);
+    if (policies.length === 0) {
+      const failed = state !== 'loading';
+      if (failed && !readFailed) { readFailed = true; readFeedback.appendChild(retry); }
+      readStatus.setAttribute('role', failed ? 'alert' : 'status');
+      if (failed) readStatus.setAttribute(KIND_POLICY_ERROR_ATTR, '');
+      else readStatus.removeAttribute(KIND_POLICY_ERROR_ATTR);
+      readStatus.textContent = failed ? error ?? 'Could not read your notification settings.'
+        : readFailed ? 'Retrying notification settings…' : 'Loading notification settings…';
+      retry.setAttribute('aria-disabled', String(!failed));
+      retry.setAttribute('aria-busy', String(!failed));
+      if (!showingReadFeedback) {
+        opts.host.innerHTML = '';
+        opts.host.appendChild(createHeading());
+        opts.host.appendChild(readFeedback);
+        showingReadFeedback = true;
+      }
+      return;
+    }
+    showingReadFeedback = false;
+    opts.host.innerHTML = '';
     // ⛔ NOT "Reminders" ANY MORE. This panel IS the notification policy for
     // kinds, and "reminder" names only one of the things it can answer — the
     // one about something UPCOMING. An arrival notice is a notification and is
     // not a reminder, so the old heading would have had to be wrong the moment
     // an incoming axis joined. Named for the question it answers instead.
-    opts.host.appendChild(el('h3', 'What you are notified about'));
-
-    if (state === 'loading') {
-      opts.host.appendChild(el('p', 'Loading…'));
-      return;
-    }
-    if (policies.length === 0) {
-      const p = el('p', error ?? 'Could not read your reminder settings.');
-      p.setAttribute(KIND_POLICY_ERROR_ATTR, '');
-      opts.host.appendChild(p);
-      return;
-    }
+    const heading = createHeading();
+    opts.host.appendChild(heading);
 
     const lede = el('p', 'Which kinds Recued tells you about, and how far ahead.');
     lede.className = 'kp-lede';
     opts.host.appendChild(lede);
     const clocks = el('p', 'Asset and occasion clocks are set on each asset and rule. ');
     const assets = el('a', 'Open Yours');
+    controls.set('assets', assets);
     assets.setAttribute('href', '#yours/asset');
     clocks.appendChild(assets);
     opts.host.appendChild(clocks);
@@ -200,6 +306,7 @@ export const mountKindPolicyPanel = (
       enabled.checked = policy.enabled;
       enabled.disabled = saving;
       enabled.setAttribute(KIND_POLICY_ENABLED_ATTR, kind);
+      controls.set(`${kind}:enabled`, enabled);
       enabled.addEventListener('change', () => {
         void save({ kind, enabled: !policy.enabled });
       });
@@ -211,7 +318,9 @@ export const mountKindPolicyPanel = (
 
       const offset = doc.createElement('select');
       offset.disabled = saving || !policy.enabled;
+      offset.setAttribute('aria-label', `${KIND_LABEL[kind]}: how far ahead`);
       offset.setAttribute(KIND_POLICY_OFFSET_ATTR, kind);
+      controls.set(`${kind}:offset`, offset);
       for (const [ms, label] of OFFSET_CHOICES) {
         const option = doc.createElement('option');
         option.value = String(ms);
@@ -234,6 +343,7 @@ export const mountKindPolicyPanel = (
         if (Number.isFinite(next)) void save({ kind, offset_ms: next });
       });
       row.appendChild(offset);
+      if (feedbackKind === kind) renderFeedback(row);
 
       opts.host.appendChild(row);
     }
@@ -245,16 +355,8 @@ export const mountKindPolicyPanel = (
     // for zero would have been dead code that always passed. The real question is
     // whether anything reaches the owner **when they are not looking at Recued**,
     // which is the entire premise of a reminder.
-    if (reachableWhenAway === false) {
-      const warn = el(
-        'p',
-        'Only in-app notifications are on, so these will be waiting in Recued '
-        + 'rather than reaching you. Turn on a channel above.',
-      );
-      warn.className = 'kp-note';
-      warn.setAttribute(KIND_POLICY_UNREACHABLE_ATTR, '');
-      opts.host.appendChild(warn);
-    }
+    renderReachability();
+    opts.host.appendChild(reachabilityNote);
 
     // ⛔ Names the ONE kind an owner will look for and not find, because its
     // absence is a decision and a blank space reads as an oversight to report.
@@ -277,10 +379,23 @@ export const mountKindPolicyPanel = (
     silencer.className = 'kp-note';
     opts.host.appendChild(silencer);
 
-    if (error !== null) {
-      const p = el('p', error);
-      p.setAttribute(KIND_POLICY_ERROR_ATTR, '');
-      opts.host.appendChild(p);
+    if (feedbackKind === null || !policies.some(policy => policy.kind === feedbackKind)) renderFeedback(opts.host);
+    if (recovering) {
+      const first = NOTIFICATION_ANCHORED_KINDS.map(kind => controls.get(`${kind}:enabled`)).find(node => node !== undefined);
+      focusOwned(first ?? heading);
+    } else if (owner !== null) {
+      const target = controls.get(owner);
+      const available = (node: HTMLElement | undefined): node is HTMLElement =>
+        node !== undefined && (node as HTMLInputElement | HTMLSelectElement).disabled !== true;
+      if (available(target)) focusOwned(target);
+      else if (savingStatus !== null) {
+        savingFocus = owner;
+        focusOwned(savingStatus);
+      } else {
+        const kind = owner.split(':')[0] as NotificationAnchoredKind;
+        const fallback = owner === 'assets' ? undefined : controls.get(`${kind}:enabled`);
+        focusOwned(available(fallback) ? fallback : heading);
+      }
     }
   };
 
@@ -288,35 +403,63 @@ export const mountKindPolicyPanel = (
    *  not fetch must leave the question UNANSWERED, never answered "no" — a
    *  warning raised by a failed lookup sends the owner to fix a setting that was
    *  never wrong. */
-  const refreshReach = async (): Promise<void> => {
-    if (opts.describeChannels === undefined) return;
-    try {
-      const { rows } = await opts.describeChannels();
-      if (disposed) return;
-      // ⛔ `ui` NAMED EXPLICITLY, not derived from `notification_togglable`.
-      // They coincide today, but "you may switch this off" and "this only
-      // reaches you in-app" are different properties, and a new fixed-on
-      // channel should make someone think rather than silently join the set.
-      reachableWhenAway = rows.some((r) => r.channel !== 'ui' && r.notification);
-    } catch {
-      if (!disposed) reachableWhenAway = null;
-    }
+  const refreshReach = (): void => {
+    const describe = opts.describeChannels;
+    if (disposed || describe === undefined || reachRead !== null) return;
+    const generation = ++reachGeneration;
+    const read = (async () => {
+      try {
+        const { rows } = await describe();
+        if (disposed || generation !== reachGeneration) return;
+        // In-app delivery does not reach the owner while they are away.
+        channelNotifications.clear();
+        for (const row of rows) channelNotifications.set(row.channel, row.notification);
+        hasChannelRoster = true;
+        updateReachability();
+      } catch {
+        if (disposed || generation !== reachGeneration) return;
+        channelNotifications.clear();
+        hasChannelRoster = false;
+        reachableWhenAway = null;
+        renderReachability();
+      }
+    })();
+    const pending = read.finally(() => { if (reachRead === pending) reachRead = null; });
+    reachRead = pending;
   };
 
-  const refresh = async (): Promise<void> => {
-    await refreshReach();
-    try {
-      const next = await opts.runGet();
-      if (disposed) return;
-      policies = next.policies;
-      state = 'ready';
+  const refresh = (): Promise<void> => {
+    if (disposed || saving) return Promise.resolve();
+    if (policies.length === 0 && initialRead !== null) return initialRead;
+    const generation = ++loadGeneration;
+    feedbackKind = null;
+    const initial = policies.length === 0;
+    if (initial) {
+      state = 'loading';
       error = null;
-    } catch (err) {
-      if (disposed) return;
-      state = 'error';
-      error = err instanceof Error ? err.message : String(err);
+      render();
     }
-    render();
+    const read = (async () => {
+      try {
+        const next = await opts.runGet();
+        if (disposed || generation !== loadGeneration) return;
+        policies = next.policies;
+        state = 'ready';
+        error = null;
+        saved = false;
+      } catch (err) {
+        if (disposed || generation !== loadGeneration) return;
+        state = 'error';
+        error = err instanceof Error ? err.message : String(err);
+      }
+      render();
+    })();
+    // Timing reads and retries complete independently of this optional lookup.
+    refreshReach();
+    if (!initial) return read;
+    const pending = read.finally(() => { if (initialRead === pending) initialRead = null; });
+    initialRead = pending;
+    return pending;
   };
 
   render();
@@ -327,7 +470,14 @@ export const mountKindPolicyPanel = (
     getPolicies: () => policies,
     getError: () => error,
     refresh,
-    dispose: () => { disposed = true; },
+    updateChannelNotification: (channel, enabled) => {
+      if (disposed || channel === 'ui') return;
+      // A roster requested before this confirmed change cannot replace it.
+      reachGeneration += 1;
+      channelNotifications.set(channel, enabled);
+      updateReachability();
+    },
+    dispose: () => { disposed = true; loadGeneration += 1; controls.clear(); savingStatus = null; savingFocus = null; },
   };
 };
 
@@ -356,6 +506,15 @@ export const KIND_POLICY_PANEL_STYLES = `
   margin: 0;
   font-size: 14px;
   font-weight: 600;
+}
+[${KIND_POLICY_PANEL_ATTR}] .kp-read-feedback {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+[${KIND_POLICY_PANEL_ATTR}] [${KIND_POLICY_READ_STATUS_ATTR}] {
+  margin: 0;
 }
 [${KIND_POLICY_PANEL_ATTR}] .kp-lede,
 [${KIND_POLICY_PANEL_ATTR}] .kp-note {

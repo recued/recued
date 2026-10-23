@@ -214,4 +214,18 @@ describe('resolveDeviceDisplayName — reads globalThis.navigator', () => {
     });
     expect(resolveDeviceDisplayName()).toBe('Web browser');
   });
+
+  it.each(['navigator', 'userAgent', 'platform', 'userAgentData', 'userAgentData.platform'])(
+    'uses the generic label when %s access is blocked', blocked => {
+      const denied = (): never => { throw new Error('Private browser hint policy'); };
+      const navigator = { userAgent: UA.chromeMac, platform: 'MacIntel', userAgentData: { platform: 'macOS' } };
+      if (blocked === 'userAgentData.platform') Object.defineProperty(navigator.userAgentData, 'platform', { get: denied });
+      else if (blocked !== 'navigator') Object.defineProperty(navigator, blocked, { get: denied });
+      Object.defineProperty(globalThis, 'navigator', {
+        configurable: true,
+        ...(blocked === 'navigator' ? { get: denied } : { value: navigator }),
+      });
+      expect(resolveDeviceDisplayName()).toBe('Web browser');
+    },
+  );
 });

@@ -1,11 +1,13 @@
 /** D-325 — rule arithmetic, with the owner's clock passed in. These functions
  * decide dates and thresholds; they never write or choose a reminder cadence. */
 import { AssetValidationError, isAssetDate, type Asset, type AssetEvidence, type AssetReading, type AssetRule, type AssetRuleOffset } from './assets.js';
+import { createZonedDateTimeFormatter } from './zoned-date-time-formatter.js';
 
 const DAY = 86_400_000;
+const dateFormatter = createZonedDateTimeFormatter({ era: 'short', year: 'numeric', month: '2-digit', day: '2-digit' });
 export const assetDateAt = (at: number, timeZone: string): string => {
   if (!Number.isSafeInteger(at) || Math.abs(at) > 8.64e15) throw new AssetValidationError('Invalid date instant');
-  const parts = new Intl.DateTimeFormat('en-US', { timeZone, era: 'short', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(at);
+  const parts = dateFormatter(timeZone).formatToParts(at);
   const part = (type: string): string => parts.find(value => value.type === type)!.value;
   const result = `${part('year').padStart(4, '0')}-${part('month')}-${part('day')}`;
   if (part('era') !== 'AD' || !isAssetDate(result)) throw new AssetValidationError('Date is out of range');

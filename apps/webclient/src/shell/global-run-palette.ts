@@ -58,10 +58,15 @@ export interface GlobalRunPaletteHandle {
 }
 
 const shortcutDisplay = (doc: Document): string => {
-  const platform = doc.defaultView?.navigator?.platform
-    ?? (globalThis as { navigator?: Navigator }).navigator?.platform
-    ?? '';
-  return /Mac|iPhone|iPad|iPod/i.test(platform) ? '⌘K' : 'Ctrl K';
+  try {
+    const platform = doc.defaultView?.navigator?.platform
+      ?? (globalThis as { navigator?: Navigator }).navigator?.platform
+      ?? '';
+    return /Mac|iPhone|iPad|iPod/i.test(platform) ? '⌘K' : 'Ctrl K';
+  } catch {
+    // A shortcut hint must not prevent startup when Navigator is restricted.
+    return 'Ctrl K';
+  }
 };
 
 export const mountGlobalRunPalette = (

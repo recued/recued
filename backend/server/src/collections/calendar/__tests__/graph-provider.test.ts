@@ -1026,8 +1026,15 @@ describe('GraphCalProvider — startSync', () => {
       emitted.push(e);
     });
     expect(seededCalls).toBe(1);
+    // The walk that replaced the link reports no deletion, so the calendar's
+    // rows in its window are checked against what it held.
     expect(emitted).toEqual([
       expect.objectContaining({ kind: 'updated', source_id: 'recovered-event' }),
+      expect.objectContaining({
+        kind: 'calendar',
+        source_id: 'cal-1',
+        calendar: expect.objectContaining({ calendar_id: 'cal-1', keep: ['recovered-event'] }),
+      }),
     ]);
     expect(
       store.data.get(`graph.work.cal_delta_link.${hashId('cal-1')}`),
@@ -1080,12 +1087,56 @@ describe('GraphCalProvider — startSync', () => {
     expect(store.data.get(tokenKey)).toBe(expiredLink);
   });
 
+  it('retains an expired deltaLink when only the check of the calendar\'s rows is rejected', async () => {
+    const store = seedStore();
+    const tokenKey = `graph.work.cal_delta_link.${hashId('cal-1')}`;
+    const expiredLink =
+      'https://graph.microsoft.com/v1.0/me/calendars/cal-1/calendarView/delta?$deltatoken=expired-check';
+    store.data.set(tokenKey, expiredLink);
+    const fetcher: HttpFetcher = async (url) => {
+      if (url.includes('/me/calendars?') || url.endsWith('/me/calendars')) {
+        return mkJson(200, { value: [{ id: 'cal-1' }] });
+      }
+      if (url === expiredLink) return mkJson(410, { error: { code: 'gone' } });
+      if (url.includes('/calendarView/delta') && !url.includes('deltatoken')) {
+        return mkJson(200, {
+          value: [{
+            id: 'acked',
+            iCalUId: 'acked',
+            subject: 'Delivered',
+            start: { dateTime: '2026-04-23T10:00:00', timeZone: 'UTC' },
+            end: { dateTime: '2026-04-23T11:00:00', timeZone: 'UTC' },
+          } as GraphCalEvent],
+          '@odata.deltaLink': 'https://graph.microsoft.com/v1.0/me/calendars/cal-1/calendarView/delta?$deltatoken=must-not-commit',
+        });
+      }
+      return mkJson(404, { error: 'unmapped', url });
+    };
+    const provider = createGraphCalProvider({
+      slug: 'work', config: mkConfig(), accountStore: store, providerConfig, fetcher,
+      scheduler: () => () => undefined,
+    });
+    cleanup.push(() => provider.close());
+
+    const kinds: string[] = [];
+    const stop = await provider.startSync(async (e) => {
+      kinds.push(e.kind);
+      if (e.kind === 'calendar') throw new Error('collection unavailable');
+    });
+    await stop();
+
+    expect(kinds).toEqual(['updated', 'calendar']);
+    expect(store.data.get(tokenKey)).toBe(expiredLink);
+  });
+
   it('a clean poll reports a sync, though it delivered nothing', async () => {
     // Live, 2026-10-15: an empty calendar delivered no event, so nothing ever
     // said it had synced, and Connections showed "First sync pending" for good.
     const store = seedStore();
     const link = 'https://graph.microsoft.com/v1.0/me/calendars/cal-1/calendarView/delta?$deltatoken=quiet';
     store.data.set(`graph.work.cal_delta_link.${hashId('cal-1')}`, link);
+    // Seeded an hour ago: its window is current, so the poll seeds nothing.
+    store.data.set(`graph.work.cal_delta_link.${hashId('cal-1')}.window`, JSON.stringify({ seeded_at: 1_792_000_000_000 - 3_600_000 }));
     const { fetcher } = makeRouter([
       calendarsListRoute([{ id: 'cal-1' }]),
       { match: (u) => u === link, response: { status: 200, body: { value: [], '@odata.deltaLink': link } } },
@@ -1101,6 +1152,100 @@ describe('GraphCalProvider — startSync', () => {
     expect(synced).toEqual([{ ok: true, at: 1_792_000_000_000 }]);
     expect(provider.health().last_successful_sync_at).toBe(1_792_000_000_000);
     await stop();
+  });
+
+  // Graph's calendarView delta reports changes only inside the window its link
+  // was seeded with, and the link was seeded once: 90 days after enrolment no
+  // new meeting arrived through a poll.
+  describe('the delta window moves', () => {
+    const NOW = 1_792_000_000_000;
+    const DAY = 86_400_000;
+    const linkKey = `graph.work.cal_delta_link.${hashId('cal-1')}`;
+    const old = 'https://graph.microsoft.com/v1.0/me/calendars/cal-1/calendarView/delta?$deltatoken=old';
+    const drained = 'https://graph.microsoft.com/v1.0/me/calendars/cal-1/calendarView/delta?$deltatoken=drained';
+    const reseeded = 'https://graph.microsoft.com/v1.0/me/calendars/cal-1/calendarView/delta?$deltatoken=reseeded';
+    const event = (id: string, day: string): GraphCalEvent => ({
+      id,
+      iCalUId: id,
+      subject: id,
+      start: { dateTime: `${day}T10:00:00`, timeZone: 'UTC' },
+      end: { dateTime: `${day}T11:00:00`, timeZone: 'UTC' },
+    } as GraphCalEvent);
+    const isSeed = (u: string): boolean =>
+      u.includes('/me/calendars/cal-1/calendarView/delta') && !u.includes('$deltatoken');
+    const setup = (window: string | undefined, seed: Route['response']) => {
+      const store = seedStore();
+      store.data.set(linkKey, old);
+      if (window !== undefined) store.data.set(`${linkKey}.window`, window);
+      const { fetcher, calls } = makeRouter([
+        calendarsListRoute([{ id: 'cal-1' }]),
+        { match: (u) => u === old, response: { status: 200, body: { value: [event('changed-meanwhile', '2026-10-01')], '@odata.deltaLink': drained } } },
+        { match: (u) => u === drained, response: { status: 200, body: { value: [], '@odata.deltaLink': drained } } },
+        { match: (u) => u === reseeded, response: { status: 200, body: { value: [], '@odata.deltaLink': reseeded } } },
+        { match: isSeed, response: seed },
+      ]);
+      let tick: (() => unknown) | undefined;
+      const provider = createGraphCalProvider({
+        slug: 'work', config: mkConfig(), accountStore: store, providerConfig, fetcher,
+        scheduler: (fn) => { tick = fn; return () => undefined; }, now: () => NOW,
+      });
+      cleanup.push(() => provider.close());
+      return { store, calls, provider, tick: async () => { await tick?.(); } };
+    };
+    const seedOk = { status: 200, body: { value: [event('past-the-old-end', '2026-12-30')], '@odata.deltaLink': reseeded } };
+
+    it('polls the old link once more, then seeds today\'s window and delivers its walk', async () => {
+      // mkConfig's forward horizon is 30 days: due after 15.
+      const h = setup(JSON.stringify({ seeded_at: NOW - 16 * DAY }), seedOk);
+      const emitted: CalendarSyncEvent[] = [];
+      const stop = await h.provider.startSync(async (e) => { emitted.push(e); });
+      expect(emitted.map((e) => e.source_id)).toEqual(['changed-meanwhile', 'past-the-old-end', 'cal-1']);
+      // The new link's walk reports no deletion: the calendar's rows in
+      // today's window, a day in from each end, are checked against it.
+      expect(emitted[2]).toMatchObject({
+        kind: 'calendar',
+        calendar: { calendar_id: 'cal-1', keep: ['past-the-old-end'], window: { start: NOW - 6 * DAY, end: NOW + 29 * DAY } },
+      });
+      expect(h.store.data.get(linkKey)).toBe(reseeded);
+      expect(JSON.parse(h.store.data.get(`${linkKey}.window`)!)).toEqual({
+        seeded_at: NOW,
+        start: new Date(NOW - 7 * DAY).toISOString(),
+        end: new Date(NOW + 30 * DAY).toISOString(),
+      });
+      const seedUrl = new URL(h.calls.find((c) => isSeed(c.url))!.url);
+      expect(seedUrl.searchParams.get('endDateTime')).toBe(new Date(NOW + 30 * DAY).toISOString());
+      await stop();
+    });
+
+    it('seeds a link from before this rule once, and not on the next tick', async () => {
+      const h = setup(undefined, seedOk);
+      const stop = await h.provider.startSync(async () => {});
+      expect(h.calls.filter((c) => isSeed(c.url))).toHaveLength(1);
+      await h.tick();
+      expect(h.calls.filter((c) => isSeed(c.url))).toHaveLength(1);
+      expect(h.calls.filter((c) => c.url === reseeded)).toHaveLength(1);
+      await stop();
+    });
+
+    it('leaves a link seeded less than half the horizon ago alone', async () => {
+      const h = setup(JSON.stringify({ seeded_at: NOW - 14 * DAY }), seedOk);
+      const stop = await h.provider.startSync(async () => {});
+      expect(h.calls.filter((c) => isSeed(c.url))).toHaveLength(0);
+      expect(h.store.data.get(linkKey)).toBe(drained);
+      await stop();
+    });
+
+    it('keeps the old link when the new seed fails, and tries again on the next tick', async () => {
+      const h = setup(JSON.stringify({ seeded_at: NOW - 16 * DAY }), { status: 503, body: { error: 'busy' } });
+      const synced: CalendarSyncOutcome[] = [];
+      h.provider.onSyncOutcome!((outcome) => { synced.push(outcome); });
+      const stop = await h.provider.startSync(async () => {});
+      expect(h.store.data.get(linkKey)).toBe(drained);
+      expect(synced.at(-1)).toMatchObject({ ok: false });
+      await h.tick();
+      expect(h.calls.filter((c) => isSeed(c.url)).length).toBeGreaterThanOrEqual(2);
+      await stop();
+    });
   });
 
   it('a poll whose change the collection rejects reports a transient failure, not a sync', async () => {
